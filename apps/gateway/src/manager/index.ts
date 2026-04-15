@@ -1,14 +1,13 @@
 import os from "node:os";
 import { redisCommandClient } from "../redis.js";
 import { DiscordProvider } from "../providers/discord/index.js";
+import { DiscordCentralProvider } from "../providers/discord-central/index.js";
 import { FeishuProvider } from "../providers/feishu/index.js";
 import type { GatewayProvider } from "../providers/base.js";
-
-interface ChannelConfig {
-  provider: string;
-  credentials: Record<string, string>;
-  externalChatId?: string;
-}
+import {
+  parseChannelConfig,
+  type GatewayNodeChannelConfig,
+} from "./config.js";
 
 export class GatewayManager {
   public readonly nodeId: string;
@@ -46,6 +45,7 @@ export class GatewayManager {
   public async stop() {
     console.log(`[Manager] Stopping Gateway Node: ${this.nodeId}`);
     console.log(`[Manager] Active providers to stop: ${this.providers.size}`);
+    const channelIds = Array.from(this.providers.keys());
 
     if (this.heartbeatInterval) {
       clearInterval(this.heartbeatInterval);
@@ -60,7 +60,7 @@ export class GatewayManager {
     for (const [channelId, provider] of this.providers.entries()) {
       try {
         console.log(`[Manager] Destroying provider for ${channelId}...`);
-        provider.destroy();
+        await provider.destroy();
       } catch (err) {
         console.error(`[Manager] Error destroying provider for ${channelId}:`, err);
       }
@@ -73,7 +73,6 @@ export class GatewayManager {
 
     // 清理本节点的任务列表和 channel 路由
     console.log("[Manager] Cleaning up task assignments...");
-    const channelIds = Array.from(this.providers.keys());
     for (const channelId of channelIds) {
       // 从全局路由表中移除（如果当前节点仍然持有该 channel）
       const currentNode = await redisCommandClient.hget("gateway:channel_routing", channelId);
@@ -132,7 +131,11 @@ export class GatewayManager {
       for (const channelId of toAdd) {
         const configStr = tasksStr[channelId];
         if (configStr) {
-          const config = JSON.parse(configStr);
+          const config = parseChannelConfig(JSON.parse(configStr));
+          if (!config) {
+            console.warn(`[Manager] Invalid or unsupported config for channel ${channelId}`);
+            continue;
+          }
           this.startProvider(channelId, config);
         }
       }
@@ -149,23 +152,25 @@ export class GatewayManager {
     }
   }
 
-  private startProvider(channelId: string, config: ChannelConfig) {
+  private startProvider(channelId: string, config: GatewayNodeChannelConfig) {
     console.log(`[Manager] Starting provider for channel ${channelId} (${config.provider})`);
     try {
       if (config.provider === "discord") {
-        const provider = new DiscordProvider(channelId, config.credentials.token as string);
+        const provider = new DiscordProvider(channelId, config.credentials.token);
         this.providers.set(channelId, provider);
         console.log(`[Manager] Provider for ${channelId} created and added to active providers`);
-      } else if (config.provider === "feishu") {
-        const provider = new FeishuProvider(channelId, {
-          appId: config.credentials.appId as string,
-          appSecret: config.credentials.appSecret as string,
-          brand: (config.credentials.brand as "feishu" | "lark") ?? "feishu",
-        });
+      } else if (config.provider === "discord_central") {
+        const provider = new DiscordCentralProvider(channelId, config.credentials);
         this.providers.set(channelId, provider);
         console.log(`[Manager] Provider for ${channelId} created and added to active providers`);
       } else {
-        console.warn(`[Manager] Unsupported provider: ${config.provider}`);
+        const provider = new FeishuProvider(channelId, {
+          appId: config.credentials.appId,
+          appSecret: config.credentials.appSecret,
+          brand: config.credentials.brand,
+        });
+        this.providers.set(channelId, provider);
+        console.log(`[Manager] Provider for ${channelId} created and added to active providers`);
       }
     } catch (error) {
       console.error(`[Manager] Error starting provider for ${channelId}:`, error);
@@ -177,7 +182,7 @@ export class GatewayManager {
     const provider = this.providers.get(channelId);
     if (provider) {
       try {
-        provider.destroy();
+        await provider.destroy();
         console.log(`[Manager] Provider for ${channelId} destroyed`);
       } catch (error) {
         console.error(`[Manager] Error destroying provider for ${channelId}:`, error);

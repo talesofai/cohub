@@ -1,4 +1,12 @@
-export type ChannelProvider = "web" | "discord" | "feishu" | "telegram" | "slack";
+export type ChannelProvider =
+  | "web"
+  | "discord"
+  | "discord_central"
+  | "feishu"
+  | "telegram"
+  | "slack";
+
+export type DiscordCentralEntryMode = "dm" | "guild" | "any";
 
 /**
  * 根据入站事件生成来源渠道名称
@@ -14,6 +22,7 @@ export function buildSessionSourceChannel(event: GatewayInboundEvent): string {
 
   switch (provider) {
     case "discord":
+    case "discord_central":
       return buildDiscordSourceChannel(event, meta);
     case "feishu":
       return buildFeishuSourceChannel(event, meta);
@@ -72,7 +81,21 @@ export interface DiscordChannelConfig {
   };
 }
 
-export type ChannelConfig = DiscordChannelConfig | FeishuChannelConfig | Record<string, unknown>;
+export interface DiscordCentralChannelCredentials {
+  discordUserId: string;
+  entryMode?: DiscordCentralEntryMode;
+  guildId?: string | null;
+  channelId?: string | null;
+  threadId?: string | null;
+}
+
+export type DiscordCentralChannelConfig = DiscordChannelConfig;
+
+export type ChannelConfig =
+  | DiscordChannelConfig
+  | DiscordCentralChannelConfig
+  | FeishuChannelConfig
+  | Record<string, unknown>;
 
 export interface FeishuChannelConfig {
   brand?: "feishu" | "lark";

@@ -1,5 +1,5 @@
 export interface GatewayProvider {
-  destroy(): void;
+  destroy(): void | Promise<void>;
   handleOutbound(cmd: {
     commandId: string;
     provider: string;
