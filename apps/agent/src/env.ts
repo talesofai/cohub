@@ -15,7 +15,7 @@ const redisUrlSchema = z
 export const GLOBAL_CONFIG_REPO = "https://gitea.cohub.run/global/configs.git";
 
 export const EnvSchema = z.object({
-  RUNTIME_ID: z.string().uuid().default("00000000-0000-0000-0000-000000000001"),
+  SPACE_ID: z.string().uuid().default("00000000-0000-0000-0000-000000000001"),
   REDIS_URL: redisUrlSchema.default("redis://localhost:6379"),
   WORKSPACE_DIR: z
     .string()
@@ -36,7 +36,7 @@ export const EnvSchema = z.object({
   WORKSPACE_GIT_USERNAME: z.string().optional(),
   WORKSPACE_GIT_EMAIL: z.string().optional(),
   PUBLIC_URL_PREFIX: z.string().optional(),
-  RUNTIME_VERSION: z.string().optional(),
+  AGENT_VERSION: z.string().optional(),
 });
 
 export type Env = z.infer<typeof EnvSchema>;

@@ -95,7 +95,7 @@ export const provisionSpaceInBackground = async (input: {
     });
 
     const pod = renderSandboxPodTemplate({
-      RUNTIME_ID: input.spaceId,
+      SPACE_ID: input.spaceId,
       USER_ID: input.userUuid,
       REDIS_URL: config.redisUrl,
       LITELLM_API_KEY: config.litellmApiKey,
@@ -107,13 +107,13 @@ export const provisionSpaceInBackground = async (input: {
 
     if (pod.spec?.containers?.[0]) {
       pod.spec.containers[0].env = [
-        { name: "RUNTIME_ID", value: input.spaceId },
+        { name: "SPACE_ID", value: input.spaceId },
         { name: "REDIS_URL", value: config.redisUrl },
         { name: "ENV", value: config.env },
         { name: "WORKSPACE_DIR", value: "/workspace" },
         { name: "SESSIONS_DIR", value: "/sessions" },
         { name: "PUBLIC_URL_PREFIX", value: config.env === "prod" ? `https://public.cohub.run/r/${input.spaceId}` : `https://public.cohub.run/dev/r/${input.spaceId}` },
-        { name: "RUNTIME_VERSION", value: config.sandboxAgentImage },
+        { name: "AGENT_VERSION", value: config.sandboxAgentImage },
         { name: "LITELLM_API_KEY", value: config.litellmApiKey ?? "" },
         { name: "WORKSPACE_REPO_URL", value: input.workspaceRepoUrl ?? "" },
         { name: "WORKSPACE_GIT_USERNAME", value: input.workspaceGitUsername ?? "" },

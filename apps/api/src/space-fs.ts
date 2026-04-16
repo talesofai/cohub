@@ -97,14 +97,14 @@ function isTextMime(mimeType: string | null) {
 }
 
 function ensureStorageConfigured() {
-  if (!config.runtimeStorageRoot) {
+  if (!config.spaceStorageRoot) {
     throw new SpaceFsError(503, "space_storage_not_configured", "Space file storage is not configured.");
   }
 }
 
 function getSpaceRoot(spaceId: string) {
   ensureStorageConfigured();
-  return resolve(config.runtimeStorageRoot, spaceId, "workspace");
+  return resolve(config.spaceStorageRoot, spaceId, "workspace");
 }
 
 function assertSafeRelativePath(input: string, options?: { allowEmpty?: boolean }) {

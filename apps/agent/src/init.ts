@@ -66,7 +66,7 @@ async function copyConfigToHome(sourceDir: string, name: string) {
 
 export async function initializeContainer() {
   console.log(
-    `[Init] Starting container initialization for space: ${env.RUNTIME_ID}`,
+    `[Init] Starting container initialization for space: ${env.SPACE_ID}`,
   );
   await reportSandboxStatus("provisioning");
 

@@ -39,9 +39,9 @@ AUTH_BASE_URL: "https://api.talesofai.com"
 GITEA_BASE_URL: "https://gitea.cohub.run/"
 GITEA_MANAGED_EMAIL_DOMAIN: "cohub.run"
 WEB_ORIGIN: "https://cohub.run"
-SANDBOX_RUNTIME_IMAGE: "git.talesofai.com/talesofai/cohub-agent:latest"
-RUNTIME_STORAGE_ROOT: "/mnt/cohub-runtime-storage"
-RUNTIME_STORAGE_PVC: "cohub-sessions-pvc"
+SANDBOX_AGENT_IMAGE: "git.talesofai.com/talesofai/cohub-agent:latest"
+SPACE_STORAGE_ROOT: "/mnt/cohub-space-storage"
+SPACE_STORAGE_PVC: "cohub-sessions-pvc"
 
 # ========== 路由配置 ==========
 ROUTE_ENABLED: "true"

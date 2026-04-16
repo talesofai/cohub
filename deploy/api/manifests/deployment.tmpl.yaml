@@ -30,8 +30,8 @@ __IMAGE_PULL_SECRETS_BLOCK__
             - secretRef:
                 name: __APP_NAME__-secrets
           volumeMounts:
-            - name: runtime-storage
-              mountPath: __RUNTIME_STORAGE_ROOT__
+            - name: space-storage
+              mountPath: __SPACE_STORAGE_ROOT__
               subPath: cohub-__ENV__
           resources:
             requests:
@@ -57,6 +57,6 @@ __IMAGE_PULL_SECRETS_BLOCK__
             timeoutSeconds: __READINESS_TIMEOUT__
             failureThreshold: __READINESS_FAILURE_THRESHOLD__
       volumes:
-        - name: runtime-storage
+        - name: space-storage
           persistentVolumeClaim:
-            claimName: __RUNTIME_STORAGE_PVC__
+            claimName: __SPACE_STORAGE_PVC__

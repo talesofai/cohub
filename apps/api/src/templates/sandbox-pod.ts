@@ -1,7 +1,7 @@
 import { config } from "../config.js";
 
 type SandboxPodTemplateVariables = {
-  RUNTIME_ID: string;
+  SPACE_ID: string;
   USER_ID: string;
   REDIS_URL: string;
   LITELLM_API_KEY?: string;
@@ -37,10 +37,10 @@ export const SANDBOX_POD_TEMPLATE = {
   apiVersion: "v1",
   kind: "Pod",
   metadata: {
-    name: "sandbox-${RUNTIME_ID}",
+    name: "sandbox-${SPACE_ID}",
     labels: {
       app: "agent-sandbox",
-      "space-id": "${RUNTIME_ID}",
+      "space-id": "${SPACE_ID}",
       "user-id": "${USER_ID}",
     },
   },
@@ -65,20 +65,20 @@ export const SANDBOX_POD_TEMPLATE = {
           {
             name: "workspace-storage",
             mountPath: "/workspace",
-            subPath: "cohub-${ENV}/${RUNTIME_ID}/workspace",
+            subPath: "cohub-${ENV}/${SPACE_ID}/workspace",
           },
           {
             name: "workspace-storage",
             mountPath: "/sessions",
-            subPath: "cohub-${ENV}/${RUNTIME_ID}/sessions",
+            subPath: "cohub-${ENV}/${SPACE_ID}/sessions",
           },
           {
             name: "public-storage",
             mountPath: "/public",
             subPath:
               config.env === "prod"
-                ? "r/${RUNTIME_ID}"
-                : "dev/r/${RUNTIME_ID}",
+                ? "r/${SPACE_ID}"
+                : "dev/r/${SPACE_ID}",
           },
         ],
       },
@@ -103,7 +103,7 @@ export const SANDBOX_POD_TEMPLATE = {
 export function validateSandboxPodTemplateVariables(
   variables: SandboxPodTemplateVariables,
 ) {
-  assertK8sSafeName(variables.RUNTIME_ID, "RUNTIME_ID");
+  assertK8sSafeName(variables.SPACE_ID, "SPACE_ID");
   assertK8sSafeName(variables.USER_ID, "USER_ID");
   assertRedisUrl(variables.REDIS_URL);
   return variables;

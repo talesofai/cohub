@@ -196,7 +196,7 @@ async function emitProviderRenderUpdate(handle: SessionHandle) {
 
   const event: SessionStreamEvent = {
     type: "stream_update",
-    spaceId: env.RUNTIME_ID,
+    spaceId: env.SPACE_ID,
     sessionId: handle.sessionId,
     content: handle.streamState.content,
     sourceMessageId,
@@ -283,7 +283,7 @@ function subscribeSessionEvents(handle: SessionHandle) {
 
         void enqueuePersistence(handle, `user:${userMessageId}`, async () => {
           await persistUserMessage({
-            spaceId: env.RUNTIME_ID,
+            spaceId: env.SPACE_ID,
             sessionId: handle.sessionId,
             userMessageId,
             content,
@@ -387,7 +387,7 @@ function subscribeSessionEvents(handle: SessionHandle) {
       // per-session queue used by user messages.
       void enqueuePersistence(handle, `assistant:${currentUserMessageId}`, async () => {
         await persistAssistantMessage({
-          spaceId: env.RUNTIME_ID,
+          spaceId: env.SPACE_ID,
           spaceSessionId: handle.sessionId,
           userMessageId: currentUserMessageId,
           event: enrichedEvent as Record<string, unknown>,
@@ -397,7 +397,7 @@ function subscribeSessionEvents(handle: SessionHandle) {
       // Emit final render update with turnEnd flag
       const finalEvent: SessionStreamEvent = {
         type: "stream_update",
-        spaceId: env.RUNTIME_ID,
+        spaceId: env.SPACE_ID,
         sessionId: handle.sessionId,
         content: handle.streamState.content,
         sourceMessageId: currentUserMessageId,
@@ -450,7 +450,7 @@ async function loadOrCreateSessionHandle(input: {
   if (existing) return existing;
 
   const registration = await registerSpaceSession({
-    spaceId: env.RUNTIME_ID,
+    spaceId: env.SPACE_ID,
     sessionId: input.sessionId,
     title: null,
     protocol: "pi",
@@ -564,20 +564,20 @@ async function loadOrCreateSessionHandle(input: {
 }
 
 async function main() {
-  console.log(`[Supervisor] Starting for Space: ${env.RUNTIME_ID}`);
+  console.log(`[Supervisor] Starting for Space: ${env.SPACE_ID}`);
   console.log(`[Supervisor] Workspace: ${env.WORKSPACE_DIR}`);
-  console.log(`[Supervisor] Agent version: ${env.RUNTIME_VERSION || "unknown"}`);
+  console.log(`[Supervisor] Agent version: ${env.AGENT_VERSION || "unknown"}`);
   console.log(`[Supervisor] Public URL prefix: ${env.PUBLIC_URL_PREFIX || "not set"}`);
   console.log("[Supervisor] Build features:", {
     env: env.ENV,
-    spaceId: env.RUNTIME_ID,
-    runtimeVersion: env.RUNTIME_VERSION || null,
+    spaceId: env.SPACE_ID,
+    agentVersion: env.AGENT_VERSION || null,
     publicUrlPrefix: env.PUBLIC_URL_PREFIX || null,
     internalApiBaseUrl:
       env.ENV === "prod"
         ? "http://cohub-api.cohub.svc.cluster.local:8787"
         : "http://cohub-api-dev.cohub-dev.svc.cluster.local:8787",
-    runtimeOwnedSessions: false,
+    spaceOwnedSessions: false,
     multiSessionRestore: true,
   });
 
@@ -688,7 +688,7 @@ async function main() {
         console.error("[Supervisor] Error processing input:", error);
         const errEvent: SessionStreamError = {
           type: "error",
-          spaceId: env.RUNTIME_ID,
+          spaceId: env.SPACE_ID,
           sessionId: inputEntry.sessionId ?? null,
           error: String(error),
         };

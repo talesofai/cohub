@@ -248,7 +248,7 @@ jobs:
         run: |
           TAG="${{ steps.get-tag.outputs.tag }}"
           kubectl set image deployment/cohub-api cohub-api=${{ env.REGISTRY }}/${{ env.NAMESPACE }}/${{ env.IMAGE_NAME }}:$TAG -n cohub
-          kubectl patch configmap cohub-api-config -n cohub --type=json -p="[{\"op\":\"replace\",\"path\":\"/data/SANDBOX_RUNTIME_IMAGE\",\"value\":\"${{ env.REGISTRY }}/${{ env.NAMESPACE }}/cohub-agent:$TAG\"}]"
+          kubectl patch configmap cohub-api-config -n cohub --type=json -p="[{\"op\":\"replace\",\"path\":\"/data/SANDBOX_AGENT_IMAGE\",\"value\":\"${{ env.REGISTRY }}/${{ env.NAMESPACE }}/cohub-agent:$TAG\"}]"
 
       - name: Verify deployment
         run: |
