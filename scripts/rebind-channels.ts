@@ -1,13 +1,13 @@
-import { bindRuntimeChannelsToGateway } from "../apps/api/src/channels.js";
+import { bindSpaceChannelsToGateway } from "../apps/api/src/channels.js";
 
 async function main() {
-  const runtimeId = process.argv[2];
-  if (!runtimeId) {
-    console.error("Usage: npx tsx rebind-channels.ts <runtimeId>");
+  const spaceId = process.argv[2];
+  if (!spaceId) {
+    console.error("Usage: npx tsx rebind-channels.ts <spaceId>");
     process.exit(1);
   }
-  console.log(`Rebinding channels for runtime ${runtimeId}...`);
-  await bindRuntimeChannelsToGateway(runtimeId);
+  console.log(`Rebinding channels for space ${spaceId}...`);
+  await bindSpaceChannelsToGateway(spaceId);
   console.log("Done!");
 }
 

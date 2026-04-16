@@ -28,8 +28,4 @@ export type Workspace = {
   description: string;
 };
 
-export type RuntimeSummary = {
-  id: string;
-  workspaceId: string;
-  status: string;
-};
+

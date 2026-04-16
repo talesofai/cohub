@@ -391,6 +391,18 @@ app.get("/api/spaces/:id/sessions", async (c) => {
   return c.json({ space: spaceRow, sessions: visibleSessions.map((session) => ({ ...session, shareLevel: sessionShareLevels.get(session.id) ?? null })) });
 });
 
+app.get("/api/sessions/:id", async (c) => {
+  const user = c.get("authUser");
+  const sessionId = c.req.param("id");
+  if (!requireValidId(sessionId)) return c.json({ message: "session not found" }, 404);
+  const session = await getSpaceSessionById(sessionId);
+  if (!session) return c.json({ message: "session not found" }, 404);
+  if (!await canRead(user, session.spaceId, sessionId)) return c.json({ message: "session not found" }, 404);
+  const space = await getSpaceById(session.spaceId);
+  if (!space) return c.json({ message: "session not found" }, 404);
+  return c.json({ space, session });
+});
+
 app.get("/api/spaces/:id/channels", async (c) => {
   const user = c.get("authUser");
   const spaceId = c.req.param("id");

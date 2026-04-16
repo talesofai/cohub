@@ -39,56 +39,56 @@ export const xaddWithMaxlen = async (
   ...args: (string | number)[]
 ) => client.xadd(streamKey, "MAXLEN", STREAM_APPROX, STREAM_MAXLEN, ...args);
 
-export const getRuntimeOutputStreamKey = (runtimeId: string) => `runtimes:${runtimeId}:output_stream`;
+export const getSpaceOutputStreamKey = (spaceId: string) => `spaces:${spaceId}:output_stream`;
 
-const getRuntimeChannelConfigKey = (runtimeChannelId: string) => `gateway:runtime_channel_config:${runtimeChannelId}`;
-const getTurnMessageRefKey = (runtimeChannelId: string, turnAnchorMessageId: string) =>
-  `gateway:turn_message_ref:${runtimeChannelId}:${turnAnchorMessageId}`;
-const runtimeChannelConfigCache = new Map<string, { expiresAt: number; value: ChannelConfig | null }>();
-const RUNTIME_CHANNEL_CONFIG_TTL_MS = 3000;
+const getSpaceChannelConfigKey = (spaceChannelId: string) => `gateway:space_channel_config:${spaceChannelId}`;
+const getTurnMessageRefKey = (spaceChannelId: string, turnAnchorMessageId: string) =>
+  `gateway:turn_message_ref:${spaceChannelId}:${turnAnchorMessageId}`;
+const spaceChannelConfigCache = new Map<string, { expiresAt: number; value: ChannelConfig | null }>();
+const SPACE_CHANNEL_CONFIG_TTL_MS = 3000;
 const TURN_MESSAGE_REF_TTL_SECONDS = 60 * 30;
 
-export const getRuntimeChannelConfig = async <TConfig extends ChannelConfig = ChannelConfig>(
-  runtimeChannelId: string,
+export const getSpaceChannelConfig = async <TConfig extends ChannelConfig = ChannelConfig>(
+  spaceChannelId: string,
 ): Promise<TConfig | null> => {
   const now = Date.now();
-  const cached = runtimeChannelConfigCache.get(runtimeChannelId);
+  const cached = spaceChannelConfigCache.get(spaceChannelId);
   if (cached && cached.expiresAt > now) {
     return (cached.value as TConfig | null) ?? null;
   }
 
-  const raw = await redisCommandClient.get(getRuntimeChannelConfigKey(runtimeChannelId));
+  const raw = await redisCommandClient.get(getSpaceChannelConfigKey(spaceChannelId));
   if (!raw) {
-    runtimeChannelConfigCache.set(runtimeChannelId, { expiresAt: now + RUNTIME_CHANNEL_CONFIG_TTL_MS, value: null });
+    spaceChannelConfigCache.set(spaceChannelId, { expiresAt: now + SPACE_CHANNEL_CONFIG_TTL_MS, value: null });
     return null;
   }
 
   try {
     const parsed = JSON.parse(raw) as TConfig;
-    runtimeChannelConfigCache.set(runtimeChannelId, {
-      expiresAt: now + RUNTIME_CHANNEL_CONFIG_TTL_MS,
+    spaceChannelConfigCache.set(spaceChannelId, {
+      expiresAt: now + SPACE_CHANNEL_CONFIG_TTL_MS,
       value: parsed,
     });
     return parsed;
   } catch (error) {
-    console.error(`[Redis] Failed to parse runtime channel config for ${runtimeChannelId}:`, error);
-    runtimeChannelConfigCache.set(runtimeChannelId, { expiresAt: now + 1000, value: null });
+    console.error(`[Redis] Failed to parse space channel config for ${spaceChannelId}:`, error);
+    spaceChannelConfigCache.set(spaceChannelId, { expiresAt: now + 1000, value: null });
     return null;
   }
 };
 
-export const getTurnMessageExternalRef = async (runtimeChannelId: string, turnAnchorMessageId: string) => {
-  const value = await redisCommandClient.get(getTurnMessageRefKey(runtimeChannelId, turnAnchorMessageId));
+export const getTurnMessageExternalRef = async (spaceChannelId: string, turnAnchorMessageId: string) => {
+  const value = await redisCommandClient.get(getTurnMessageRefKey(spaceChannelId, turnAnchorMessageId));
   return value?.trim() || null;
 };
 
 export const setTurnMessageExternalRef = async (
-  runtimeChannelId: string,
+  spaceChannelId: string,
   turnAnchorMessageId: string,
   externalMessageId: string,
 ) => {
   await redisCommandClient.set(
-    getTurnMessageRefKey(runtimeChannelId, turnAnchorMessageId),
+    getTurnMessageRefKey(spaceChannelId, turnAnchorMessageId),
     externalMessageId,
     "EX",
     TURN_MESSAGE_REF_TTL_SECONDS,

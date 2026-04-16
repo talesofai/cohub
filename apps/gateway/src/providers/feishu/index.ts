@@ -3,7 +3,7 @@ import { randomUUID } from "node:crypto";
 import type { GatewayInboundEvent, GatewayOutboundCommand, ContentBlock, FeishuChannelConfig } from "@cohub/protocol";
 import type { GatewayProvider } from "../base.js";
 import { publishInboundEvent, publishConversationCreateEvent } from "../../bus.js";
-import { getRuntimeChannelConfig, getTurnMessageExternalRef, setTurnMessageExternalRef } from "../../redis.js";
+import { getSpaceChannelConfig, getTurnMessageExternalRef, setTurnMessageExternalRef } from "../../redis.js";
 import {
   detectIdType,
   resolveReceiveIdType,
@@ -153,7 +153,7 @@ export class FeishuProvider implements GatewayProvider {
 
     // Group: skip if bot not mentioned (config-controlled)
     if (!isDm) {
-      const config = await getRuntimeChannelConfig<FeishuChannelConfig>(this.channelId);
+      const config = await getSpaceChannelConfig<FeishuChannelConfig>(this.channelId);
       const requireMention = config?.inbound?.requireMentionInGroup ?? true;
       if (requireMention && this.botOpenId) {
         const hasMention = msg.mentions?.some((m) => m.id.open_id === this.botOpenId) ?? false;
@@ -278,7 +278,7 @@ export class FeishuProvider implements GatewayProvider {
     });
 
     try {
-      const config = await getRuntimeChannelConfig<FeishuChannelConfig>(this.channelId);
+      const config = await getSpaceChannelConfig<FeishuChannelConfig>(this.channelId);
       const isFinalMessage = cmd.meta?.source === "session_persist";
       // Per-command renderMode override; falls back to channel config, then default "post"
       const renderMode = (cmd.meta?.renderMode ?? config?.outbound?.renderMode ?? "post") as "card" | "post";

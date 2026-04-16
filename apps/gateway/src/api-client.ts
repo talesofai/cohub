@@ -9,7 +9,7 @@ export type SessionAuthorizationResult =
   | {
       ok: true;
       user: GatewayAuthUser & { uuid: string };
-      runtimeId: string;
+      spaceId: string;
       sessionId: string;
     }
   | {
@@ -23,7 +23,7 @@ export type SessionAuthorizationResult =
 
 export const authorizeSessionAccess = async (input: {
   token: string;
-  runtimeId: string;
+  spaceId: string;
   sessionId: string;
 }): Promise<SessionAuthorizationResult> => {
   const sessionResponse = await fetch(`${gatewayConfig.apiBaseUrl}/api/sessions/${input.sessionId}`, {
@@ -60,12 +60,12 @@ export const authorizeSessionAccess = async (input: {
   }
 
   const data = await parseJson<{
-    runtime?: { id?: string };
+    space?: { id?: string };
     session?: { id?: string };
     user?: GatewayAuthUser;
   }>(sessionResponse);
 
-  if (!data?.runtime?.id || !data?.session?.id) {
+  if (!data?.space?.id || !data?.session?.id) {
     return {
       ok: false,
       status: 404,
@@ -76,12 +76,12 @@ export const authorizeSessionAccess = async (input: {
     };
   }
 
-  if (data.runtime.id !== input.runtimeId || data.session.id !== input.sessionId) {
+  if (data.space.id !== input.spaceId || data.session.id !== input.sessionId) {
     return {
       ok: false,
       status: 404,
       error: {
-        message: "Session does not belong to runtime",
+        message: "Session does not belong to space",
         type: "invalid_request_error",
       },
     };
@@ -102,7 +102,7 @@ export const authorizeSessionAccess = async (input: {
   return {
     ok: true,
     user: user as GatewayAuthUser & { uuid: string },
-    runtimeId: data.runtime.id,
+    spaceId: data.space.id,
     sessionId: data.session.id,
   };
 };
