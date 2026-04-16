@@ -196,11 +196,11 @@ async function handleMakePrivate() {
       {/if}
       {#if isOwner && !isEmpty}
         <a
-          href="/runtimes/new?workspaceId={workspace!.id}"
+          href="/spaces/new"
           class="flex items-center gap-1.5 px-2.5 py-1.5 rounded-[5px] bg-[#FF3E00] hover:bg-brand-hover text-[12px] text-white font-medium transition-colors"
         >
           <Play class="w-3.5 h-3.5" />
-          <span class="hidden sm:inline">Create Runtime</span>
+          <span class="hidden sm:inline">Create Space</span>
         </a>
       {/if}
     </div>

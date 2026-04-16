@@ -4,37 +4,35 @@ import { page } from "$app/state";
 import {
 	type ChannelConfig,
 	type DiscordChannelConfig,
-	type RuntimeChannelRecord,
-	type RuntimeRecord,
+	type SpaceChannelRecord,
+	type SpaceRecord,
 	type SessionRecord,
 	type SessionStreamEvent,
-	createRuntimeSession,
-	deleteRuntime,
+	createSpaceSession,
+	deleteSpace,
 	extractSessionRenderState,
 	getModels,
 	getSessionMessages,
 	getSessionMessagesPaginated,
-	hibernateRuntime,
 	postSessionMessage,
 	streamSessionEvents,
-	updateRuntimeChannelConfig,
-	wakeRuntime,
-	createRuntimePermission,
+	updateSpaceChannelConfig,
+	createSpacePermission,
 	createSessionPermission,
-	deleteRuntimePermission,
+	deleteSpacePermission,
 	deleteSessionPermission,
 	type ResourcePermission,
-	getRuntimeFsTree,
-	getRuntimeFsFile,
-	putRuntimeFsFile,
-	createRuntimeFsDir,
-	deleteRuntimeFsNode,
-	moveRuntimeFsNode,
-	type RuntimeFsFileResponse,
-	addRuntimeCollaborator,
-	listRuntimeCollaborators,
-	updateRuntimeCollaborator,
-	removeRuntimeCollaborator,
+	getSpaceFsTree,
+	getSpaceFsFile,
+	putSpaceFsFile,
+	createSpaceFsDir,
+	deleteSpaceFsNode,
+	moveSpaceFsNode,
+	type SpaceFsFileResponse,
+	addSpaceCollaborator,
+	listSpaceCollaborators,
+	updateSpaceCollaborator,
+	removeSpaceCollaborator,
 } from "$lib/api";
 import PageHeader from "$lib/components/PageHeader.svelte";
 import ChatTimeline from "$lib/components/ChatTimeline.svelte";
@@ -42,19 +40,16 @@ import MobileRightDrawer from "$lib/components/MobileRightDrawer.svelte";
 import ModelSelector from "$lib/components/ModelSelector.svelte";
 import SessionComposer from "$lib/components/SessionComposer.svelte";
 import SettingsOverlay from "$lib/components/SettingsOverlay.svelte";
-import RuntimeFileSidebar from "$lib/components/RuntimeFileSidebar.svelte";
-import CodeEditor from "$lib/components/CodeEditor.svelte";
-import type { RuntimeFsNode } from "$lib/runtime-fs";
+import SpaceFileSidebar from "$lib/components/SpaceFileSidebar.svelte";
+import type { SpaceFsNode } from "$lib/space-fs";
 import { renderMarkdown } from "$lib/markdown";
-import { getRuntimeStatusMeta } from "$lib/runtime-status";
-import { triggerRuntimeFsDownload } from "$lib/api";
 import { type ChatMessage, type TimelineItem, toChatMessages } from "$lib/session-tree";
 import { unreadTracker } from "$lib/stores/session-state.svelte";
 import { messageCache } from "$lib/stores/message-cache";
 import { authStore } from "$lib/stores/auth.svelte";
-import { runtimeStore } from "$lib/stores/runtime-store.svelte";
+import { spaceStore } from "$lib/stores/space-store.svelte";
 import { uiState, RIGHT_SIDEBAR_MAX, RIGHT_SIDEBAR_MIN } from "$lib/stores/ui.svelte";
-import { hydrateSessionCacheToRuntimeStore } from "$lib/stores/cache-hydration";
+import { hydrateSessionCacheToSpaceStore } from "$lib/stores/cache-hydration";
 import {
 	MOBILE_DRAWER_WIDTH_PX,
 	getDrawerOpenRatio,
@@ -72,20 +67,16 @@ import {
 	Brain,
 	Check,
 	Copy,
-	Download,
-	Eye,
 	Globe,
 	Hash,
 	Loader2,
 	Lock,
-	Moon,
 	MoreVertical,
 	PanelRightClose,
 	PanelRightOpen,
 	Pencil,
 	Plus,
-	Power,
-	Save,
+	Eye,
 	Settings,
 	Share2,
 	Terminal,
@@ -98,7 +89,7 @@ import { onMount, tick } from "svelte";
 
 type Props = {
 	data: {
-		runtimeId: string;
+		spaceId: string;
 	};
 };
 
@@ -129,21 +120,21 @@ type SessionViewState = {
 
 const props = $props();
 const data = $derived((props as Props).data);
-const runtimeId = $derived(data.runtimeId);
+const spaceId = $derived(data.spaceId);
 
 // Session from URL query param
 const urlSessionId = $derived(page.url.searchParams.get("session"));
 const urlFilePath = $derived(page.url.searchParams.get("file"));
 
-let runtime = $state<RuntimeRecord | null>(null);
-let runtimeSessions = $state<SessionRecord[]>([]);
-let runtimeChannels = $state<RuntimeChannelRecord[]>([]);
+let space = $state<SpaceRecord | null>(null);
+let spaceSessions = $state<SessionRecord[]>([]);
+let spaceChannels = $state<SpaceChannelRecord[]>([]);
 let sessionStateById = $state<Record<string, SessionViewState>>({});
 let activeSessionId = $state<string | null>(null);
 let input = $state("");
 let imageAttachments = $state<ComposerImageAttachment[]>([]);
 let sending = $state(false);
-let runtimeLoadError = $state("");
+let spaceLoadError = $state("");
 let streamStatus = $state<"idle" | "streaming" | "done" | "error">("idle");
 let streamError = $state("");
 let streamingAssistantText = $state("");
@@ -263,17 +254,17 @@ let streamingSessionId: string | null = null;
 let broadcastChannel: BroadcastChannel | null = null;
 
 function notifySessionsUpdate() {
-	// Use sorted sessions from store, not the local unsorted runtimeSessions
-	const sessions = runtimeStore.getSessions(runtimeId) ?? runtimeSessions;
+	// Use sorted sessions from store, not the local unsorted spaceSessions
+	const sessions = spaceStore.getSessions(spaceId) ?? spaceSessions;
 	// Notify sidebar about session changes
 	window.dispatchEvent(
 		new CustomEvent("cohub:sessions-updated", {
-			detail: { runtimeId, sessions },
+			detail: { spaceId, sessions },
 		}),
 	);
 	broadcastChannel?.postMessage({
 		type: "sessions-updated",
-		runtimeId,
+		spaceId,
 		sessions: JSON.parse(JSON.stringify(sessions)),
 	});
 }
@@ -281,7 +272,7 @@ function notifySessionsUpdate() {
 function notifyPermissionsUpdate() {
 	window.dispatchEvent(
 		new CustomEvent("cohub:permissions-updated", {
-			detail: { runtimeId },
+			detail: { spaceId },
 		}),
 	);
 }
@@ -289,18 +280,18 @@ function notifyPermissionsUpdate() {
 function notifyStreamingStatus(sessionId: string | null, isStreaming: boolean) {
 	window.dispatchEvent(
 		new CustomEvent("cohub:streaming-status", {
-			detail: { runtimeId, sessionId, isStreaming },
+			detail: { spaceId, sessionId, isStreaming },
 		}),
 	);
 	broadcastChannel?.postMessage({
 		type: "streaming-status",
-		runtimeId,
+		spaceId,
 		sessionId,
 		isStreaming,
 	});
 }
 
-let runtimePollingTimer: ReturnType<typeof setTimeout> | null = null;
+let spacePollingTimer: ReturnType<typeof setTimeout> | null = null;
 let loadingPermissions = $state(false);
 let loadingChannels = $state(false);
 const listEl = $state<HTMLDivElement | null>(null);
@@ -320,21 +311,21 @@ let showScrollToBottom = $state(false);
 let rightSidebarResizeCleanup: (() => void) | null = null;
 
 // Share / Permissions
-let runtimePermissions = $state<ResourcePermission[]>([]);
-let runtimePermissionsLoaded = $state(false);
+let spacePermissions = $state<ResourcePermission[]>([]);
+let spacePermissionsLoaded = $state(false);
 const sessionTitleById = $derived.by(() => {
 	const map = new Map<string, string>();
-	for (const session of runtimeSessions) {
+	for (const session of spaceSessions) {
 		const label = session.title || session.latestMessageText || `Session ${session.id.slice(0, 8)}`;
 		map.set(session.id, label);
 	}
 	return map;
 });
 const sharedSessionPermissions = $derived(
-	runtimePermissions.filter((permission) => permission.resourceType === "session"),
+	spacePermissions.filter((permission) => permission.resourceType === "session"),
 );
-let runtimePublicRead = $state(false);
-let savingRuntimePerm = $state(false);
+let spacePublicRead = $state(false);
+let savingSpacePerm = $state(false);
 let shareCopied = $state(false);
 let shareCopiedTimer: ReturnType<typeof setTimeout> | null = null;
 let showShareModal = $state(false);
@@ -346,7 +337,7 @@ let sessionPermError = $state("");
 let isOwner = $state(false);
 
 // Collaborators
-let runtimeCollaborators = $state<ResourcePermission[]>([]);
+let spaceCollaborators = $state<ResourcePermission[]>([]);
 let collaboratorsLoaded = $state(false);
 let loadingCollaborators = $state(false);
 let addingCollaboratorUuid = $state("");
@@ -358,7 +349,7 @@ let savingCollaborator = $state(false);
 // non-owners need to be a collaborator with "write" level.
 let canWrite = $derived(
   isOwner ||
-  runtimeCollaborators.some(
+  spaceCollaborators.some(
     (c) => c.granteeUuid === authStore.userUuid && c.level === "write",
   ),
 );
@@ -375,9 +366,9 @@ let chatTimelineRef = $state<ChatTimelineHandle | null>(null);
 let preloadingSessionIds = new Set<string>();
 const PRELOAD_THRESHOLD = 10;
 
-// Runtime actions
-let runtimeActionError = $state("");
-let runtimeActionInProgress: string | null = $state(null);
+// Space actions
+let spaceActionError = $state("");
+let spaceActionInProgress: string | null = $state(null);
 
 // No-write-permission hint toast
 let showNoWriteHint = $state(false);
@@ -389,11 +380,11 @@ function triggerNoWriteHint() {
 	noWriteHintTimer = setTimeout(() => { showNoWriteHint = false; }, 3000);
 }
 
-let fileTree = $state<RuntimeFsNode[]>([]);
+let fileTree = $state<SpaceFsNode[]>([]);
 let fileTreeLoading = $state(false);
 let fileTreeError = $state<string | null>(null);
 const fileMode = $derived<("chat" | "file")>(urlFilePath ? "file" : "chat");
-let openFile = $state<RuntimeFsFileResponse | null>(null);
+let openFile = $state<SpaceFsFileResponse | null>(null);
 let openFileDraft = $state("");
 let openFileLoading = $state(false);
 let openFileSaving = $state(false);
@@ -402,51 +393,20 @@ let fileEdit = $state(true);
 let fileMarkdownHtml = $state("");
 let openFileTooLarge = $state(false);
 
-async function handleHibernate() {
-	if (!confirm("Hibernate this runtime? The sandbox pod will be stopped."))
-		return;
-	runtimeActionInProgress = "hibernate";
-	runtimeActionError = "";
-	try {
-		await hibernateRuntime(runtimeId);
-		await loadRuntime({ force: true });
-	} catch (error) {
-		runtimeActionError =
-			error instanceof Error ? error.message : "Failed to hibernate";
-	} finally {
-		runtimeActionInProgress = null;
-	}
-}
-
-async function handleWake() {
-	if (!confirm("Wake this runtime? A new sandbox pod will be provisioned."))
-		return;
-	runtimeActionInProgress = "wake";
-	runtimeActionError = "";
-	try {
-		await wakeRuntime(runtimeId);
-		await loadRuntime({ force: true });
-	} catch (error) {
-		runtimeActionError =
-			error instanceof Error ? error.message : "Failed to wake";
-	} finally {
-		runtimeActionInProgress = null;
-	}
-}
-
 async function handleDelete() {
-	if (!confirm("Delete this runtime permanently? This cannot be undone."))
+	if (!confirm("Delete this space permanently? This cannot be undone."))
 		return;
-	runtimeActionInProgress = "delete";
-	runtimeActionError = "";
+	spaceActionInProgress = "delete";
+	spaceActionError = "";
 	try {
-		await deleteRuntime(runtimeId);
-		runtimeStore.removeRuntime(runtimeId);
-		goto("/runtimes");
+		await deleteSpace(spaceId);
+		spaceStore.removeSpace(spaceId);
+		await goto("/spaces");
 	} catch (error) {
-		runtimeActionError =
+		spaceActionError =
 			error instanceof Error ? error.message : "Failed to delete";
-		runtimeActionInProgress = null;
+	} finally {
+		spaceActionInProgress = null;
 	}
 }
 
@@ -628,10 +588,10 @@ const timeline = $derived.by<TimelineItem[]>(() => {
 });
 
 $effect(() => {
-	const currentRuntime = runtime;
+	const currentSpace = space;
 	const userUuid = authStore.userUuid;
-	if (currentRuntime) {
-		isOwner = currentRuntime.userUuid === userUuid;
+	if (currentSpace) {
+		isOwner = currentSpace.userUuid === userUuid;
 	}
 });
 
@@ -642,15 +602,15 @@ $effect(() => {
 	}
 });
 
-// Inject shared runtime into sidebar when non-owner views it
+// Inject shared space into sidebar when non-owner views it
 $effect(() => {
-	const currentRuntime = runtime;
-	if (currentRuntime && !isOwner) {
-		// Check if already in the runtime list
-		const alreadyInList = runtimeStore.runtimeList.some((r) => r.id === currentRuntime.id);
+	const currentSpace = space;
+	if (currentSpace && !isOwner) {
+		// Check if already in the space list
+		const alreadyInList = spaceStore.spaceList.some((r) => r.id === currentSpace.id);
 		if (!alreadyInList) {
 			// Inject at the front of the list so it appears first in sidebar
-			runtimeStore.injectSharedRuntime(currentRuntime);
+			spaceStore.injectSharedSpace(currentSpace);
 		}
 	}
 });
@@ -687,7 +647,7 @@ function updateUrlSession(sessionId: string | null) {
 	} else {
 		params.delete("session");
 	}
-	void goto(`/runtimes/${runtimeId}?${params.toString()}`, {
+	void goto(`/spaces/${spaceId}?${params.toString()}`, {
 		replaceState: true,
 	});
 }
@@ -728,7 +688,7 @@ function makeFsNode(entry: {
 	size: number;
 	mimeType: string | null;
 	mtimeMs: number;
-}): RuntimeFsNode {
+}): SpaceFsNode {
 	return {
 		...entry,
 		children: [],
@@ -738,7 +698,7 @@ function makeFsNode(entry: {
 	};
 }
 
-function replaceNodeChildren(nodes: RuntimeFsNode[], nodePath: string, children: RuntimeFsNode[]): RuntimeFsNode[] {
+function replaceNodeChildren(nodes: SpaceFsNode[], nodePath: string, children: SpaceFsNode[]): SpaceFsNode[] {
 	return nodes.map((node) => {
 		if (node.path === nodePath) {
 			return { ...node, children, isLoaded: true, isLoading: false, isOpen: true };
@@ -750,7 +710,7 @@ function replaceNodeChildren(nodes: RuntimeFsNode[], nodePath: string, children:
 	});
 }
 
-function updateNodeState(nodes: RuntimeFsNode[], nodePath: string, updater: (node: RuntimeFsNode) => RuntimeFsNode): RuntimeFsNode[] {
+function updateNodeState(nodes: SpaceFsNode[], nodePath: string, updater: (node: SpaceFsNode) => SpaceFsNode): SpaceFsNode[] {
 	return nodes.map((node) => {
 		if (node.path === nodePath) return updater(node);
 		if (node.children.length > 0) {
@@ -765,7 +725,7 @@ async function loadFileTree(force = false) {
 	fileTreeLoading = true;
 	fileTreeError = null;
 	try {
-		const tree = await getRuntimeFsTree(runtimeId, "");
+		const tree = await getSpaceFsTree(spaceId, "");
 		fileTree = tree.entries.map(makeFsNode);
 	} catch (error) {
 		fileTreeError = error instanceof Error ? error.message : "Failed to load files";
@@ -774,7 +734,7 @@ async function loadFileTree(force = false) {
 	}
 }
 
-async function expandDirectory(node: RuntimeFsNode) {
+async function expandDirectory(node: SpaceFsNode) {
 	if (node.type !== "dir") return;
 	if (node.isOpen) {
 		fileTree = updateNodeState(fileTree, node.path, (item) => ({ ...item, isOpen: false }));
@@ -786,7 +746,7 @@ async function expandDirectory(node: RuntimeFsNode) {
 	}
 	fileTree = updateNodeState(fileTree, node.path, (item) => ({ ...item, isLoading: true, isOpen: true }));
 	try {
-		const tree = await getRuntimeFsTree(runtimeId, node.path);
+		const tree = await getSpaceFsTree(spaceId, node.path);
 		fileTree = replaceNodeChildren(fileTree, node.path, tree.entries.map(makeFsNode));
 	} catch (error) {
 		fileTree = updateNodeState(fileTree, node.path, (item) => ({ ...item, isLoading: false }));
@@ -794,10 +754,10 @@ async function expandDirectory(node: RuntimeFsNode) {
 	}
 }
 
-async function openRuntimeFile(path: string) {
+async function openSpaceFile(path: string) {
 	const params = new URLSearchParams(page.url.searchParams);
 	params.set("file", path);
-	void goto(`/runtimes/${runtimeId}?${params.toString()}`, { replaceState: true });
+	void goto(`/spaces/${spaceId}?${params.toString()}`, { replaceState: true });
 }
 
 async function saveOpenFile() {
@@ -805,7 +765,7 @@ async function saveOpenFile() {
 	openFileSaving = true;
 	openFileError = null;
 	try {
-		await putRuntimeFsFile(runtimeId, {
+		await putSpaceFsFile(spaceId, {
 			path: openFile.path,
 			content: openFileDraft,
 			encoding: "utf-8",
@@ -824,9 +784,9 @@ async function handleCreateFile(parentPath: string) {
 	if (!name?.trim()) return;
 	const path = parentPath ? `${parentPath}/${name.trim()}` : name.trim();
 	try {
-		await putRuntimeFsFile(runtimeId, { path, content: "", encoding: "utf-8" });
+		await putSpaceFsFile(spaceId, { path, content: "", encoding: "utf-8" });
 		await loadFileTree(true);
-		await openRuntimeFile(path);
+		await openSpaceFile(path);
 	} catch (error) {
 		fileTreeError = error instanceof Error ? error.message : "Failed to create file";
 	}
@@ -837,37 +797,37 @@ async function handleCreateDir(parentPath: string) {
 	if (!name?.trim()) return;
 	const path = parentPath ? `${parentPath}/${name.trim()}` : name.trim();
 	try {
-		await createRuntimeFsDir(runtimeId, path);
+		await createSpaceFsDir(spaceId, path);
 		await loadFileTree(true);
 	} catch (error) {
 		fileTreeError = error instanceof Error ? error.message : "Failed to create folder";
 	}
 }
 
-async function handleRenameNode(node: RuntimeFsNode) {
+async function handleRenameNode(node: SpaceFsNode) {
 	const nextName = prompt("Rename", node.name);
 	if (!nextName?.trim() || nextName.trim() === node.name) return;
 	const parent = node.path.includes("/") ? node.path.slice(0, node.path.lastIndexOf("/")) : "";
 	const toPath = parent ? `${parent}/${nextName.trim()}` : nextName.trim();
 	try {
-		await moveRuntimeFsNode(runtimeId, { fromPath: node.path, toPath });
+		await moveSpaceFsNode(spaceId, { fromPath: node.path, toPath });
 		await loadFileTree(true);
 		if (urlFilePath === node.path) {
-			await openRuntimeFile(toPath);
+			await openSpaceFile(toPath);
 		}
 	} catch (error) {
 		fileTreeError = error instanceof Error ? error.message : "Failed to rename";
 	}
 }
 
-async function handleDeleteNode(node: RuntimeFsNode) {
+async function handleDeleteNode(node: SpaceFsNode) {
 	if (!confirm(`Delete ${node.name}?`)) return;
 	try {
-		await deleteRuntimeFsNode(runtimeId, node.path, node.type === "dir");
+		await deleteSpaceFsNode(spaceId, node.path, node.type === "dir");
 		if (urlFilePath === node.path) {
 			const params = new URLSearchParams(page.url.searchParams);
 			params.delete("file");
-			void goto(`/runtimes/${runtimeId}?${params.toString()}`, { replaceState: true });
+			void goto(`/spaces/${spaceId}?${params.toString()}`, { replaceState: true });
 		}
 		await loadFileTree(true);
 	} catch (error) {
@@ -887,7 +847,7 @@ const openFileIsVideo = $derived(Boolean(openFile?.mimeType?.startsWith("video/"
 const openFileIsText = $derived(Boolean(openFile?.kind === "text"));
 const openFileDownloadUrl = $derived.by(() => {
 	if (!urlFilePath) return "";
-	return `/api/runtimes/${runtimeId}/fs/download?path=${encodeURIComponent(urlFilePath)}`;
+	return `/api/spaces/${spaceId}/fs/download?path=${encodeURIComponent(urlFilePath)}`;
 });
 const openFileDownloadName = $derived.by(() => {
 	if (!urlFilePath) return "";
@@ -908,16 +868,16 @@ $effect(() => {
 	});
 });
 
-async function handleFileSelect(node: RuntimeFsNode) {
+async function handleFileSelect(node: SpaceFsNode) {
 	if (node.type !== "file") {
 		await expandDirectory(node);
 		return;
 	}
-	await openRuntimeFile(node.path);
+	await openSpaceFile(node.path);
 	uiState.mobileRightDrawerOpen = false;
 }
 
-async function handleFileToggle(node: RuntimeFsNode) {
+async function handleFileToggle(node: SpaceFsNode) {
 	await expandDirectory(node);
 }
 
@@ -934,7 +894,7 @@ $effect(() => {
 			openFileError = null;
 			openFileTooLarge = false;
 			try {
-				const file = await getRuntimeFsFile(runtimeId, path);
+				const file = await getSpaceFsFile(spaceId, path);
 				if (urlFilePath !== path) return;
 				openFile = file;
 				openFileDraft = file.kind === "text" ? file.content : "";
@@ -970,7 +930,7 @@ $effect(() => {
 function closeFile() {
 	const params = new URLSearchParams(page.url.searchParams);
 	params.delete("file");
-	void goto(`/runtimes/${runtimeId}?${params.toString()}`, { replaceState: true });
+	void goto(`/spaces/${spaceId}?${params.toString()}`, { replaceState: true });
 }
 
 function handleFileInput(value: string) {
@@ -985,16 +945,16 @@ async function handleFileKeyboardSave(event: KeyboardEvent) {
 }
 
 async function handleCreateNewSession() {
-	if (creatingSession || !runtime) return;
+	if (creatingSession || !space) return;
 	creatingSession = true;
 	createSessionError = "";
 
 	try {
-		const result = await createRuntimeSession(runtime.id, { source: "web" });
+		const result = await createSpaceSession(space.id, { source: "web" });
 		const newSession = result.session;
 
-		runtimeSessions = [...runtimeSessions, newSession];
-		runtimeStore.patchSession(runtime.id, newSession);
+		spaceSessions = [...spaceSessions, newSession];
+		spaceStore.patchSession(space.id, newSession);
 		sessionStateById = {
 			...sessionStateById,
 			[newSession.id]: {
@@ -1022,9 +982,9 @@ async function handleCreateNewSession() {
 }
 
 function seedSessions(sessions: SessionRecord[]) {
-	if (sessions.length === 0 && runtimeSessions.length > 0) return;
+	if (sessions.length === 0 && spaceSessions.length > 0) return;
 
-	runtimeSessions = sessions;
+	spaceSessions = sessions;
 	const nextState = { ...sessionStateById };
 	for (const session of sessions) {
 		if (!nextState[session.id]) {
@@ -1048,7 +1008,7 @@ function seedSessions(sessions: SessionRecord[]) {
 	sessionStateById = nextState;
 
 	// Notify sidebar about session changes
-	runtimeStore.setSessions(runtimeId, sessions);
+	spaceStore.setSessions(spaceId, sessions);
 	notifySessionsUpdate();
 
 	// Auto-select session from URL or fallback to latest
@@ -1065,41 +1025,41 @@ function seedSessions(sessions: SessionRecord[]) {
 	}
 }
 
-function getDiscordRuntimeChannelConfig(
-	runtimeChannel: RuntimeChannelRecord,
+function getDiscordSpaceChannelConfig(
+	spaceChannel: SpaceChannelRecord,
 ): DiscordChannelConfig {
 	return (
-		(runtimeChannel.config as DiscordChannelConfig) ?? {
+		(spaceChannel.config as DiscordChannelConfig) ?? {
 			inbound: { requireMentionInGuild: true },
 			outbound: { showThinking: false, showToolCalls: false },
 		}
 	);
 }
 
-async function saveRuntimeChannelConfig(
-	runtimeChannelId: string,
+async function saveSpaceChannelConfig(
+	spaceChannelId: string,
 	config: ChannelConfig,
 ) {
 	savingChannelConfigById = {
 		...savingChannelConfigById,
-		[runtimeChannelId]: true,
+		[spaceChannelId]: true,
 	};
 	channelConfigErrorById = {
 		...channelConfigErrorById,
-		[runtimeChannelId]: "",
+		[spaceChannelId]: "",
 	};
 
 	try {
-		const updated = await updateRuntimeChannelConfig(runtimeChannelId, {
+		const updated = await updateSpaceChannelConfig(spaceChannelId, {
 			config,
 		});
-		runtimeChannels = runtimeChannels.map((item) =>
-			item.id === runtimeChannelId ? updated : item,
+		spaceChannels = spaceChannels.map((item) =>
+			item.id === spaceChannelId ? updated : item,
 		);
 	} catch (error) {
 		channelConfigErrorById = {
 			...channelConfigErrorById,
-			[runtimeChannelId]:
+			[spaceChannelId]:
 				error instanceof Error
 					? error.message
 					: "Failed to update channel config",
@@ -1107,39 +1067,39 @@ async function saveRuntimeChannelConfig(
 	} finally {
 		savingChannelConfigById = {
 			...savingChannelConfigById,
-			[runtimeChannelId]: false,
+			[spaceChannelId]: false,
 		};
 	}
 }
 
-function patchDiscordRuntimeChannelConfig(
-	runtimeChannel: RuntimeChannelRecord,
+function patchDiscordSpaceChannelConfig(
+	spaceChannel: SpaceChannelRecord,
 	updater: (config: DiscordChannelConfig) => DiscordChannelConfig,
 ) {
-	const nextConfig = updater(getDiscordRuntimeChannelConfig(runtimeChannel));
-	runtimeChannels = runtimeChannels.map((item) =>
-		item.id === runtimeChannel.id ? { ...item, config: nextConfig } : item,
+	const nextConfig = updater(getDiscordSpaceChannelConfig(spaceChannel));
+	spaceChannels = spaceChannels.map((item) =>
+		item.id === spaceChannel.id ? { ...item, config: nextConfig } : item,
 	);
-	void saveRuntimeChannelConfig(runtimeChannel.id, nextConfig);
+	void saveSpaceChannelConfig(spaceChannel.id, nextConfig);
 }
 
-async function loadRuntime(options?: { force?: boolean; includeChannels?: boolean }) {
-	runtimeLoadError = "";
+async function loadSpace(options?: { force?: boolean; includeChannels?: boolean }) {
+	spaceLoadError = "";
 	const force = options?.force ?? false;
 	const includeChannels = options?.includeChannels ?? false;
 
-	const cachedRuntime = runtimeStore.getRuntime(runtimeId);
-	if (cachedRuntime && !runtime) {
-		runtime = cachedRuntime as RuntimeRecord;
-		isOwner = cachedRuntime.userUuid === authStore.userUuid;
+	const cachedSpace = spaceStore.getSpace(spaceId);
+	if (cachedSpace && !space) {
+		space = cachedSpace as SpaceRecord;
+		isOwner = cachedSpace.userUuid === authStore.userUuid;
 	}
 
-	const cachedSessions = runtimeStore.getSessions(runtimeId);
+	const cachedSessions = spaceStore.getSessions(spaceId);
 	if (!cachedSessions) {
-		hydrateSessionCacheToRuntimeStore(runtimeId);
+		hydrateSessionCacheToSpaceStore(spaceId);
 	}
-	const fallbackSessions = cachedSessions ?? runtimeStore.getSessions(runtimeId);
-	if (fallbackSessions && runtimeSessions.length === 0) {
+	const fallbackSessions = cachedSessions ?? spaceStore.getSessions(spaceId);
+	if (fallbackSessions && spaceSessions.length === 0) {
 		seedSessions(fallbackSessions);
 	}
 
@@ -1147,27 +1107,27 @@ async function loadRuntime(options?: { force?: boolean; includeChannels?: boolea
 
 	tasks.push((async () => {
 		try {
-			const runtimeResult = await runtimeStore.ensureRuntimeDetail(runtimeId, { force: force || shouldPollRuntime(runtimeStore.getRuntime(runtimeId) as RuntimeRecord | null) });
-			runtime = runtimeResult;
-			isOwner = runtimeResult.userUuid === authStore.userUuid;
+			const spaceResult = await spaceStore.ensureSpaceDetail(spaceId, { force: force || shouldPollSpace(spaceStore.getSpace(spaceId) as SpaceRecord | null) });
+			space = spaceResult;
+			isOwner = spaceResult.userUuid === authStore.userUuid;
 		} catch (error) {
-			runtimeLoadError =
+			spaceLoadError =
 				error instanceof Error
 					? error.message
-					: "Failed to load runtime";
+					: "Failed to load space";
 		}
 	})());
 
 	tasks.push((async () => {
 		try {
-			const sessions = await runtimeStore.ensureRuntimeSessions(runtimeId, { force });
+			const sessions = await spaceStore.ensureSpaceSessions(spaceId, { force });
 			seedSessions(sessions);
 		} catch (error) {
-			if (!runtimeLoadError) {
-				runtimeLoadError =
+			if (!spaceLoadError) {
+				spaceLoadError =
 					error instanceof Error
 						? error.message
-						: "Failed to load runtime sessions";
+						: "Failed to load space sessions";
 			}
 		}
 	})());
@@ -1175,21 +1135,21 @@ async function loadRuntime(options?: { force?: boolean; includeChannels?: boolea
 	if (includeChannels) {
 		tasks.push((async () => {
 			try {
-				const channels = await runtimeStore.ensureRuntimeChannels(runtimeId, { force });
-				runtimeChannels = channels;
+				const channels = await spaceStore.ensureSpaceChannels(spaceId, { force });
+				spaceChannels = channels;
 			} catch (error) {
-				if (!runtimeLoadError) {
-					runtimeLoadError =
+				if (!spaceLoadError) {
+					spaceLoadError =
 						error instanceof Error
 							? error.message
-							: "Failed to load runtime channels";
+							: "Failed to load space channels";
 				}
 			}
 		})());
 	} else {
-		const cachedChannels = runtimeStore.getRuntimeChannels(runtimeId);
-		if (cachedChannels && runtimeChannels.length === 0) {
-			runtimeChannels = cachedChannels;
+		const cachedChannels = spaceStore.getSpaceChannels(spaceId);
+		if (cachedChannels && spaceChannels.length === 0) {
+			spaceChannels = cachedChannels;
 		}
 	}
 
@@ -1421,52 +1381,49 @@ function handleFirstVisible(index: number) {
 	}
 }
 
-function shouldPollRuntime(runtime: RuntimeRecord | null) {
-	if (!runtime) return true;
-	const status = runtime.status;
-	if (!status) return true;
-	return status === "starting";
+function shouldPollSpace(_space: SpaceRecord | null) {
+	return false;
 }
 
-function getRuntimePollInterval(runtime: RuntimeRecord | null) {
-	return runtime?.status === "starting" ? 1_000 : 3_000;
+function getSpacePollInterval(_space: SpaceRecord | null) {
+	return 3_000;
 }
 
 // ─── Share / Permissions ───
 
 async function loadPermissions(force = false) {
-	if (!force && runtimePermissionsLoaded) return;
+	if (!force && spacePermissionsLoaded) return;
 	// Mark as loading immediately so the $effect doesn't re-trigger
 	// while the async call is in-flight.
-	runtimePermissionsLoaded = true;
+	spacePermissionsLoaded = true;
 	try {
-		const perms = await runtimeStore.ensureRuntimePermissionRecords(runtimeId, { force });
-		runtimePermissions = perms;
-		runtimePublicRead = perms.some((p) => p.resourceType === "runtime");
-		runtimeSessions = runtimeStore.getSessions(runtimeId) ?? runtimeSessions;
+		const perms = await spaceStore.ensureSpacePermissionRecords(spaceId, { force });
+		spacePermissions = perms;
+		spacePublicRead = perms.some((p) => p.resourceType === "space");
+		spaceSessions = spaceStore.getSessions(spaceId) ?? spaceSessions;
 	} catch {
 		// Reset on failure so it can retry
-		runtimePermissionsLoaded = false;
+		spacePermissionsLoaded = false;
 		// Ignore — permissions may not exist yet
 	}
 }
 
-async function toggleRuntimePublicRead(enabled: boolean) {
-	savingRuntimePerm = true;
+async function toggleSpacePublicRead(enabled: boolean) {
+	savingSpacePerm = true;
 	try {
 		if (enabled) {
-			await createRuntimePermission(runtimeId, "read");
+			await createSpacePermission(spaceId, "read");
 		} else {
-			await deleteRuntimePermission(runtimeId);
+			await deleteSpacePermission(spaceId);
 		}
-		runtimePublicRead = enabled;
+		spacePublicRead = enabled;
 		await loadPermissions(true);
 		notifyPermissionsUpdate();
 	} catch {
 		// Revert
-		runtimePublicRead = !enabled;
+		spacePublicRead = !enabled;
 	} finally {
-		savingRuntimePerm = false;
+		savingSpacePerm = false;
 	}
 }
 
@@ -1484,7 +1441,7 @@ async function shareAndCopyLink() {
 		await createSessionPermission(shareModalSessionId, "read");
 		await loadPermissions(true);
 		notifyPermissionsUpdate();
-		const url = `${window.location.origin}/runtimes/${runtimeId}?session=${shareModalSessionId}`;
+		const url = `${window.location.origin}/spaces/${spaceId}?session=${shareModalSessionId}`;
 		await navigator.clipboard.writeText(url);
 		shareCopied = true;
 		if (shareCopiedTimer) clearTimeout(shareCopiedTimer);
@@ -1528,7 +1485,7 @@ async function removeSessionPermission(sessionId: string): Promise<boolean> {
 }
 
 function hasSessionPermission(sessionId: string): boolean {
-	return runtimePermissions.some(
+	return spacePermissions.some(
 		(p) => p.resourceType === "session" && p.resourceId === sessionId && p.level !== "private",
 	);
 }
@@ -1539,8 +1496,8 @@ async function loadCollaborators(force = false) {
 	if (!force && collaboratorsLoaded) return;
 	loadingCollaborators = true;
 	try {
-		const perms = await listRuntimeCollaborators(runtimeId);
-		runtimeCollaborators = perms;
+		const perms = await listSpaceCollaborators(spaceId);
+		spaceCollaborators = perms;
 		collaboratorsLoaded = true;
 	} catch {
 		// ignore — collaborator endpoint requires auth; anonymous users stay read-only
@@ -1554,7 +1511,7 @@ async function handleAddCollaborator() {
 	savingCollaborator = true;
 	addingCollaboratorError = "";
 	try {
-		await addRuntimeCollaborator(runtimeId, addingCollaboratorUuid.trim(), addingCollaboratorLevel);
+		await addSpaceCollaborator(spaceId, addingCollaboratorUuid.trim(), addingCollaboratorLevel);
 		addingCollaboratorUuid = "";
 		await loadCollaborators(true);
 		notifyPermissionsUpdate();
@@ -1567,7 +1524,7 @@ async function handleAddCollaborator() {
 
 async function handleUpdateCollaboratorLevel(granteeUuid: string, level: "read" | "write") {
 	try {
-		await updateRuntimeCollaborator(runtimeId, granteeUuid, level);
+		await updateSpaceCollaborator(spaceId, granteeUuid, level);
 		await loadCollaborators(true);
 		notifyPermissionsUpdate();
 	} catch (error) {
@@ -1577,7 +1534,7 @@ async function handleUpdateCollaboratorLevel(granteeUuid: string, level: "read" 
 
 async function handleRemoveCollaborator(granteeUuid: string) {
 	try {
-		await removeRuntimeCollaborator(runtimeId, granteeUuid);
+		await removeSpaceCollaborator(spaceId, granteeUuid);
 		await loadCollaborators(true);
 		notifyPermissionsUpdate();
 	} catch (error) {
@@ -1839,7 +1796,7 @@ async function handleSend() {
 		!activeSessionState ||
 		(!input.trim() && imageAttachments.length === 0) ||
 		sending ||
-		!runtime
+		!space
 	)
 		return;
 	sending = true;
@@ -2265,8 +2222,8 @@ onMount(() => {
 	// Preload model catalog so the composer shows a default model immediately
 	void loadModelsCatalog();
 	void authStore.ensureLoaded().then(() => {
-		if (runtime) {
-			isOwner = runtime.userUuid === authStore.userUuid;
+		if (space) {
+			isOwner = space.userUuid === authStore.userUuid;
 		}
 	});
 
@@ -2317,12 +2274,12 @@ onMount(() => {
 
 	// Initialize broadcast channel for cross-component communication
 	try {
-		broadcastChannel = new BroadcastChannel(`cohub:runtime:${runtimeId}`);
+		broadcastChannel = new BroadcastChannel(`cohub:space:${spaceId}`);
 	} catch {
 		// BroadcastChannel not supported, fallback to window events
 	}
 
-	void loadRuntime({ force: true }).finally(() => {
+	void loadSpace({ force: true }).finally(() => {
 		void loadFileTree(true);
 		if (authStore.isAuthenticated) {
 			void loadPermissions(true).finally(() => {
@@ -2334,14 +2291,14 @@ onMount(() => {
 	});
 
 	// Polling is handled by the $effect below to avoid competing timer
-	// mechanisms. The $effect re-schedules whenever runtime state changes,
+	// mechanisms. The $effect re-schedules whenever space state changes,
 	// so no recursive self-scheduling is needed here.
 
 	return () => {
 		rightSidebarResizeCleanup?.();
 		document.body.classList.remove("sidebar-resizing");
 		pageMounted = false;
-		if (runtimePollingTimer) clearTimeout(runtimePollingTimer);
+		if (spacePollingTimer) clearTimeout(spacePollingTimer);
 		window.removeEventListener("online", handleOnline);
 		window.removeEventListener("offline", handleOffline);
 		window.removeEventListener("keydown", handleFileKeyboardSave);
@@ -2505,15 +2462,15 @@ $effect(() => {
 });
 
 $effect(() => {
-	if (showSettings && !runtimeStore.hasLoadedChannels(runtimeId) && !loadingChannels) {
+	if (showSettings && !spaceStore.hasLoadedChannels(spaceId) && !loadingChannels) {
 		loadingChannels = true;
-		void runtimeStore.ensureRuntimeChannels(runtimeId).then((channels) => {
-			runtimeChannels = channels;
+		void spaceStore.ensureSpaceChannels(spaceId).then((channels) => {
+			spaceChannels = channels;
 		}).finally(() => {
 			loadingChannels = false;
 		});
 	}
-	if (showSettings && authStore.isAuthenticated && !runtimePermissionsLoaded && !loadingPermissions) {
+	if (showSettings && authStore.isAuthenticated && !spacePermissionsLoaded && !loadingPermissions) {
 		loadingPermissions = true;
 		void loadPermissions().finally(() => {
 			loadingPermissions = false;
@@ -2530,41 +2487,33 @@ $effect(() => {
 });
 
 $effect(() => {
-	if (runtimePollingTimer) {
-		clearTimeout(runtimePollingTimer);
-		runtimePollingTimer = null;
+	if (spacePollingTimer) {
+		clearTimeout(spacePollingTimer);
+		spacePollingTimer = null;
 	}
-	if (!shouldPollRuntime(runtime)) return;
+	if (!shouldPollSpace(space)) return;
 	const timer = setTimeout(async () => {
 		// Don't use force:true for polling — the store's shouldRefresh
 		// checks are sufficient and prevent request storms when multiple
 		// consumers (sidebar, page) poll simultaneously.
-		await loadRuntime();
-	}, getRuntimePollInterval(runtime));
-	runtimePollingTimer = timer;
+		await loadSpace();
+	}, getSpacePollInterval(space));
+	spacePollingTimer = timer;
 	return () => {
 		clearTimeout(timer);
-		if (runtimePollingTimer === timer) {
-			runtimePollingTimer = null;
+		if (spacePollingTimer === timer) {
+			spacePollingTimer = null;
 		}
 	};
 });
 </script>
 
-<!-- Runtime Header -->
+<!-- Space Header -->
 <PageHeader>
   {#snippet left()}
     <div class="flex items-center gap-2 min-w-0">
       <Terminal class="w-3.5 h-3.5 text-text-tertiary shrink-0 hidden sm:block" />
-      <span class="text-[13px] text-text-primary truncate">{runtime?.title || runtime?.id || runtimeId}</span>
-      {#if runtime}
-        <div class="hidden md:flex items-center gap-1.5 ml-1 px-1.5 py-0.5 rounded-sm bg-bg-hover border border-border-subtle shrink-0">
-          <div class="w-[5px] h-[5px] rounded-full bg-current {getRuntimeStatusMeta(runtime.status).textColorClass}"></div>
-          <span class="text-[10px] uppercase tracking-wider font-medium text-text-secondary">
-            {runtime.status}
-          </span>
-        </div>
-      {/if}
+      <span class="text-[13px] text-text-primary truncate">{space?.name || space?.id || spaceId}</span>
     </div>
   {/snippet}
   {#snippet right()}
@@ -2573,7 +2522,7 @@ $effect(() => {
       type="button"
       class="flex items-center gap-1.5 px-2 h-8 rounded-[5px] text-text-tertiary hover:text-text-secondary hover:bg-bg-hover transition-colors duration-100 disabled:opacity-50"
       onclick={() => handleCreateNewSession()}
-      disabled={creatingSession || !runtime}
+      disabled={creatingSession || !space}
       title="New session"
     >
       {#if creatingSession}
@@ -2620,7 +2569,6 @@ $effect(() => {
         <div
           class="absolute right-0 top-full mt-1 w-48 bg-bg-primary border border-border-subtle rounded-md shadow-lg overflow-hidden z-50"
         >
-          {#if isOwner}
           <button
             type="button"
             class="flex items-center gap-2 w-full px-3 py-2 text-[12px] text-text-secondary hover:text-text-primary hover:bg-bg-hover transition-colors"
@@ -2629,59 +2577,19 @@ $effect(() => {
             <Settings class="w-3.5 h-3.5" />
             <span>Settings</span>
           </button>
-          {/if}
-
-          {#if isOwner && (getRuntimeStatusMeta(runtime?.status).canHibernate || getRuntimeStatusMeta(runtime?.status).canWake || getRuntimeStatusMeta(runtime?.status).canDelete)}
-            <div class="border-t border-border-subtle"></div>
-          {/if}
-
-          {#if getRuntimeStatusMeta(runtime?.status).canHibernate}
-            <button
-              type="button"
-              class="flex items-center gap-2 w-full px-3 py-2 text-[12px] text-warning-soft hover:text-warning hover:bg-bg-hover transition-colors disabled:opacity-50"
-              disabled={runtimeActionInProgress !== null}
-              onclick={() => { void handleHibernate(); showMoreMenu = false; }}
-            >
-              {#if runtimeActionInProgress === "hibernate"}
-                <Loader2 class="w-3.5 h-3.5 animate-spin" />
-              {:else}
-                <Moon class="w-3.5 h-3.5" />
-              {/if}
-              <span>Hibernate</span>
-            </button>
-          {/if}
-
-          {#if getRuntimeStatusMeta(runtime?.status).canWake}
-            <button
-              type="button"
-              class="flex items-center gap-2 w-full px-3 py-2 text-[12px] text-success-soft hover:text-success hover:bg-bg-hover transition-colors disabled:opacity-50"
-              disabled={runtimeActionInProgress !== null}
-              onclick={() => { void handleWake(); showMoreMenu = false; }}
-            >
-              {#if runtimeActionInProgress === "wake"}
-                <Loader2 class="w-3.5 h-3.5 animate-spin" />
-              {:else}
-                <Power class="w-3.5 h-3.5" />
-              {/if}
-              <span>Wake</span>
-            </button>
-          {/if}
-
-          {#if getRuntimeStatusMeta(runtime?.status).canDelete}
-            <button
-              type="button"
-              class="flex items-center gap-2 w-full px-3 py-2 text-[12px] text-error-soft hover:text-error hover:bg-bg-hover transition-colors disabled:opacity-50"
-              disabled={runtimeActionInProgress !== null}
-              onclick={() => { void handleDelete(); showMoreMenu = false; }}
-            >
-              {#if runtimeActionInProgress === "delete"}
-                <Loader2 class="w-3.5 h-3.5 animate-spin" />
-              {:else}
-                <Trash2 class="w-3.5 h-3.5" />
-              {/if}
-              <span>Delete</span>
-            </button>
-          {/if}
+          <button
+            type="button"
+            class="flex items-center gap-2 w-full px-3 py-2 text-[12px] text-error-soft hover:text-error hover:bg-bg-hover transition-colors disabled:opacity-50"
+            disabled={spaceActionInProgress !== null}
+            onclick={() => { void handleDelete(); showMoreMenu = false; }}
+          >
+            {#if spaceActionInProgress === "delete"}
+              <Loader2 class="w-3.5 h-3.5 animate-spin" />
+            {:else}
+              <Trash2 class="w-3.5 h-3.5" />
+            {/if}
+            <span>Delete space</span>
+          </button>
         </div>
       {/if}
     </div>
@@ -2715,21 +2623,20 @@ $effect(() => {
         {/if}
       </button>
 
-      <!-- No-write-permission hint -->
       {#if showNoWriteHint}
         <div class="hint-toast">
-          <span>Read-only — you don't have write access to this runtime</span>
+          <span>Read-only — you don't have write access to this space</span>
         </div>
       {/if}
     </div>
   {/snippet}
 </PageHeader>
 
-<!-- Runtime action error banner -->
-{#if runtimeActionError}
+<!-- Space action error banner -->
+{#if spaceActionError}
   <div class="flex items-center justify-between px-3 py-2 border-b border-error-soft/30 bg-error-bg shrink-0">
-    <span class="text-[12px] font-mono text-error-soft truncate mr-2">{runtimeActionError}</span>
-    <button onclick={() => runtimeActionError = ""} class="text-text-tertiary hover:text-text-secondary shrink-0" title="Dismiss">
+    <span class="text-[12px] font-mono text-error-soft truncate mr-2">{spaceActionError}</span>
+    <button onclick={() => spaceActionError = ""} class="text-text-tertiary hover:text-text-secondary shrink-0" title="Dismiss">
       <X class="w-3 h-3" />
     </button>
   </div>
@@ -2738,275 +2645,10 @@ $effect(() => {
 <!-- Main Content -->
 <div class="flex-1 flex min-h-0">
   <div class="flex-1 flex flex-col min-w-0 bg-bg-content">
-    {#if fileMode === 'file'}
-      <!-- File Viewer -->
-      {#if openFileLoading}
-        <div class="flex-1 flex items-center justify-center text-[12px] text-text-tertiary">Loading file...</div>
-      {:else if openFileError}
-        <div class="m-4 flex items-start gap-2 rounded-md border border-error-soft/30 bg-error-bg p-3 text-[12px] text-error-soft">
-          {openFileError}
-        </div>
-      {:else if openFileTooLarge}
-        <!-- File too large: show info + download -->
-        <div class="flex-1 min-h-0 flex flex-col overflow-hidden">
-          <div class="flex h-10 items-center gap-1.5 sm:gap-2 border-b border-border-subtle px-2 sm:px-3 shrink-0">
-            <div class="min-w-0 flex-1 truncate text-[11px] sm:text-[12px] text-text-secondary">
-              {urlFilePath}
-            </div>
-            <a
-              href={openFileDownloadUrl}
-              download={openFileDownloadName}
-              class="download-btn"
-              title="Download file"
-            >
-              <Download class="w-3.5 h-3.5 shrink-0" />
-              <span class="hidden sm:inline">Download</span>
-            </a>
-            <button type="button" class="icon-btn" onclick={closeFile} title="Close file">
-              <X class="w-4 h-4" />
-            </button>
-          </div>
-          <div class="flex-1 flex items-center justify-center">
-            <div class="m-4 rounded-lg border border-warning-soft/30 bg-warning-bg p-6 text-center max-w-sm">
-              <div class="text-[40px] mb-3">📦</div>
-              <div class="text-[14px] font-semibold text-text-primary mb-1">File too large to preview</div>
-              <div class="text-[12px] text-text-secondary mb-4">This file exceeds 10MB and cannot be opened in the web editor.</div>
-              <a
-                href={openFileDownloadUrl}
-                download={openFileDownloadName}
-                class="download-btn primary"
-              >
-                <Download class="w-3.5 h-3.5" />
-                Download file
-              </a>
-            </div>
-          </div>
-        </div>
-      {:else if openFile}
-        {@const dataUrl = openFile.kind === 'binary' ? `data:${openFile.mimeType ?? 'application/octet-stream'};base64,${openFile.content}` : null}
-        <div class="flex-1 min-h-0 flex flex-col overflow-hidden">
-          {#if openFileIsText}
-            <!-- Text file: toolbar with edit/preview toggle + save/close -->
-            <div class="flex h-10 items-center gap-1.5 sm:gap-2 border-b border-border-subtle px-2 sm:px-3 shrink-0">
-              <div class="min-w-0 flex-1 truncate text-[11px] sm:text-[12px] text-text-secondary">
-                {openFile.path}
-              </div>
-              {#if openFileIsMarkdown}
-                <button
-                  type="button"
-                  class="toggle-btn"
-                  class:active={!fileEdit}
-                  onclick={() => fileEdit = false}
-                  title="Preview"
-                >
-                  <Eye class="w-3.5 h-3.5" />
-                  <span class="hidden sm:inline">Preview</span>
-                </button>
-                <button
-                  type="button"
-                  class="toggle-btn"
-                  class:active={fileEdit}
-                  onclick={() => fileEdit = true}
-                  title="Edit"
-                >
-                  <Pencil class="w-3.5 h-3.5" />
-                  <span class="hidden sm:inline">Edit</span>
-                </button>
-              {/if}
-              <a
-                href={openFileDownloadUrl}
-                download={openFileDownloadName}
-                class="icon-btn"
-                title="Download file"
-              >
-                <Download class="w-4 h-4" />
-              </a>
-              <button
-                type="button"
-                class="action-btn"
-                onclick={saveOpenFile}
-                disabled={openFileSaving || !fileDirty}
-                title="Save (Ctrl+S)"
-              >
-                <Save class="w-3.5 h-3.5 shrink-0" />
-                <span class="hidden sm:inline">Save</span>
-              </button>
-              <button type="button" class="icon-btn" onclick={closeFile} title="Close file">
-                <X class="w-4 h-4" />
-              </button>
-            </div>
-            <div class="flex-1 min-h-0">
-              {#if fileEdit}
-                <CodeEditor
-                  value={openFileDraft}
-                  language={openFileExt}
-                  onInput={(v) => openFileDraft = v}
-                />
-              {:else if openFileIsMarkdown && fileMarkdownHtml}
-                <article class="markdown-preview">{@html fileMarkdownHtml}</article>
-              {:else}
-                <CodeEditor
-                  value={openFileDraft}
-                  language={openFileExt}
-                  readonly={true}
-                />
-              {/if}
-            </div>
-          {:else if openFileIsImage && dataUrl}
-            <!-- Image: info toolbar + image preview -->
-            <div class="flex h-10 items-center gap-1.5 sm:gap-2 border-b border-border-subtle px-2 sm:px-3 shrink-0">
-              <div class="min-w-0 flex-1 truncate text-[11px] sm:text-[12px] text-text-secondary">
-                {openFile.path}
-              </div>
-              <div class="text-[11px] text-text-tertiary hidden sm:inline">{openFile.size} bytes</div>
-              <a
-                href={openFileDownloadUrl}
-                download={openFileDownloadName}
-                class="icon-btn"
-                title="Download file"
-              >
-                <Download class="w-4 h-4" />
-              </a>
-              <button type="button" class="icon-btn" onclick={closeFile} title="Close file">
-                <X class="w-4 h-4" />
-              </button>
-            </div>
-            <div class="flex flex-1 items-center justify-center p-4">
-              <img src={dataUrl} alt={openFile.name} class="max-h-full max-w-full rounded-md object-contain" />
-            </div>
-          {:else if openFileIsVideo && dataUrl}
-            <!-- Video: info toolbar + video preview -->
-            <div class="flex h-10 items-center gap-1.5 sm:gap-2 border-b border-border-subtle px-2 sm:px-3 shrink-0">
-              <div class="min-w-0 flex-1 truncate text-[11px] sm:text-[12px] text-text-secondary">
-                {openFile.path}
-              </div>
-              <div class="text-[11px] text-text-tertiary hidden sm:inline">{openFile.size} bytes</div>
-              <a
-                href={openFileDownloadUrl}
-                download={openFileDownloadName}
-                class="icon-btn"
-                title="Download file"
-              >
-                <Download class="w-4 h-4" />
-              </a>
-              <button type="button" class="icon-btn" onclick={closeFile} title="Close file">
-                <X class="w-4 h-4" />
-              </button>
-            </div>
-            <div class="flex flex-1 items-center justify-center p-4">
-              <video src={dataUrl} controls class="max-h-full max-w-full rounded-md">
-                <track kind="captions" />
-              </video>
-            </div>
-          {:else}
-            <!-- Binary/unknown: info toolbar + fallback -->
-            <div class="flex h-10 items-center gap-1.5 sm:gap-2 border-b border-border-subtle px-2 sm:px-3 shrink-0">
-              <div class="min-w-0 flex-1 truncate text-[11px] sm:text-[12px] text-text-secondary">
-                {openFile.path}
-              </div>
-              <div class="text-[11px] text-text-tertiary hidden sm:inline">{openFile.size} bytes</div>
-              <a
-                href={openFileDownloadUrl}
-                download={openFileDownloadName}
-                class="icon-btn"
-                title="Download file"
-              >
-                <Download class="w-4 h-4" />
-              </a>
-              <button type="button" class="icon-btn" onclick={closeFile} title="Close file">
-                <X class="w-4 h-4" />
-              </button>
-            </div>
-            <div class="m-4 rounded-md border border-border-subtle bg-bg-primary p-4 text-[12px] text-text-secondary">
-              <div><strong>Name:</strong> {openFile.name}</div>
-              <div><strong>Type:</strong> {openFile.mimeType ?? 'application/octet-stream'}</div>
-              <div><strong>Size:</strong> {openFile.size} bytes</div>
-              <div class="mt-3 text-text-tertiary">This file type cannot be previewed in the browser.</div>
-            </div>
-          {/if}
-        </div>
-      {/if}
-    {:else}
-      <!-- Chat -->
-      {#if bootstrapping && !activeSessionState}
-        <div class="flex-1 flex items-center justify-center">
-          <div class="flex flex-col items-center gap-3 text-text-tertiary">
-            <div class="w-7 h-7 rounded-full border-2 border-border-subtle border-t-brand animate-spin"></div>
-            <div class="text-[12px]">Loading runtime…</div>
-          </div>
-        </div>
-      {:else if !activeSessionState}
-        <div class="flex-1 flex flex-col items-center justify-center text-text-tertiary gap-4">
-          <div class="text-[14px]">No session selected</div>
-          {#if canWrite}
-          <button
-            type="button"
-            class="flex items-center gap-1.5 px-3 py-2 rounded-[5px] bg-bg-hover hover:bg-bg-hover-strong border border-border-subtle text-[12px] text-text-secondary hover:text-text-primary transition-colors duration-100 disabled:opacity-50"
-            onclick={() => handleCreateNewSession()}
-            disabled={creatingSession || !runtime}
-          >
-            <Plus class="w-3.5 h-3.5" />
-            Create a session
-          </button>
-          {/if}
-        </div>
-      {:else if activeSessionState.loading && !activeSessionState.loaded}
-        <div class="flex-1 flex items-center justify-center">
-          <div class="flex flex-col items-center gap-3 text-text-tertiary">
-            <div class="w-6 h-6 rounded-full border-2 border-border-subtle border-t-brand animate-spin"></div>
-            <div class="text-[12px]">Loading messages…</div>
-          </div>
-        </div>
-      {:else}
-        {#if activeSessionState.error}
-          <div class="m-4 rounded-md border border-error-soft/30 bg-error-bg p-3 text-[12px] font-mono text-error-soft break-all">
-            {activeSessionState.error}
-          </div>
-        {/if}
-
-        <div class="relative flex-1 min-h-0 flex flex-col">
-          <ChatTimeline
-            bind:this={chatTimelineRef}
-            bindListEl={listEl}
-            timeline={timeline}
-            preloadThreshold={10}
-            onFirstVisible={handleFirstVisible}
-            loadingOlder={activeSessionState?.loadingOlder ?? false}
-          />
-
-          {#if showScrollToBottom && timeline.length > 0}
-            <button
-              type="button"
-              class="fixed bottom-24 left-1/2 -translate-x-1/2 z-50 flex items-center gap-1.5 rounded-full border border-border-subtle bg-bg-elevated/92 px-3 py-1.5 text-[12px] text-text-secondary shadow-lg backdrop-blur transition-all hover:-translate-y-0.5 hover:bg-bg-hover-strong hover:text-text-primary animate-in fade-in slide-in-from-bottom-2 duration-200"
-              onclick={() => scrollToBottom()}
-            >
-              <ArrowDown class="w-3.5 h-3.5" />
-              <span>Scroll to bottom</span>
-            </button>
-          {/if}
-
-          <SessionComposer
-            bind:value={input}
-            disabled={sending || !activeSessionState || !getRuntimeStatusMeta(runtime?.status).canSend}
-            streamError={streamError}
-            attachments={imageAttachments}
-            currentModel={activeSessionModel}
-            onpickimage={handlePickImages}
-            onremoveattachment={handleRemoveAttachment}
-            onsubmit={handleSend}
-            onModelSelect={() => {
-              void loadModelsCatalog();
-              showModelSelector = true;
-            }}
-          />
-        </div>
-      {/if}
-    {/if}
-  </div>
 
   {#if !uiState.rightSidebarCollapsed}
     <div class="hidden shrink-0 xl:block relative border-l border-border-subtle" style={`width: ${uiState.rightSidebarWidth}px`}>
-      <RuntimeFileSidebar
+      <SpaceFileSidebar
         nodes={fileTree}
         selectedPath={urlFilePath ?? ""}
         loading={fileTreeLoading}
@@ -3039,14 +2681,14 @@ $effect(() => {
           <span>Sharing</span>
         </div>
 
-        <!-- Runtime-level toggle -->
+        <!-- Space-level toggle -->
         <label class="flex items-start gap-3 cursor-pointer group p-2 rounded-[5px] hover:bg-bg-hover transition-colors">
           <div class="relative shrink-0 mt-0.5">
             <input
               type="checkbox"
-              checked={runtimePublicRead}
-              onchange={(event) => { void toggleRuntimePublicRead((event.currentTarget as HTMLInputElement).checked); }}
-              disabled={savingRuntimePerm}
+              checked={spacePublicRead}
+              onchange={(event) => { void toggleSpacePublicRead((event.currentTarget as HTMLInputElement).checked); }}
+              disabled={savingSpacePerm}
               class="sr-only peer"
             />
             <div class="w-8 h-[18px] rounded-full bg-bg-hover-strong peer-checked:bg-brand transition-colors duration-150"></div>
@@ -3080,7 +2722,7 @@ $effect(() => {
                   type="button"
                   class="p-1 rounded-sm text-text-tertiary hover:text-brand hover:bg-bg-hover transition-colors opacity-0 group-hover:opacity-100"
                   onclick={() => {
-                    const url = `${window.location.origin}/runtimes/${runtimeId}?session=${perm.resourceId}`;
+                    const url = `${window.location.origin}/spaces/${spaceId}?session=${perm.resourceId}`;
                     void navigator.clipboard.writeText(url);
                     shareCopied = true;
                     if (shareCopiedTimer) clearTimeout(shareCopiedTimer);
@@ -3113,79 +2755,42 @@ $effect(() => {
 
       </section>
 
-      <!-- Collaborators section (owner only) -->
       {#if isOwner}
       <section class="space-y-3">
         <div class="text-[10px] font-bold text-text-tertiary uppercase tracking-widest flex items-center justify-between">
           <span>Collaborators</span>
-          <span class="px-1.5 py-0.5 rounded-sm bg-bg-hover-strong text-text-secondary">{runtimeCollaborators.length}</span>
+          <span class="px-1.5 py-0.5 rounded-sm bg-bg-hover-strong text-text-secondary">{spaceCollaborators.length}</span>
         </div>
 
-        <!-- Add collaborator form -->
         <div class="space-y-2">
           <div class="flex gap-2">
-            <input
-              type="text"
-              bind:value={addingCollaboratorUuid}
-              placeholder="Paste user UUID"
-              class="flex-1 px-2.5 py-[5px] rounded-[5px] bg-bg-input border border-border-subtle text-[12px] text-text-primary placeholder:text-text-placeholder focus:border-brand/40 focus:outline-none font-mono"
-              onkeydown={(e) => { if (e.key === 'Enter') { e.preventDefault(); void handleAddCollaborator(); } }}
-            />
-            <select
-              bind:value={addingCollaboratorLevel}
-              class="px-2 py-[5px] rounded-[5px] bg-bg-input border border-border-subtle text-[12px] text-text-secondary focus:border-brand/40 focus:outline-none"
-            >
+            <input type="text" bind:value={addingCollaboratorUuid} placeholder="Paste user UUID" class="flex-1 px-2.5 py-[5px] rounded-[5px] bg-bg-input border border-border-subtle text-[12px] text-text-primary placeholder:text-text-placeholder focus:border-brand/40 focus:outline-none font-mono" onkeydown={(e) => { if (e.key === 'Enter') { e.preventDefault(); void handleAddCollaborator(); } }} />
+            <select bind:value={addingCollaboratorLevel} class="px-2 py-[5px] rounded-[5px] bg-bg-input border border-border-subtle text-[12px] text-text-secondary focus:border-brand/40 focus:outline-none">
               <option value="write">Write</option>
               <option value="read">Read</option>
             </select>
-            <button
-              type="button"
-              onclick={() => { void handleAddCollaborator(); }}
-              disabled={savingCollaborator || !addingCollaboratorUuid.trim()}
-              class="px-2.5 py-[5px] rounded-[5px] bg-[#FF3E00] hover:bg-brand-hover text-[12px] text-white font-medium transition-colors disabled:opacity-50 cursor-pointer"
-            >
-              {savingCollaborator ? '...' : 'Add'}
-            </button>
+            <button type="button" onclick={() => { void handleAddCollaborator(); }} disabled={savingCollaborator || !addingCollaboratorUuid.trim()} class="px-2.5 py-[5px] rounded-[5px] bg-[#FF3E00] hover:bg-brand-hover text-[12px] text-white font-medium transition-colors disabled:opacity-50 cursor-pointer">{savingCollaborator ? '...' : 'Add'}</button>
           </div>
           {#if addingCollaboratorError}
             <div class="text-[11px] text-error-soft break-all">{addingCollaboratorError}</div>
           {/if}
         </div>
 
-        <!-- Collaborators list -->
         {#if loadingCollaborators}
-          <div class="flex items-center justify-center py-4 text-[12px] text-text-tertiary">
-            <div class="w-3.5 h-3.5 rounded-full border-2 border-border-subtle border-t-brand animate-spin mr-2"></div>
-            Loading...
-          </div>
-        {:else if runtimeCollaborators.length === 0}
+          <div class="flex items-center justify-center py-4 text-[12px] text-text-tertiary"><div class="w-3.5 h-3.5 rounded-full border-2 border-border-subtle border-t-brand animate-spin mr-2"></div>Loading...</div>
+        {:else if spaceCollaborators.length === 0}
           <div class="px-2 py-1 text-[12px] text-text-tertiary italic">No collaborators</div>
         {:else}
           <div class="space-y-1">
-            {#each runtimeCollaborators as collab (collab.granteeUuid)}
+            {#each spaceCollaborators as collab (collab.granteeUuid)}
               <div class="flex items-center gap-2 px-2 py-1.5 rounded-[4px] group hover:bg-bg-hover transition-colors">
-                {#if collab.level === 'write'}
-                  <Pencil class="w-3.5 h-3.5 text-brand shrink-0" />
-                {:else}
-                  <Eye class="w-3.5 h-3.5 text-text-tertiary shrink-0" />
-                {/if}
+                {#if collab.level === 'write'}<Pencil class="w-3.5 h-3.5 text-brand shrink-0" />{:else}<Eye class="w-3.5 h-3.5 text-text-tertiary shrink-0" />{/if}
                 <code class="flex-1 text-[11px] font-mono text-text-secondary truncate select-all">{collab.granteeUuid}</code>
-                <select
-                  value={collab.level}
-                  onchange={(event) => { void handleUpdateCollaboratorLevel(collab.granteeUuid!, (event.currentTarget as HTMLSelectElement).value as "read" | "write"); }}
-                  class="px-1.5 py-0.5 rounded-sm bg-bg-input border border-border-subtle text-[11px] text-text-secondary focus:border-brand/40 focus:outline-none"
-                >
+                <select value={collab.level} onchange={(event) => { void handleUpdateCollaboratorLevel(collab.granteeUuid!, (event.currentTarget as HTMLSelectElement).value as "read" | "write"); }} class="px-1.5 py-0.5 rounded-sm bg-bg-input border border-border-subtle text-[11px] text-text-secondary focus:border-brand/40 focus:outline-none">
                   <option value="write">Write</option>
                   <option value="read">Read</option>
                 </select>
-                <button
-                  type="button"
-                  class="p-1 rounded-sm text-text-tertiary hover:text-error-soft hover:bg-bg-hover transition-colors opacity-0 group-hover:opacity-100 cursor-pointer"
-                  onclick={() => { void handleRemoveCollaborator(collab.granteeUuid!); }}
-                  title="Remove collaborator"
-                >
-                  <X class="w-3 h-3" />
-                </button>
+                <button type="button" class="p-1 rounded-sm text-text-tertiary hover:text-error-soft hover:bg-bg-hover transition-colors opacity-0 group-hover:opacity-100 cursor-pointer" onclick={() => { void handleRemoveCollaborator(collab.granteeUuid!); }} title="Remove collaborator"><X class="w-3 h-3" /></button>
               </div>
             {/each}
           </div>
@@ -3195,86 +2800,39 @@ $effect(() => {
       </section>
       {/if}
 
-      <!-- Channels section -->
       <section class="space-y-3">
         <div class="text-[10px] font-bold text-text-tertiary uppercase tracking-widest flex items-center justify-between">
           <span>Channels</span>
-          <span class="px-1.5 py-0.5 rounded-sm bg-bg-hover-strong text-text-secondary">{runtimeChannels.length}</span>
+          <span class="px-1.5 py-0.5 rounded-sm bg-bg-hover-strong text-text-secondary">{spaceChannels.length}</span>
         </div>
 
-        {#if runtimeChannels.length === 0}
+        {#if spaceChannels.length === 0}
           <div class="rounded-md border border-border-subtle bg-bg-hover p-3 text-[13px] text-text-tertiary">No channels bound.</div>
         {:else}
           <div class="space-y-3">
-            {#each runtimeChannels as runtimeChannel (runtimeChannel.id)}
+            {#each spaceChannels as spaceChannel (spaceChannel.id)}
               <div class="border border-border-subtle rounded-[5px] bg-bg-surface overflow-hidden">
                 <div class="px-3 py-2 border-b border-border-subtle bg-bg-header-alt flex items-center gap-2">
                   <Hash class="w-3 h-3 text-text-tertiary" />
-                  <span class="text-[12px] font-medium text-text-primary truncate">{runtimeChannel.channel?.name || runtimeChannel.channel?.provider}</span>
+                  <span class="text-[12px] font-medium text-text-primary truncate">{spaceChannel.channel?.name || spaceChannel.channel?.provider}</span>
                 </div>
-
                 <div class="p-3">
-                  {#if runtimeChannel.channel?.provider === "discord"}
-                    {@const config = getDiscordRuntimeChannelConfig(runtimeChannel)}
+                  {#if spaceChannel.channel?.provider === "discord"}
+                    {@const config = getDiscordSpaceChannelConfig(spaceChannel)}
                     <div class="space-y-4">
                       <label class="flex items-start gap-2 cursor-pointer group">
-                        <input
-                          type="checkbox"
-                          checked={config.inbound?.requireMentionInGuild !== false}
-                          onchange={(event) => patchDiscordRuntimeChannelConfig(runtimeChannel, (current) => ({
-                            ...current,
-                            inbound: { ...(current.inbound ?? {}), requireMentionInGuild: (event.currentTarget as HTMLInputElement).checked },
-                          }))}
-                          class="mt-0.5 rounded-sm bg-bg-input border-border-subtle checked:bg-brand"
-                        />
-                        <div class="flex flex-col min-w-0">
-                          <span class="text-[13px] text-text-secondary group-hover:text-text-primary transition-colors">Require mention in Guild</span>
-                          <span class="text-[11px] text-text-placeholder">Respond only when mentioned</span>
-                        </div>
+                        <input type="checkbox" checked={config.inbound?.requireMentionInGuild !== false} onchange={(event) => patchDiscordSpaceChannelConfig(spaceChannel, (current) => ({ ...current, inbound: { ...(current.inbound ?? {}), requireMentionInGuild: (event.currentTarget as HTMLInputElement).checked } }))} class="mt-0.5 rounded-sm bg-bg-input border-border-subtle checked:bg-brand" />
+                        <div class="flex flex-col min-w-0"><span class="text-[13px] text-text-secondary group-hover:text-text-primary transition-colors">Require mention in Guild</span><span class="text-[11px] text-text-placeholder">Respond only when mentioned</span></div>
                       </label>
-
                       <div class="w-full h-px bg-border-subtle"></div>
-
-                      <label class="flex items-start gap-2 cursor-pointer group">
-                        <input
-                          type="checkbox"
-                          checked={config.outbound?.showThinking === true}
-                          onchange={(event) => patchDiscordRuntimeChannelConfig(runtimeChannel, (current) => ({
-                            ...current,
-                            outbound: { ...(current.outbound ?? {}), showThinking: (event.currentTarget as HTMLInputElement).checked },
-                          }))}
-                          class="mt-0.5 rounded-sm bg-bg-input border-border-subtle checked:bg-brand"
-                        />
-                        <div class="flex flex-col">
-                          <span class="text-[13px] text-text-secondary group-hover:text-text-primary transition-colors">Show thinking</span>
-                        </div>
-                      </label>
-
-                      <label class="flex items-start gap-2 cursor-pointer group">
-                        <input
-                          type="checkbox"
-                          checked={config.outbound?.showToolCalls === true}
-                          onchange={(event) => patchDiscordRuntimeChannelConfig(runtimeChannel, (current) => ({
-                            ...current,
-                            outbound: { ...(current.outbound ?? {}), showToolCalls: (event.currentTarget as HTMLInputElement).checked },
-                          }))}
-                          class="mt-0.5 rounded-sm bg-bg-input border-border-subtle checked:bg-brand"
-                        />
-                        <div class="flex flex-col">
-                          <span class="text-[13px] text-text-secondary group-hover:text-text-primary transition-colors">Show tool calls</span>
-                        </div>
-                      </label>
+                      <label class="flex items-start gap-2 cursor-pointer group"><input type="checkbox" checked={config.outbound?.showThinking === true} onchange={(event) => patchDiscordSpaceChannelConfig(spaceChannel, (current) => ({ ...current, outbound: { ...(current.outbound ?? {}), showThinking: (event.currentTarget as HTMLInputElement).checked } }))} class="mt-0.5 rounded-sm bg-bg-input border-border-subtle checked:bg-brand" /><div class="flex flex-col"><span class="text-[13px] text-text-secondary group-hover:text-text-primary transition-colors">Show thinking</span></div></label>
+                      <label class="flex items-start gap-2 cursor-pointer group"><input type="checkbox" checked={config.outbound?.showToolCalls === true} onchange={(event) => patchDiscordSpaceChannelConfig(spaceChannel, (current) => ({ ...current, outbound: { ...(current.outbound ?? {}), showToolCalls: (event.currentTarget as HTMLInputElement).checked } }))} class="mt-0.5 rounded-sm bg-bg-input border-border-subtle checked:bg-brand" /><div class="flex flex-col"><span class="text-[13px] text-text-secondary group-hover:text-text-primary transition-colors">Show tool calls</span></div></label>
                     </div>
                   {:else}
                     <div class="text-[13px] text-text-tertiary">No configuration available.</div>
                   {/if}
-
-                  {#if savingChannelConfigById[runtimeChannel.id]}
-                    <div class="mt-3 text-[10px] text-success-soft">Saving changes...</div>
-                  {/if}
-                  {#if channelConfigErrorById[runtimeChannel.id]}
-                    <div class="mt-3 text-[10px] text-error-soft break-all">{channelConfigErrorById[runtimeChannel.id]}</div>
-                  {/if}
+                  {#if savingChannelConfigById[spaceChannel.id]}<div class="mt-3 text-[10px] text-success-soft">Saving changes...</div>{/if}
+                  {#if channelConfigErrorById[spaceChannel.id]}<div class="mt-3 text-[10px] text-error-soft break-all">{channelConfigErrorById[spaceChannel.id]}</div>{/if}
                 </div>
               </div>
             {/each}
@@ -3284,132 +2842,39 @@ $effect(() => {
     </div>
   </SettingsOverlay>
 
-  <!-- Share Modal -->
   {#if showShareModal && shareModalSessionId}
     <div class="fixed inset-0 z-50 flex items-center justify-center p-4">
-      <button
-        type="button"
-        class="absolute inset-0 bg-black/40"
-        aria-label="Close share dialog"
-        onclick={() => { showShareModal = false; }}
-      ></button>
+      <button type="button" class="absolute inset-0 bg-black/40" aria-label="Close share dialog" onclick={() => { showShareModal = false; }}></button>
       <div class="relative w-full max-w-[380px] rounded-xl border border-border-subtle bg-bg-primary shadow-2xl overflow-hidden">
         <div class="h-9 flex items-center justify-between px-3 border-b border-border-subtle text-[10px] font-medium uppercase tracking-wider text-text-tertiary select-none">
           <span>{hasSessionPermission(shareModalSessionId!) ? 'Session is public' : 'Share session'}</span>
-          <button type="button" class="flex items-center justify-center w-6 h-6 rounded-[4px] text-text-tertiary hover:text-text-secondary hover:bg-bg-hover transition-colors" onclick={() => { showShareModal = false; }}>
-            <X class="w-3.5 h-3.5" />
-          </button>
+          <button type="button" class="flex items-center justify-center w-6 h-6 rounded-[4px] text-text-tertiary hover:text-text-secondary hover:bg-bg-hover transition-colors" onclick={() => { showShareModal = false; }}><X class="w-3.5 h-3.5" /></button>
         </div>
         <div class="p-4 space-y-4">
-          <!-- Already public: show manage options -->
           {#if hasSessionPermission(shareModalSessionId!)}
             <p class="text-[13px] text-text-secondary leading-relaxed">Anyone with the link can view this session. Choose how to manage access:</p>
             <div class="space-y-2">
-              <button
-                type="button"
-                class="w-full text-left flex items-start gap-3 px-3 py-2.5 rounded-[6px] border border-border-subtle bg-bg-surface hover:bg-bg-hover transition-colors disabled:opacity-50"
-                onclick={() => { void removeSessionPermission(shareModalSessionId!).then((ok) => { if (ok) showShareModal = false; }); }}
-                disabled={shareModalSaving}
-              >
-                <Globe class="w-4 h-4 text-text-tertiary shrink-0 mt-0.5" />
-                <div class="min-w-0">
-                  <div class="text-[13px] text-text-primary font-medium">Remove permission</div>
-                  <div class="text-[11px] text-text-placeholder mt-0.5 leading-relaxed">Delete this session's access rule. It will inherit the runtime-level setting instead.</div>
-                </div>
-              </button>
-              <button
-                type="button"
-                class="w-full text-left flex items-start gap-3 px-3 py-2.5 rounded-[6px] border border-border-subtle bg-bg-surface hover:bg-bg-hover transition-colors disabled:opacity-50"
-                onclick={() => { void makeSessionPrivate(); }}
-                disabled={shareModalSaving}
-              >
-                <Lock class="w-4 h-4 text-text-tertiary shrink-0 mt-0.5" />
-                <div class="min-w-0">
-                  <div class="text-[13px] text-text-primary font-medium">Make private</div>
-                  <div class="text-[11px] text-text-placeholder mt-0.5 leading-relaxed">Block all external access regardless of the runtime's visibility setting.</div>
-                </div>
-              </button>
+              <button type="button" class="w-full text-left flex items-start gap-3 px-3 py-2.5 rounded-[6px] border border-border-subtle bg-bg-surface hover:bg-bg-hover transition-colors disabled:opacity-50" onclick={() => { void removeSessionPermission(shareModalSessionId!).then((ok) => { if (ok) showShareModal = false; }); }} disabled={shareModalSaving}><Globe class="w-4 h-4 text-text-tertiary shrink-0 mt-0.5" /><div class="min-w-0"><div class="text-[13px] text-text-primary font-medium">Remove permission</div><div class="text-[11px] text-text-placeholder mt-0.5 leading-relaxed">Delete this session's access rule. It will inherit the space-level setting instead.</div></div></button>
+              <button type="button" class="w-full text-left flex items-start gap-3 px-3 py-2.5 rounded-[6px] border border-border-subtle bg-bg-surface hover:bg-bg-hover transition-colors disabled:opacity-50" onclick={() => { void makeSessionPrivate(); }} disabled={shareModalSaving}><Lock class="w-4 h-4 text-text-tertiary shrink-0 mt-0.5" /><div class="min-w-0"><div class="text-[13px] text-text-primary font-medium">Make private</div><div class="text-[11px] text-text-placeholder mt-0.5 leading-relaxed">Block all external access regardless of the space visibility setting.</div></div></button>
             </div>
-            <!-- Copy link shortcut -->
-            <button
-              type="button"
-              class="w-full flex items-center justify-center gap-2 px-3 py-2 rounded-[5px] text-[13px] text-text-secondary hover:text-text-primary border border-border-subtle hover:bg-bg-hover transition-colors disabled:opacity-50"
-              onclick={() => {
-                const url = `${window.location.origin}/runtimes/${runtimeId}?session=${shareModalSessionId}`;
-                void navigator.clipboard.writeText(url);
-                shareCopied = true;
-                if (shareCopiedTimer) clearTimeout(shareCopiedTimer);
-                shareCopiedTimer = setTimeout(() => { shareCopied = false; }, 2000);
-              }}
-              disabled={shareModalSaving}
-            >
-              {#if shareCopied}
-                <Check class="w-3.5 h-3.5 text-status-success" />
-                Copied
-              {:else}
-                <Copy class="w-3.5 h-3.5" />
-                Copy link
-              {/if}
-            </button>
+            <button type="button" class="w-full flex items-center justify-center gap-2 px-3 py-2 rounded-[5px] text-[13px] text-text-secondary hover:text-text-primary border border-border-subtle hover:bg-bg-hover transition-colors disabled:opacity-50" onclick={() => { const url = `${window.location.origin}/spaces/${spaceId}?session=${shareModalSessionId}`; void navigator.clipboard.writeText(url); shareCopied = true; if (shareCopiedTimer) clearTimeout(shareCopiedTimer); shareCopiedTimer = setTimeout(() => { shareCopied = false; }, 2000); }} disabled={shareModalSaving}>{#if shareCopied}<Check class="w-3.5 h-3.5 text-status-success" />Copied{:else}<Copy class="w-3.5 h-3.5" />Copy link{/if}</button>
           {:else}
-            <!-- Currently private: confirm before sharing -->
             <p class="text-[13px] text-text-secondary leading-relaxed">This session will become publicly accessible. Anyone with the link can view the conversation.</p>
-            <button
-              type="button"
-              class="w-full flex items-center justify-center gap-2 px-3 py-2.5 rounded-[5px] bg-bg-primary hover:bg-bg-hover-strong border border-border-subtle text-[13px] text-text-primary font-medium transition-colors disabled:opacity-50"
-              onclick={() => { void shareAndCopyLink(); }}
-              disabled={shareModalSaving}
-            >
-              {#if shareModalSaving}
-                <Loader2 class="w-3.5 h-3.5 animate-spin" />
-                Sharing…
-              {:else}
-                <Share2 class="w-3.5 h-3.5" />
-                Share &amp; copy link
-              {/if}
-            </button>
+            <button type="button" class="w-full flex items-center justify-center gap-2 px-3 py-2.5 rounded-[5px] bg-bg-primary hover:bg-bg-hover-strong border border-border-subtle text-[13px] text-text-primary font-medium transition-colors disabled:opacity-50" onclick={() => { void shareAndCopyLink(); }} disabled={shareModalSaving}>{#if shareModalSaving}<Loader2 class="w-3.5 h-3.5 animate-spin" />Sharing…{:else}<Share2 class="w-3.5 h-3.5" />Share &amp; copy link{/if}</button>
           {/if}
-
-          {#if shareModalError}
-            <div class="text-[12px] text-error-soft break-all">{shareModalError}</div>
-          {/if}
+          {#if shareModalError}<div class="text-[12px] text-error-soft break-all">{shareModalError}</div>{/if}
         </div>
       </div>
     </div>
   {/if}
 
-  <!-- Model Selector Dialog -->
-  <ModelSelector
-    open={showModelSelector}
-    onClose={() => { showModelSelector = false; }}
-    onSelect={handleModelSelect}
-    models={modelsCatalog ?? []}
-    currentModel={activeSessionModel}
-  />
+  <ModelSelector open={showModelSelector} onClose={() => { showModelSelector = false; }} onSelect={handleModelSelect} models={modelsCatalog ?? []} currentModel={activeSessionModel} />
 
-  <!-- Mobile right drawer for file sidebar -->
-  <MobileRightDrawer
-    dragOffsetPx={rightDrawerDragOffsetPx}
-    isDragging={rightDrawerIsDragging}
-    isDrawerVisible={rightDrawerIsVisible}
-  >
-    <RuntimeFileSidebar
-      nodes={fileTree}
-      selectedPath={urlFilePath ?? ""}
-      loading={fileTreeLoading}
-      error={fileTreeError}
-      onToggle={handleFileToggle}
-      onSelect={handleFileSelect}
-      onRefresh={refreshFileTree}
-      onCreateFile={handleCreateFile}
-      onCreateDir={handleCreateDir}
-      onRename={handleRenameNode}
-      onDelete={handleDeleteNode}
-      canWrite={canWrite}
-    />
+  <MobileRightDrawer dragOffsetPx={rightDrawerDragOffsetPx} isDragging={rightDrawerIsDragging} isDrawerVisible={rightDrawerIsVisible}>
+    <SpaceFileSidebar nodes={fileTree} selectedPath={urlFilePath ?? ""} loading={fileTreeLoading} error={fileTreeError} onToggle={handleFileToggle} onSelect={handleFileSelect} onRefresh={refreshFileTree} onCreateFile={handleCreateFile} onCreateDir={handleCreateDir} onRename={handleRenameNode} onDelete={handleDeleteNode} canWrite={canWrite} />
   </MobileRightDrawer>
 </div>
-
+</div>
 <style>
   .right-sidebar-resize-handle {
     position: absolute;
@@ -3428,160 +2893,6 @@ $effect(() => {
   :global(body.sidebar-resizing) {
     cursor: col-resize;
     user-select: none;
-  }
-
-  .icon-btn {
-    display: inline-flex;
-    align-items: center;
-    justify-content: center;
-    width: 32px;
-    height: 32px;
-    border: none;
-    border-radius: 6px;
-    background: transparent;
-    color: var(--text-tertiary);
-    text-decoration: none;
-  }
-  .icon-btn:hover { background: var(--bg-hover); color: var(--text-secondary); }
-  .action-btn {
-    display: inline-flex;
-    align-items: center;
-    justify-content: center;
-    gap: 6px;
-    min-height: 32px;
-    padding: 0 10px;
-    border-radius: 6px;
-    border: 1px solid var(--border-subtle);
-    background: var(--bg-hover);
-    color: var(--text-secondary);
-    font-size: 12px;
-  }
-  .action-btn:disabled { opacity: 0.5; }
-  .toggle-btn {
-    display: inline-flex;
-    align-items: center;
-    justify-content: center;
-    gap: 5px;
-    min-height: 28px;
-    padding: 0 8px;
-    border-radius: 6px;
-    border: 1px solid transparent;
-    background: transparent;
-    color: var(--text-tertiary);
-    font-size: 12px;
-  }
-  .toggle-btn:hover { background: var(--bg-hover); color: var(--text-secondary); }
-  .toggle-btn.active {
-    border-color: var(--border-subtle);
-    background: var(--bg-hover);
-    color: var(--text-primary);
-  }
-  .download-btn {
-    display: inline-flex;
-    align-items: center;
-    justify-content: center;
-    gap: 6px;
-    min-height: 32px;
-    padding: 0 10px;
-    border-radius: 6px;
-    border: 1px solid var(--border-subtle);
-    background: var(--bg-hover);
-    color: var(--text-secondary);
-    font-size: 12px;
-    text-decoration: none;
-  }
-  .download-btn:hover { background: var(--bg-hover-strong); color: var(--text-primary); }
-  .download-btn.primary {
-    background: var(--brand, #58a6ff);
-    border-color: var(--brand, #58a6ff);
-    color: #fff;
-  }
-  .download-btn.primary:hover { opacity: 0.9; }
-  .markdown-preview {
-    height: 100%;
-    overflow: auto;
-    padding: 20px 24px;
-    max-width: 860px;
-    margin: 0 auto;
-    line-height: 1.7;
-    font-size: 14px;
-  }
-  .markdown-preview :global(h1) {
-    font-size: 1.8em;
-    font-weight: 700;
-    margin-top: 0;
-    margin-bottom: 0.5em;
-    padding-bottom: 0.3em;
-    border-bottom: 1px solid var(--border-subtle);
-  }
-  .markdown-preview :global(h2) {
-    font-size: 1.4em;
-    font-weight: 600;
-    margin-top: 1.5em;
-    margin-bottom: 0.5em;
-  }
-  .markdown-preview :global(h3) {
-    font-size: 1.15em;
-    font-weight: 600;
-    margin-top: 1.2em;
-    margin-bottom: 0.4em;
-  }
-  .markdown-preview :global(p) { margin-bottom: 1em; }
-  .markdown-preview :global(code) {
-    background: var(--bg-hover);
-    border: 1px solid var(--border-subtle);
-    border-radius: 4px;
-    padding: 0.15em 0.4em;
-    font-size: 0.9em;
-    font-family: var(--font-mono, monospace);
-  }
-  .markdown-preview :global(pre) {
-    background: var(--bg-primary);
-    border: 1px solid var(--border-subtle);
-    border-radius: 8px;
-    padding: 16px;
-    overflow: auto;
-    margin-bottom: 1em;
-  }
-  .markdown-preview :global(pre code) {
-    background: none;
-    border: none;
-    padding: 0;
-    font-size: 13px;
-    line-height: 1.5;
-  }
-  .markdown-preview :global(ul),
-  .markdown-preview :global(ol) {
-    padding-left: 1.5em;
-    margin-bottom: 1em;
-  }
-  .markdown-preview :global(li) { margin-bottom: 0.3em; }
-  .markdown-preview :global(blockquote) {
-    border-left: 3px solid var(--border-subtle);
-    padding-left: 1em;
-    color: var(--text-tertiary);
-    margin-bottom: 1em;
-  }
-  .markdown-preview :global(img) {
-    max-width: 100%;
-    border-radius: 6px;
-    margin: 0.5em 0;
-  }
-  .markdown-preview :global(a) { color: var(--brand, #58a6ff); }
-  .markdown-preview :global(table) {
-    border-collapse: collapse;
-    width: 100%;
-    margin-bottom: 1em;
-  }
-  .markdown-preview :global(th),
-  .markdown-preview :global(td) {
-    border: 1px solid var(--border-subtle);
-    padding: 8px 12px;
-    text-align: left;
-  }
-  .markdown-preview :global(th) {
-    background: var(--bg-hover);
-    font-weight: 600;
   }
 
   /* No-write-permission hint toast */

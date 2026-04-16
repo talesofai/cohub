@@ -95,7 +95,7 @@ async function handleDelete(id: string) {
           <span></span>
           <span>Channel</span>
           <span>Status</span>
-          <span>Bound Runtime</span>
+          <span>Bound Space</span>
           <span></span>
         </div>
         <div class="divide-y divide-border-subtle">
@@ -117,10 +117,10 @@ async function handleDelete(id: string) {
                 <span class="px-1.5 py-0.5 rounded-sm text-[10px] bg-bg-hover text-text-tertiary border border-border-subtle">{channel.status}</span>
               </div>
               <div class="flex items-center gap-1.5 pt-0.5 min-w-0">
-                {#if channel.boundRuntime}
+                {#if channel.boundSpace}
                   <Box class="w-3 h-3 shrink-0 text-text-placeholder" />
-                  <a href="/runtimes/{channel.boundRuntime.id}" class="text-[12px] text-text-secondary hover:text-text-primary truncate font-mono transition-colors">
-                    {channel.boundRuntime.title || channel.boundRuntime.id.slice(0, 8)}
+                  <a href="/spaces/{channel.boundSpace.id}" class="text-[12px] text-text-secondary hover:text-text-primary truncate font-mono transition-colors">
+                    {channel.boundSpace.name || channel.boundSpace.id.slice(0, 8)}
                   </a>
                 {:else}
                   <Box class="w-3 h-3 shrink-0 text-text-placeholder" />
@@ -159,9 +159,9 @@ async function handleDelete(id: string) {
                   <div class="text-[11px] uppercase tracking-wider text-text-tertiary mt-0.5">{channel.provider}</div>
                   <div class="flex items-center gap-3 mt-2">
                     <span class="px-1.5 py-0.5 rounded-sm text-[11px] bg-bg-hover text-text-tertiary border border-border-subtle">{channel.status}</span>
-                    {#if channel.boundRuntime}
-                      <a href="/runtimes/{channel.boundRuntime.id}" class="text-[12px] text-text-secondary hover:text-text-primary truncate font-mono transition-colors">
-                        {channel.boundRuntime.title || channel.boundRuntime.id.slice(0, 8)}
+                    {#if channel.boundSpace}
+                      <a href="/spaces/{channel.boundSpace.id}" class="text-[12px] text-text-secondary hover:text-text-primary truncate font-mono transition-colors">
+                        {channel.boundSpace.name || channel.boundSpace.id.slice(0, 8)}
                       </a>
                     {:else}
                       <span class="text-[12px] text-text-placeholder">Not bound</span>

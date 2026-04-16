@@ -1,5 +1,5 @@
 <script lang="ts">
-import type { RuntimeFsNode } from "$lib/runtime-fs";
+import type { SpaceFsNode } from "$lib/space-fs";
 import { RefreshCw, Plus, FolderPlus, AlertCircle, Lock } from "lucide-svelte";
 import FsTreeItem from "./FsTreeItem.svelte";
 
@@ -17,17 +17,17 @@ const {
   onDelete,
   canWrite = true,
 }: {
-  nodes: RuntimeFsNode[];
+  nodes: SpaceFsNode[];
   selectedPath: string;
   loading: boolean;
   error: string | null;
-  onToggle: (node: RuntimeFsNode) => void;
-  onSelect: (node: RuntimeFsNode) => void;
+  onToggle: (node: SpaceFsNode) => void;
+  onSelect: (node: SpaceFsNode) => void;
   onRefresh: () => void;
   onCreateFile: (parentPath: string) => void;
   onCreateDir: (parentPath: string) => void;
-  onRename: (node: RuntimeFsNode) => void;
-  onDelete: (node: RuntimeFsNode) => void;
+  onRename: (node: SpaceFsNode) => void;
+  onDelete: (node: SpaceFsNode) => void;
   canWrite?: boolean;
 } = $props();
 
@@ -44,7 +44,7 @@ function handleCreateDirAtRoot() {
   <div class="flex items-center gap-1 border-b border-border-subtle px-3 py-2 shrink-0">
     <div class="min-w-0 flex-1">
       <div class="text-[11px] uppercase tracking-[0.14em] text-text-tertiary">Files</div>
-      <div class="text-[12px] text-text-secondary">Runtime workspace</div>
+      <div class="text-[12px] text-text-secondary">Space workspace</div>
     </div>
     {#if canWrite}
       <button class="icon-btn" type="button" title="New file" onclick={handleCreateFileAtRoot}>

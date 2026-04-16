@@ -18,7 +18,7 @@ import { onMount } from "svelte";
 import { LEFT_SIDEBAR_MAX, LEFT_SIDEBAR_MIN, uiState } from "$lib/stores/ui.svelte";
 import MediaLightbox from "$lib/components/MediaLightbox.svelte";
 import { authStore } from "$lib/stores/auth.svelte";
-import { hydrateRuntimeStoreFromSidebarCache } from "$lib/stores/cache-hydration";
+import { hydrateSpaceStoreFromSidebarCache } from "$lib/stores/cache-hydration";
 
 const { children } = $props();
 
@@ -278,7 +278,7 @@ $effect(() => {
 
 onMount(() => {
   uiState.loadLayoutPrefs();
-  hydrateRuntimeStoreFromSidebarCache();
+  hydrateSpaceStoreFromSidebarCache();
   void authStore.ensureLoaded();
 
   // Register PWA Service Worker (conservative update: closes all tabs to activate)

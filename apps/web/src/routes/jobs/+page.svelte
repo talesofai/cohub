@@ -7,13 +7,13 @@ import {
   deleteCronJob,
   toggleCronJob,
   getTaskRuns,
-  getRuntimes,
+  getSpaces,
   type CronJobRecord,
   type TaskRunRecord,
-  type RuntimeRecord,
+  type SpaceRecord,
 } from "$lib/api";
 import { logtoClient } from "$lib/auth";
-import { Plus, Trash2, Power, PowerOff, Loader2, Clock, Activity, Filter, X, Clipboard, ClipboardCheck, Pencil } from "lucide-svelte";
+import { Plus, Trash2, Power, PowerOff, Loader2, Clock, Activity, Filter, X, Clipboard, ClipboardCheck } from "lucide-svelte";
 import PageHeader from "$lib/components/PageHeader.svelte";
 
 type TabId = "cronjobs" | "history";
@@ -36,15 +36,15 @@ let createType: "repeating" | "onetime" = $state("repeating");
 let createTitle = $state("");
 let createCronExpression = $state("");
 let createScheduleAt = $state("");
-let createRuntimeId = $state("");
+let createSpaceId = $state("");
 let createPromptText = $state("");
 let createError = $state("");
-let runtimes = $state<RuntimeRecord[]>([]);
+let spaces = $state<SpaceRecord[]>([]);
 let copiedIndex = $state<number | null>(null);
 
 // Example prompts — create (2 items for mobile fit)
 const createExamplePrompts = [
-  "Every day at 10 AM, send a daily report summary to this runtime",
+  "Every day at 10 AM, send a daily report summary to this space",
   "Remind me to check the deployment status in 5 minutes",
 ];
 
@@ -143,12 +143,12 @@ function clearFilter() {
   filterCronJobId = null;
 }
 
-async function loadRuntimes() {
+async function loadSpaces() {
   try {
-    const data = await getRuntimes();
-    runtimes = (data ?? []).filter((r: RuntimeRecord) => r.status !== "deleted");
+    const data = await getSpaces();
+    spaces = data ?? [];
   } catch (error) {
-    console.warn("[Jobs] Failed to load runtimes", error);
+    console.warn("[Jobs] Failed to load spaces", error);
   }
 }
 
@@ -161,11 +161,11 @@ function openCreateModal() {
   createTitle = "";
   createCronExpression = "";
   createScheduleAt = "";
-  createRuntimeId = runtimes[0]?.id ?? "";
+  createSpaceId = spaces[0]?.id ?? "";
   createPromptText = "";
   createError = "";
   copiedIndex = null;
-  void loadRuntimes();
+  void loadSpaces();
 }
 
 function openEditModal(job: CronJobRecord) {
@@ -177,11 +177,11 @@ function openEditModal(job: CronJobRecord) {
   createTitle = job.title;
   createCronExpression = job.cronExpression;
   createScheduleAt = "";
-  createRuntimeId = job.runtimeId ?? "";
+  createSpaceId = job.spaceId ?? "";
   createPromptText = extractPromptText(job.payload as Record<string, unknown>);
   createError = "";
   copiedIndex = null;
-  void loadRuntimes();
+  void loadSpaces();
 }
 
 function closeCreateModal() {
@@ -226,7 +226,7 @@ async function handleCreate() {
           content: [{ type: "text", text: createPromptText.trim() }],
         },
         cronExpression: createCronExpression.trim(),
-        runtimeId: createRuntimeId || undefined,
+        spaceId: createSpaceId || undefined,
       });
 
       showCreateModal = false;
@@ -245,8 +245,8 @@ async function handleCreate() {
     createError = "Prompt message is required";
     return;
   }
-  if (!createRuntimeId) {
-    createError = "Runtime is required";
+  if (!createSpaceId) {
+    createError = "Space is required";
     return;
   }
 
@@ -273,7 +273,7 @@ async function handleCreate() {
           content: [{ type: "text", text: createPromptText.trim() }],
         },
         cronExpression: createCronExpression.trim(),
-        runtimeId: createRuntimeId || undefined,
+        spaceId: createSpaceId || undefined,
       });
     } else {
       if (!createScheduleAt) {
@@ -291,7 +291,7 @@ async function handleCreate() {
           content: [{ type: "text", text: createPromptText.trim() }],
         },
         scheduleAt: scheduleTime.toISOString(),
-        runtimeId: createRuntimeId || undefined,
+        spaceId: createSpaceId || undefined,
       });
     }
     showCreateModal = false;
@@ -678,15 +678,15 @@ onMount(() => {
             </div>
 
             <div>
-              <label class="block text-[12px] font-medium text-text-secondary mb-1" for="task-runtime">Target Runtime</label>
+              <label class="block text-[12px] font-medium text-text-secondary mb-1" for="task-space">Target Space</label>
               <select
-                id="task-runtime"
-                bind:value={createRuntimeId}
+                id="task-space"
+                bind:value={createSpaceId}
                 class="w-full px-3 py-2 rounded-md border border-border-subtle bg-bg-secondary text-[13px] outline-none focus:border-brand/50 text-text-primary"
               >
                 <option value="">— Select —</option>
-                {#each runtimes as rt (rt.id)}
-                  <option value={rt.id}>{rt.title || rt.id.slice(0, 12)}</option>
+                {#each spaces as space (space.id)}
+                  <option value={space.id}>{space.name || space.id.slice(0, 12)}</option>
                 {/each}
               </select>
             </div>
@@ -708,7 +708,7 @@ onMount(() => {
                 id="task-prompt"
                 bind:value={createPromptText}
                 rows="2"
-                placeholder="Message content to send to the runtime..."
+                placeholder="Message content to send to the space..."
                 class="w-full px-3 py-2 rounded-md border border-border-subtle bg-bg-secondary text-[13px] outline-none focus:border-brand/50 placeholder:text-text-placeholder resize-none"
               ></textarea>
             </div>
@@ -777,15 +777,15 @@ onMount(() => {
             {/if}
 
             <div>
-              <label class="block text-[12px] font-medium text-text-secondary mb-1" for="task-runtime">Target Runtime</label>
+              <label class="block text-[12px] font-medium text-text-secondary mb-1" for="task-space">Target Space</label>
               <select
-                id="task-runtime"
-                bind:value={createRuntimeId}
+                id="task-space"
+                bind:value={createSpaceId}
                 class="w-full px-3 py-2 rounded-md border border-border-subtle bg-bg-secondary text-[13px] outline-none focus:border-brand/50 text-text-primary"
               >
                 <option value="">— Select —</option>
-                {#each runtimes as rt (rt.id)}
-                  <option value={rt.id}>{rt.title || rt.id.slice(0, 12)}</option>
+                {#each spaces as space (space.id)}
+                  <option value={space.id}>{space.name || space.id.slice(0, 12)}</option>
                 {/each}
               </select>
             </div>
@@ -825,7 +825,7 @@ onMount(() => {
                 id="task-prompt"
                 bind:value={createPromptText}
                 rows="2"
-                placeholder="Message content to send to the runtime..."
+                placeholder="Message content to send to the space..."
                 class="w-full px-3 py-2 rounded-md border border-border-subtle bg-bg-secondary text-[13px] outline-none focus:border-brand/50 placeholder:text-text-placeholder resize-none"
               ></textarea>
             </div>
@@ -849,7 +849,7 @@ onMount(() => {
         <button
           type="button"
           class="px-3 py-1.5 rounded text-[12px] font-medium bg-brand text-white hover:bg-brand-hover transition-colors disabled:opacity-50 flex items-center gap-1.5"
-          disabled={isCreating || !createPromptText.trim() || !createRuntimeId || (modalMode === 'edit' && !createTitle.trim()) || (modalMode === 'edit' && !createCronExpression.trim()) || (modalMode === 'create' && createType === 'repeating' && !createTitle.trim()) || (modalMode === 'create' && createType === 'repeating' && !createCronExpression.trim()) || (modalMode === 'create' && createType === 'onetime' && !createScheduleAt)}
+          disabled={isCreating || !createPromptText.trim() || !createSpaceId || (modalMode === 'edit' && !createTitle.trim()) || (modalMode === 'edit' && !createCronExpression.trim()) || (modalMode === 'create' && createType === 'repeating' && !createTitle.trim()) || (modalMode === 'create' && createType === 'repeating' && !createCronExpression.trim()) || (modalMode === 'create' && createType === 'onetime' && !createScheduleAt)}
           onclick={handleCreate}
         >
           {#if isCreating}

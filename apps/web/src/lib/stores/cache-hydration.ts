@@ -1,16 +1,16 @@
 import { sidebarCache } from "$lib/stores/sidebar-cache";
-import { runtimeStore } from "$lib/stores/runtime-store.svelte";
+import { spaceStore } from "$lib/stores/space-store.svelte";
 
-export function hydrateRuntimeStoreFromSidebarCache() {
-  const runtimes = sidebarCache.getRuntimes();
-  if (runtimes?.length) {
-    runtimeStore.setRuntimeList(runtimes);
+export function hydrateSpaceStoreFromSidebarCache() {
+  const spaces = sidebarCache.getSpaces();
+  if (spaces?.length) {
+    spaceStore.setSpaceList(spaces);
   }
 }
 
-export function hydrateSessionCacheToRuntimeStore(runtimeId: string) {
-  const sessions = sidebarCache.getSessions(runtimeId);
+export function hydrateSessionCacheToSpaceStore(spaceId: string) {
+  const sessions = sidebarCache.getSessions(spaceId);
   if (sessions?.length) {
-    runtimeStore.setSessions(runtimeId, sessions);
+    spaceStore.setSessions(spaceId, sessions);
   }
 }
