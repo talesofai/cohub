@@ -244,12 +244,15 @@ importers:
       '@tailwindcss/vite':
         specifier: ^4.2.1
         version: 4.2.1(vite@7.3.1(@types/node@24.12.0)(jiti@2.6.1)(lightningcss@1.31.1)(terser@5.46.1)(tsx@4.19.2)(yaml@2.8.2))
+      '@typescript/native-preview':
+        specifier: ^7.0.0-dev
+        version: 7.0.0-dev.20260416.1
       svelte:
         specifier: ^5.51.0
         version: 5.53.7
-      svelte-check:
-        specifier: ^4.4.2
-        version: 4.4.4(picomatch@4.0.3)(svelte@5.53.7)(typescript@6.0.2)
+      svelte-check-rs:
+        specifier: ^0.9.7
+        version: 0.9.7(@typescript/native-preview@7.0.0-dev.20260416.1)
       tailwindcss:
         specifier: ^4.2.1
         version: 4.2.1
@@ -2660,6 +2663,31 @@ packages:
   '@surma/rollup-plugin-off-main-thread@2.2.3':
     resolution: {integrity: sha512-lR8q/9W7hZpMWweNiAKU7NQerBnzQQLvi8qnTDU/fxItPhtZVMbPV3lbCwjhIlNBe9Bbr5V+KHshvWmVSG9cxQ==}
 
+  '@svelte-check-rs/darwin-arm64@0.9.7':
+    resolution: {integrity: sha512-8yPfMkneK7afJWEe+ihAvShaWplJ/WJb8UnGZJSwZ5IOz+heiROJdhYq5usgv8dX4OEF4ExJ0HosYNHfVY5T2A==}
+    cpu: [arm64]
+    os: [darwin]
+
+  '@svelte-check-rs/darwin-x64@0.9.7':
+    resolution: {integrity: sha512-JXK307xSrqhfjzCefPRio3wxRl+hJep4kRTdA5aJAdOhlzCg2lEBF24mC5fo1LX9Uz1PjNfSy6MZePzVnRl7+g==}
+    cpu: [x64]
+    os: [darwin]
+
+  '@svelte-check-rs/linux-arm64@0.9.7':
+    resolution: {integrity: sha512-XM52mnkVhaKa8qehWtASGAX74ex8EjMmmBKSWw3eU4OiowFmt4VFp7LvTpphNnuCNLZJEDq/sNY0IhkvatTZFw==}
+    cpu: [arm64]
+    os: [linux]
+
+  '@svelte-check-rs/linux-x64@0.9.7':
+    resolution: {integrity: sha512-qjpYrVALOBU6segt1FiGqjZzRKUFRL9Tl+nvYZ60Hz45F3uzbtyCymOR62bOf680Te6xqkzHsLVIz+bGjNX+Sw==}
+    cpu: [x64]
+    os: [linux]
+
+  '@svelte-check-rs/win32-x64@0.9.7':
+    resolution: {integrity: sha512-m+A9v3Bna3TY9aFbZz0Bq7hJ6ifoOzfoaDDSbyVxWFvv3xuMOwDSpQHq49PlJLPEBd4xDRCUixHfuo4SGz8C6w==}
+    cpu: [x64]
+    os: [win32]
+
   '@sveltejs/acorn-typescript@1.0.9':
     resolution: {integrity: sha512-lVJX6qEgs/4DOcRTpo56tmKzVPtoWAaVbL4hfO7t7NVwl9AAXzQR6cihesW1BmNMPl+bK6dreu2sOKBP2Q9CIA==}
     peerDependencies:
@@ -3161,10 +3189,6 @@ packages:
 
   character-entities-legacy@3.0.0:
     resolution: {integrity: sha512-RpPp0asT/6ufRm//AJVwpViZbGM/MkjQFxJccQRHmISF/22NBtsHqAWmL+/pmkPWoIUJdWyeVleTl1wydHATVQ==}
-
-  chokidar@4.0.3:
-    resolution: {integrity: sha512-Qgzu8kfBvo+cA4962jnP1KkS6Dop5NS6g7R5LFYJr4b8Ub94PPQXUksCw9PvXoeXPRRddRNC5C1JQUR2SMGtnA==}
-    engines: {node: '>= 14.16.0'}
 
   cli-cursor@5.0.0:
     resolution: {integrity: sha512-aCj4O5wKyszjMmDT4tZj93kxyydN/K5zPWSCe6/0AV/AA1pqe5ZBIw0a2ZfPQV7lL5/yb5HsUreJ6UFAF1tEQw==}
@@ -4298,10 +4322,6 @@ packages:
     resolution: {integrity: sha512-tEBHqDnIoM/1rXME1zgka9g6Q2lcoCkxHLuc7ODJ5BxbP5d4c2Z5cGgtXAku59200Cx7diuHTOYfSBD8n6mm8A==}
     engines: {node: '>=16 || 14 >=14.17'}
 
-  mri@1.2.0:
-    resolution: {integrity: sha512-tzzskb3bG8LvYGFF/mDTpq3jpI6Q9wc3LEmBaghu+DdCssd1FakN7Bc0hVNmEyGq1bq3RgfkCb3cmQLpNPOroA==}
-    engines: {node: '>=4'}
-
   mrmime@2.0.1:
     resolution: {integrity: sha512-Y3wQdFg2Va6etvQ5I82yUhGdsKrcYox6p7FfL1LbK2J4V01F9TGlepTIhnK24t7koZibmg82KGglhA1XK5IsLQ==}
     engines: {node: '>=10'}
@@ -4537,10 +4557,6 @@ packages:
   randombytes@2.1.0:
     resolution: {integrity: sha512-vYl3iOX+4CKUWuxGi9Ukhie6fsqXqS9FE2Zaic4tNFD2N2QQaXOMFbuKK4QmDHC0JO6B1Zp41J0LpT0oR68amQ==}
 
-  readdirp@4.1.2:
-    resolution: {integrity: sha512-GDhwkLfywWL2s6vEjyhri+eXmfH6j1L7JE27WhqLeYzoh/A3DBaYGEj2H/HFZCn/kMfim73FXxEJTw06WtxQwg==}
-    engines: {node: '>= 14.18.0'}
-
   redis-errors@1.2.0:
     resolution: {integrity: sha512-1qny3OExCf0UvUV/5wpYKf2YwPcOqXzkwKKSmKHiE6ZMQs5heeE/c8eXK+PNllPvmjgAbfnsbpkGZWy8cBpn9w==}
     engines: {node: '>=4'}
@@ -4637,10 +4653,6 @@ packages:
 
   rrweb-cssom@0.8.0:
     resolution: {integrity: sha512-guoltQEx+9aMf2gDZ0s62EcV8lsXR+0w8915TC3ITdn2YueuNjdAYh/levpU9nFaoChh9RUS5ZdQMrKfVEN9tw==}
-
-  sade@1.8.1:
-    resolution: {integrity: sha512-xal3CZX1Xlo/k4ApwCFrHVACi9fBqJ7V+mwhBsuf/1IOKbBy098Fex+Wa/5QMubw09pSZ/u8EY8PWgevJsXp1A==}
-    engines: {node: '>=6'}
 
   safe-array-concat@1.1.3:
     resolution: {integrity: sha512-AURm5f0jYEOydBj7VQlVvDrjeFgthDdEF5H1dP+6mNpoXOMo1quQqJ4wvJDyRZ9+pO3kGWoOdmV08cSv2aJV6Q==}
@@ -4871,13 +4883,11 @@ packages:
     resolution: {integrity: sha512-ot0WnXS9fgdkgIcePe6RHNk1WA8+muPa6cSjeR3V8K27q9BB1rTE3R1p7Hv0z1ZyAc8s6Vvv8DIyWf681MAt0w==}
     engines: {node: '>= 0.4'}
 
-  svelte-check@4.4.4:
-    resolution: {integrity: sha512-F1pGqXc710Oi/wTI4d/x7d6lgPwwfx1U6w3Q35n4xsC2e8C/yN2sM1+mWxjlMcpAfWucjlq4vPi+P4FZ8a14sQ==}
-    engines: {node: '>= 18.0.0'}
+  svelte-check-rs@0.9.7:
+    resolution: {integrity: sha512-70Iihg8/5JICDYVEcWp4NtLz5cXGgHXUQf66xy4H//CelAtvkjK9+ptfrYNeOLrTzrrkawRelOzsBWpNS0TPLQ==}
     hasBin: true
     peerDependencies:
-      svelte: ^4.0.0 || ^5.0.0-next.0
-      typescript: '>=5.0.0'
+      '@typescript/native-preview': '>=7.0.0-dev.0'
 
   svelte@5.53.7:
     resolution: {integrity: sha512-uxck1KI7JWtlfP3H6HOWi/94soAl23jsGJkBzN2BAWcQng0+lTrRNhxActFqORgnO9BHVd1hKJhG+ljRuIUWfQ==}
@@ -7981,6 +7991,21 @@ snapshots:
       magic-string: 0.25.9
       string.prototype.matchall: 4.0.12
 
+  '@svelte-check-rs/darwin-arm64@0.9.7':
+    optional: true
+
+  '@svelte-check-rs/darwin-x64@0.9.7':
+    optional: true
+
+  '@svelte-check-rs/linux-arm64@0.9.7':
+    optional: true
+
+  '@svelte-check-rs/linux-x64@0.9.7':
+    optional: true
+
+  '@svelte-check-rs/win32-x64@0.9.7':
+    optional: true
+
   '@sveltejs/acorn-typescript@1.0.9(acorn@8.16.0)':
     dependencies:
       acorn: 8.16.0
@@ -8443,10 +8468,6 @@ snapshots:
   character-entities-html4@2.1.0: {}
 
   character-entities-legacy@3.0.0: {}
-
-  chokidar@4.0.3:
-    dependencies:
-      readdirp: 4.1.2
 
   cli-cursor@5.0.0:
     dependencies:
@@ -9673,8 +9694,6 @@ snapshots:
 
   minipass@7.1.3: {}
 
-  mri@1.2.0: {}
-
   mrmime@2.0.1: {}
 
   ms@2.1.3: {}
@@ -9915,8 +9934,6 @@ snapshots:
     dependencies:
       safe-buffer: 5.2.1
 
-  readdirp@4.1.2: {}
-
   redis-errors@1.2.0: {}
 
   redis-parser@3.0.0:
@@ -10040,10 +10057,6 @@ snapshots:
   rrweb-cssom@0.7.1: {}
 
   rrweb-cssom@0.8.0: {}
-
-  sade@1.8.1:
-    dependencies:
-      mri: 1.2.0
 
   safe-array-concat@1.1.3:
     dependencies:
@@ -10349,17 +10362,15 @@ snapshots:
 
   supports-preserve-symlinks-flag@1.0.0: {}
 
-  svelte-check@4.4.4(picomatch@4.0.3)(svelte@5.53.7)(typescript@6.0.2):
+  svelte-check-rs@0.9.7(@typescript/native-preview@7.0.0-dev.20260416.1):
     dependencies:
-      '@jridgewell/trace-mapping': 0.3.31
-      chokidar: 4.0.3
-      fdir: 6.5.0(picomatch@4.0.3)
-      picocolors: 1.1.1
-      sade: 1.8.1
-      svelte: 5.53.7
-      typescript: 6.0.2
-    transitivePeerDependencies:
-      - picomatch
+      '@typescript/native-preview': 7.0.0-dev.20260416.1
+    optionalDependencies:
+      '@svelte-check-rs/darwin-arm64': 0.9.7
+      '@svelte-check-rs/darwin-x64': 0.9.7
+      '@svelte-check-rs/linux-arm64': 0.9.7
+      '@svelte-check-rs/linux-x64': 0.9.7
+      '@svelte-check-rs/win32-x64': 0.9.7
 
   svelte@5.53.7:
     dependencies:

@@ -53,8 +53,8 @@ const {
     <!-- Mobile: bottom sheet -->
     <div
       class="lg:hidden relative w-full max-w-[480px] rounded-t-xl border-t border-border-subtle bg-bg-primary shadow-2xl overflow-hidden"
-      in:slide={{ axis: "y", duration: 200, easing: (t) => t }}
-      out:slide={{ axis: "y", duration: 150, easing: (t) => t * t }}
+      in:slide={{ axis: "y", duration: 200, easing: (t: number) => t }}
+      out:slide={{ axis: "y", duration: 150, easing: (t: number) => t * t }}
     >
       <div class="flex flex-col max-h-[70vh]">
         <div class="h-9 flex items-center justify-between px-3 border-b border-border-subtle text-[10px] font-medium uppercase tracking-wider text-text-tertiary select-none shrink-0">

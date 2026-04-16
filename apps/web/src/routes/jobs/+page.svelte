@@ -29,10 +29,10 @@ let actionInProgress = $state<Record<string, string>>({});
 
 // ── Modal state ──
 let showCreateModal = $state(false);
-let modalMode: ModalMode = $state("create");
+let modalMode = $state<ModalMode>("create");
 let editingJob: CronJobRecord | null = $state(null);
 let isCreating = $state(false);
-let createType: "repeating" | "onetime" = $state("repeating");
+let createType = $state<"repeating" | "onetime">("repeating");
 let createTitle = $state("");
 let createCronExpression = $state("");
 let createScheduleAt = $state("");
@@ -41,6 +41,11 @@ let createPromptText = $state("");
 let createError = $state("");
 let spaces = $state<SpaceRecord[]>([]);
 let copiedIndex = $state<number | null>(null);
+
+// Derived booleans to avoid TS narrowing issues in templates
+let isEditMode = $derived(modalMode === "edit");
+let isRepeatingType = $derived(createType === "repeating");
+let isOnetimeType = $derived(createType === "onetime");
 
 // Example prompts — create (2 items for mobile fit)
 const createExamplePrompts = [
@@ -632,7 +637,7 @@ onMount(() => {
       onkeydown={(e) => { if (e.key === 'Escape') closeCreateModal(); }}
     >
       <div class="flex items-center justify-between px-4 py-3 border-b border-border-subtle">
-        <h2 id="modal-title" class="text-[14px] font-semibold">{modalMode === 'edit' ? 'Edit Cronjob' : 'New Task'}</h2>
+        <h2 id="modal-title" class="text-[14px] font-semibold">{isEditMode ? 'Edit Cronjob' : 'New Task'}</h2>
         <button type="button" class="text-text-tertiary hover:text-text-primary" aria-label="Close" onclick={closeCreateModal}>
           <svg class="w-4 h-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
             <line x1="18" y1="6" x2="6" y2="18" /><line x1="6" y1="6" x2="18" y2="18" />
@@ -641,7 +646,7 @@ onMount(() => {
       </div>
 
       <div class="px-4 py-3 space-y-4">
-        {#if modalMode === "edit"}
+        {#if isEditMode}
           <!-- Edit mode -->
           <div>
             <p class="text-[12px] text-text-tertiary mb-2">Edit via Agent — or fill the form below:</p>
@@ -741,7 +746,7 @@ onMount(() => {
           <div class="flex items-center gap-1">
             <button
               type="button"
-              class="px-2.5 py-1 text-[12px] font-medium rounded transition-colors {createType === 'repeating' ? 'text-text-primary bg-bg-active' : 'text-text-tertiary hover:text-text-secondary'}"
+              class="px-2.5 py-1 text-[12px] font-medium rounded transition-colors {isRepeatingType ? 'text-text-primary bg-bg-active' : 'text-text-tertiary hover:text-text-secondary'}"
               onclick={() => { createType = "repeating"; }}
             >
               <span class="flex items-center gap-1.5">
@@ -751,7 +756,7 @@ onMount(() => {
             </button>
             <button
               type="button"
-              class="px-2.5 py-1 text-[12px] font-medium rounded transition-colors {createType === 'onetime' ? 'text-text-primary bg-bg-active' : 'text-text-tertiary hover:text-text-secondary'}"
+              class="px-2.5 py-1 text-[12px] font-medium rounded transition-colors {isOnetimeType ? 'text-text-primary bg-bg-active' : 'text-text-tertiary hover:text-text-secondary'}"
               onclick={() => { createType = "onetime"; }}
             >
               <span class="flex items-center gap-1.5">
@@ -763,7 +768,7 @@ onMount(() => {
 
           <!-- Form fields -->
           <div class="space-y-3">
-            {#if createType === "repeating"}
+            {#if isRepeatingType}
               <div>
                 <label class="block text-[12px] font-medium text-text-secondary mb-1" for="task-title">Name</label>
                 <input
@@ -790,7 +795,7 @@ onMount(() => {
               </select>
             </div>
 
-            {#if createType === "repeating"}
+            {#if isRepeatingType}
               <div>
                 <label class="block text-[12px] font-medium text-text-secondary mb-1" for="task-expression">Cron Expression</label>
                 <input
@@ -846,19 +851,34 @@ onMount(() => {
         >
           Cancel
         </button>
-        <button
-          type="button"
-          class="px-3 py-1.5 rounded text-[12px] font-medium bg-brand text-white hover:bg-brand-hover transition-colors disabled:opacity-50 flex items-center gap-1.5"
-          disabled={isCreating || !createPromptText.trim() || !createSpaceId || (modalMode === 'edit' && !createTitle.trim()) || (modalMode === 'edit' && !createCronExpression.trim()) || (modalMode === 'create' && createType === 'repeating' && !createTitle.trim()) || (modalMode === 'create' && createType === 'repeating' && !createCronExpression.trim()) || (modalMode === 'create' && createType === 'onetime' && !createScheduleAt)}
-          onclick={handleCreate}
-        >
-          {#if isCreating}
-            <Loader2 class="w-3.5 h-3.5 animate-spin" />
-            {#if modalMode === 'edit'}Updating...{:else}Creating...{/if}
-          {:else}
-            {#if modalMode === 'edit'}Update{:else}Create{/if}
-          {/if}
-        </button>
+        {#if isEditMode}
+          <button
+            type="button"
+            class="px-3 py-1.5 rounded text-[12px] font-medium bg-brand text-white hover:bg-brand-hover transition-colors disabled:opacity-50 flex items-center gap-1.5"
+            disabled={isCreating || !createPromptText.trim() || !createSpaceId || !createTitle.trim() || !createCronExpression.trim()}
+            onclick={handleCreate}
+          >
+            {#if isCreating}Updating...{:else}Update{/if}
+          </button>
+        {:else if isRepeatingType}
+          <button
+            type="button"
+            class="px-3 py-1.5 rounded text-[12px] font-medium bg-brand text-white hover:bg-brand-hover transition-colors disabled:opacity-50 flex items-center gap-1.5"
+            disabled={isCreating || !createPromptText.trim() || !createSpaceId || !createTitle.trim() || !createCronExpression.trim()}
+            onclick={handleCreate}
+          >
+            {#if isCreating}Creating...{:else}Create{/if}
+          </button>
+        {:else}
+          <button
+            type="button"
+            class="px-3 py-1.5 rounded text-[12px] font-medium bg-brand text-white hover:bg-brand-hover transition-colors disabled:opacity-50 flex items-center gap-1.5"
+            disabled={isCreating || !createPromptText.trim() || !createSpaceId || !createScheduleAt}
+            onclick={handleCreate}
+          >
+            {#if isCreating}Creating...{:else}Create{/if}
+          </button>
+        {/if}
       </div>
     </div>
   </div>
