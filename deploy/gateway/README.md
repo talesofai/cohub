@@ -1,12 +1,12 @@
 # Cohub Gateway 部署
 
-Gateway 负责维护与第三方 IM 平台（Discord、Telegram、Feishu 等）的长连接，同时提供 HTTP API 供 Session Runtime 调用。
+Gateway 负责维护与第三方 IM 平台（Discord、Telegram、Feishu 等）的长连接，同时提供 HTTP API 供 Cohub 后端调用。
 
 ## 架构特点
 
 - 使用 **StatefulSet** 部署，保证 Pod 名字固定（如 `cohub-gateway-dev-0`）
 - 通过 **Redis Streams** 与 API 通信
-- 提供 **HTTP API**（默认 8788 端口）供 Session Runtime 调用
+- 提供 **HTTP API**（默认 8788 端口）供后端服务调用
 - 支持多副本水平扩展，API 自动分配 Channel 到各个节点
 - 通过 **HTTPRoute** 暴露外部访问（可选）
 

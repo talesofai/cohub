@@ -1,4 +1,4 @@
-# Agent Runtime Supervisor (@cohub/agent)
+# Agent Sandbox Supervisor (@cohub/agent)
 
 这是 Cohub 的 Sandbox 守护进程（Supervisor）。它主要负责在隔离容器中启动并管理 `pi-coding-agent`，并通过 Redis Streams 与主后端 `apps/api` 进行双向流式交互。
 

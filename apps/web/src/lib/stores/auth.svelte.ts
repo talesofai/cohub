@@ -9,7 +9,7 @@ class AuthStore {
   loading = $state(false);
 
   // userUuid from backend API (/api/me), used for ownership checks
-  // against runtime.userUuid, workspace.userUuid, etc.
+  // against space.userUuid, workspace.userUuid, etc.
   _userUuid = $state<string | null>(null);
 
   // Shared promise for in-flight ensureLoaded calls so concurrent callers all wait
@@ -32,7 +32,7 @@ class AuthStore {
         : null;
 
       // Fetch user profile from backend to get the correct uuid
-      // that matches runtime.userUuid / workspace.userUuid stored in DB
+      // that matches space.userUuid / workspace.userUuid stored in DB
       if (this.isAuthenticated) {
         try {
           const me = await getMe();
