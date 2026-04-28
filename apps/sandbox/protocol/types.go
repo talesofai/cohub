@@ -94,6 +94,12 @@ type SandboxHeartbeat struct {
 	Metadata     *SandboxMetadata    `json:"metadata,omitempty"`
 }
 
+type WorkspaceFSChanged struct {
+	BaseMessage
+	EventID string `json:"eventId"`
+	Count   int    `json:"count"`
+}
+
 type SessionAttach struct {
 	BaseMessage
 	RequestID string `json:"requestId"`

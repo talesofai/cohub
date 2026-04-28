@@ -261,6 +261,39 @@ func (s *Server) SendToIdentity(identity string, v interface{}) error {
 	return nil
 }
 
+func (s *Server) BroadcastWorkspaceFSChanged(count int) {
+	payload, err := json.Marshal(protocol.WorkspaceFSChanged{
+		BaseMessage: protocol.BaseMessage{
+			Version:   protocol.Version,
+			Type:      "workspace.fs.changed",
+			SpaceID:   s.cfg.SpaceID,
+			SandboxID: s.hostname,
+			Timestamp: time.Now().UnixMilli(),
+		},
+		EventID: uuid.NewString(),
+		Count:   count,
+	})
+	if err != nil {
+		s.logger.Warn("failed to marshal workspace.fs.changed", slog.String("error", err.Error()))
+		return
+	}
+
+	s.mu.RLock()
+	targets := make([]*connectionSession, 0, len(s.sessionsByID))
+	for _, session := range s.sessionsByID {
+		if session.attached {
+			targets = append(targets, session)
+		}
+	}
+	s.mu.RUnlock()
+
+	for _, session := range targets {
+		if err := enqueuePayload(session, payload); err != nil {
+			s.logger.Warn("failed to enqueue workspace.fs.changed", slog.String("connectionId", session.id), slog.String("identity", session.identity), slog.String("error", err.Error()))
+		}
+	}
+}
+
 func (s *Server) handleSessionAttach(session *connectionSession, attach protocol.SessionAttach) {
 	identity := attach.Identity
 	if identity == "" {

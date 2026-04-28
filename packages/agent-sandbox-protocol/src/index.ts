@@ -99,6 +99,12 @@ export type SandboxHeartbeat = BaseMessage & {
   };
 };
 
+export type WorkspaceFsChanged = BaseMessage & {
+  type: "workspace.fs.changed";
+  eventId: string;
+  count: number;
+};
+
 export type SandboxSetupInfo = {
   ran: boolean;
   exitCode: number;
@@ -319,6 +325,7 @@ export type RpcFailed = OperationScopedMessage & {
 
 export type AgentSandboxMessage =
   | SandboxHeartbeat
+  | WorkspaceFsChanged
   | SessionAttach
   | SessionAttachOk
   | RpcRequest
