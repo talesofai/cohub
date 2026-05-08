@@ -3903,6 +3903,26 @@ $effect(() => {
 	});
 	return wsEventCleanup;
 });
+/** DEV：与 web 自管 reducer 对照，同一条 WS 上额外挂 session.subscribe 的 patchState */
+$effect(() => {
+	const currentSpaceId = spaceId;
+	const sessionId = activeSessionId;
+	if (!import.meta.env.DEV || !pageMounted || !currentSpaceId || !sessionId)
+		return;
+	const stop = sdk
+		.space(currentSpaceId)
+		.session(sessionId)
+		.subscribe({
+			patchState: (result) => {
+				console.log("[cohub][sdk:session.subscribe] patchState", {
+					spaceId: currentSpaceId,
+					sessionId,
+					result,
+				});
+			},
+		});
+	return stop;
+});
 $effect(() => {
 	const currentSpaceId = spaceId;
 	const sessionId = activeSessionId;

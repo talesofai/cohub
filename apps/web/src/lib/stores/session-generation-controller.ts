@@ -313,6 +313,17 @@ export function applyRealtimeGenerationPatch(
 		spaceId: resolvedSpaceId,
 		turnId: resolvedTurnId,
 	});
+	if (import.meta.env.DEV) {
+		console.log("[cohub][web:applyRealtimeGenerationPatch] patchState parity", {
+			sessionId,
+			spaceId: resolvedSpaceId,
+			turnId: resolvedTurnId,
+			incomingSeq: input.seq,
+			incomingBaseSeq: input.baseSeq,
+			didCallReducerStart: isDifferentTurn || messageChanged,
+			result,
+		});
+	}
 	if (!result.applied) {
 		return {
 			applied: false,
