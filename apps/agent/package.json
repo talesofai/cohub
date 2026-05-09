@@ -1,6 +1,6 @@
 {
   "name": "@cohub/agent",
-  "version": "1.0.3",
+  "version": "1.0.4",
   "private": true,
   "type": "module",
   "files": [

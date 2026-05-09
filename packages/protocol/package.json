@@ -1,6 +1,6 @@
 {
   "name": "@neta-art/cohub-protocol",
-  "version": "1.2.3",
+  "version": "1.2.4",
   "description": "Shared protocol definitions for the Cohub agent collaboration platform.",
   "license": "UNLICENSED",
   "private": false,
