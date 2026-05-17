@@ -1,5 +1,11 @@
 # @neta-art/cohub
 
+## 1.10.0
+
+### Minor Changes
+
+- 78a111b: Publish the latest SDK, CLI, and web updates, including space file upload support, refreshed realtime protocol handling, batch file APIs, command palette and streaming tool call UI improvements, and package build tooling improvements.
+
 ## 1.9.0
 
 ### Minor Changes

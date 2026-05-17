@@ -1,5 +1,13 @@
 # web
 
+## 0.1.6
+
+### Patch Changes
+
+- 78a111b: Publish the latest SDK, CLI, and web updates, including space file upload support, refreshed realtime protocol handling, batch file APIs, command palette and streaming tool call UI improvements, and package build tooling improvements.
+- Updated dependencies [78a111b]
+  - @neta-art/cohub@1.10.0
+
 ## 0.1.5
 
 ### Patch Changes
