@@ -1,5 +1,11 @@
 # @neta-art/cohub
 
+## 1.11.0
+
+### Minor Changes
+
+- 4eed38f: Add space mod APIs and CLI commands.
+
 ## 1.10.2
 
 ### Patch Changes

@@ -1,5 +1,16 @@
 # @neta-art/cohub-cli
 
+## 1.5.0
+
+### Minor Changes
+
+- 4eed38f: Add space mod APIs and CLI commands.
+
+### Patch Changes
+
+- Updated dependencies [4eed38f]
+  - @neta-art/cohub@1.11.0
+
 ## 1.4.2
 
 ### Patch Changes
