@@ -1,5 +1,11 @@
 # @neta-art/cohub
 
+## 1.13.0
+
+### Minor Changes
+
+- 48bdf1b: Add SDK and CLI support for usernames, sectioned Explore spaces, space pins, and sandbox lifecycle controls.
+
 ## 1.12.0
 
 ### Minor Changes

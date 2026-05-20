@@ -1,5 +1,16 @@
 # @neta-art/cohub-cli
 
+## 1.6.0
+
+### Minor Changes
+
+- 48bdf1b: Add SDK and CLI support for usernames, sectioned Explore spaces, space pins, and sandbox lifecycle controls.
+
+### Patch Changes
+
+- Updated dependencies [48bdf1b]
+  - @neta-art/cohub@1.13.0
+
 ## 1.5.1
 
 ### Patch Changes
