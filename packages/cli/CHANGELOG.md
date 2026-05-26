@@ -1,5 +1,13 @@
 # @neta-art/cohub-cli
 
+## 1.7.1
+
+### Patch Changes
+
+- 02519c6: Restore named space mod mounts and sandbox restart metadata in the SDK and CLI.
+- Updated dependencies [02519c6]
+  - @neta-art/cohub@1.15.1
+
 ## 1.7.0
 
 ### Minor Changes
