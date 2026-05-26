@@ -1,5 +1,18 @@
 # @neta-art/cohub-cli
 
+## 1.7.0
+
+### Minor Changes
+
+- 133275c: Release SDK support for public asset uploads, space slugs, space public profiles, and default space mods.
+
+  Release CLI avatar upload commands for user and space profiles, plus updated space mod management output.
+
+### Patch Changes
+
+- Updated dependencies [133275c]
+  - @neta-art/cohub@1.15.0
+
 ## 1.6.3
 
 ### Patch Changes
