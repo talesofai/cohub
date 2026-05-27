@@ -1,5 +1,13 @@
 # @neta-art/cohub-cli
 
+## 1.9.1
+
+### Patch Changes
+
+- 1f860ba: Clean up legacy realtime turn progress/snapshot events and add session/task lifecycle realtime events.
+- Updated dependencies [1f860ba]
+  - @neta-art/cohub@1.17.0
+
 ## 1.9.0
 
 ### Minor Changes
