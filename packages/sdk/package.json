@@ -1,6 +1,6 @@
 {
   "name": "@neta-art/cohub",
-  "version": "1.16.0",
+  "version": "1.16.1",
   "description": "Cohub SDK for spaces, sessions, checkpoints, and realtime agent collaboration.",
   "license": "UNLICENSED",
   "private": false,

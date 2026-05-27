@@ -1,5 +1,16 @@
 # @neta-art/cohub-cli
 
+## 1.9.0
+
+### Minor Changes
+
+- 884b3d0: feat(cli): improve generation task feedback and output labels; fix fetch failure diagnostics and surface generation provider details; upgrade neta generation to 0.1.2
+
+### Patch Changes
+
+- Updated dependencies [884b3d0]
+  - @neta-art/cohub@1.16.1
+
 ## 1.8.0
 
 ### Minor Changes

@@ -1,5 +1,11 @@
 # @neta-art/cohub
 
+## 1.16.1
+
+### Patch Changes
+
+- 884b3d0: feat(cli): improve generation task feedback and output labels; fix fetch failure diagnostics and surface generation provider details; upgrade neta generation to 0.1.2
+
 ## 1.16.0
 
 ### Minor Changes
