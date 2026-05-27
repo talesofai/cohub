@@ -1,5 +1,22 @@
 # @neta-art/cohub-cli
 
+## 1.8.0
+
+### Minor Changes
+
+- 109cf4d: feat: add multimodal model show command, billing credits integration, and async task refactor
+
+  - Add multimodal model show command for CLI
+  - Integrate billing credits support
+  - Refactor generations to async tasks
+  - Fix CLI auth, space defaults, and JSON output flag
+  - Recover from transient unauthorized responses
+
+### Patch Changes
+
+- Updated dependencies [109cf4d]
+  - @neta-art/cohub@1.16.0
+
 ## 1.7.1
 
 ### Patch Changes
