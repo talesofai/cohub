@@ -19,32 +19,30 @@ import { config } from "../config.js";
 import { db } from "../db/index.js";
 import { redisCommandClient } from "../redis.js";
 import { getSpacePublicProfile } from "../lib/middleware.js";
-import { getSpaceSandboxBySpaceId } from "../space-sandboxes.js";
-import { fallbackPublicUserProfile, getProfilesByUuids, type PublicUserProfile } from "../user-profiles.js";
+import { fallbackPublicUserProfile, getProfilesByUuids } from "../user-profiles.js";
 
 const logger = createLogger({ serviceName: "cohub-api" });
 const PLATFORM_EXPLORE_PATH = join(config.platformConfigRoot, "platform", ".cohub", "explore.json");
 const inflightByKey = new Map<string, Promise<ExploreConfig | null>>();
 
 type ExploreSpaceItem = {
-  space: typeof spaces.$inferSelect & {
-    publicProfile: ReturnType<typeof getSpacePublicProfile>;
-    ownerProfile: PublicUserProfile | null;
-  };
-  ownerProfile: PublicUserProfile | null;
-  accessAudience: "anonymous" | "signed_in";
-  explore: {
-    rank: number;
-    category: string | null;
-    label: string | null;
-  };
-  latestCheckpoints: Array<typeof checkpoints.$inferSelect>;
-  stats: {
-    pinnedCount: number;
-    checkpointCount: number;
-    forkCount: number;
-  };
-  sandboxStatus: string | null;
+  id: string;
+  slug: string | null;
+  title: string;
+  summary: string | null;
+  spaceUrl: string;
+  coverUrl: string | null;
+  coverAlt: string | null;
+  ownerDisplayName: string | null;
+  ownerAvatarUrl: string | null;
+  category: string | null;
+  tags: string[];
+  skillCount: number;
+  assetCount: number;
+  forkCount: number;
+  updatedAt: string | null;
+  accessLabel: "public" | "sign-in-required" | "unknown";
+  latestSignal: string | null;
 };
 
 type ExploreSectionResult = {
@@ -99,6 +97,29 @@ function dedupeSpaces(sections: ExploreSectionConfig[]) {
     }
   }
   return ordered;
+}
+
+const ALLOWED_COVER_HOSTS = new Set([
+  "cohub.run",
+  "dev.cohub.run",
+  "api.cohub.run",
+  "api-dev.cohub.run",
+  "public.cohub.run",
+  "sessions.cohub.run",
+  "localhost",
+  "127.0.0.1",
+]);
+
+function normalizeExploreCoverUrl(value: string | null | undefined): string | null {
+  if (!value) return null;
+  try {
+    const url = new URL(value);
+    if (url.protocol !== "https:" && url.protocol !== "http:") return null;
+    if (!ALLOWED_COVER_HOSTS.has(url.hostname.toLowerCase())) return null;
+    return url.toString();
+  } catch {
+    return null;
+  }
 }
 
 async function loadExploreFromFile(input: {
@@ -255,37 +276,34 @@ router.get("/spaces", async (c) => {
     }
 
     const profileByUserUuid = await getProfilesByUuids(spaceRows.map((space) => space.userUuid));
-    const sandboxRows = await Promise.all(visibleIds.map(async (spaceId) => [spaceId, await getSpaceSandboxBySpaceId(spaceId)] as const));
-    const sandboxBySpaceId = new Map(sandboxRows);
 
     const buildItem = (spaceId: string, entry: ExploreSpaceConfig): ExploreSpaceItem | null => {
       const space = spacesById.get(spaceId);
       const policy = policyBySpaceId.get(spaceId);
       if (!space || !policy) return null;
       const ownerProfile = profileByUserUuid.get(space.userUuid) ?? fallbackPublicUserProfile(space.userUuid);
-      const latestCheckpoints = checkpointsBySpaceId.get(space.id) ?? [];
+      const latestCheckpoint = checkpointsBySpaceId.get(space.id)?.[0] ?? null;
       const stats = checkpointStatsBySpaceId.get(space.id);
-      const normalizedOwner = ownerProfile ?? null;
+      const publicProfile = getSpacePublicProfile(space);
+      const title = space.name || space.id;
       return {
-        space: {
-          ...space,
-          publicProfile: getSpacePublicProfile(space),
-          ownerProfile: normalizedOwner,
-        },
-        ownerProfile: normalizedOwner,
-        accessAudience: policy.anonymousUserRole ? "anonymous" : "signed_in",
-        explore: {
-          rank: entry.rank ?? 0,
-          category: entry.category ?? null,
-          label: entry.label ?? null,
-        },
-        latestCheckpoints,
-        stats: {
-          pinnedCount: pinCountBySpaceId.get(space.id) ?? 0,
-          checkpointCount: stats?.checkpointCount ?? 0,
-          forkCount: stats?.forkCount ?? 0,
-        },
-        sandboxStatus: sandboxBySpaceId.get(space.id)?.status ?? null,
+        id: space.id,
+        slug: space.slug ?? null,
+        title,
+        summary: space.description ?? null,
+        spaceUrl: `/spaces/${space.id}`,
+        coverUrl: normalizeExploreCoverUrl(publicProfile.avatarUrl),
+        coverAlt: publicProfile.avatarUrl ? `${title} cover` : null,
+        ownerDisplayName: ownerProfile?.displayName ?? null,
+        ownerAvatarUrl: normalizeExploreCoverUrl(ownerProfile?.avatarUrl ?? null),
+        category: entry.label ?? entry.category ?? null,
+        tags: [entry.category, entry.label].filter((v): v is string => Boolean(v)),
+        skillCount: stats?.checkpointCount ?? 0,
+        assetCount: pinCountBySpaceId.get(space.id) ?? 0,
+        forkCount: stats?.forkCount ?? 0,
+        updatedAt: space.updatedAt ? new Date(space.updatedAt).toISOString() : null,
+        accessLabel: policy.anonymousUserRole ? "public" : "sign-in-required",
+        latestSignal: latestCheckpoint ? latestCheckpoint.description || latestCheckpoint.commitHash.slice(0, 12) : null,
       };
     };
 

@@ -689,40 +689,41 @@ export type SpaceModListItem = {
   modSpaceDescription: string | null;
 };
 
-export type PublicExploreSpace = {
-  space: SpaceRecord & {
-    publicProfile: SpacePublicProfile;
-    ownerProfile: UserProfile | null;
-  };
-  ownerProfile: UserProfile | null;
-  accessAudience: "anonymous" | "signed_in";
-  explore: {
-    rank: number;
-    category: string | null;
-    label: string | null;
-  };
-  latestCheckpoints: CheckpointRecord[];
-  stats: {
-    pinnedCount: number;
-    checkpointCount: number;
-    forkCount: number;
-  };
-  sandboxStatus: string | null;
+/**
+ * Public-safe DTO for Explore spaces.
+ * Only contains fields safe for unauthenticated product rendering.
+ */
+export type ExploreSpaceItem = {
+  id: string;
+  slug: string | null;
+  title: string;
+  summary: string | null;
+  spaceUrl: string;
+  coverUrl: string | null;
+  coverAlt: string | null;
+  ownerDisplayName: string | null;
+  ownerAvatarUrl: string | null;
+  category: string | null;
+  tags: string[];
+  skillCount: number;
+  assetCount: number;
+  forkCount: number;
+  updatedAt: string | null;
+  accessLabel: "public" | "sign-in-required" | "unknown";
+  latestSignal: string | null;
 };
-
-export type ExploreSpaceItem = PublicExploreSpace;
 
 export type ExploreSection = {
   key: string;
   title: string | null;
   subtitle: string | null;
   description: string | null;
-  spaces: PublicExploreSpace[];
+  spaces: ExploreSpaceItem[];
 };
 
 export type ExploreSpacesResponse = {
   sections: ExploreSection[];
-  spaces: PublicExploreSpace[];
+  spaces: ExploreSpaceItem[];
 };
 
 export type Permission =
