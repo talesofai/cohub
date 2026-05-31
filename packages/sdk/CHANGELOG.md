@@ -1,5 +1,11 @@
 # @neta-art/cohub
 
+## 1.18.1
+
+### Patch Changes
+
+- 1ade102: Publish npm packages for the latest release.
+
 ## 1.18.0
 
 ### Minor Changes
