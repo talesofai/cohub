@@ -1,5 +1,11 @@
 # @neta-art/cohub
 
+## 1.19.0
+
+### Minor Changes
+
+- 2312811: Release Mirror updates with read-only prompt access, shared session visibility improvements, and session participant metadata.
+
 ## 1.18.1
 
 ### Patch Changes
