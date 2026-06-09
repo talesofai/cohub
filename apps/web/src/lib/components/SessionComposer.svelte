@@ -643,7 +643,6 @@ async function startVoiceInput() {
 		isVoiceStarting = false;
 		if (voiceStopRequested) {
 			isVoiceFinishing = true;
-			client.stop(voiceStopReason);
 			return;
 		}
 		isVoiceRecording = true;
@@ -680,7 +679,6 @@ function stopVoiceInput(reason: "manual" | "hotkey_release" = "manual") {
 	voiceStopReason = reason;
 	isVoiceRecording = false;
 	isVoiceFinishing = true;
-	if (isVoiceStarting) return;
 	client.stop(reason);
 }
 

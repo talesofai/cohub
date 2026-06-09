@@ -342,6 +342,7 @@ export class VoiceInputClient {
   private vad: VoiceInputVad | null = null;
   private pendingAudio: string[] = [];
   private started = false;
+  private asrStartRequested = false;
   private asrStarted = false;
   private authenticated = false;
   private intentionalClose = false;
@@ -400,22 +401,29 @@ export class VoiceInputClient {
     const pendingSamples = this.audioChunker.flush();
     if (pendingSamples) this.sendAudio(pendingSamples);
     this.flushPendingAudio();
-    if (this.asrStarted)
+    const shouldStopAsr = this.asrStartRequested || this.asrStarted;
+    if (shouldStopAsr)
       this.send({
         type: "asr.stop",
         requestId: this.sessionId ?? undefined,
         payload: { reason, clientSessionId: this.sessionId },
       });
+    this.resolveAsrStartWaiter();
     this.cleanupAudio();
     this.started = false;
     this.scheduleIdleClose();
+    if (!shouldStopAsr) {
+      this.emitTelemetry(reason);
+      this.callbacks.onDone?.();
+    }
   }
 
   cancel(reason: VoiceInputStopReason = "cancel") {
     this.stopReason = reason;
     if (this.telemetry && !this.telemetry.stopAt)
       this.telemetry.stopAt = Date.now();
-    if (this.asrStarted)
+    const shouldCancelAsr = this.asrStartRequested || this.asrStarted;
+    if (shouldCancelAsr)
       this.send({
         type: "asr.cancel",
         requestId: this.sessionId ?? undefined,
@@ -439,6 +447,7 @@ export class VoiceInputClient {
   private async startInternal() {
     this.clearIdleCloseTimer();
     this.started = true;
+    this.asrStartRequested = false;
     this.asrStarted = false;
     this.sessionId = createVoiceInputSessionId();
     this.telemetry = {
@@ -467,7 +476,12 @@ export class VoiceInputClient {
       await this.withConnectionTimeout(
         Promise.all([this.setupAudio(), this.ensureAuthenticatedSocket()]),
       );
+      if (!this.started) {
+        this.cleanupAudio();
+        return;
+      }
       await this.withConnectionTimeout(this.startAsrSession());
+      if (!this.started) this.cleanupAudio();
     } catch (error) {
       this.cleanupAudio();
       this.started = false;
@@ -567,6 +581,7 @@ export class VoiceInputClient {
 
   private async startAsrSession() {
     const waiter = this.createAsrStartWaiter();
+    this.asrStartRequested = true;
     this.send({
       type: "asr.start",
       requestId: this.sessionId ?? undefined,
@@ -795,6 +810,11 @@ export class VoiceInputClient {
     }
 
     if (data.type === "asr.started") {
+      this.asrStartRequested = false;
+      if (!this.started) {
+        this.resolveAsrStartWaiter();
+        return data;
+      }
       this.asrStarted = true;
       if (this.telemetry) this.telemetry.readyAt = Date.now();
       this.flushPendingAudio();
@@ -825,6 +845,7 @@ export class VoiceInputClient {
       this.callbacks.onFinal?.(text, transcript);
     }
     if (data.type === "asr.done") {
+      this.asrStartRequested = false;
       this.asrStarted = false;
       this.started = false;
       if (this.telemetry) this.telemetry.doneAt = Date.now();
@@ -856,6 +877,7 @@ export class VoiceInputClient {
     this.vad?.reset();
     this.vad = null;
     this.pendingAudio = [];
+    this.asrStartRequested = false;
     this.asrStarted = false;
   }
 

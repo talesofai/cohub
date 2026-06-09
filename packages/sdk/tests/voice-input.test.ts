@@ -33,6 +33,7 @@ type SentVoiceMessage = {
 let lastSocket: MockWebSocket | null = null;
 let lastProcessor: MockScriptProcessorNode | null = null;
 let requestedAudioConstraints: unknown = null;
+let autoEmitAsrStarted = true;
 
 class MockWebSocket {
   readonly readyState = 1;
@@ -56,7 +57,7 @@ class MockWebSocket {
         payload: { user: { uuid: "user-1" } },
       });
     }
-    if (message.type === "asr.start") {
+    if (message.type === "asr.start" && autoEmitAsrStarted) {
       this.emit({ type: "asr.started" });
     }
   }
@@ -121,6 +122,7 @@ const installVoiceInputMocks = () => {
   lastSocket = null;
   lastProcessor = null;
   requestedAudioConstraints = null;
+  autoEmitAsrStarted = true;
 
   const originalNavigator = Object.getOwnPropertyDescriptor(
     globalThis,
@@ -158,6 +160,14 @@ const installVoiceInputMocks = () => {
       Object.defineProperty(globalThis, "AudioContext", originalAudioContext);
     else Reflect.deleteProperty(globalThis, "AudioContext");
   };
+};
+
+const waitForSentMessage = async (type: string) => {
+  for (let attempt = 0; attempt < 20; attempt += 1) {
+    if (lastSocket?.sent.some((message) => message.type === type)) return;
+    await new Promise((resolve) => setTimeout(resolve, 0));
+  }
+  assert.fail(`expected websocket message ${type}`);
 };
 
 test("voice audio constraints prefer browser speech cleanup", () => {
@@ -394,6 +404,59 @@ test("VoiceInputClient reports session telemetry and transcript alternatives", a
     assert.equal(summaryAudioChunks, 1);
     assert.equal(summaryStopReason, "hotkey_release");
     assert.equal(summaryCount, 1);
+  } finally {
+    restore();
+  }
+});
+
+test("VoiceInputClient stops a pending ASR start on hotkey release", async () => {
+  const restore = installVoiceInputMocks();
+  try {
+    autoEmitAsrStarted = false;
+    let summaryStopReason = "";
+    let doneCount = 0;
+    const client = new VoiceInputClient({
+      url: "ws://localhost",
+      getAccessToken: () => "token-1",
+      WebSocketImpl: MockWebSocket,
+      preferAudioWorklet: false,
+      callbacks: {
+        onDone: () => {
+          doneCount += 1;
+        },
+        onTelemetry: (summary) => {
+          summaryStopReason = summary.stopReason;
+        },
+      },
+    });
+
+    const startPromise = client.start();
+    await waitForSentMessage("asr.start");
+    const requestId = lastSocket?.sent.find(
+      (message) => message.type === "asr.start",
+    )?.requestId;
+
+    client.stop("hotkey_release");
+    lastProcessor?.emit(Float32Array.from({ length: 3200 }, () => 0.08));
+
+    assert.deepEqual(
+      lastSocket?.sent.map((message) => message.type),
+      ["auth", "asr.start", "asr.stop"],
+    );
+
+    lastSocket?.emit({ type: "asr.started", requestId });
+    lastSocket?.emit({ type: "asr.done", requestId });
+    await startPromise;
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    client.close();
+
+    assert.equal(doneCount, 1);
+    assert.equal(summaryStopReason, "hotkey_release");
+    assert.equal(
+      lastSocket?.sent.filter((message) => message.type === "asr.audio")
+        .length,
+      0,
+    );
   } finally {
     restore();
   }
