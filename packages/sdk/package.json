@@ -76,6 +76,7 @@
   ],
   "scripts": {
     "build": "tsdown",
+    "test": "tsx --test tests/*.test.ts",
     "typecheck": "tsgo -p tsconfig.json --noEmit"
   },
   "devDependencies": {

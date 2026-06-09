@@ -1,5 +1,12 @@
 import type { CohubEnvironment } from "./environment.js";
 import { resolveVoiceInputWebsocketUrl } from "./environment.js";
+import {
+  createVoiceInputAudioConstraints,
+  floatToPcm16,
+  resampleTo16k,
+  TARGET_SAMPLE_RATE,
+  VoiceInputAudioChunker,
+} from "./voice-input-audio.js";
 
 export type VoiceInputEvent = {
   type: string;
@@ -18,6 +25,8 @@ export type VoiceInputClientOptions = {
   url?: string;
   getAccessToken?: (options?: { forceRefresh?: boolean }) => Promise<string | null> | string | null;
   WebSocketImpl?: WebSocketConstructor;
+  audioConstraints?: MediaTrackConstraints;
+  preferAudioWorklet?: boolean;
   connectionTimeoutMs?: number;
   idleConnectionTimeoutMs?: number;
   callbacks?: VoiceInputCallbacks;
@@ -37,12 +46,57 @@ export type WebSocketLike = {
 
 export type WebSocketConstructor = new (url: string) => WebSocketLike;
 
-const TARGET_SAMPLE_RATE = 16_000;
-const CHUNK_MS = 200;
-const CHUNK_SAMPLES = (TARGET_SAMPLE_RATE * CHUNK_MS) / 1000;
+const AUDIO_WORKLET_FRAME_CHUNK = 1024;
+const SCRIPT_PROCESSOR_BUFFER_SIZE = 2048;
 const DEFAULT_CONNECTION_TIMEOUT_MS = 10_000;
 const DEFAULT_IDLE_CONNECTION_TIMEOUT_MS = 30 * 60_000;
 const WEBSOCKET_OPEN = 1;
+const VOICE_INPUT_WORKLET_NAME = "cohub-voice-input";
+
+const VOICE_INPUT_WORKLET_SOURCE = `
+class CohubVoiceInputProcessor extends AudioWorkletProcessor {
+  constructor() {
+    super();
+    this.pending = [];
+    this.pendingLength = 0;
+    this.chunkSamples = ${AUDIO_WORKLET_FRAME_CHUNK};
+  }
+
+  process(inputs) {
+    var input = inputs[0];
+    var channel = input && input[0];
+    if (!channel || channel.length === 0) return true;
+
+    this.pending.push(new Float32Array(channel));
+    this.pendingLength += channel.length;
+
+    while (this.pendingLength >= this.chunkSamples) {
+      var output = new Float32Array(this.chunkSamples);
+      var offset = 0;
+
+      while (offset < this.chunkSamples && this.pending.length > 0) {
+        var first = this.pending[0];
+        var take = Math.min(first.length, this.chunkSamples - offset);
+        output.set(first.subarray(0, take), offset);
+        offset += take;
+
+        if (take === first.length) {
+          this.pending.shift();
+        } else {
+          this.pending[0] = first.subarray(take);
+        }
+      }
+
+      this.pendingLength -= this.chunkSamples;
+      this.port.postMessage(output, [output.buffer]);
+    }
+
+    return true;
+  }
+}
+
+registerProcessor("${VOICE_INPUT_WORKLET_NAME}", CohubVoiceInputProcessor);
+`;
 
 const getDefaultWebSocket = (): WebSocketConstructor => {
   const WebSocketImpl = globalThis.WebSocket;
@@ -57,6 +111,29 @@ const getDefaultAudioContext = () => {
   return context.AudioContext ?? context.webkitAudioContext;
 };
 
+const createAudioContext = (AudioContextImpl: typeof AudioContext) => {
+  try {
+    return new AudioContextImpl({ sampleRate: TARGET_SAMPLE_RATE, latencyHint: "interactive" });
+  } catch {
+    try {
+      return new AudioContextImpl({ latencyHint: "interactive" });
+    } catch {
+      return new AudioContextImpl();
+    }
+  }
+};
+
+const createVoiceInputWorkletUrl = () => {
+  if (!globalThis.URL?.createObjectURL || !globalThis.Blob) return null;
+  return globalThis.URL.createObjectURL(new Blob([VOICE_INPUT_WORKLET_SOURCE], { type: "application/javascript" }));
+};
+
+const toFloat32Array = (input: unknown) => {
+  if (input instanceof Float32Array) return input;
+  if (input instanceof ArrayBuffer) return new Float32Array(input);
+  return null;
+};
+
 const encodeBase64 = (bytes: Uint8Array) => {
   if (typeof btoa === "function") {
     let binary = "";
@@ -68,31 +145,6 @@ const encodeBase64 = (bytes: Uint8Array) => {
   }).Buffer;
   if (maybeBuffer) return maybeBuffer.from(bytes).toString("base64");
   throw new Error("Base64 encoding is not available in this environment");
-};
-
-const floatToPcm16 = (samples: Float32Array) => {
-  const buffer = new ArrayBuffer(samples.length * 2);
-  const view = new DataView(buffer);
-  for (let i = 0; i < samples.length; i += 1) {
-    const sample = Math.max(-1, Math.min(1, samples[i] ?? 0));
-    view.setInt16(i * 2, sample < 0 ? sample * 0x8000 : sample * 0x7fff, true);
-  }
-  return new Uint8Array(buffer);
-};
-
-const resampleTo16k = (input: Float32Array, inputSampleRate: number) => {
-  if (inputSampleRate === TARGET_SAMPLE_RATE) return input;
-  const ratio = inputSampleRate / TARGET_SAMPLE_RATE;
-  const length = Math.floor(input.length / ratio);
-  const output = new Float32Array(length);
-  for (let i = 0; i < length; i += 1) {
-    const index = i * ratio;
-    const left = Math.floor(index);
-    const right = Math.min(left + 1, input.length - 1);
-    const weight = index - left;
-    output[i] = (input[left] ?? 0) * (1 - weight) + (input[right] ?? 0) * weight;
-  }
-  return output;
 };
 
 const getErrorCode = (event: VoiceInputEvent) => {
@@ -109,6 +161,8 @@ export class VoiceInputClient {
   private readonly url: string;
   private readonly getAccessToken?: VoiceInputClientOptions["getAccessToken"];
   private readonly WebSocketImpl: WebSocketConstructor;
+  private readonly audioConstraints?: MediaTrackConstraints;
+  private readonly preferAudioWorklet: boolean;
   private readonly connectionTimeoutMs: number;
   private readonly idleConnectionTimeoutMs: number;
   private readonly callbacks: VoiceInputCallbacks;
@@ -116,9 +170,11 @@ export class VoiceInputClient {
   private socket: WebSocketLike | null = null;
   private stream: MediaStream | null = null;
   private audioContext: AudioContext | null = null;
+  private workletNode: AudioWorkletNode | null = null;
   private processor: ScriptProcessorNode | null = null;
   private source: MediaStreamAudioSourceNode | null = null;
-  private pendingSamples: number[] = [];
+  private sink: GainNode | null = null;
+  private audioChunker = new VoiceInputAudioChunker();
   private pendingAudio: string[] = [];
   private started = false;
   private asrStarted = false;
@@ -142,6 +198,8 @@ export class VoiceInputClient {
     this.url = resolveVoiceInputWebsocketUrl({ env: options.env, url: options.url });
     this.getAccessToken = options.getAccessToken;
     this.WebSocketImpl = options.WebSocketImpl ?? getDefaultWebSocket();
+    this.audioConstraints = options.audioConstraints;
+    this.preferAudioWorklet = options.preferAudioWorklet ?? true;
     this.connectionTimeoutMs = options.connectionTimeoutMs ?? DEFAULT_CONNECTION_TIMEOUT_MS;
     this.idleConnectionTimeoutMs = options.idleConnectionTimeoutMs ?? DEFAULT_IDLE_CONNECTION_TIMEOUT_MS;
     this.callbacks = options.callbacks ?? {};
@@ -158,7 +216,8 @@ export class VoiceInputClient {
   }
 
   stop() {
-    if (this.pendingSamples.length > 0) this.sendAudio(new Float32Array(this.pendingSamples.splice(0)));
+    const pendingSamples = this.audioChunker.flush();
+    if (pendingSamples) this.sendAudio(pendingSamples);
     this.flushPendingAudio();
     if (this.asrStarted) this.send({ type: "asr.stop" });
     this.cleanupAudio();
@@ -185,6 +244,7 @@ export class VoiceInputClient {
     this.clearIdleCloseTimer();
     this.started = true;
     this.asrStarted = false;
+    this.audioChunker.reset();
     this.pendingAudio = [];
     this.intentionalClose = false;
 
@@ -349,22 +409,75 @@ export class VoiceInputClient {
     const AudioContextImpl = getDefaultAudioContext();
     if (!AudioContextImpl) throw new Error("AudioContext is not available in this environment");
 
-    this.stream = await mediaDevices.getUserMedia({ audio: true });
-    this.audioContext = new AudioContextImpl();
+    this.stream = await mediaDevices.getUserMedia({ audio: createVoiceInputAudioConstraints(this.audioConstraints) });
+    this.audioContext = createAudioContext(AudioContextImpl);
     await this.audioContext.resume().catch(() => undefined);
     this.source = this.audioContext.createMediaStreamSource(this.stream);
-    this.processor = this.audioContext.createScriptProcessor(4096, 1, 1);
+
+    if (await this.setupAudioWorklet()) return;
+    this.setupScriptProcessor();
+  }
+
+  private async setupAudioWorklet() {
+    if (!this.preferAudioWorklet || !this.audioContext?.audioWorklet || !this.source) return false;
+
+    const workletUrl = createVoiceInputWorkletUrl();
+    if (!workletUrl) return false;
+
+    try {
+      await this.audioContext.audioWorklet.addModule(workletUrl);
+    } catch {
+      return false;
+    } finally {
+      globalThis.URL.revokeObjectURL(workletUrl);
+    }
+
+    try {
+      this.workletNode = new AudioWorkletNode(this.audioContext, VOICE_INPUT_WORKLET_NAME, {
+        channelCount: 1,
+        channelCountMode: "explicit",
+        numberOfInputs: 1,
+        numberOfOutputs: 1,
+        outputChannelCount: [1],
+      });
+      this.workletNode.port.onmessage = (event) => {
+        const samples = toFloat32Array(event.data);
+        if (samples) this.handleAudioSamples(samples);
+      };
+      this.sink = this.audioContext.createGain();
+      this.sink.gain.value = 0;
+      this.source.connect(this.workletNode);
+      this.workletNode.connect(this.sink);
+      this.sink.connect(this.audioContext.destination);
+      return true;
+    } catch {
+      this.workletNode?.disconnect();
+      this.workletNode?.port.close();
+      this.sink?.disconnect();
+      this.workletNode = null;
+      this.sink = null;
+      return false;
+    }
+  }
+
+  private setupScriptProcessor() {
+    if (!this.audioContext || !this.source) throw new Error("Audio input is not ready");
+    this.processor = this.audioContext.createScriptProcessor(SCRIPT_PROCESSOR_BUFFER_SIZE, 1, 1);
     this.processor.onaudioprocess = (event) => {
       const samples = event.inputBuffer.getChannelData(0);
-      const resampled = resampleTo16k(samples, this.audioContext?.sampleRate ?? TARGET_SAMPLE_RATE);
-      for (const sample of resampled) this.pendingSamples.push(sample);
-      while (this.pendingSamples.length >= CHUNK_SAMPLES) {
-        const chunk = this.pendingSamples.splice(0, CHUNK_SAMPLES);
-        this.sendAudio(new Float32Array(chunk));
-      }
+      this.handleAudioSamples(samples);
     };
+    this.sink = this.audioContext.createGain();
+    this.sink.gain.value = 0;
     this.source.connect(this.processor);
-    this.processor.connect(this.audioContext.destination);
+    this.processor.connect(this.sink);
+    this.sink.connect(this.audioContext.destination);
+  }
+
+  private handleAudioSamples(samples: Float32Array) {
+    if (!this.started) return;
+    const resampled = resampleTo16k(samples, this.audioContext?.sampleRate ?? TARGET_SAMPLE_RATE);
+    for (const chunk of this.audioChunker.push(resampled)) this.sendAudio(chunk);
   }
 
   private sendAudio(samples: Float32Array) {
@@ -428,18 +541,23 @@ export class VoiceInputClient {
   }
 
   private cleanupAudio() {
+    this.workletNode?.disconnect();
+    this.workletNode?.port.close();
     this.processor?.disconnect();
     if (this.processor) this.processor.onaudioprocess = null;
+    this.sink?.disconnect();
     this.source?.disconnect();
     this.stream?.getTracks().forEach((track) => {
       track.stop();
     });
     void this.audioContext?.close().catch(() => undefined);
+    this.workletNode = null;
     this.processor = null;
+    this.sink = null;
     this.source = null;
     this.stream = null;
     this.audioContext = null;
-    this.pendingSamples = [];
+    this.audioChunker.reset();
     this.pendingAudio = [];
     this.asrStarted = false;
   }
