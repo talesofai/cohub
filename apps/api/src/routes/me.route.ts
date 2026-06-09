@@ -4,6 +4,14 @@ import { Hono } from "hono";
 import { config } from "../config.js";
 import { requireValidId, useAuth } from "../lib/middleware.js";
 import { ensureCurrentUserProfile, updateCurrentUserProfile, UsernameConflictError, validateUsername } from "../user-profiles.js";
+import {
+  deleteUserVoiceLexiconEntry,
+  listUserVoiceLexiconEntries,
+  updateUserVoiceLexiconEntry,
+  upsertUserVoiceLexiconEntry,
+  VoiceLexiconConflictError,
+  VoiceLexiconValidationError,
+} from "../voice-lexicon.js";
 
 const USER_RULES_FILE_NAME = "AGENTS.md";
 const USER_RULES_SANDBOX_PATH = "/configs/user/AGENTS.md";
@@ -123,6 +131,50 @@ router.get("/rules", async (c) => {
   } catch {
     return c.json({ message: "failed to load user rules" }, 500);
   }
+});
+
+router.get("/voice-lexicon", async (c) => {
+  const user = useAuth(c);
+  return c.json({ items: await listUserVoiceLexiconEntries(user.uuid) });
+});
+
+router.post("/voice-lexicon", async (c) => {
+  const user = useAuth(c);
+  const body = await c.req.json<{ term?: unknown; source?: unknown; originalText?: unknown }>().catch(() => null);
+  if (!body) return c.json({ message: "invalid body" }, 400);
+  try {
+    const item = await upsertUserVoiceLexiconEntry(user.uuid, body);
+    return c.json({ item }, 201);
+  } catch (error) {
+    if (error instanceof VoiceLexiconValidationError) return c.json({ message: error.message }, 400);
+    throw error;
+  }
+});
+
+router.patch("/voice-lexicon/:entryId", async (c) => {
+  const user = useAuth(c);
+  const entryId = c.req.param("entryId");
+  if (!entryId || !requireValidId(entryId)) return c.json({ message: "entry not found" }, 404);
+  const body = await c.req.json<{ term?: unknown; source?: unknown; originalText?: unknown }>().catch(() => null);
+  if (!body) return c.json({ message: "invalid body" }, 400);
+  try {
+    const item = await updateUserVoiceLexiconEntry(user.uuid, entryId, body);
+    if (!item) return c.json({ message: "entry not found" }, 404);
+    return c.json({ item });
+  } catch (error) {
+    if (error instanceof VoiceLexiconValidationError) return c.json({ message: error.message }, 400);
+    if (error instanceof VoiceLexiconConflictError) return c.json({ message: error.message }, 409);
+    throw error;
+  }
+});
+
+router.delete("/voice-lexicon/:entryId", async (c) => {
+  const user = useAuth(c);
+  const entryId = c.req.param("entryId");
+  if (!entryId || !requireValidId(entryId)) return c.json({ message: "entry not found" }, 404);
+  const deleted = await deleteUserVoiceLexiconEntry(user.uuid, entryId);
+  if (!deleted) return c.json({ message: "entry not found" }, 404);
+  return c.json({ ok: true });
 });
 
 export default router;

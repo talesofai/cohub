@@ -1,5 +1,12 @@
 import { HttpError, type HttpTransport, type Fetch } from "../transport.js";
-import type { MeResponse, UserProfile, UserRulesResponse } from "../types.js";
+import type {
+  MeResponse,
+  UserProfile,
+  UserRulesResponse,
+  VoiceLexiconEntryResponse,
+  VoiceLexiconInput,
+  VoiceLexiconListResponse,
+} from "../types.js";
 
 export class UserApi {
   constructor(
@@ -26,6 +33,39 @@ export class UserApi {
       method: "GET",
       fetch: customFetch,
     });
+  }
+
+  getVoiceLexicon(customFetch?: Fetch) {
+    return this.transport.request<VoiceLexiconListResponse>("/api/me/voice-lexicon", {
+      method: "GET",
+      fetch: customFetch,
+    });
+  }
+
+  addVoiceLexiconEntry(input: VoiceLexiconInput) {
+    return this.transport.request<VoiceLexiconEntryResponse>("/api/me/voice-lexicon", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(input),
+    });
+  }
+
+  updateVoiceLexiconEntry(entryId: string, input: VoiceLexiconInput) {
+    return this.transport.request<VoiceLexiconEntryResponse>(
+      `/api/me/voice-lexicon/${encodeURIComponent(entryId)}`,
+      {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(input),
+      },
+    );
+  }
+
+  deleteVoiceLexiconEntry(entryId: string) {
+    return this.transport.request<{ ok: true }>(
+      `/api/me/voice-lexicon/${encodeURIComponent(entryId)}`,
+      { method: "DELETE" },
+    );
   }
 
   async setAuthToken(token: string) {

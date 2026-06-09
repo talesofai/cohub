@@ -1,9 +1,11 @@
 <script lang="ts">
 import type {
 	PromptTemplateCatalogEntry,
+	VoiceLexiconEntry as ServerVoiceLexiconEntry,
 	VoiceActivityEvent,
 	VoiceInputAsrOptions,
 	VoiceInputClient,
+	VoiceLexiconSource,
 } from "@neta-art/cohub";
 import {
 	ArrowUp,
@@ -50,8 +52,13 @@ import {
 } from "$lib/upload-entries";
 import {
 	addVoiceInputLexiconTerm,
-	getVoiceInputLexicon,
+	getCachedUserVoiceInputLexicon,
+	getVoiceLexiconTermKey,
+	mergeVoiceLexiconForComposer,
+	normalizeVoiceLexiconTerm,
 	removeVoiceInputLexiconTerm,
+	setCachedSpaceVoiceInputLexicon,
+	setCachedUserVoiceInputLexicon,
 	type VoiceInputLexiconEntry,
 } from "$lib/voice-input-lexicon";
 
@@ -59,6 +66,16 @@ type SelectedModel = {
 	provider: string;
 	id: string;
 	name?: string;
+};
+
+type VoiceInsertedSegment = {
+	start: number;
+	end: number;
+	originalText: string;
+	insertedText: string;
+	sessionId: number;
+	snapshot: string;
+	learned: boolean;
 };
 
 type Props = {
@@ -156,6 +173,10 @@ let voiceContinuousUndoSnapshot: string | null = null;
 let voiceLexiconOpen = $state(false);
 let voiceLexiconInput = $state("");
 let voiceLexiconEntries = $state<VoiceInputLexiconEntry[]>([]);
+let voiceLexiconLoadToken = 0;
+let voiceLexiconSyncedSpaceId: string | null | undefined;
+let voiceCorrectionLearnTimer: number | null = null;
+let lastVoiceInsertedSegment: VoiceInsertedSegment | null = null;
 
 const hasDraft = $derived(Boolean(value.trim() || attachments.length > 0));
 const showAbort = $derived(Boolean(isRunning && !hasDraft));
@@ -337,7 +358,9 @@ function collapseComposer() {
 
 function submitDraft() {
 	if (submitDisabled || !hasDraft) return;
+	learnVoiceCorrectionNow();
 	onsubmit();
+	lastVoiceInsertedSegment = null;
 	collapseComposer();
 }
 
@@ -393,6 +416,19 @@ function applyVoiceCandidate(candidate: string) {
 		candidate +
 		value.slice(voiceCandidateEnd);
 	voiceCandidateEnd = voiceCandidateStart + candidate.length;
+	const learnedFrom =
+		lastVoiceInsertedSegment?.originalText ||
+		lastVoiceInsertedSegment?.insertedText ||
+		null;
+	if (isLearnableVoiceCorrection(candidate, learnedFrom)) {
+		if (lastVoiceInsertedSegment) {
+			lastVoiceInsertedSegment = {
+				...lastVoiceInsertedSegment,
+				learned: true,
+			};
+		}
+		void addUserVoiceLexiconTerm(candidate, "correction", learnedFrom);
+	}
 	resetVoiceCandidates();
 	requestAnimationFrame(() => {
 		textareaEl?.focus();
@@ -406,6 +442,7 @@ function undoLastVoiceInput() {
 	value = voiceUndoSnapshot;
 	voiceUndoSnapshot = null;
 	voiceContinuousUndoSnapshot = null;
+	lastVoiceInsertedSegment = null;
 	resetVoiceCandidates();
 	requestAnimationFrame(() => {
 		textareaEl?.focus();
@@ -413,18 +450,192 @@ function undoLastVoiceInput() {
 	});
 }
 
-function refreshVoiceLexicon() {
-	voiceLexiconEntries = getVoiceInputLexicon();
+function toServerVoiceLexiconEntry(
+	entry: VoiceInputLexiconEntry,
+): ServerVoiceLexiconEntry | null {
+	if (entry.scope !== "user" && entry.scope !== "space") return null;
+	return {
+		id: entry.id,
+		scope: entry.scope,
+		term: entry.term,
+		source: entry.source,
+		originalText: entry.originalText,
+		usageCount: entry.usageCount,
+		createdAt: entry.createdAt,
+		updatedAt: entry.updatedAt,
+	};
+}
+
+function upsertCachedUserVoiceLexiconEntry(entry: ServerVoiceLexiconEntry) {
+	const key = getVoiceLexiconTermKey(entry.term);
+	const cached = getCachedUserVoiceInputLexicon()
+		.map(toServerVoiceLexiconEntry)
+		.filter((item): item is ServerVoiceLexiconEntry => Boolean(item))
+		.filter(
+			(item) =>
+				item.id !== entry.id && getVoiceLexiconTermKey(item.term) !== key,
+		);
+	setCachedUserVoiceInputLexicon([entry, ...cached]);
+	refreshVoiceLexicon();
+}
+
+function removeCachedUserVoiceLexiconEntry(entryId: string) {
+	const cached = getCachedUserVoiceInputLexicon()
+		.map(toServerVoiceLexiconEntry)
+		.filter((item): item is ServerVoiceLexiconEntry => Boolean(item))
+		.filter((item) => item.id !== entryId);
+	setCachedUserVoiceInputLexicon(cached);
+	refreshVoiceLexicon();
+}
+
+function refreshVoiceLexicon(spaceId = currentSpaceId) {
+	voiceLexiconEntries = mergeVoiceLexiconForComposer(spaceId);
+}
+
+async function syncVoiceLexiconFromServer(spaceId = currentSpaceId) {
+	const token = ++voiceLexiconLoadToken;
+	const [userResult, spaceResult] = await Promise.all([
+		sdk.user.getVoiceLexicon().catch(() => null),
+		spaceId
+			? sdk
+					.space(spaceId)
+					.voiceLexicon.list()
+					.catch(() => null)
+			: Promise.resolve(null),
+	]);
+	if (token !== voiceLexiconLoadToken) return;
+	if (userResult) setCachedUserVoiceInputLexicon(userResult.items);
+	if (spaceId && spaceResult)
+		setCachedSpaceVoiceInputLexicon(spaceId, spaceResult.items);
+	refreshVoiceLexicon(spaceId);
+}
+
+async function addUserVoiceLexiconTerm(
+	term: string,
+	source: VoiceLexiconSource = "manual",
+	originalText?: string | null,
+) {
+	const normalized = normalizeVoiceLexiconTerm(term);
+	if (!normalized) {
+		refreshVoiceLexicon();
+		return;
+	}
+	try {
+		const result = await sdk.user.addVoiceLexiconEntry({
+			term: normalized,
+			source,
+			originalText: originalText ?? null,
+		});
+		upsertCachedUserVoiceLexiconEntry(result.item);
+	} catch (error) {
+		console.warn("[voice-input] failed to save user lexicon term", error);
+		addVoiceInputLexiconTerm(normalized, source, originalText);
+		refreshVoiceLexicon();
+	}
+}
+
+function isLearnableVoiceCorrection(
+	correction: string,
+	originalText?: string | null,
+) {
+	const normalized = normalizeVoiceLexiconTerm(correction);
+	if (!normalized) return false;
+	if (/[\r\n]/.test(normalized)) return false;
+	if (/[。！？!?；;]/.test(normalized)) return false;
+	const wordCount = normalized.split(/\s+/).filter(Boolean).length;
+	if (wordCount > 6) return false;
+	if (wordCount <= 1 && normalized.length > 32) return false;
+	if (normalized.length > 60) return false;
+	const original = normalizeVoiceLexiconTerm(originalText ?? "");
+	return (
+		!original ||
+		getVoiceLexiconTermKey(original) !== getVoiceLexiconTermKey(normalized)
+	);
+}
+
+function getChangedRange(before: string, after: string) {
+	let start = 0;
+	const minLength = Math.min(before.length, after.length);
+	while (start < minLength && before[start] === after[start]) start += 1;
+	let beforeEnd = before.length;
+	let afterEnd = after.length;
+	while (
+		beforeEnd > start &&
+		afterEnd > start &&
+		before[beforeEnd - 1] === after[afterEnd - 1]
+	) {
+		beforeEnd -= 1;
+		afterEnd -= 1;
+	}
+	return { start, beforeEnd, afterEnd };
+}
+
+function getCorrectedVoiceSegmentText(segment: VoiceInsertedSegment) {
+	if (value === segment.snapshot) return null;
+	const change = getChangedRange(segment.snapshot, value);
+	const changedInside =
+		change.start < segment.end && change.beforeEnd > segment.start;
+	const insertedInside =
+		change.beforeEnd === change.start &&
+		change.start > segment.start &&
+		change.start < segment.end;
+	if (!changedInside && !insertedInside) return null;
+	const adjustedEnd = Math.max(
+		segment.start,
+		segment.end + value.length - segment.snapshot.length,
+	);
+	return value.slice(segment.start, adjustedEnd);
+}
+
+function learnVoiceCorrectionNow() {
+	if (voiceCorrectionLearnTimer != null) {
+		window.clearTimeout(voiceCorrectionLearnTimer);
+		voiceCorrectionLearnTimer = null;
+	}
+	const segment = lastVoiceInsertedSegment;
+	if (!segment || segment.learned) return;
+	const correction = getCorrectedVoiceSegmentText(segment);
+	const learnedFrom = segment.originalText || segment.insertedText;
+	if (!correction || !isLearnableVoiceCorrection(correction, learnedFrom))
+		return;
+	segment.learned = true;
+	lastVoiceInsertedSegment = segment;
+	void addUserVoiceLexiconTerm(correction, "correction", learnedFrom);
+}
+
+function scheduleVoiceCorrectionLearning() {
+	if (!lastVoiceInsertedSegment || lastVoiceInsertedSegment.learned) return;
+	if (voiceCorrectionLearnTimer != null)
+		window.clearTimeout(voiceCorrectionLearnTimer);
+	voiceCorrectionLearnTimer = window.setTimeout(() => {
+		learnVoiceCorrectionNow();
+	}, 600);
+}
+
+function handleComposerInput() {
+	resizeTextarea();
+	scheduleVoiceCorrectionLearning();
 }
 
 function addVoiceLexiconInput() {
-	const next = addVoiceInputLexiconTerm(voiceLexiconInput, "manual");
+	const term = voiceLexiconInput;
 	voiceLexiconInput = "";
-	voiceLexiconEntries = next;
+	void addUserVoiceLexiconTerm(term, "manual");
 }
 
-function removeVoiceLexiconEntry(term: string) {
-	voiceLexiconEntries = removeVoiceInputLexiconTerm(term);
+async function removeVoiceLexiconEntry(entry: VoiceInputLexiconEntry) {
+	if (entry.scope === "space") return;
+	if (entry.scope === "user") {
+		try {
+			await sdk.user.deleteVoiceLexiconEntry(entry.id);
+			removeCachedUserVoiceLexiconEntry(entry.id);
+		} catch (error) {
+			console.warn("[voice-input] failed to delete user lexicon term", error);
+		}
+		return;
+	}
+	removeVoiceInputLexiconTerm(entry.term);
+	refreshVoiceLexicon();
 }
 
 function toggleVoiceContinuousMode() {
@@ -466,7 +677,7 @@ function buildVoiceAsrOptions(): VoiceInputAsrOptions {
 			? `Current composer context: ${contextSource.slice(-900)}`
 			: "User is dictating into the Cohub session composer.";
 	return {
-		endWindowSizeMs: 600,
+		endWindowSizeMs: 800,
 		forceToSpeechTimeMs: 1000,
 		enableNonstream: true,
 		enablePunctuation: true,
@@ -589,13 +800,23 @@ async function startVoiceInput() {
 			},
 			onFinal: (text, event) => {
 				if (!isCurrentVoiceSession(sessionId, client)) return;
+				const segmentStart = voicePrefix.length + voiceCommittedText.length;
 				voiceCommittedText += text;
 				voicePartialText = "";
 				applyVoiceText();
+				lastVoiceInsertedSegment = {
+					start: segmentStart,
+					end: segmentStart + text.length,
+					originalText: event.originalText ?? "",
+					insertedText: text,
+					sessionId,
+					snapshot: voicePrefix + voiceCommittedText + voiceSuffix,
+					learned: false,
+				};
 				setVoiceCandidates(event.alternatives, event.originalText ?? "", text);
 				for (const term of extractVoiceTerms(text).slice(0, 6)) {
 					if (/^[A-Z][A-Za-z0-9_-]{2,39}$/.test(term)) {
-						voiceLexiconEntries = addVoiceInputLexiconTerm(term, "auto");
+						void addUserVoiceLexiconTerm(term, "auto");
 					}
 				}
 			},
@@ -1031,9 +1252,20 @@ onMount(() => {
 		spaceMentionRemoteController?.abort();
 		pastedSpaceResolveController?.abort();
 		voiceClient?.close();
+		if (voiceCorrectionLearnTimer != null)
+			window.clearTimeout(voiceCorrectionLearnTimer);
 		if (spaceMentionDebounceTimer != null)
 			window.clearTimeout(spaceMentionDebounceTimer);
 	};
+});
+
+$effect(() => {
+	const spaceId = currentSpaceId;
+	if (spaceId === voiceLexiconSyncedSpaceId) return;
+	voiceLexiconSyncedSpaceId = spaceId;
+	lastVoiceInsertedSegment = null;
+	refreshVoiceLexicon(spaceId);
+	void syncVoiceLexiconFromServer(spaceId);
 });
 
 $effect(() => {
@@ -1197,7 +1429,7 @@ $effect(() => {
 							onpointerdown={() => {
 								isTextareaFocused = true;
 							}}
-							oninput={() => resizeTextarea()}
+							oninput={handleComposerInput}
 							onscroll={syncMentionMirrorScroll}
 							ondragover={handlePathDragOver}
 						ondragleave={handlePathDragLeave}
@@ -1424,15 +1656,22 @@ $effect(() => {
 											{:else}
 												{#each voiceLexiconEntries as entry (entry.term)}
 													<div class="flex items-center justify-between gap-2 rounded-md px-1.5 py-1 text-[12px] text-text-secondary hover:bg-bg-hover">
-														<span class="min-w-0 truncate">{entry.term}</span>
-														<button
-															type="button"
-															class="shrink-0 text-text-tertiary hover:text-text-primary"
-															title="Remove"
-															onclick={() => removeVoiceLexiconEntry(entry.term)}
-														>
-															<X class="h-3.5 w-3.5" />
-														</button>
+														<div class="min-w-0">
+															<div class="truncate">{entry.term}</div>
+															<div class="text-[10px] text-text-placeholder">
+																{entry.scope === 'space' ? 'Shared' : entry.scope === 'user' ? 'Personal' : 'Local'}
+															</div>
+														</div>
+														{#if entry.scope !== 'space'}
+															<button
+																type="button"
+																class="shrink-0 text-text-tertiary hover:text-text-primary"
+																title="Remove"
+																onclick={() => void removeVoiceLexiconEntry(entry)}
+															>
+																<X class="h-3.5 w-3.5" />
+															</button>
+														{/if}
 													</div>
 												{/each}
 											{/if}
