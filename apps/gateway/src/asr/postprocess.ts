@@ -1,7 +1,7 @@
 import type { AsrSessionOptions } from "./options.js";
 
 const ENGLISH_FILLERS = /\b(?:um+|uh+|er+|ah+)\b[,.，。 ]*/gi;
-const CHINESE_FILLERS = /(?:^|[，。！？\s])(?:嗯+|呃+|额+|那个|然后)(?=[，。！？\s]|$)/g;
+const CHINESE_FILLERS = /(?:^|[，。！？\s])(?:嗯+|呃+|额+|那个)(?=[，。！？\s]|$)/g;
 
 const escapeRegExp = (value: string) => value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 

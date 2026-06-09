@@ -2,8 +2,8 @@
 import type {
 	PromptTemplateCatalogEntry,
 	VoiceActivityEvent,
-	VoiceInputClient,
 	VoiceInputAsrOptions,
+	VoiceInputClient,
 } from "@neta-art/cohub";
 import {
 	ArrowUp,
@@ -118,6 +118,7 @@ let spaceMentionLocalController: AbortController | null = null;
 let spaceMentionRemoteController: AbortController | null = null;
 let spaceMentionDebounceTimer: number | null = null;
 let pastedSpaceResolveController: AbortController | null = null;
+let composerRootEl = $state<HTMLDivElement | null>(null);
 let spaceMentionTrigger = $state<{
 	start: number;
 	end: number;
@@ -125,6 +126,7 @@ let spaceMentionTrigger = $state<{
 } | null>(null);
 let isComposerExpanded = $state(false);
 let voiceClient: VoiceInputClient | null = null;
+let voiceSessionId = 0;
 let voicePrefix = "";
 let voiceSuffix = "";
 let voiceCommittedText = "";
@@ -132,6 +134,9 @@ let voicePartialText = $state("");
 let voiceActivity = $state<VoiceActivityEvent | null>(null);
 let isVoiceRecording = $state(false);
 let isVoiceStarting = $state(false);
+let isVoiceFinishing = $state(false);
+let voiceStopRequested = false;
+let voicePushToTalkActive = false;
 let voiceError = $state<string | null>(null);
 
 const hasDraft = $derived(Boolean(value.trim() || attachments.length > 0));
@@ -332,8 +337,7 @@ function extractVoiceTerms(text: string) {
 	const terms = new Set<string>();
 	const add = (term: string | null | undefined) => {
 		const normalized = term?.replace(/[`*_#[\]()>]/g, "").trim();
-		if (!normalized || normalized.length < 2 || normalized.length > 40)
-			return;
+		if (!normalized || normalized.length < 2 || normalized.length > 40) return;
 		terms.add(normalized);
 	};
 
@@ -353,9 +357,10 @@ function extractVoiceTerms(text: string) {
 
 function buildVoiceAsrOptions(): VoiceInputAsrOptions {
 	const contextSource = `${voicePrefix}${voiceSuffix}`.trim();
-	const contextText = contextSource.length > 0
-		? `Current composer context: ${contextSource.slice(-900)}`
-		: "User is dictating into the Cohub session composer.";
+	const contextText =
+		contextSource.length > 0
+			? `Current composer context: ${contextSource.slice(-900)}`
+			: "User is dictating into the Cohub session composer.";
 	return {
 		endWindowSizeMs: 600,
 		forceToSpeechTimeMs: 1000,
@@ -367,7 +372,9 @@ function buildVoiceAsrOptions(): VoiceInputAsrOptions {
 		contextText,
 		contextMessages: [
 			currentModel?.name ? `Selected model: ${currentModel.name}` : "",
-			attachments.length > 0 ? `Composer has ${attachments.length} attachment(s).` : "",
+			attachments.length > 0
+				? `Composer has ${attachments.length} attachment(s).`
+				: "",
 		].filter(Boolean),
 		postProcessing: {
 			enabled: true,
@@ -381,78 +388,139 @@ function buildVoiceAsrOptions(): VoiceInputAsrOptions {
 
 function getVoiceStatusText() {
 	if (voiceError) return voiceError;
+	if (isVoiceFinishing) return "Finishing";
 	if (isVoiceStarting) return "Starting...";
 	if (!isVoiceRecording) return "";
-	if (!voiceActivity || voiceActivity.state === "waiting") return "Waiting for speech";
+	if (!voiceActivity || voiceActivity.state === "waiting")
+		return "Waiting for speech";
 	if (voiceActivity.state === "silence") return "Finishing";
 	return "Listening";
 }
 
+function isCurrentVoiceSession(sessionId: number, client: VoiceInputClient) {
+	return voiceSessionId === sessionId && voiceClient === client;
+}
+
+function canStartVoiceInput() {
+	return (
+		!disabled &&
+		!sending &&
+		!showAbort &&
+		!voiceClient &&
+		!isVoiceStarting &&
+		!isVoiceRecording &&
+		!isVoiceFinishing
+	);
+}
+
+function finishVoiceInputSession(sessionId: number, client: VoiceInputClient) {
+	if (!isCurrentVoiceSession(sessionId, client)) {
+		client.close();
+		return;
+	}
+	isVoiceRecording = false;
+	isVoiceStarting = false;
+	isVoiceFinishing = false;
+	voiceStopRequested = false;
+	voicePushToTalkActive = false;
+	client.close();
+	voiceClient = null;
+	voiceActivity = null;
+}
+
 async function startVoiceInput() {
-	if (disabled || sending || isVoiceRecording || isVoiceStarting) return;
+	if (!canStartVoiceInput()) return;
+	const sessionId = voiceSessionId + 1;
+	voiceSessionId = sessionId;
 	voiceError = null;
 	voiceActivity = null;
+	isVoiceFinishing = false;
 	isVoiceStarting = true;
+	voiceStopRequested = false;
 	const start = textareaEl?.selectionStart ?? value.length;
 	const end = textareaEl?.selectionEnd ?? start;
 	voicePrefix = value.slice(0, start);
 	voiceSuffix = value.slice(end);
 	voiceCommittedText = "";
 	voicePartialText = "";
-	voiceClient = sdk.voice.createInputClient({
-		onPartial: (text) => {
-			voicePartialText = text;
-			applyVoiceText(text);
+	let client: VoiceInputClient;
+	client = sdk.voice.createInputClient(
+		{
+			onPartial: (text) => {
+				if (!isCurrentVoiceSession(sessionId, client)) return;
+				voicePartialText = text;
+				applyVoiceText(text);
+			},
+			onFinal: (text) => {
+				if (!isCurrentVoiceSession(sessionId, client)) return;
+				voiceCommittedText += text;
+				voicePartialText = "";
+				applyVoiceText();
+			},
+			onVoiceActivity: (event) => {
+				if (!isCurrentVoiceSession(sessionId, client)) return;
+				voiceActivity = event;
+			},
+			onEndpoint: () => {
+				if (!isCurrentVoiceSession(sessionId, client)) return;
+				isVoiceRecording = false;
+				isVoiceFinishing = true;
+				voiceStopRequested = true;
+			},
+			onError: (message) => {
+				if (!isCurrentVoiceSession(sessionId, client)) return;
+				voiceError = message;
+			},
+			onDone: () => {
+				finishVoiceInputSession(sessionId, client);
+			},
 		},
-		onFinal: (text) => {
-			voiceCommittedText += text;
-			voicePartialText = "";
-			applyVoiceText();
+		{
+			asr: buildVoiceAsrOptions(),
+			vad: {
+				enabled: true,
+				autoStop: true,
+				preRollMs: 400,
+				minSpeechMs: 160,
+				silenceDurationMs: 2400,
+				speechThreshold: 0.008,
+				silenceThreshold: 0.005,
+				peakThreshold: 0.07,
+			},
 		},
-		onVoiceActivity: (event) => {
-			voiceActivity = event;
-		},
-		onEndpoint: () => {
-			isVoiceRecording = false;
-		},
-		onError: (message) => {
-			voiceError = message;
-		},
-		onDone: () => {
-			isVoiceRecording = false;
-			isVoiceStarting = false;
-			voiceClient?.close();
-			voiceClient = null;
-			voiceActivity = null;
-		},
-	}, {
-		asr: buildVoiceAsrOptions(),
-		vad: {
-			enabled: true,
-			autoStop: true,
-			preRollMs: 400,
-			minSpeechMs: 160,
-			silenceDurationMs: 2400,
-			speechThreshold: 0.008,
-			silenceThreshold: 0.005,
-			peakThreshold: 0.07,
-		},
-	});
+	);
+	voiceClient = client;
 	try {
-		await voiceClient.start();
+		await client.start();
+		if (!isCurrentVoiceSession(sessionId, client)) {
+			client.close();
+			return;
+		}
+		isVoiceStarting = false;
+		if (voiceStopRequested) {
+			isVoiceFinishing = true;
+			client.stop();
+			return;
+		}
 		isVoiceRecording = true;
 	} catch (error) {
+		if (!isCurrentVoiceSession(sessionId, client)) {
+			client.close();
+			return;
+		}
 		voiceError = error instanceof Error ? error.message : "Voice input failed";
-		voiceClient?.close();
+		client.close();
 		voiceClient = null;
 		isVoiceRecording = false;
-	} finally {
 		isVoiceStarting = false;
+		isVoiceFinishing = false;
+		voiceStopRequested = false;
+		voicePushToTalkActive = false;
 	}
 }
 
 function toggleVoiceInput() {
-	if (isVoiceRecording) {
+	if (isVoiceRecording || isVoiceStarting) {
 		stopVoiceInput();
 		return;
 	}
@@ -460,9 +528,55 @@ function toggleVoiceInput() {
 }
 
 function stopVoiceInput() {
-	if (!isVoiceRecording) return;
+	const client = voiceClient;
+	if (!client || isVoiceFinishing) return;
+	voiceStopRequested = true;
 	isVoiceRecording = false;
-	voiceClient?.stop();
+	isVoiceFinishing = true;
+	if (isVoiceStarting) return;
+	client.stop();
+}
+
+function isVoicePushToTalkKey(event: KeyboardEvent) {
+	return (
+		event.key === "Alt" || event.code === "AltLeft" || event.code === "AltRight"
+	);
+}
+
+function isVoicePushToTalkScope(event: KeyboardEvent) {
+	if (!composerRootEl) return false;
+	const target = event.target;
+	if (target instanceof Node && composerRootEl.contains(target)) return true;
+	const active = document.activeElement;
+	return active instanceof Node && composerRootEl.contains(active);
+}
+
+function handleVoicePushToTalkDown(event: KeyboardEvent) {
+	if (
+		!isVoicePushToTalkKey(event) ||
+		event.repeat ||
+		event.ctrlKey ||
+		event.metaKey ||
+		event.shiftKey
+	)
+		return;
+	if (!isVoicePushToTalkScope(event) || !canStartVoiceInput()) return;
+	event.preventDefault();
+	voicePushToTalkActive = true;
+	void startVoiceInput();
+}
+
+function handleVoicePushToTalkUp(event: KeyboardEvent) {
+	if (!isVoicePushToTalkKey(event) || !voicePushToTalkActive) return;
+	event.preventDefault();
+	voicePushToTalkActive = false;
+	stopVoiceInput();
+}
+
+function releaseVoicePushToTalk() {
+	if (!voicePushToTalkActive) return;
+	voicePushToTalkActive = false;
+	stopVoiceInput();
 }
 
 function applyPromptTemplate(item: SlashCommandMenuItem) {
@@ -754,11 +868,17 @@ onMount(() => {
 	const handleViewportResize = () => resizeTextarea();
 	window.addEventListener("cohub:composer-focus", handleFocusComposer);
 	window.addEventListener("cohub:composer-insert", handleComposerInsert);
+	window.addEventListener("keydown", handleVoicePushToTalkDown);
+	window.addEventListener("keyup", handleVoicePushToTalkUp);
+	window.addEventListener("blur", releaseVoicePushToTalk);
 	window.addEventListener("resize", handleViewportResize);
 	window.visualViewport?.addEventListener("resize", handleViewportResize);
 	return () => {
 		window.removeEventListener("cohub:composer-focus", handleFocusComposer);
 		window.removeEventListener("cohub:composer-insert", handleComposerInsert);
+		window.removeEventListener("keydown", handleVoicePushToTalkDown);
+		window.removeEventListener("keyup", handleVoicePushToTalkUp);
+		window.removeEventListener("blur", releaseVoicePushToTalk);
 		window.removeEventListener("resize", handleViewportResize);
 		window.visualViewport?.removeEventListener("resize", handleViewportResize);
 		spaceMentionLocalController?.abort();
@@ -827,7 +947,7 @@ $effect(() => {
 });
 </script>
 
-<div class="px-4 pb-[calc(0.75rem+env(safe-area-inset-bottom))] pt-2 sm:px-6 sm:pb-4">
+<div bind:this={composerRootEl} class="px-4 pb-[calc(0.75rem+env(safe-area-inset-bottom))] pt-2 sm:px-6 sm:pb-4">
 	<div class={`relative mx-auto transition-[max-width] duration-200 ${isComposerExpanded ? 'max-w-5xl' : 'max-w-4xl'}`}>
 		{#if streamError}
 			<div class="mb-3 rounded-2xl border border-error-soft/25 bg-error-bg px-3 py-2 text-[11px] text-error-soft">
@@ -1133,17 +1253,17 @@ $effect(() => {
 						</div>
 
 						<div class="flex items-center gap-2">
-							{#if isVoiceStarting || isVoiceRecording || voiceError}
+							{#if isVoiceStarting || isVoiceRecording || isVoiceFinishing || voiceError}
 								<span class={`max-w-[160px] truncate text-[11px] leading-none ${voiceError ? 'text-error-soft' : 'text-text-placeholder'}`}>
 									{getVoiceStatusText()}
 								</span>
 							{/if}
 							<button
 								type="button"
-								class={`voice-record-button relative flex h-9 w-9 shrink-0 items-center justify-center rounded-full border transition-all disabled:cursor-not-allowed disabled:opacity-50 ${isVoiceRecording ? 'border-brand/45 bg-brand text-brand-contrast-fg shadow-sm' : isVoiceStarting ? 'border-border-subtle bg-bg-hover-strong text-text-secondary' : 'border-transparent text-text-tertiary hover:bg-bg-hover hover:text-text-primary'}`}
-								disabled={disabled || sending || showAbort || isVoiceStarting}
-								title={isVoiceRecording ? "Stop voice input" : "Start voice input"}
-								aria-label={isVoiceRecording ? "Stop voice input" : "Start voice input"}
+								class={`voice-record-button relative flex h-9 w-9 shrink-0 items-center justify-center rounded-full border transition-all disabled:cursor-not-allowed disabled:opacity-50 ${isVoiceRecording ? 'border-brand/45 bg-brand text-brand-contrast-fg shadow-sm' : (isVoiceStarting || isVoiceFinishing) ? 'border-border-subtle bg-bg-hover-strong text-text-secondary' : 'border-transparent text-text-tertiary hover:bg-bg-hover hover:text-text-primary'}`}
+								disabled={disabled || sending || showAbort || isVoiceFinishing}
+								title={isVoiceRecording || isVoiceStarting ? "Stop voice input" : "Start voice input"}
+								aria-label={isVoiceRecording || isVoiceStarting ? "Stop voice input" : "Start voice input"}
 								aria-pressed={isVoiceRecording}
 								oncontextmenu={(event) => event.preventDefault()}
 								onclick={toggleVoiceInput}

@@ -87,3 +87,9 @@ test("postprocessAsrText applies conservative cleanup", () => {
 
   assert.equal(postprocessAsrText("um cohub  ,  hello!!", options), "Cohub, hello!");
 });
+
+test("postprocessAsrText does not remove meaningful Chinese sequencing terms", () => {
+  const options = normalizeAsrSessionOptions(undefined);
+
+  assert.equal(postprocessAsrText("先做 A，然后，做 B", options), "先做 A，然后，做 B");
+});
