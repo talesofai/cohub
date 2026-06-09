@@ -8,7 +8,13 @@
       "@cohub/db": ["../db/dist/index.d.ts"],
       "@cohub/db/schema": ["../db/dist/index.d.ts"],
       "@cohub/db/schema-v2": ["../db/dist/schema-v2.d.ts"],
+      "@cohub/protocol": ["../protocol/dist/index.d.ts"],
       "@cohub/protocol/core": ["../protocol/dist/core/index.d.ts"],
+      "@cohub/protocol/fs": ["../protocol/dist/fs/index.d.ts"],
+      "@cohub/protocol/generation": ["../protocol/dist/generation/index.d.ts"],
+      "@cohub/protocol/model": ["../protocol/dist/model/session.d.ts"],
+      "@cohub/protocol/sandbox": ["../protocol/dist/sandbox/index.d.ts"],
+      "@cohub/protocol/task": ["../protocol/dist/task/index.d.ts"],
       "@cohub/sandbox-controller": ["../sandbox-controller/dist/index.d.ts"]
     },
     "declaration": true,

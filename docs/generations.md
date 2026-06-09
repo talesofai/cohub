@@ -86,9 +86,15 @@ See the full examples:
 
 - [`docs/examples/generations/gpt-image-2.yaml`](./examples/generations/gpt-image-2.yaml)
 - [`docs/examples/generations/gemini-3.1-flash-image-preview.yaml`](./examples/generations/gemini-3.1-flash-image-preview.yaml)
+- [`docs/examples/generations/kling-text-to-video.yaml`](./examples/generations/kling-text-to-video.yaml)
+- [`docs/examples/generations/kling-image-to-video.yaml`](./examples/generations/kling-image-to-video.yaml)
+- [`docs/examples/generations/kling-omni-video.yaml`](./examples/generations/kling-omni-video.yaml)
+- [`docs/examples/generations/kling-multi-image-to-video.yaml`](./examples/generations/kling-multi-image-to-video.yaml)
 - [`docs/examples/generations/seedance-2-0-fast.yaml`](./examples/generations/seedance-2-0-fast.yaml)
 - [`docs/examples/generations/seedance-2-0.yaml`](./examples/generations/seedance-2-0.yaml)
 - [`docs/examples/generations/suno_music.yaml`](./examples/generations/suno_music.yaml)
+
+Kling declarations use the `kling.videoGenerations` worker adapter and call Neta Router's Kling-compatible video endpoints. Install the desired Kling YAML files into `platform/.cohub/generations` to enable them for all users. Only the latest upstream model for each supported Kling capability is exposed. `kling-v1-5` is intentionally not included. For Kling Omni and multi-image models, provider-native fields such as `image_list`, `element_list`, `video_list`, and `multi_prompt` belong in request `meta` and are passed through unchanged.
 
 ## CLI
 
@@ -115,6 +121,27 @@ cohub generate "a cat playing piano in a cozy jazz club" \
   --model seedance-2-0-fast \
   --param duration=5 \
   --param resolution=720p
+
+cohub generate "a small paper boat floating on calm water, cinematic motion" \
+  --model kling-text-to-video \
+  --param duration=5 \
+  --param aspect_ratio=16:9
+
+cohub generate "gently turn toward the camera with soft natural motion" \
+  --model kling-image-to-video \
+  --image ./input.png \
+  --param duration=5
+
+cohub generate "<<<image_1>>> gently turns toward the camera with soft natural motion" \
+  --model kling-omni-video \
+  --meta '{"image_list":[{"image_url":"https://example.com/input.png","type":"first_frame"}]}' \
+  --param duration=5
+
+cohub generate "combine these references into one cinematic shot" \
+  --model kling-multi-image-to-video \
+  --image ./reference-1.png \
+  --image ./reference-2.png \
+  --param duration=5
 
 cohub generate "uplifting cinematic pop with warm piano and clear chorus" \
   --model suno_music \

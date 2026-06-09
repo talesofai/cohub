@@ -10,6 +10,9 @@
     "sourceMap": true,
     "paths": {
       "@cohub/db": ["../db/dist/index.d.ts"],
+      "@cohub/protocol/core": ["../protocol/dist/core/index.d.ts"],
+      "@cohub/protocol/model": ["../protocol/dist/model/session.d.ts"],
+      "@cohub/protocol/task": ["../protocol/dist/task/index.d.ts"],
       "@cohub/protocol/sandbox": ["../protocol/dist/sandbox/index.d.ts"]
     }
   },

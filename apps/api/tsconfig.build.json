@@ -10,6 +10,9 @@
       "@cohub/core/permissions": [
         "../../packages/core/dist/permissions/index.d.ts"
       ],
+      "@cohub/core/content/sanitize": [
+        "../../packages/core/dist/content/sanitize.d.ts"
+      ],
       "@cohub/protocol": [
         "../../packages/protocol/dist/index.d.ts"
       ],

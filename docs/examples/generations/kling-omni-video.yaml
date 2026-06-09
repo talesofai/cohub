@@ -1,0 +1,106 @@
+schema: neta.generation.model.v1
+model: kling-omni-video
+title: Kling Omni Video
+description: Kling Omni-Video generation through Neta Router. Uses the latest upstream model_name kling-v3-omni.
+adapter:
+  type: kling.videoGenerations
+content:
+  input:
+    - type: text
+      required: false
+      max: 16
+      merge: newline
+      description: Video prompt. Use Kling Omni placeholders such as <<<image_1>>> when passing image_list in meta.
+    - type: image
+      required: false
+      max: 2
+      sources:
+        - url
+        - base64
+      description: Optional simple image input. Official Omni image_list payloads belong in request meta.
+parameters:
+  duration:
+    type: integer
+    optional: true
+    default: 5
+    min: 5
+    max: 15
+    description: Video duration in seconds.
+  aspect_ratio:
+    type: string
+    optional: true
+    default: "16:9"
+    enum: ["16:9", "9:16", "1:1"]
+    description: Output aspect ratio.
+  size:
+    type: string
+    optional: true
+    default: 1280x720
+    enum: [1280x720, 720x1280, 1024x1024]
+    description: OpenAI-compatible video size used to derive Kling aspect ratio.
+  mode:
+    type: string
+    optional: true
+    default: std
+    enum: [std, pro]
+    description: Kling generation mode.
+  cfg_scale:
+    type: number
+    optional: true
+    default: 0.5
+    min: 0
+    max: 1
+    description: Prompt adherence scale.
+  sound:
+    type: string
+    optional: true
+    enum: [on, off]
+    description: Enable or disable generated sound when supported.
+  poll_interval:
+    type: integer
+    optional: true
+    default: 5
+    min: 1
+    max: 30
+    description: Seconds between task status checks.
+  max_wait:
+    type: integer
+    optional: true
+    default: 900
+    min: 30
+    max: 1800
+    description: Maximum seconds to wait for task completion.
+meta:
+  fields:
+    multi_shot:
+      type: boolean
+      optional: true
+      description: Enable Kling multi-shot mode.
+    shot_type:
+      type: string
+      optional: true
+      description: Kling shot type.
+examples:
+  - title: Text to video
+    request:
+      model: kling-omni-video
+      content:
+        - type: text
+          text: a small paper boat floating on calm water, cinematic motion
+      parameters:
+        duration: 5
+        aspect_ratio: "16:9"
+        mode: std
+  - title: Omni image to video
+    request:
+      model: kling-omni-video
+      content:
+        - type: text
+          text: <<<image_1>>> gently turns toward the camera with soft natural motion
+      parameters:
+        duration: 5
+        aspect_ratio: "16:9"
+      meta:
+        image_list:
+          - image_url: https://example.com/input.png
+            type: first_frame

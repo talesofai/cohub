@@ -1,0 +1,89 @@
+schema: neta.generation.model.v1
+model: kling-image-to-video
+title: Kling Image To Video
+description: Kling image-to-video generation through Neta Router. Uses the latest upstream model_name kling-v3.
+adapter:
+  type: kling.videoGenerations
+content:
+  input:
+    - type: text
+      required: true
+      max: 16
+      merge: newline
+      description: Video prompt.
+    - type: image
+      required: true
+      max: 2
+      sources:
+        - url
+        - base64
+      description: First frame and optional tail frame image input.
+parameters:
+  duration:
+    type: integer
+    optional: true
+    default: 5
+    min: 5
+    max: 10
+    description: Video duration in seconds.
+  aspect_ratio:
+    type: string
+    optional: true
+    default: "16:9"
+    enum: ["16:9", "9:16", "1:1"]
+    description: Output aspect ratio.
+  size:
+    type: string
+    optional: true
+    default: 1280x720
+    enum: [1280x720, 720x1280, 1024x1024]
+    description: OpenAI-compatible video size used to derive Kling aspect ratio.
+  mode:
+    type: string
+    optional: true
+    default: std
+    enum: [std, pro]
+    description: Kling generation mode.
+  cfg_scale:
+    type: number
+    optional: true
+    default: 0.5
+    min: 0
+    max: 1
+    description: Prompt adherence scale.
+  negative_prompt:
+    type: string
+    optional: true
+    description: Negative prompt.
+  seed:
+    type: integer
+    optional: true
+    description: Random seed for reproducibility.
+  poll_interval:
+    type: integer
+    optional: true
+    default: 5
+    min: 1
+    max: 30
+    description: Seconds between task status checks.
+  max_wait:
+    type: integer
+    optional: true
+    default: 900
+    min: 30
+    max: 1800
+    description: Maximum seconds to wait for task completion.
+examples:
+  - title: Image to video
+    request:
+      model: kling-image-to-video
+      content:
+        - type: text
+          text: gently turn toward the camera with soft natural motion
+        - type: image
+          source:
+            type: url
+            url: https://example.com/input.png
+      parameters:
+        duration: 5
+        aspect_ratio: "16:9"

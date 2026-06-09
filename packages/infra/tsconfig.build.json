@@ -4,7 +4,10 @@
     "outDir": "dist",
     "rootDir": "src",
     "declaration": true,
-    "declarationMap": false
+    "declarationMap": false,
+    "paths": {
+      "@cohub/protocol/generation": ["../protocol/dist/generation/index.d.ts"]
+    }
   },
   "include": [
     "src"

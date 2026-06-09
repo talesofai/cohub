@@ -2,7 +2,10 @@
   "extends": "../../tsconfig.base.json",
   "compilerOptions": {
     "noEmit": true,
-    "rootDir": "./src"
+    "rootDir": "../..",
+    "paths": {
+      "@cohub/protocol/generation": ["../protocol/src/generation/index.ts"]
+    }
   },
   "include": ["src"]
 }

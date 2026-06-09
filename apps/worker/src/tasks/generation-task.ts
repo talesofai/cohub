@@ -10,6 +10,7 @@ import { createGenerationDeclarationLoader } from "@cohub/infra/config-runtime/g
 import { GENERATION_TASK_TYPE, type GenerationTaskData, type GenerationTaskResult } from "@cohub/protocol/generation";
 import type { TaskPayload } from "@cohub/protocol/task";
 import { config } from "../config.js";
+import { klingVideoGenerationsAdapter } from "../generations/kling-video-adapter.js";
 import { redisCommandClient } from "../redis.js";
 import { registerTask } from "./registry.js";
 
@@ -136,6 +137,9 @@ registerTask(GENERATION_TASK_TYPE, async (job: Job, context) => {
       models: [declaration],
       includeBuiltinModels: false,
       apiKey: getNetaRouterApiKey(),
+      adapters: {
+        "kling.videoGenerations": klingVideoGenerationsAdapter,
+      },
     }).generate({
       model: data.model,
       content: data.content,

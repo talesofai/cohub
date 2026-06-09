@@ -10,6 +10,9 @@
       "@cohub/core/permissions": [
         "../../packages/core/src/permissions/index.ts"
       ],
+      "@cohub/core/content/sanitize": [
+        "../../packages/core/src/content/sanitize.ts"
+      ],
       "@cohub/protocol": [
         "../../packages/protocol/src/index.ts"
       ],

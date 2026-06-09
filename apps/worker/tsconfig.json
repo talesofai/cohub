@@ -124,6 +124,7 @@
     }
   },
   "include": [
-    "src"
+    "src",
+    "tests"
   ]
 }

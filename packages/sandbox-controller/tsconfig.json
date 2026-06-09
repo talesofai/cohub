@@ -6,6 +6,9 @@
     "types": ["node"],
     "paths": {
       "@cohub/db": ["../db/src/index.ts"],
+      "@cohub/protocol/core": ["../protocol/src/core/index.ts"],
+      "@cohub/protocol/model": ["../protocol/src/model/session.ts"],
+      "@cohub/protocol/task": ["../protocol/src/task/index.ts"],
       "@cohub/protocol/sandbox": ["../protocol/src/sandbox/index.ts"]
     }
   },
