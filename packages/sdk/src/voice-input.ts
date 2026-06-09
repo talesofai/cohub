@@ -13,16 +13,68 @@ import {
 
 export type VoiceInputEvent = {
   type: string;
+  requestId?: string | null;
   payload?: Record<string, unknown>;
 };
 
+export type VoiceInputStopReason =
+  | "manual"
+  | "hotkey_release"
+  | "vad_endpoint"
+  | "cancel"
+  | "client_close"
+  | "error";
+
+export type VoiceInputTranscriptEvent = {
+  text: string;
+  fullText?: string;
+  originalText?: string;
+  alternatives: string[];
+  rewritten: boolean;
+  requestId?: string | null;
+};
+
+export type VoiceInputTelemetrySummary = {
+  sessionId: string;
+  requestId: string;
+  stopReason: VoiceInputStopReason | "done";
+  audioPipeline: "audio-worklet" | "script-processor" | "unknown";
+  vadEnabled: boolean;
+  timing: {
+    durationMs: number;
+    startToReadyMs?: number;
+    firstAudioToPartialMs?: number;
+    firstAudioToFinalMs?: number;
+    stopToDoneMs?: number;
+  };
+  traffic: {
+    audioBytes: number;
+    audioChunks: number;
+    partialMessages: number;
+    finalMessages: number;
+    insertedChars: number;
+  };
+  vad: {
+    endpointCount: number;
+    speechMs: number;
+    silenceMs: number;
+    peak: number;
+    maxRms: number;
+  };
+  error?: {
+    code?: string | null;
+    message: string;
+  };
+};
+
 export type VoiceInputCallbacks = {
-  onPartial?: (text: string) => void;
-  onFinal?: (text: string) => void;
+  onPartial?: (text: string, event: VoiceInputTranscriptEvent) => void;
+  onFinal?: (text: string, event: VoiceInputTranscriptEvent) => void;
   onVoiceActivity?: (event: VoiceActivityEvent) => void;
   onEndpoint?: () => void;
   onError?: (message: string) => void;
   onDone?: () => void;
+  onTelemetry?: (summary: VoiceInputTelemetrySummary) => void;
 };
 
 export type VoiceInputPostProcessingOptions = {
@@ -54,7 +106,9 @@ export type VoiceInputAsrOptions = {
 export type VoiceInputClientOptions = {
   env?: CohubEnvironment;
   url?: string;
-  getAccessToken?: (options?: { forceRefresh?: boolean }) => Promise<string | null> | string | null;
+  getAccessToken?: (options?: {
+    forceRefresh?: boolean;
+  }) => Promise<string | null> | string | null;
   WebSocketImpl?: WebSocketConstructor;
   audioConstraints?: MediaTrackConstraints;
   vad?: VoiceInputVadOptions;
@@ -65,7 +119,10 @@ export type VoiceInputClientOptions = {
   callbacks?: VoiceInputCallbacks;
 };
 
-export type VoiceInputCreateOptions = Omit<VoiceInputClientOptions, "callbacks">;
+export type VoiceInputCreateOptions = Omit<
+  VoiceInputClientOptions,
+  "callbacks"
+>;
 
 export type WebSocketLike = {
   readonly readyState: number;
@@ -133,7 +190,8 @@ registerProcessor("${VOICE_INPUT_WORKLET_NAME}", CohubVoiceInputProcessor);
 
 const getDefaultWebSocket = (): WebSocketConstructor => {
   const WebSocketImpl = globalThis.WebSocket;
-  if (!WebSocketImpl) throw new Error("WebSocket is not available in this environment");
+  if (!WebSocketImpl)
+    throw new Error("WebSocket is not available in this environment");
   return WebSocketImpl;
 };
 
@@ -146,7 +204,10 @@ const getDefaultAudioContext = () => {
 
 const createAudioContext = (AudioContextImpl: typeof AudioContext) => {
   try {
-    return new AudioContextImpl({ sampleRate: TARGET_SAMPLE_RATE, latencyHint: "interactive" });
+    return new AudioContextImpl({
+      sampleRate: TARGET_SAMPLE_RATE,
+      latencyHint: "interactive",
+    });
   } catch {
     try {
       return new AudioContextImpl({ latencyHint: "interactive" });
@@ -158,7 +219,9 @@ const createAudioContext = (AudioContextImpl: typeof AudioContext) => {
 
 const createVoiceInputWorkletUrl = () => {
   if (!globalThis.URL?.createObjectURL || !globalThis.Blob) return null;
-  return globalThis.URL.createObjectURL(new Blob([VOICE_INPUT_WORKLET_SOURCE], { type: "application/javascript" }));
+  return globalThis.URL.createObjectURL(
+    new Blob([VOICE_INPUT_WORKLET_SOURCE], { type: "application/javascript" }),
+  );
 };
 
 const toFloat32Array = (input: unknown) => {
@@ -170,12 +233,17 @@ const toFloat32Array = (input: unknown) => {
 const encodeBase64 = (bytes: Uint8Array) => {
   if (typeof btoa === "function") {
     let binary = "";
-    for (let i = 0; i < bytes.length; i += 1) binary += String.fromCharCode(bytes[i] ?? 0);
+    for (let i = 0; i < bytes.length; i += 1)
+      binary += String.fromCharCode(bytes[i] ?? 0);
     return btoa(binary);
   }
-  const maybeBuffer = (globalThis as typeof globalThis & {
-    Buffer?: { from(input: Uint8Array): { toString(encoding: "base64"): string } };
-  }).Buffer;
+  const maybeBuffer = (
+    globalThis as typeof globalThis & {
+      Buffer?: {
+        from(input: Uint8Array): { toString(encoding: "base64"): string };
+      };
+    }
+  ).Buffer;
   if (maybeBuffer) return maybeBuffer.from(bytes).toString("base64");
   throw new Error("Base64 encoding is not available in this environment");
 };
@@ -188,6 +256,67 @@ const getErrorCode = (event: VoiceInputEvent) => {
 const getErrorMessage = (event: VoiceInputEvent) => {
   const message = event.payload?.message;
   return typeof message === "string" ? message : "Voice input failed";
+};
+
+const createVoiceInputSessionId = () => {
+  if (globalThis.crypto?.randomUUID) return globalThis.crypto.randomUUID();
+  return `voice_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 10)}`;
+};
+
+const getStringPayload = (event: VoiceInputEvent, key: string) => {
+  const value = event.payload?.[key];
+  return typeof value === "string" ? value : undefined;
+};
+
+const getStringArrayPayload = (event: VoiceInputEvent, key: string) => {
+  const value = event.payload?.[key];
+  if (!Array.isArray(value)) return [];
+  return value.filter(
+    (item): item is string => typeof item === "string" && item.length > 0,
+  );
+};
+
+const buildTranscriptEvent = (
+  event: VoiceInputEvent,
+): VoiceInputTranscriptEvent => {
+  const text = getStringPayload(event, "text") ?? "";
+  const originalText = getStringPayload(event, "originalText");
+  return {
+    text,
+    fullText: getStringPayload(event, "fullText"),
+    originalText,
+    alternatives: getStringArrayPayload(event, "alternatives"),
+    rewritten:
+      event.payload?.rewritten === true ||
+      Boolean(originalText && originalText !== text),
+    requestId: event.requestId ?? null,
+  };
+};
+
+type VoiceTelemetryState = {
+  sessionId: string;
+  startedAt: number;
+  readyAt?: number;
+  firstAudioAt?: number;
+  firstPartialAt?: number;
+  firstFinalAt?: number;
+  stopAt?: number;
+  doneAt?: number;
+  audioBytes: number;
+  audioChunks: number;
+  partialMessages: number;
+  finalMessages: number;
+  insertedChars: number;
+  endpointCount: number;
+  speechMs: number;
+  silenceMs: number;
+  peak: number;
+  maxRms: number;
+  emitted: boolean;
+  error?: {
+    code?: string | null;
+    message: string;
+  };
 };
 
 export class VoiceInputClient {
@@ -218,7 +347,8 @@ export class VoiceInputClient {
   private intentionalClose = false;
   private startPromise: Promise<void> | null = null;
   private socketOpenPromise: Promise<void> | null = null;
-  private idleCloseTimer: ReturnType<typeof globalThis.setTimeout> | null = null;
+  private idleCloseTimer: ReturnType<typeof globalThis.setTimeout> | null =
+    null;
   private authWaiter: {
     promise: Promise<void>;
     resolve: () => void;
@@ -229,17 +359,27 @@ export class VoiceInputClient {
     resolve: () => void;
     reject: (error: Error) => void;
   } | null = null;
+  private sessionId: string | null = null;
+  private telemetry: VoiceTelemetryState | null = null;
+  private audioPipeline: VoiceInputTelemetrySummary["audioPipeline"] =
+    "unknown";
+  private stopReason: VoiceInputStopReason | null = null;
 
   constructor(options: VoiceInputClientOptions = {}) {
-    this.url = resolveVoiceInputWebsocketUrl({ env: options.env, url: options.url });
+    this.url = resolveVoiceInputWebsocketUrl({
+      env: options.env,
+      url: options.url,
+    });
     this.getAccessToken = options.getAccessToken;
     this.WebSocketImpl = options.WebSocketImpl ?? getDefaultWebSocket();
     this.audioConstraints = options.audioConstraints;
     this.vadOptions = options.vad;
     this.asrOptions = options.asr;
     this.preferAudioWorklet = options.preferAudioWorklet ?? true;
-    this.connectionTimeoutMs = options.connectionTimeoutMs ?? DEFAULT_CONNECTION_TIMEOUT_MS;
-    this.idleConnectionTimeoutMs = options.idleConnectionTimeoutMs ?? DEFAULT_IDLE_CONNECTION_TIMEOUT_MS;
+    this.connectionTimeoutMs =
+      options.connectionTimeoutMs ?? DEFAULT_CONNECTION_TIMEOUT_MS;
+    this.idleConnectionTimeoutMs =
+      options.idleConnectionTimeoutMs ?? DEFAULT_IDLE_CONNECTION_TIMEOUT_MS;
     this.callbacks = options.callbacks ?? {};
   }
 
@@ -253,24 +393,42 @@ export class VoiceInputClient {
     return this.startPromise;
   }
 
-  stop() {
+  stop(reason: VoiceInputStopReason = "manual") {
+    this.stopReason = reason;
+    if (this.telemetry && !this.telemetry.stopAt)
+      this.telemetry.stopAt = Date.now();
     const pendingSamples = this.audioChunker.flush();
     if (pendingSamples) this.sendAudio(pendingSamples);
     this.flushPendingAudio();
-    if (this.asrStarted) this.send({ type: "asr.stop" });
+    if (this.asrStarted)
+      this.send({
+        type: "asr.stop",
+        requestId: this.sessionId ?? undefined,
+        payload: { reason, clientSessionId: this.sessionId },
+      });
     this.cleanupAudio();
     this.started = false;
     this.scheduleIdleClose();
   }
 
-  cancel() {
-    if (this.asrStarted) this.send({ type: "asr.cancel" });
+  cancel(reason: VoiceInputStopReason = "cancel") {
+    this.stopReason = reason;
+    if (this.telemetry && !this.telemetry.stopAt)
+      this.telemetry.stopAt = Date.now();
+    if (this.asrStarted)
+      this.send({
+        type: "asr.cancel",
+        requestId: this.sessionId ?? undefined,
+        payload: { reason, clientSessionId: this.sessionId },
+      });
     this.cleanupAudio();
     this.started = false;
     this.scheduleIdleClose();
+    this.emitTelemetry(reason);
   }
 
   close() {
+    this.emitTelemetry(this.stopReason ?? "client_close");
     this.intentionalClose = true;
     this.clearIdleCloseTimer();
     this.cleanupAudio();
@@ -282,13 +440,33 @@ export class VoiceInputClient {
     this.clearIdleCloseTimer();
     this.started = true;
     this.asrStarted = false;
+    this.sessionId = createVoiceInputSessionId();
+    this.telemetry = {
+      sessionId: this.sessionId,
+      startedAt: Date.now(),
+      audioBytes: 0,
+      audioChunks: 0,
+      partialMessages: 0,
+      finalMessages: 0,
+      insertedChars: 0,
+      endpointCount: 0,
+      speechMs: 0,
+      silenceMs: 0,
+      peak: 0,
+      maxRms: 0,
+      emitted: false,
+    };
+    this.audioPipeline = "unknown";
+    this.stopReason = null;
     this.audioChunker.reset();
     this.vad = new VoiceInputVad(this.vadOptions);
     this.pendingAudio = [];
     this.intentionalClose = false;
 
     try {
-      await this.withConnectionTimeout(Promise.all([this.setupAudio(), this.ensureAuthenticatedSocket()]));
+      await this.withConnectionTimeout(
+        Promise.all([this.setupAudio(), this.ensureAuthenticatedSocket()]),
+      );
       await this.withConnectionTimeout(this.startAsrSession());
     } catch (error) {
       this.cleanupAudio();
@@ -316,7 +494,8 @@ export class VoiceInputClient {
   }
 
   private async ensureAuthenticatedSocket() {
-    if (this.socket?.readyState === WEBSOCKET_OPEN && this.authenticated) return;
+    if (this.socket?.readyState === WEBSOCKET_OPEN && this.authenticated)
+      return;
 
     await this.ensureSocketOpen();
     if (this.authenticated) return;
@@ -324,7 +503,8 @@ export class VoiceInputClient {
     try {
       await this.authenticate(false);
     } catch (error) {
-      if (!(error instanceof Error) || error.message !== "UNAUTHORIZED") throw error;
+      if (!(error instanceof Error) || error.message !== "UNAUTHORIZED")
+        throw error;
       await this.authenticate(true);
     }
   }
@@ -350,9 +530,12 @@ export class VoiceInputClient {
         this.rejectAsrStartWaiter(new Error("Voice connection closed"));
         if (this.socket === socket) this.socket = null;
         if (!this.intentionalClose && this.started) {
+          if (this.telemetry)
+            this.telemetry.error = { message: "Voice connection closed" };
           this.cleanupAudio();
           this.started = false;
           this.callbacks.onError?.("Voice connection closed. Try again.");
+          this.emitTelemetry("error");
           this.callbacks.onDone?.();
         }
         if (socket.readyState !== WEBSOCKET_OPEN) {
@@ -384,7 +567,18 @@ export class VoiceInputClient {
 
   private async startAsrSession() {
     const waiter = this.createAsrStartWaiter();
-    this.send({ type: "asr.start", payload: this.asrOptions ? { asr: this.asrOptions } : undefined });
+    this.send({
+      type: "asr.start",
+      requestId: this.sessionId ?? undefined,
+      payload: {
+        ...(this.asrOptions ? { asr: this.asrOptions } : {}),
+        client: {
+          sessionId: this.sessionId,
+          audioPipeline: this.audioPipeline,
+          vadEnabled: this.vadOptions?.enabled ?? true,
+        },
+      },
+    });
     await waiter.promise;
   }
 
@@ -444,11 +638,15 @@ export class VoiceInputClient {
 
   private async setupAudio() {
     const mediaDevices = globalThis.navigator?.mediaDevices;
-    if (!mediaDevices) throw new Error("Microphone input is not available in this environment");
+    if (!mediaDevices)
+      throw new Error("Microphone input is not available in this environment");
     const AudioContextImpl = getDefaultAudioContext();
-    if (!AudioContextImpl) throw new Error("AudioContext is not available in this environment");
+    if (!AudioContextImpl)
+      throw new Error("AudioContext is not available in this environment");
 
-    this.stream = await mediaDevices.getUserMedia({ audio: createVoiceInputAudioConstraints(this.audioConstraints) });
+    this.stream = await mediaDevices.getUserMedia({
+      audio: createVoiceInputAudioConstraints(this.audioConstraints),
+    });
     this.audioContext = createAudioContext(AudioContextImpl);
     await this.audioContext.resume().catch(() => undefined);
     this.source = this.audioContext.createMediaStreamSource(this.stream);
@@ -458,7 +656,12 @@ export class VoiceInputClient {
   }
 
   private async setupAudioWorklet() {
-    if (!this.preferAudioWorklet || !this.audioContext?.audioWorklet || !this.source) return false;
+    if (
+      !this.preferAudioWorklet ||
+      !this.audioContext?.audioWorklet ||
+      !this.source
+    )
+      return false;
 
     const workletUrl = createVoiceInputWorkletUrl();
     if (!workletUrl) return false;
@@ -472,13 +675,17 @@ export class VoiceInputClient {
     }
 
     try {
-      this.workletNode = new AudioWorkletNode(this.audioContext, VOICE_INPUT_WORKLET_NAME, {
-        channelCount: 1,
-        channelCountMode: "explicit",
-        numberOfInputs: 1,
-        numberOfOutputs: 1,
-        outputChannelCount: [1],
-      });
+      this.workletNode = new AudioWorkletNode(
+        this.audioContext,
+        VOICE_INPUT_WORKLET_NAME,
+        {
+          channelCount: 1,
+          channelCountMode: "explicit",
+          numberOfInputs: 1,
+          numberOfOutputs: 1,
+          outputChannelCount: [1],
+        },
+      );
       this.workletNode.port.onmessage = (event) => {
         const samples = toFloat32Array(event.data);
         if (samples) this.handleAudioSamples(samples);
@@ -488,6 +695,7 @@ export class VoiceInputClient {
       this.source.connect(this.workletNode);
       this.workletNode.connect(this.sink);
       this.sink.connect(this.audioContext.destination);
+      this.audioPipeline = "audio-worklet";
       return true;
     } catch {
       this.workletNode?.disconnect();
@@ -500,8 +708,13 @@ export class VoiceInputClient {
   }
 
   private setupScriptProcessor() {
-    if (!this.audioContext || !this.source) throw new Error("Audio input is not ready");
-    this.processor = this.audioContext.createScriptProcessor(SCRIPT_PROCESSOR_BUFFER_SIZE, 1, 1);
+    if (!this.audioContext || !this.source)
+      throw new Error("Audio input is not ready");
+    this.processor = this.audioContext.createScriptProcessor(
+      SCRIPT_PROCESSOR_BUFFER_SIZE,
+      1,
+      1,
+    );
     this.processor.onaudioprocess = (event) => {
       const samples = event.inputBuffer.getChannelData(0);
       this.handleAudioSamples(samples);
@@ -511,11 +724,15 @@ export class VoiceInputClient {
     this.source.connect(this.processor);
     this.processor.connect(this.sink);
     this.sink.connect(this.audioContext.destination);
+    this.audioPipeline = "script-processor";
   }
 
   private handleAudioSamples(samples: Float32Array) {
     if (!this.started) return;
-    const resampled = resampleTo16k(samples, this.audioContext?.sampleRate ?? TARGET_SAMPLE_RATE);
+    const resampled = resampleTo16k(
+      samples,
+      this.audioContext?.sampleRate ?? TARGET_SAMPLE_RATE,
+    );
     for (const chunk of this.audioChunker.push(resampled)) {
       const vadResult = this.vad?.process(chunk);
       if (!vadResult) {
@@ -523,39 +740,53 @@ export class VoiceInputClient {
         continue;
       }
 
+      this.recordVoiceActivity(vadResult.event);
       this.callbacks.onVoiceActivity?.(vadResult.event);
       for (const audioChunk of vadResult.chunks) this.sendAudio(audioChunk);
       if (vadResult.endpoint) {
+        if (this.telemetry) this.telemetry.endpointCount += 1;
         this.callbacks.onEndpoint?.();
-        this.stop();
+        this.stop("vad_endpoint");
         return;
       }
     }
   }
 
   private sendAudio(samples: Float32Array) {
-    const audio = encodeBase64(floatToPcm16(samples));
+    const pcm = floatToPcm16(samples);
+    this.recordAudio(pcm.byteLength);
+    const audio = encodeBase64(pcm);
     if (!this.asrStarted) {
       this.pendingAudio.push(audio);
       return;
     }
-    this.send({ type: "asr.audio", payload: { audio } });
+    this.send({
+      type: "asr.audio",
+      requestId: this.sessionId ?? undefined,
+      payload: { audio },
+    });
   }
 
   private flushPendingAudio() {
     if (!this.asrStarted) return;
     for (const audio of this.pendingAudio.splice(0)) {
-      this.send({ type: "asr.audio", payload: { audio } });
+      this.send({
+        type: "asr.audio",
+        requestId: this.sessionId ?? undefined,
+        payload: { audio },
+      });
     }
   }
 
   private send(message: Record<string, unknown>) {
-    if (this.socket?.readyState === WEBSOCKET_OPEN) this.socket.send(JSON.stringify(message));
+    if (this.socket?.readyState === WEBSOCKET_OPEN)
+      this.socket.send(JSON.stringify(message));
   }
 
   private handleMessage(event: MessageEvent) {
     const data = JSON.parse(String(event.data)) as VoiceInputEvent;
-    const text = typeof data.payload?.text === "string" ? data.payload.text : "";
+    const transcript = buildTranscriptEvent(data);
+    const text = transcript.text;
 
     if (data.type === "system.auth.ok") {
       this.authenticated = true;
@@ -565,6 +796,7 @@ export class VoiceInputClient {
 
     if (data.type === "asr.started") {
       this.asrStarted = true;
+      if (this.telemetry) this.telemetry.readyAt = Date.now();
       this.flushPendingAudio();
       this.resolveAsrStartWaiter();
       return data;
@@ -573,21 +805,31 @@ export class VoiceInputClient {
     if (data.type === "asr.error") {
       const message = getErrorMessage(data);
       const code = getErrorCode(data);
+      if (this.telemetry) this.telemetry.error = { code, message };
       if (code === "UNAUTHORIZED") {
         this.authenticated = false;
         this.rejectAuthWaiter(new Error("UNAUTHORIZED"));
       }
       this.rejectAsrStartWaiter(new Error(message));
       this.callbacks.onError?.(message);
+      this.emitTelemetry("error");
       return data;
     }
 
-    if (data.type === "asr.partial") this.callbacks.onPartial?.(text);
-    if (data.type === "asr.final") this.callbacks.onFinal?.(text);
+    if (data.type === "asr.partial") {
+      this.recordPartial();
+      this.callbacks.onPartial?.(text, transcript);
+    }
+    if (data.type === "asr.final") {
+      this.recordFinal(text);
+      this.callbacks.onFinal?.(text, transcript);
+    }
     if (data.type === "asr.done") {
       this.asrStarted = false;
       this.started = false;
+      if (this.telemetry) this.telemetry.doneAt = Date.now();
       this.scheduleIdleClose();
+      this.emitTelemetry(this.stopReason ?? "done");
       this.callbacks.onDone?.();
     }
     return data;
@@ -615,6 +857,90 @@ export class VoiceInputClient {
     this.vad = null;
     this.pendingAudio = [];
     this.asrStarted = false;
+  }
+
+  private recordAudio(byteLength: number) {
+    if (!this.telemetry) return;
+    const now = Date.now();
+    if (!this.telemetry.firstAudioAt) this.telemetry.firstAudioAt = now;
+    this.telemetry.audioChunks += 1;
+    this.telemetry.audioBytes += byteLength;
+  }
+
+  private recordVoiceActivity(event: VoiceActivityEvent) {
+    if (!this.telemetry) return;
+    this.telemetry.speechMs = Math.max(this.telemetry.speechMs, event.speechMs);
+    this.telemetry.silenceMs = Math.max(
+      this.telemetry.silenceMs,
+      event.silenceMs,
+    );
+    this.telemetry.peak = Math.max(this.telemetry.peak, event.peak);
+    this.telemetry.maxRms = Math.max(this.telemetry.maxRms, event.level);
+  }
+
+  private recordPartial() {
+    if (!this.telemetry) return;
+    const now = Date.now();
+    if (!this.telemetry.firstPartialAt) this.telemetry.firstPartialAt = now;
+    this.telemetry.partialMessages += 1;
+  }
+
+  private recordFinal(text: string) {
+    if (!this.telemetry) return;
+    const now = Date.now();
+    if (!this.telemetry.firstFinalAt) this.telemetry.firstFinalAt = now;
+    this.telemetry.finalMessages += 1;
+    this.telemetry.insertedChars += text.length;
+  }
+
+  private emitTelemetry(
+    stopReason: VoiceInputTelemetrySummary["stopReason"],
+    error?: VoiceTelemetryState["error"],
+  ) {
+    const telemetry = this.telemetry;
+    if (!telemetry || telemetry.emitted) return;
+    const doneAt = telemetry.doneAt ?? Date.now();
+    telemetry.doneAt = doneAt;
+    telemetry.emitted = true;
+    if (error) telemetry.error = error;
+    const firstAudioAt = telemetry.firstAudioAt;
+    this.callbacks.onTelemetry?.({
+      sessionId: telemetry.sessionId,
+      requestId: telemetry.sessionId,
+      stopReason,
+      audioPipeline: this.audioPipeline,
+      vadEnabled: this.vadOptions?.enabled ?? true,
+      timing: {
+        durationMs: doneAt - telemetry.startedAt,
+        ...(telemetry.readyAt
+          ? { startToReadyMs: telemetry.readyAt - telemetry.startedAt }
+          : {}),
+        ...(firstAudioAt && telemetry.firstPartialAt
+          ? { firstAudioToPartialMs: telemetry.firstPartialAt - firstAudioAt }
+          : {}),
+        ...(firstAudioAt && telemetry.firstFinalAt
+          ? { firstAudioToFinalMs: telemetry.firstFinalAt - firstAudioAt }
+          : {}),
+        ...(telemetry.stopAt
+          ? { stopToDoneMs: doneAt - telemetry.stopAt }
+          : {}),
+      },
+      traffic: {
+        audioBytes: telemetry.audioBytes,
+        audioChunks: telemetry.audioChunks,
+        partialMessages: telemetry.partialMessages,
+        finalMessages: telemetry.finalMessages,
+        insertedChars: telemetry.insertedChars,
+      },
+      vad: {
+        endpointCount: telemetry.endpointCount,
+        speechMs: telemetry.speechMs,
+        silenceMs: telemetry.silenceMs,
+        peak: telemetry.peak,
+        maxRms: telemetry.maxRms,
+      },
+      ...(telemetry.error ? { error: telemetry.error } : {}),
+    });
   }
 
   private scheduleIdleClose() {
@@ -645,7 +971,10 @@ export class VoiceInputClient {
 export class VoiceApi {
   constructor(private readonly defaults: VoiceInputCreateOptions = {}) {}
 
-  createInputClient(callbacks: VoiceInputCallbacks = {}, options: VoiceInputCreateOptions = {}) {
+  createInputClient(
+    callbacks: VoiceInputCallbacks = {},
+    options: VoiceInputCreateOptions = {},
+  ) {
     return new VoiceInputClient({
       ...this.defaults,
       ...options,
@@ -654,4 +983,5 @@ export class VoiceApi {
   }
 }
 
-export const createVoiceInputClient = (options?: VoiceInputClientOptions) => new VoiceInputClient(options);
+export const createVoiceInputClient = (options?: VoiceInputClientOptions) =>
+  new VoiceInputClient(options);

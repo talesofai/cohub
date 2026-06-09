@@ -10,6 +10,7 @@ import {
 	ChevronDown,
 	Mic,
 	Plus,
+	RefreshCw,
 	Square,
 	Upload,
 	X,
@@ -47,6 +48,12 @@ import {
 	entriesFromFiles,
 	type LocalUploadEntry,
 } from "$lib/upload-entries";
+import {
+	addVoiceInputLexiconTerm,
+	getVoiceInputLexicon,
+	removeVoiceInputLexiconTerm,
+	type VoiceInputLexiconEntry,
+} from "$lib/voice-input-lexicon";
 
 type SelectedModel = {
 	provider: string;
@@ -136,8 +143,19 @@ let isVoiceRecording = $state(false);
 let isVoiceStarting = $state(false);
 let isVoiceFinishing = $state(false);
 let voiceStopRequested = false;
+let voiceStopReason: "manual" | "hotkey_release" | "vad_endpoint" | "error" =
+	"manual";
 let voicePushToTalkActive = false;
 let voiceError = $state<string | null>(null);
+let voiceContinuousMode = $state(false);
+let voiceCandidateAlternatives = $state<string[]>([]);
+let voiceCandidateStart = 0;
+let voiceCandidateEnd = 0;
+let voiceUndoSnapshot = $state<string | null>(null);
+let voiceContinuousUndoSnapshot: string | null = null;
+let voiceLexiconOpen = $state(false);
+let voiceLexiconInput = $state("");
+let voiceLexiconEntries = $state<VoiceInputLexiconEntry[]>([]);
 
 const hasDraft = $derived(Boolean(value.trim() || attachments.length > 0));
 const showAbort = $derived(Boolean(isRunning && !hasDraft));
@@ -333,6 +351,91 @@ function applyVoiceText(partialText = "") {
 	});
 }
 
+function rememberVoiceUndoSnapshot() {
+	if (voiceContinuousMode && voiceContinuousUndoSnapshot !== null) {
+		voiceUndoSnapshot = voiceContinuousUndoSnapshot;
+		return;
+	}
+	voiceUndoSnapshot = value;
+	if (voiceContinuousMode) voiceContinuousUndoSnapshot = value;
+}
+
+function resetVoiceCandidates() {
+	voiceCandidateAlternatives = [];
+	voiceCandidateStart = 0;
+	voiceCandidateEnd = 0;
+}
+
+function setVoiceCandidates(
+	alternatives: string[],
+	originalText: string,
+	insertedText: string,
+) {
+	const unique = [originalText, ...alternatives]
+		.map((item) => item.trim())
+		.filter(
+			(item, index, values) =>
+				item && item !== insertedText && values.indexOf(item) === index,
+		)
+		.slice(0, 3);
+	voiceCandidateAlternatives = unique;
+	voiceCandidateEnd = voicePrefix.length + voiceCommittedText.length;
+	voiceCandidateStart = Math.max(
+		voicePrefix.length,
+		voiceCandidateEnd - insertedText.length,
+	);
+}
+
+function applyVoiceCandidate(candidate: string) {
+	if (!candidate || voiceCandidateEnd < voiceCandidateStart) return;
+	value =
+		value.slice(0, voiceCandidateStart) +
+		candidate +
+		value.slice(voiceCandidateEnd);
+	voiceCandidateEnd = voiceCandidateStart + candidate.length;
+	resetVoiceCandidates();
+	requestAnimationFrame(() => {
+		textareaEl?.focus();
+		textareaEl?.setSelectionRange(voiceCandidateEnd, voiceCandidateEnd);
+		resizeTextarea();
+	});
+}
+
+function undoLastVoiceInput() {
+	if (voiceUndoSnapshot === null) return;
+	value = voiceUndoSnapshot;
+	voiceUndoSnapshot = null;
+	voiceContinuousUndoSnapshot = null;
+	resetVoiceCandidates();
+	requestAnimationFrame(() => {
+		textareaEl?.focus();
+		resizeTextarea();
+	});
+}
+
+function refreshVoiceLexicon() {
+	voiceLexiconEntries = getVoiceInputLexicon();
+}
+
+function addVoiceLexiconInput() {
+	const next = addVoiceInputLexiconTerm(voiceLexiconInput, "manual");
+	voiceLexiconInput = "";
+	voiceLexiconEntries = next;
+}
+
+function removeVoiceLexiconEntry(term: string) {
+	voiceLexiconEntries = removeVoiceInputLexiconTerm(term);
+}
+
+function toggleVoiceContinuousMode() {
+	voiceContinuousMode = !voiceContinuousMode;
+	if (voiceContinuousMode) {
+		voiceContinuousUndoSnapshot = value;
+		return;
+	}
+	voiceContinuousUndoSnapshot = null;
+}
+
 function extractVoiceTerms(text: string) {
 	const terms = new Set<string>();
 	const add = (term: string | null | undefined) => {
@@ -345,6 +448,7 @@ function extractVoiceTerms(text: string) {
 	add("Neta");
 	add(currentModel?.name);
 	add(currentModel?.id);
+	for (const entry of voiceLexiconEntries) add(entry.term);
 	for (const item of promptTemplates.slice(0, 24)) add(item.name);
 	for (const token of tokenizeSpaceMentionText(text)) {
 		if (token.type === "spaceMention") add(token.label);
@@ -413,23 +517,54 @@ function canStartVoiceInput() {
 	);
 }
 
+function scheduleContinuousVoiceInput(reason: typeof voiceStopReason) {
+	if (
+		!voiceContinuousMode ||
+		reason !== "vad_endpoint" ||
+		voiceError ||
+		voicePushToTalkActive ||
+		disabled ||
+		sending ||
+		showAbort
+	)
+		return;
+	window.setTimeout(() => {
+		if (
+			voiceClient ||
+			isVoiceStarting ||
+			isVoiceRecording ||
+			isVoiceFinishing ||
+			!voiceContinuousMode
+		)
+			return;
+		void startVoiceInput();
+	}, 180);
+}
+
 function finishVoiceInputSession(sessionId: number, client: VoiceInputClient) {
 	if (!isCurrentVoiceSession(sessionId, client)) {
 		client.close();
 		return;
 	}
+	const stopReason = voiceStopReason;
 	isVoiceRecording = false;
 	isVoiceStarting = false;
 	isVoiceFinishing = false;
 	voiceStopRequested = false;
+	voiceStopReason = "manual";
 	voicePushToTalkActive = false;
 	client.close();
 	voiceClient = null;
 	voiceActivity = null;
+	if (stopReason !== "vad_endpoint") voiceContinuousUndoSnapshot = null;
+	scheduleContinuousVoiceInput(stopReason);
 }
 
 async function startVoiceInput() {
 	if (!canStartVoiceInput()) return;
+	refreshVoiceLexicon();
+	rememberVoiceUndoSnapshot();
+	resetVoiceCandidates();
 	const sessionId = voiceSessionId + 1;
 	voiceSessionId = sessionId;
 	voiceError = null;
@@ -437,6 +572,7 @@ async function startVoiceInput() {
 	isVoiceFinishing = false;
 	isVoiceStarting = true;
 	voiceStopRequested = false;
+	voiceStopReason = "manual";
 	const start = textareaEl?.selectionStart ?? value.length;
 	const end = textareaEl?.selectionEnd ?? start;
 	voicePrefix = value.slice(0, start);
@@ -451,11 +587,17 @@ async function startVoiceInput() {
 				voicePartialText = text;
 				applyVoiceText(text);
 			},
-			onFinal: (text) => {
+			onFinal: (text, event) => {
 				if (!isCurrentVoiceSession(sessionId, client)) return;
 				voiceCommittedText += text;
 				voicePartialText = "";
 				applyVoiceText();
+				setVoiceCandidates(event.alternatives, event.originalText ?? "", text);
+				for (const term of extractVoiceTerms(text).slice(0, 6)) {
+					if (/^[A-Z][A-Za-z0-9_-]{2,39}$/.test(term)) {
+						voiceLexiconEntries = addVoiceInputLexiconTerm(term, "auto");
+					}
+				}
 			},
 			onVoiceActivity: (event) => {
 				if (!isCurrentVoiceSession(sessionId, client)) return;
@@ -466,10 +608,12 @@ async function startVoiceInput() {
 				isVoiceRecording = false;
 				isVoiceFinishing = true;
 				voiceStopRequested = true;
+				voiceStopReason = "vad_endpoint";
 			},
 			onError: (message) => {
 				if (!isCurrentVoiceSession(sessionId, client)) return;
 				voiceError = message;
+				voiceStopReason = "error";
 			},
 			onDone: () => {
 				finishVoiceInputSession(sessionId, client);
@@ -499,7 +643,7 @@ async function startVoiceInput() {
 		isVoiceStarting = false;
 		if (voiceStopRequested) {
 			isVoiceFinishing = true;
-			client.stop();
+			client.stop(voiceStopReason);
 			return;
 		}
 		isVoiceRecording = true;
@@ -515,7 +659,9 @@ async function startVoiceInput() {
 		isVoiceStarting = false;
 		isVoiceFinishing = false;
 		voiceStopRequested = false;
+		voiceStopReason = "manual";
 		voicePushToTalkActive = false;
+		voiceContinuousUndoSnapshot = null;
 	}
 }
 
@@ -527,14 +673,15 @@ function toggleVoiceInput() {
 	void startVoiceInput();
 }
 
-function stopVoiceInput() {
+function stopVoiceInput(reason: "manual" | "hotkey_release" = "manual") {
 	const client = voiceClient;
 	if (!client || isVoiceFinishing) return;
 	voiceStopRequested = true;
+	voiceStopReason = reason;
 	isVoiceRecording = false;
 	isVoiceFinishing = true;
 	if (isVoiceStarting) return;
-	client.stop();
+	client.stop(reason);
 }
 
 function isVoicePushToTalkKey(event: KeyboardEvent) {
@@ -570,13 +717,13 @@ function handleVoicePushToTalkUp(event: KeyboardEvent) {
 	if (!isVoicePushToTalkKey(event) || !voicePushToTalkActive) return;
 	event.preventDefault();
 	voicePushToTalkActive = false;
-	stopVoiceInput();
+	stopVoiceInput("hotkey_release");
 }
 
 function releaseVoicePushToTalk() {
 	if (!voicePushToTalkActive) return;
 	voicePushToTalkActive = false;
-	stopVoiceInput();
+	stopVoiceInput("hotkey_release");
 }
 
 function applyPromptTemplate(item: SlashCommandMenuItem) {
@@ -857,6 +1004,7 @@ function handlePaste(event: ClipboardEvent) {
 }
 
 onMount(() => {
+	refreshVoiceLexicon();
 	focusComposer();
 	const handleComposerInsert = (event: Event) => {
 		const custom = event as CustomEvent<{ snippet?: string }>;
@@ -1224,8 +1372,8 @@ $effect(() => {
 						onselect={applySpaceMention}
 					/>
 
-					<div class="mt-1.5 flex items-center justify-between gap-2">
-						<div class="flex items-center gap-1">
+					<div class="mt-1.5 flex flex-wrap items-center justify-between gap-2">
+						<div class="flex min-w-0 flex-wrap items-center gap-1">
 							<button
 								type="button"
 								class="-ml-2 flex h-8.5 w-8.5 shrink-0 items-center justify-center rounded-full text-text-tertiary transition-colors hover:bg-bg-hover hover:text-text-primary disabled:cursor-not-allowed disabled:opacity-50"
@@ -1236,10 +1384,80 @@ $effect(() => {
 								<Plus class="h-[17px] w-[17px]" />
 							</button>
 
+							<div class="relative">
+								<button
+									type="button"
+									class={`flex h-7 items-center rounded-full border px-2 text-[11px] transition-colors disabled:cursor-not-allowed disabled:opacity-50 ${voiceLexiconOpen ? 'border-brand/35 bg-brand/8 text-text-primary' : 'border-border-subtle text-text-tertiary hover:bg-bg-hover hover:text-text-primary'}`}
+									onclick={() => {
+										refreshVoiceLexicon();
+										voiceLexiconOpen = !voiceLexiconOpen;
+									}}
+									disabled={disabled || sending}
+									title="Voice terms"
+								>
+									Terms
+								</button>
+								{#if voiceLexiconOpen}
+									<div class="absolute bottom-8 left-0 z-30 w-64 rounded-lg border border-border-subtle bg-bg-elevated p-2 shadow-lg">
+										<div class="flex gap-1">
+											<input
+												bind:value={voiceLexiconInput}
+												class="min-w-0 flex-1 rounded-md border border-border-subtle bg-bg-content px-2 py-1 text-[12px] text-text-primary outline-none focus:border-brand/35"
+												placeholder="Add term"
+												onkeydown={(event) => {
+													if (event.key === 'Enter') {
+														event.preventDefault();
+														addVoiceLexiconInput();
+													}
+												}}
+											/>
+											<button
+												type="button"
+												class="rounded-md bg-text-primary px-2 text-[11px] text-bg-primary disabled:opacity-50"
+												disabled={!voiceLexiconInput.trim()}
+												onclick={addVoiceLexiconInput}
+											>
+												Add
+											</button>
+										</div>
+										<div class="mt-2 max-h-36 overflow-y-auto">
+											{#if voiceLexiconEntries.length === 0}
+												<div class="px-1 py-2 text-[11px] text-text-placeholder">No terms</div>
+											{:else}
+												{#each voiceLexiconEntries as entry (entry.term)}
+													<div class="flex items-center justify-between gap-2 rounded-md px-1.5 py-1 text-[12px] text-text-secondary hover:bg-bg-hover">
+														<span class="min-w-0 truncate">{entry.term}</span>
+														<button
+															type="button"
+															class="shrink-0 text-text-tertiary hover:text-text-primary"
+															title="Remove"
+															onclick={() => removeVoiceLexiconEntry(entry.term)}
+														>
+															<X class="h-3.5 w-3.5" />
+														</button>
+													</div>
+												{/each}
+											{/if}
+										</div>
+									</div>
+								{/if}
+							</div>
+
+							<button
+								type="button"
+								class={`flex h-7 items-center rounded-full border px-2 text-[11px] transition-colors disabled:cursor-not-allowed disabled:opacity-50 ${voiceContinuousMode ? 'border-brand/35 bg-brand/8 text-text-primary' : 'border-border-subtle text-text-tertiary hover:bg-bg-hover hover:text-text-primary'}`}
+								onclick={toggleVoiceContinuousMode}
+								disabled={disabled || sending}
+								title="Continuous dictation"
+								aria-pressed={voiceContinuousMode}
+							>
+								Loop
+							</button>
+
 							{#if onModelSelect}
 								<button
 									type="button"
-									class="flex items-center gap-1 h-7 px-2 rounded-full text-[11px] text-text-tertiary transition-colors hover:bg-bg-hover hover:text-text-primary border border-border-subtle disabled:cursor-not-allowed disabled:opacity-50"
+									class="flex h-7 items-center gap-1 rounded-full border border-border-subtle px-2 text-[11px] text-text-tertiary transition-colors hover:bg-bg-hover hover:text-text-primary disabled:cursor-not-allowed disabled:opacity-50"
 									onclick={() => onModelSelect?.()}
 									disabled={disabled || sending}
 									title="Select model"
@@ -1252,7 +1470,31 @@ $effect(() => {
 							{/if}
 						</div>
 
-						<div class="flex items-center gap-2">
+						<div class="flex min-w-0 items-center gap-2">
+							{#if voiceCandidateAlternatives.length > 0 || voiceUndoSnapshot !== null}
+								<div class="flex max-w-[46vw] flex-wrap items-center justify-end gap-1 overflow-hidden sm:max-w-[280px]">
+									{#each voiceCandidateAlternatives as candidate}
+										<button
+											type="button"
+											class="max-w-[92px] truncate rounded-full border border-border-subtle px-2 py-1 text-[11px] text-text-secondary hover:bg-bg-hover hover:text-text-primary"
+											title={candidate}
+											onclick={() => applyVoiceCandidate(candidate)}
+										>
+											{candidate}
+										</button>
+									{/each}
+									{#if voiceUndoSnapshot !== null}
+										<button
+											type="button"
+											class="flex h-7 w-7 items-center justify-center rounded-full text-text-tertiary hover:bg-bg-hover hover:text-text-primary"
+											title="Undo voice input"
+											onclick={undoLastVoiceInput}
+										>
+											<RefreshCw class="h-3.5 w-3.5" />
+										</button>
+									{/if}
+								</div>
+							{/if}
 							{#if isVoiceStarting || isVoiceRecording || isVoiceFinishing || voiceError}
 								<span class={`max-w-[160px] truncate text-[11px] leading-none ${voiceError ? 'text-error-soft' : 'text-text-placeholder'}`}>
 									{getVoiceStatusText()}

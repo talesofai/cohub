@@ -1,4 +1,5 @@
 import { resolveLogtoEndpoint } from "@cohub/identity";
+import { parseAsrExperimentVariants } from "./asr/experiments.js";
 
 const normalizeBaseUrl = (value: string) => value.replace(/\/+$/, "");
 
@@ -18,9 +19,14 @@ const boolFromEnv = (name: string, fallback: boolean) => {
 };
 
 export const gatewayConfig = {
-  apiBaseUrl: normalizeBaseUrl(process.env.API_BASE_URL ?? "http://localhost:8787"),
+  apiBaseUrl: normalizeBaseUrl(
+    process.env.API_BASE_URL ?? "http://localhost:8787",
+  ),
   workerSecret: process.env.WORKER_SECRET ?? "",
-  logtoEndpoint: resolveLogtoEndpoint({ endpoint: process.env.LOGTO_ENDPOINT, env }),
+  logtoEndpoint: resolveLogtoEndpoint({
+    endpoint: process.env.LOGTO_ENDPOINT,
+    env,
+  }),
   port: Number(process.env.PORT ?? 8788),
   volcAsr: {
     apiKey: process.env.VOLC_ASR_API_KEY ?? "",
@@ -36,6 +42,21 @@ export const gatewayConfig = {
     boostingTableId: process.env.VOLC_ASR_BOOSTING_TABLE_ID ?? "",
     correctTableName: process.env.VOLC_ASR_CORRECT_TABLE_NAME ?? "",
     correctTableId: process.env.VOLC_ASR_CORRECT_TABLE_ID ?? "",
+    experimentName: process.env.VOLC_ASR_EXPERIMENT_NAME?.trim() || "",
+    experimentVariants: parseAsrExperimentVariants(
+      process.env.VOLC_ASR_EXPERIMENT_VARIANTS,
+    ),
+  },
+  asrRewrite: {
+    enabled:
+      boolFromEnv("ASR_REWRITE_ENABLED", false) &&
+      Boolean(process.env.ASR_REWRITE_API_KEY),
+    baseUrl: normalizeBaseUrl(
+      process.env.ASR_REWRITE_BASE_URL ?? "https://api.openai.com/v1",
+    ),
+    apiKey: process.env.ASR_REWRITE_API_KEY ?? "",
+    model: process.env.ASR_REWRITE_MODEL ?? "gpt-4.1-mini",
+    timeoutMs: intFromEnv("ASR_REWRITE_TIMEOUT_MS", 1800),
   },
 };
 

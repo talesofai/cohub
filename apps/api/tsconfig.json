@@ -118,6 +118,12 @@
       "@cohub/core/spaces/audience": [
         "../../packages/core/src/spaces/audience.ts"
       ],
+      "@cohub/core/content": [
+        "../../packages/core/src/content/index.ts"
+      ],
+      "@cohub/core/content/sanitize": [
+        "../../packages/core/src/content/sanitize.ts"
+      ],
       "@cohub/core/sandbox-lifecycle": [
         "../../packages/core/src/sandbox-lifecycle/index.ts"
       ],
