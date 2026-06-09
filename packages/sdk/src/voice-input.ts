@@ -6,6 +6,9 @@ import {
   resampleTo16k,
   TARGET_SAMPLE_RATE,
   VoiceInputAudioChunker,
+  type VoiceActivityEvent,
+  VoiceInputVad,
+  type VoiceInputVadOptions,
 } from "./voice-input-audio.js";
 
 export type VoiceInputEvent = {
@@ -16,8 +19,36 @@ export type VoiceInputEvent = {
 export type VoiceInputCallbacks = {
   onPartial?: (text: string) => void;
   onFinal?: (text: string) => void;
+  onVoiceActivity?: (event: VoiceActivityEvent) => void;
+  onEndpoint?: () => void;
   onError?: (message: string) => void;
   onDone?: () => void;
+};
+
+export type VoiceInputPostProcessingOptions = {
+  enabled?: boolean;
+  normalizeWhitespace?: boolean;
+  cleanupFillers?: boolean;
+  rewritePunctuation?: boolean;
+  applyContextTerms?: boolean;
+};
+
+export type VoiceInputAsrOptions = {
+  language?: string;
+  endWindowSizeMs?: number;
+  forceToSpeechTimeMs?: number;
+  enableNonstream?: boolean;
+  enablePunctuation?: boolean;
+  enableItn?: boolean;
+  enableDdc?: boolean;
+  hotwords?: string[];
+  contextText?: string;
+  contextMessages?: string[];
+  boostingTableName?: string;
+  boostingTableId?: string;
+  correctTableName?: string;
+  correctTableId?: string;
+  postProcessing?: VoiceInputPostProcessingOptions;
 };
 
 export type VoiceInputClientOptions = {
@@ -26,6 +57,8 @@ export type VoiceInputClientOptions = {
   getAccessToken?: (options?: { forceRefresh?: boolean }) => Promise<string | null> | string | null;
   WebSocketImpl?: WebSocketConstructor;
   audioConstraints?: MediaTrackConstraints;
+  vad?: VoiceInputVadOptions;
+  asr?: VoiceInputAsrOptions;
   preferAudioWorklet?: boolean;
   connectionTimeoutMs?: number;
   idleConnectionTimeoutMs?: number;
@@ -162,6 +195,8 @@ export class VoiceInputClient {
   private readonly getAccessToken?: VoiceInputClientOptions["getAccessToken"];
   private readonly WebSocketImpl: WebSocketConstructor;
   private readonly audioConstraints?: MediaTrackConstraints;
+  private readonly vadOptions?: VoiceInputVadOptions;
+  private readonly asrOptions?: VoiceInputAsrOptions;
   private readonly preferAudioWorklet: boolean;
   private readonly connectionTimeoutMs: number;
   private readonly idleConnectionTimeoutMs: number;
@@ -175,6 +210,7 @@ export class VoiceInputClient {
   private source: MediaStreamAudioSourceNode | null = null;
   private sink: GainNode | null = null;
   private audioChunker = new VoiceInputAudioChunker();
+  private vad: VoiceInputVad | null = null;
   private pendingAudio: string[] = [];
   private started = false;
   private asrStarted = false;
@@ -199,6 +235,8 @@ export class VoiceInputClient {
     this.getAccessToken = options.getAccessToken;
     this.WebSocketImpl = options.WebSocketImpl ?? getDefaultWebSocket();
     this.audioConstraints = options.audioConstraints;
+    this.vadOptions = options.vad;
+    this.asrOptions = options.asr;
     this.preferAudioWorklet = options.preferAudioWorklet ?? true;
     this.connectionTimeoutMs = options.connectionTimeoutMs ?? DEFAULT_CONNECTION_TIMEOUT_MS;
     this.idleConnectionTimeoutMs = options.idleConnectionTimeoutMs ?? DEFAULT_IDLE_CONNECTION_TIMEOUT_MS;
@@ -245,6 +283,7 @@ export class VoiceInputClient {
     this.started = true;
     this.asrStarted = false;
     this.audioChunker.reset();
+    this.vad = new VoiceInputVad(this.vadOptions);
     this.pendingAudio = [];
     this.intentionalClose = false;
 
@@ -345,7 +384,7 @@ export class VoiceInputClient {
 
   private async startAsrSession() {
     const waiter = this.createAsrStartWaiter();
-    this.send({ type: "asr.start" });
+    this.send({ type: "asr.start", payload: this.asrOptions ? { asr: this.asrOptions } : undefined });
     await waiter.promise;
   }
 
@@ -477,7 +516,21 @@ export class VoiceInputClient {
   private handleAudioSamples(samples: Float32Array) {
     if (!this.started) return;
     const resampled = resampleTo16k(samples, this.audioContext?.sampleRate ?? TARGET_SAMPLE_RATE);
-    for (const chunk of this.audioChunker.push(resampled)) this.sendAudio(chunk);
+    for (const chunk of this.audioChunker.push(resampled)) {
+      const vadResult = this.vad?.process(chunk);
+      if (!vadResult) {
+        this.sendAudio(chunk);
+        continue;
+      }
+
+      this.callbacks.onVoiceActivity?.(vadResult.event);
+      for (const audioChunk of vadResult.chunks) this.sendAudio(audioChunk);
+      if (vadResult.endpoint) {
+        this.callbacks.onEndpoint?.();
+        this.stop();
+        return;
+      }
+    }
   }
 
   private sendAudio(samples: Float32Array) {
@@ -558,6 +611,8 @@ export class VoiceInputClient {
     this.stream = null;
     this.audioContext = null;
     this.audioChunker.reset();
+    this.vad?.reset();
+    this.vad = null;
     this.pendingAudio = [];
     this.asrStarted = false;
   }

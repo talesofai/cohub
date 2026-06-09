@@ -10,6 +10,7 @@
     "build": "tsgo -p tsconfig.build.json",
     "lint": "biome lint .",
     "lint:fix": "biome lint --write .",
+    "test": "tsx --test tests/*.test.ts",
     "typecheck": "tsgo -p tsconfig.json --noEmit",
     "start": "node dist/index.js"
   },

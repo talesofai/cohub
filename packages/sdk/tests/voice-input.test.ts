@@ -3,8 +3,11 @@ import { test } from "node:test";
 import {
 	createVoiceInputAudioConstraints,
 	floatToPcm16,
+	measureAudioLevel,
+	normalizeVoiceInputVadOptions,
 	resampleTo16k,
 	VoiceInputAudioChunker,
+	VoiceInputVad,
 } from "../src/voice-input-audio.js";
 import {
 	VoiceInputClient,
@@ -13,6 +16,11 @@ import {
 type SentVoiceMessage = {
 	type: string;
 	payload?: {
+		asr?: {
+			endWindowSizeMs?: number;
+			hotwords?: string[];
+			contextText?: string;
+		};
 		audio?: string;
 		token?: string;
 	};
@@ -178,6 +186,53 @@ test("VoiceInputAudioChunker emits stable chunks and flushes tail samples", () =
 	assert.equal(chunker.flush(), null);
 });
 
+test("measureAudioLevel returns rms and peak for samples", () => {
+	const level = measureAudioLevel(Float32Array.from([0, 0.5, -0.5, 1]));
+	assert.equal(level.peak, 1);
+	assert.ok(Math.abs(level.rms - 0.6123724357) < 0.000001);
+});
+
+test("normalizeVoiceInputVadOptions clamps unsafe tuning values", () => {
+	assert.deepEqual(normalizeVoiceInputVadOptions({
+		preRollMs: -1,
+		silenceDurationMs: 1,
+		speechThreshold: 2,
+	}), {
+		enabled: true,
+		autoStop: true,
+		sampleRate: 16000,
+		preRollMs: 0,
+		minSpeechMs: 160,
+		silenceDurationMs: 400,
+		speechThreshold: 1,
+		silenceThreshold: 0.005,
+		peakThreshold: 0.07,
+	});
+});
+
+test("VoiceInputVad keeps preroll, emits speech, and endpoints after sustained silence", () => {
+	const vad = new VoiceInputVad({
+		preRollMs: 200,
+		minSpeechMs: 0,
+		silenceDurationMs: 400,
+		speechThreshold: 0.01,
+		silenceThreshold: 0.008,
+		peakThreshold: 0.2,
+	});
+	const quiet = Float32Array.from({ length: 3200 }, () => 0.001);
+	const speech = Float32Array.from({ length: 3200 }, () => 0.04);
+
+	assert.equal(vad.process(quiet).chunks.length, 0);
+	const active = vad.process(speech);
+	assert.equal(active.event.state, "speech");
+	assert.equal(active.chunks.length, 1);
+
+	assert.equal(vad.process(quiet).endpoint, false);
+	const endpoint = vad.process(quiet);
+	assert.equal(endpoint.endpoint, true);
+	assert.equal(endpoint.event.state, "endpoint");
+});
+
 test("floatToPcm16 clamps samples to signed 16-bit pcm", () => {
 	const pcm = floatToPcm16(Float32Array.from([-2, -1, 0, 1, 2]));
 	const view = new DataView(pcm.buffer, pcm.byteOffset, pcm.byteLength);
@@ -211,6 +266,35 @@ test("VoiceInputClient sends captured audio over the ASR websocket", async () =>
 		const audioMessage = lastSocket?.sent.find((message) => message.type === "asr.audio");
 		assert.equal(typeof audioMessage?.payload?.audio, "string");
 		assert.ok((audioMessage?.payload?.audio.length ?? 0) > 0);
+	} finally {
+		restore();
+	}
+});
+
+test("VoiceInputClient sends ASR tuning and context in start payload", async () => {
+	const restore = installVoiceInputMocks();
+	try {
+		const client = new VoiceInputClient({
+			url: "ws://localhost",
+			getAccessToken: () => "token-1",
+			WebSocketImpl: MockWebSocket,
+			preferAudioWorklet: false,
+			asr: {
+				endWindowSizeMs: 600,
+				hotwords: ["Cohub", "Neta"],
+				contextText: "editing a Cohub session prompt",
+			},
+		});
+
+		await client.start();
+		client.close();
+
+		const startMessage = lastSocket?.sent.find((message) => message.type === "asr.start");
+		assert.deepEqual(startMessage?.payload?.asr, {
+			endWindowSizeMs: 600,
+			hotwords: ["Cohub", "Neta"],
+			contextText: "editing a Cohub session prompt",
+		});
 	} finally {
 		restore();
 	}

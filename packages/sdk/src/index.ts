@@ -42,10 +42,17 @@ export {
 export type { CohubClientOptions, Fetch } from "./transport.js";
 export type { CohubEnvironment } from "./environment.js";
 export type {
+  VoiceActivityEvent,
+  VoiceActivityState,
+  VoiceInputVadOptions,
+} from "./voice-input-audio.js";
+export type {
+  VoiceInputAsrOptions,
   VoiceInputCallbacks,
   VoiceInputClientOptions,
   VoiceInputCreateOptions,
   VoiceInputEvent,
+  VoiceInputPostProcessingOptions,
 } from "./voice-input.js";
 export type {
   SessionPatchApplyInput,

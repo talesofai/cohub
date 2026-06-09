@@ -4,6 +4,8 @@ import { z } from "zod";
 import { createLogger } from "@cohub/infra/logging";
 import { authenticateRealtimeToken, type RealtimeAuthResult } from "../api-client.js";
 import { gatewayConfig } from "../config.js";
+import { buildVolcCorpusContext, normalizeAsrSessionOptions } from "./options.js";
+import { postprocessAsrText } from "./postprocess.js";
 import { VolcAsrProvider } from "./volc-asr-provider.js";
 
 const logger = createLogger({ serviceName: "cohub-gateway" });
@@ -20,12 +22,39 @@ const authMessageSchema = z.object({
   }),
 });
 
+const postProcessingSchema = z.object({
+  enabled: z.boolean().optional(),
+  normalizeWhitespace: z.boolean().optional(),
+  cleanupFillers: z.boolean().optional(),
+  rewritePunctuation: z.boolean().optional(),
+  applyContextTerms: z.boolean().optional(),
+});
+
+const asrOptionsSchema = z.object({
+  language: z.string().min(1).optional(),
+  endWindowSizeMs: z.number().int().optional(),
+  forceToSpeechTimeMs: z.number().int().optional(),
+  enableNonstream: z.boolean().optional(),
+  enablePunctuation: z.boolean().optional(),
+  enableItn: z.boolean().optional(),
+  enableDdc: z.boolean().optional(),
+  hotwords: z.array(z.string().min(1)).optional(),
+  contextText: z.string().optional(),
+  contextMessages: z.array(z.string()).optional(),
+  boostingTableName: z.string().optional(),
+  boostingTableId: z.string().optional(),
+  correctTableName: z.string().optional(),
+  correctTableId: z.string().optional(),
+  postProcessing: postProcessingSchema.optional(),
+});
+
 const asrMessageSchema = z.discriminatedUnion("type", [
   z.object({
     type: z.literal("asr.start"),
     requestId: z.string().optional(),
     payload: z.object({
       language: z.string().min(1).optional(),
+      asr: asrOptionsSchema.optional(),
     }).optional(),
   }),
   z.object({
@@ -153,23 +182,42 @@ const startAsr = async (socket: WebSocket, ctx: AsrConnectionContext, message: E
 
   const volcConfig = getVolcConfig();
   const requestId = message.requestId ?? randomUUID();
+  const asrOptions = normalizeAsrSessionOptions(message.payload);
+  const corpusContext = buildVolcCorpusContext(asrOptions);
   const provider = new VolcAsrProvider({
     ...volcConfig,
     requestId,
     uid: ctx.userId,
-    language: message.payload?.language ?? null,
+    requestConfig: {
+      language: asrOptions.enableNonstream ? null : asrOptions.language,
+      endWindowSizeMs: asrOptions.endWindowSizeMs,
+      forceToSpeechTimeMs: asrOptions.forceToSpeechTimeMs,
+      enableNonstream: asrOptions.enableNonstream,
+      enablePunctuation: asrOptions.enablePunctuation,
+      enableItn: asrOptions.enableItn,
+      enableDdc: asrOptions.enableDdc,
+      corpus: {
+        boostingTableName: asrOptions.boostingTableName,
+        boostingTableId: asrOptions.boostingTableId,
+        correctTableName: asrOptions.correctTableName,
+        correctTableId: asrOptions.correctTableId,
+        context: corpusContext,
+      },
+    },
   });
   ctx.provider = provider;
 
   provider.on("result", (result) => {
+    const text = postprocessAsrText(result.text, asrOptions);
+    if (!text) return;
     if (result.definite) {
-      ctx.committedText += result.text;
+      ctx.committedText += text;
       ctx.partialText = "";
-      send(socket, { type: "asr.final", requestId, payload: { text: result.text, fullText: ctx.committedText } });
+      send(socket, { type: "asr.final", requestId, payload: { text, fullText: ctx.committedText } });
       return;
     }
-    ctx.partialText = result.text;
-    send(socket, { type: "asr.partial", requestId, payload: { text: result.text, fullText: ctx.committedText + ctx.partialText } });
+    ctx.partialText = text;
+    send(socket, { type: "asr.partial", requestId, payload: { text, fullText: ctx.committedText + ctx.partialText } });
   });
   provider.on("error", (error) => {
     logger.warn("[ASR] provider error", { connectionId: ctx.connectionId, requestId, error: error.message });
@@ -186,7 +234,19 @@ const startAsr = async (socket: WebSocket, ctx: AsrConnectionContext, message: E
     provider.stop();
     sendError(socket, "MAX_DURATION_EXCEEDED", "Voice input reached the time limit", requestId);
   }, ASR_MAX_SESSION_MS);
-  send(socket, { type: "asr.started", requestId });
+  send(socket, {
+    type: "asr.started",
+    requestId,
+    payload: {
+      endpoint: {
+        endWindowSizeMs: asrOptions.endWindowSizeMs,
+        forceToSpeechTimeMs: asrOptions.forceToSpeechTimeMs,
+      },
+      hotwordCount: asrOptions.hotwords.length,
+      contextEnabled: Boolean(corpusContext),
+      postProcessing: asrOptions.postProcessing,
+    },
+  });
 };
 
 const handleAsrMessage = async (socket: WebSocket, ctx: AsrConnectionContext, message: AsrMessage) => {

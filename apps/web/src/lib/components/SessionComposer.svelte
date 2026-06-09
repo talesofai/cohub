@@ -1,7 +1,9 @@
 <script lang="ts">
 import type {
 	PromptTemplateCatalogEntry,
+	VoiceActivityEvent,
 	VoiceInputClient,
+	VoiceInputAsrOptions,
 } from "@neta-art/cohub";
 import {
 	ArrowUp,
@@ -127,6 +129,7 @@ let voicePrefix = "";
 let voiceSuffix = "";
 let voiceCommittedText = "";
 let voicePartialText = $state("");
+let voiceActivity = $state<VoiceActivityEvent | null>(null);
 let isVoiceRecording = $state(false);
 let isVoiceStarting = $state(false);
 let voiceError = $state<string | null>(null);
@@ -325,9 +328,70 @@ function applyVoiceText(partialText = "") {
 	});
 }
 
+function extractVoiceTerms(text: string) {
+	const terms = new Set<string>();
+	const add = (term: string | null | undefined) => {
+		const normalized = term?.replace(/[`*_#[\]()>]/g, "").trim();
+		if (!normalized || normalized.length < 2 || normalized.length > 40)
+			return;
+		terms.add(normalized);
+	};
+
+	add("Cohub");
+	add("Neta");
+	add(currentModel?.name);
+	add(currentModel?.id);
+	for (const item of promptTemplates.slice(0, 24)) add(item.name);
+	for (const token of tokenizeSpaceMentionText(text)) {
+		if (token.type === "spaceMention") add(token.label);
+	}
+	for (const match of text.matchAll(/\b[A-Z][A-Za-z0-9_-]{1,39}\b/g)) {
+		add(match[0]);
+	}
+	return Array.from(terms).slice(0, 40);
+}
+
+function buildVoiceAsrOptions(): VoiceInputAsrOptions {
+	const contextSource = `${voicePrefix}${voiceSuffix}`.trim();
+	const contextText = contextSource.length > 0
+		? `Current composer context: ${contextSource.slice(-900)}`
+		: "User is dictating into the Cohub session composer.";
+	return {
+		endWindowSizeMs: 600,
+		forceToSpeechTimeMs: 1000,
+		enableNonstream: true,
+		enablePunctuation: true,
+		enableItn: true,
+		enableDdc: false,
+		hotwords: extractVoiceTerms(contextSource),
+		contextText,
+		contextMessages: [
+			currentModel?.name ? `Selected model: ${currentModel.name}` : "",
+			attachments.length > 0 ? `Composer has ${attachments.length} attachment(s).` : "",
+		].filter(Boolean),
+		postProcessing: {
+			enabled: true,
+			normalizeWhitespace: true,
+			cleanupFillers: true,
+			rewritePunctuation: true,
+			applyContextTerms: true,
+		},
+	};
+}
+
+function getVoiceStatusText() {
+	if (voiceError) return voiceError;
+	if (isVoiceStarting) return "Starting...";
+	if (!isVoiceRecording) return "";
+	if (!voiceActivity || voiceActivity.state === "waiting") return "Waiting for speech";
+	if (voiceActivity.state === "silence") return "Finishing";
+	return "Listening";
+}
+
 async function startVoiceInput() {
 	if (disabled || sending || isVoiceRecording || isVoiceStarting) return;
 	voiceError = null;
+	voiceActivity = null;
 	isVoiceStarting = true;
 	const start = textareaEl?.selectionStart ?? value.length;
 	const end = textareaEl?.selectionEnd ?? start;
@@ -345,6 +409,12 @@ async function startVoiceInput() {
 			voicePartialText = "";
 			applyVoiceText();
 		},
+		onVoiceActivity: (event) => {
+			voiceActivity = event;
+		},
+		onEndpoint: () => {
+			isVoiceRecording = false;
+		},
 		onError: (message) => {
 			voiceError = message;
 		},
@@ -353,6 +423,19 @@ async function startVoiceInput() {
 			isVoiceStarting = false;
 			voiceClient?.close();
 			voiceClient = null;
+			voiceActivity = null;
+		},
+	}, {
+		asr: buildVoiceAsrOptions(),
+		vad: {
+			enabled: true,
+			autoStop: true,
+			preRollMs: 400,
+			minSpeechMs: 160,
+			silenceDurationMs: 2400,
+			speechThreshold: 0.008,
+			silenceThreshold: 0.005,
+			peakThreshold: 0.07,
 		},
 	});
 	try {
@@ -1052,7 +1135,7 @@ $effect(() => {
 						<div class="flex items-center gap-2">
 							{#if isVoiceStarting || isVoiceRecording || voiceError}
 								<span class={`max-w-[160px] truncate text-[11px] leading-none ${voiceError ? 'text-error-soft' : 'text-text-placeholder'}`}>
-									{voiceError ?? (isVoiceStarting ? 'Starting…' : 'Listening')}
+									{getVoiceStatusText()}
 								</span>
 							{/if}
 							<button

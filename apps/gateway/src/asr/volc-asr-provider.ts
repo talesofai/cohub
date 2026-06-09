@@ -14,7 +14,7 @@ export type VolcAsrProviderOptions = {
   url: string;
   requestId: string;
   uid: string;
-  language?: string | null;
+  requestConfig?: Omit<VolcAsrRequestConfig, "uid">;
 };
 
 export class VolcAsrProvider extends TypedEventEmitter<VolcAsrProviderEvents> {
@@ -49,7 +49,7 @@ export class VolcAsrProvider extends TypedEventEmitter<VolcAsrProviderEvents> {
       socket.once("open", () => {
         const config: VolcAsrRequestConfig = {
           uid: this.options.uid,
-          language: this.options.language,
+          ...this.options.requestConfig,
         };
         socket.send(encodeFullClientRequest(config));
         resolve();
