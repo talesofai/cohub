@@ -171,6 +171,7 @@ let voiceStopRequested = false;
 let voiceStopReason: "manual" | "hotkey_release" | "vad_endpoint" | "error" =
 	"manual";
 let voicePushToTalkActive = false;
+let voicePushToTalkSession = false;
 let voiceError = $state<string | null>(null);
 let voiceContinuousMode = $state(false);
 let voiceCandidateAlternatives = $state<string[]>([]);
@@ -755,12 +756,16 @@ function clearContinuousVoiceInputRestart() {
 	voiceContinuousRestartTimer = null;
 }
 
-function scheduleContinuousVoiceInput(reason: typeof voiceStopReason) {
+function scheduleContinuousVoiceInput(
+	reason: typeof voiceStopReason,
+	wasPushToTalkSession = false,
+) {
 	clearContinuousVoiceInputRestart();
 	if (
 		!voiceContinuousMode ||
 		reason !== "vad_endpoint" ||
 		voiceError ||
+		wasPushToTalkSession ||
 		voicePushToTalkActive ||
 		disabled ||
 		sending ||
@@ -787,17 +792,19 @@ function finishVoiceInputSession(sessionId: number, client: VoiceInputClient) {
 		return;
 	}
 	const stopReason = voiceStopReason;
+	const wasPushToTalkSession = voicePushToTalkSession || voicePushToTalkActive;
 	isVoiceRecording = false;
 	isVoiceStarting = false;
 	isVoiceFinishing = false;
 	voiceStopRequested = false;
 	voiceStopReason = "manual";
 	voicePushToTalkActive = false;
+	voicePushToTalkSession = false;
 	client.close();
 	voiceClient = null;
 	voiceActivity = null;
 	if (stopReason !== "vad_endpoint") voiceContinuousUndoSnapshot = null;
-	scheduleContinuousVoiceInput(stopReason);
+	scheduleContinuousVoiceInput(stopReason, wasPushToTalkSession);
 }
 
 async function startVoiceInput() {
@@ -814,6 +821,7 @@ async function startVoiceInput() {
 	isVoiceStarting = true;
 	voiceStopRequested = false;
 	voiceStopReason = "manual";
+	voicePushToTalkSession = voicePushToTalkActive;
 	const start = textareaEl?.selectionStart ?? value.length;
 	const end = textareaEl?.selectionEnd ?? start;
 	voicePrefix = value.slice(0, start);
@@ -911,6 +919,7 @@ async function startVoiceInput() {
 		voiceStopRequested = false;
 		voiceStopReason = "manual";
 		voicePushToTalkActive = false;
+		voicePushToTalkSession = false;
 		voiceContinuousUndoSnapshot = null;
 	}
 }

@@ -432,6 +432,10 @@ const startAsr = async (
       replacedSession.telemetry.stopReason = "client_close";
       replacedSession.telemetry.stopAt = Date.now();
     }
+    send(socket, {
+      type: "asr.cancelled",
+      requestId: replacedSession.requestId,
+    });
     closeSession(ctx, replacedSession);
     emitAsrTelemetrySummary(
       logger,
