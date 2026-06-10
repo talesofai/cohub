@@ -499,7 +499,7 @@ export class VoiceInputClient {
     this.startToken = startToken;
 
     try {
-      await this.withConnectionTimeout(this.ensureAuthenticatedSocket());
+      await this.withConnectionTimeout(this.ensureAuthenticatedSocket(startToken));
       if (!this.started) {
         this.cleanupAudio();
         return;
@@ -560,19 +560,21 @@ export class VoiceInputClient {
     }
   }
 
-  private async ensureAuthenticatedSocket() {
+  private async ensureAuthenticatedSocket(startToken: number) {
     if (this.socket?.readyState === WEBSOCKET_OPEN && this.authenticated)
       return;
 
     await this.ensureSocketOpen();
+    if (!this.isCurrentStart(startToken)) return;
     if (this.authenticated) return;
 
     try {
-      await this.authenticate(false);
+      await this.authenticate(false, startToken);
     } catch (error) {
       if (!(error instanceof Error) || error.message !== "UNAUTHORIZED")
         throw error;
-      await this.authenticate(true);
+      if (!this.isCurrentStart(startToken)) return;
+      await this.authenticate(true, startToken);
     }
   }
 
@@ -629,8 +631,10 @@ export class VoiceInputClient {
     return this.socketOpenPromise;
   }
 
-  private async authenticate(forceRefresh: boolean) {
+  private async authenticate(forceRefresh: boolean, startToken: number) {
     const token = await this.getAccessToken?.({ forceRefresh });
+    if (!this.isCurrentStart(startToken)) return;
+    if (this.socket?.readyState !== WEBSOCKET_OPEN) return;
     if (!token) throw new Error("Sign in to use voice input");
 
     const waiter = this.createAuthWaiter();

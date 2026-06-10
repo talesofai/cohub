@@ -466,6 +466,43 @@ test("VoiceInputClient closes auth socket after start timeout", async () => {
   }
 });
 
+test("VoiceInputClient ignores late access tokens from timed out starts", async () => {
+  const restore = installVoiceInputMocks();
+  try {
+    let tokenCalls = 0;
+    const client = new VoiceInputClient({
+      url: "ws://localhost",
+      getAccessToken: async () => {
+        tokenCalls += 1;
+        if (tokenCalls === 1) {
+          await new Promise((resolve) => setTimeout(resolve, 20));
+          return "late-token";
+        }
+        return "token-2";
+      },
+      WebSocketImpl: MockWebSocket,
+      preferAudioWorklet: false,
+      connectionTimeoutMs: 5,
+    });
+
+    await assert.rejects(client.start(), /Voice connection timed out/);
+    const timedOutSocket = lastSocket;
+    await new Promise((resolve) => setTimeout(resolve, 25));
+    assert.deepEqual(timedOutSocket?.sent.map((message) => message.type), []);
+
+    await client.start();
+    assert.notEqual(lastSocket, timedOutSocket);
+    assert.equal(tokenCalls, 2);
+    assert.deepEqual(
+      lastSocket?.sent.map((message) => message.type),
+      ["auth", "asr.start"],
+    );
+    client.close();
+  } finally {
+    restore();
+  }
+});
+
 test("VoiceInputClient stops late microphone streams after setup timeout", async () => {
   const restore = installVoiceInputMocks();
   try {
