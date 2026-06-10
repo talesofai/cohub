@@ -202,7 +202,13 @@ export async function upsertUserVoiceLexiconEntry(
         userVoiceLexiconEntries.termKey,
       ],
       set: {
-        term: parsed.term,
+        term: sql<string>`case
+          when excluded.source = 'manual' then excluded.term
+          when ${userVoiceLexiconEntries.source} = 'manual' then ${userVoiceLexiconEntries.term}
+          when excluded.source = 'correction' then excluded.term
+          when ${userVoiceLexiconEntries.source} = 'correction' then ${userVoiceLexiconEntries.term}
+          else excluded.term
+        end`,
         source: sql<VoiceLexiconSource>`case
           when excluded.source = 'manual' or ${userVoiceLexiconEntries.source} = 'manual' then 'manual'
           when excluded.source = 'correction' or ${userVoiceLexiconEntries.source} = 'correction' then 'correction'
@@ -304,7 +310,13 @@ export async function upsertSpaceVoiceLexiconEntry(
         spaceVoiceLexiconEntries.termKey,
       ],
       set: {
-        term: parsed.term,
+        term: sql<string>`case
+          when excluded.source = 'manual' then excluded.term
+          when ${spaceVoiceLexiconEntries.source} = 'manual' then ${spaceVoiceLexiconEntries.term}
+          when excluded.source = 'correction' then excluded.term
+          when ${spaceVoiceLexiconEntries.source} = 'correction' then ${spaceVoiceLexiconEntries.term}
+          else excluded.term
+        end`,
         source: sql<VoiceLexiconSource>`case
           when excluded.source = 'manual' or ${spaceVoiceLexiconEntries.source} = 'manual' then 'manual'
           when excluded.source = 'correction' or ${spaceVoiceLexiconEntries.source} = 'correction' then 'correction'

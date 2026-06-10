@@ -36,6 +36,8 @@ let lastProcessor: MockScriptProcessorNode | null = null;
 let requestedAudioConstraints: unknown = null;
 let autoEmitAsrStarted = true;
 let authFailuresRemaining = 0;
+let getUserMediaDelayMs = 0;
+let stoppedMediaTracks = 0;
 
 class MockWebSocket {
   readonly readyState = 1;
@@ -140,6 +142,8 @@ const installVoiceInputMocks = () => {
   requestedAudioConstraints = null;
   autoEmitAsrStarted = true;
   authFailuresRemaining = 0;
+  getUserMediaDelayMs = 0;
+  stoppedMediaTracks = 0;
 
   const originalNavigator = Object.getOwnPropertyDescriptor(
     globalThis,
@@ -156,8 +160,19 @@ const installVoiceInputMocks = () => {
       mediaDevices: {
         getUserMedia: async (constraints: { audio?: unknown }) => {
           requestedAudioConstraints = constraints.audio;
+          if (getUserMediaDelayMs > 0) {
+            await new Promise((resolve) =>
+              setTimeout(resolve, getUserMediaDelayMs),
+            );
+          }
           return {
-            getTracks: () => [{ stop() {} }],
+            getTracks: () => [
+              {
+                stop() {
+                  stoppedMediaTracks += 1;
+                },
+              },
+            ],
           };
         },
       },
@@ -394,6 +409,29 @@ test("VoiceInputClient does not request microphone when auth fails", async () =>
       lastSocket?.sent.map((message) => message.type),
       ["auth", "auth"],
     );
+  } finally {
+    restore();
+  }
+});
+
+test("VoiceInputClient stops late microphone streams after setup timeout", async () => {
+  const restore = installVoiceInputMocks();
+  try {
+    getUserMediaDelayMs = 30;
+    const client = new VoiceInputClient({
+      url: "ws://localhost",
+      getAccessToken: () => "token-1",
+      WebSocketImpl: MockWebSocket,
+      preferAudioWorklet: false,
+      connectionTimeoutMs: 5,
+    });
+
+    await assert.rejects(client.start(), /Voice connection timed out/);
+    await new Promise((resolve) => setTimeout(resolve, 40));
+    client.close();
+
+    assert.equal(stoppedMediaTracks, 1);
+    assert.equal(lastProcessor, null);
   } finally {
     restore();
   }

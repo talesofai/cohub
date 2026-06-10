@@ -340,6 +340,21 @@ const failProviderSession = (
   scheduleIdleClose(socket, ctx);
 };
 
+const failGatewaySession = (
+  socket: WebSocket,
+  ctx: AsrConnectionContext,
+  session: AsrSessionState,
+  code: string,
+  message: string,
+) => {
+  markAsrError(session.telemetry, { stage: "gateway", code });
+  sendError(socket, code, message, session.requestId);
+  if (!session.telemetry.stopAt) session.telemetry.stopAt = Date.now();
+  closeSession(ctx, session);
+  emitAsrTelemetrySummary(logger, session.telemetry, session.asrOptions, "error");
+  scheduleIdleClose(socket, ctx);
+};
+
 const resolveClientInfo = (
   message: Extract<AsrMessage, { type: "asr.start" }>,
 ): AsrClientInfo => ({
@@ -655,7 +670,18 @@ export const handleAsrWebSocketConnection = (socket: WebSocket) => {
 
       const parsed = asrMessageSchema.safeParse(raw);
       if (!parsed.success) {
-        if (ctx.activeSession) ctx.activeSession.telemetry.invalidMessages += 1;
+        const session = ctx.activeSession;
+        if (session) {
+          session.telemetry.invalidMessages += 1;
+          failGatewaySession(
+            socket,
+            ctx,
+            session,
+            "BAD_REQUEST",
+            "invalid asr message",
+          );
+          return;
+        }
         sendError(socket, "BAD_REQUEST", "invalid asr message");
         return;
       }
@@ -663,26 +689,22 @@ export const handleAsrWebSocketConnection = (socket: WebSocket) => {
       await handleAsrMessage(socket, ctx, parsed.data);
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
-      markAsrError(ctx.activeSession?.telemetry, {
-        stage: "gateway",
-        code:
-          message === "message too large"
-            ? "MESSAGE_TOO_LARGE"
-            : "INTERNAL_ERROR",
-      });
+      const code =
+        message === "message too large" ? "MESSAGE_TOO_LARGE" : "INTERNAL_ERROR";
+      const clientMessage =
+        message === "message too large"
+          ? "Voice data is too large"
+          : "Voice input is unavailable. Try again later";
       logger.warn("[ASR] message handling failed", {
         connectionId: ctx.connectionId,
         error: message,
       });
-      sendError(
-        socket,
-        message === "message too large"
-          ? "MESSAGE_TOO_LARGE"
-          : "INTERNAL_ERROR",
-        message === "message too large"
-          ? "Voice data is too large"
-          : "Voice input is unavailable. Try again later",
-      );
+      const session = ctx.activeSession;
+      if (session) {
+        failGatewaySession(socket, ctx, session, code, clientMessage);
+        return;
+      }
+      sendError(socket, code, clientMessage);
     }
   };
 

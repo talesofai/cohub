@@ -367,6 +367,7 @@ export class VoiceInputClient {
   private stopReason: VoiceInputStopReason | null = null;
   private pendingStopReason: VoiceInputStopReason | null = null;
   private doneEmitted = false;
+  private startToken = 0;
 
   constructor(options: VoiceInputClientOptions = {}) {
     this.url = resolveVoiceInputWebsocketUrl({
@@ -491,6 +492,8 @@ export class VoiceInputClient {
     this.intentionalClose = false;
     this.pendingStopReason = null;
     this.doneEmitted = false;
+    const startToken = this.startToken + 1;
+    this.startToken = startToken;
 
     try {
       await this.withConnectionTimeout(this.ensureAuthenticatedSocket());
@@ -498,7 +501,7 @@ export class VoiceInputClient {
         this.cleanupAudio();
         return;
       }
-      await this.withConnectionTimeout(this.setupAudio());
+      await this.withConnectionTimeout(this.setupAudio(startToken));
       if (!this.started) {
         this.cleanupAudio();
         return;
@@ -521,6 +524,7 @@ export class VoiceInputClient {
       }
       this.cleanupAudio();
       this.started = false;
+      this.startToken += 1;
       this.scheduleIdleClose();
       throw startError;
     }
@@ -692,7 +696,15 @@ export class VoiceInputClient {
     this.emitDone();
   }
 
-  private async setupAudio() {
+  private isCurrentStart(startToken: number) {
+    return this.startToken === startToken && this.started;
+  }
+
+  private cleanupOwnedAudio(startToken: number) {
+    if (this.startToken === startToken) this.cleanupAudio();
+  }
+
+  private async setupAudio(startToken: number) {
     const mediaDevices = globalThis.navigator?.mediaDevices;
     if (!mediaDevices)
       throw new Error("Microphone input is not available in this environment");
@@ -700,15 +712,41 @@ export class VoiceInputClient {
     if (!AudioContextImpl)
       throw new Error("AudioContext is not available in this environment");
 
-    this.stream = await mediaDevices.getUserMedia({
+    const stream = await mediaDevices.getUserMedia({
       audio: createVoiceInputAudioConstraints(this.audioConstraints),
     });
-    this.audioContext = createAudioContext(AudioContextImpl);
-    await this.audioContext.resume().catch(() => undefined);
-    this.source = this.audioContext.createMediaStreamSource(this.stream);
+    if (!this.isCurrentStart(startToken)) {
+      for (const track of stream.getTracks()) track.stop();
+      return;
+    }
+    const audioContext = createAudioContext(AudioContextImpl);
+    await audioContext.resume().catch(() => undefined);
+    if (!this.isCurrentStart(startToken)) {
+      for (const track of stream.getTracks()) track.stop();
+      void audioContext.close().catch(() => undefined);
+      return;
+    }
+    const source = audioContext.createMediaStreamSource(stream);
+    if (!this.isCurrentStart(startToken)) {
+      source.disconnect();
+      for (const track of stream.getTracks()) track.stop();
+      void audioContext.close().catch(() => undefined);
+      return;
+    }
+    this.stream = stream;
+    this.audioContext = audioContext;
+    this.source = source;
 
-    if (await this.setupAudioWorklet()) return;
+    if (await this.setupAudioWorklet()) {
+      if (!this.isCurrentStart(startToken)) this.cleanupOwnedAudio(startToken);
+      return;
+    }
+    if (!this.isCurrentStart(startToken)) {
+      this.cleanupOwnedAudio(startToken);
+      return;
+    }
     this.setupScriptProcessor();
+    if (!this.isCurrentStart(startToken)) this.cleanupOwnedAudio(startToken);
   }
 
   private async setupAudioWorklet() {
