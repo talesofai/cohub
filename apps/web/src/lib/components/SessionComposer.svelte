@@ -61,6 +61,13 @@ import {
 	setCachedUserVoiceInputLexicon,
 	type VoiceInputLexiconEntry,
 } from "$lib/voice-input-lexicon";
+import {
+	formatVoiceInputShortcut,
+	isVoiceInputShortcutRelease,
+	isVoiceInputShortcutTrigger,
+	listenVoiceInputShortcutChange,
+	readVoiceInputShortcut,
+} from "$lib/voice-input-shortcut";
 
 type SelectedModel = {
 	provider: string;
@@ -176,6 +183,8 @@ let voiceLexiconEntries = $state<VoiceInputLexiconEntry[]>([]);
 let voiceLexiconLoadToken = 0;
 let voiceLexiconSyncedSpaceId: string | null | undefined;
 let voiceCorrectionLearnTimer: number | null = null;
+let voiceShortcut = $state(readVoiceInputShortcut());
+const voiceShortcutLabel = $derived(formatVoiceInputShortcut(voiceShortcut));
 let lastVoiceInsertedSegment: VoiceInsertedSegment | null = null;
 
 const hasDraft = $derived(Boolean(value.trim() || attachments.length > 0));
@@ -903,12 +912,6 @@ function stopVoiceInput(reason: "manual" | "hotkey_release" = "manual") {
 	client.stop(reason);
 }
 
-function isVoicePushToTalkKey(event: KeyboardEvent) {
-	return (
-		event.key === "Alt" || event.code === "AltLeft" || event.code === "AltRight"
-	);
-}
-
 function isVoicePushToTalkScope(event: KeyboardEvent) {
 	if (!composerRootEl) return false;
 	const target = event.target;
@@ -919,21 +922,23 @@ function isVoicePushToTalkScope(event: KeyboardEvent) {
 
 function handleVoicePushToTalkDown(event: KeyboardEvent) {
 	if (
-		!isVoicePushToTalkKey(event) ||
+		!isVoiceInputShortcutTrigger(event, voiceShortcut) ||
 		event.repeat ||
-		event.ctrlKey ||
-		event.metaKey ||
-		event.shiftKey
+		!isVoicePushToTalkScope(event) ||
+		!canStartVoiceInput()
 	)
 		return;
-	if (!isVoicePushToTalkScope(event) || !canStartVoiceInput()) return;
 	event.preventDefault();
 	voicePushToTalkActive = true;
 	void startVoiceInput();
 }
 
 function handleVoicePushToTalkUp(event: KeyboardEvent) {
-	if (!isVoicePushToTalkKey(event) || !voicePushToTalkActive) return;
+	if (
+		!voicePushToTalkActive ||
+		!isVoiceInputShortcutRelease(event, voiceShortcut)
+	)
+		return;
 	event.preventDefault();
 	voicePushToTalkActive = false;
 	stopVoiceInput("hotkey_release");
@@ -1223,6 +1228,12 @@ function handlePaste(event: ClipboardEvent) {
 }
 
 onMount(() => {
+	voiceShortcut = readVoiceInputShortcut();
+	const stopVoiceShortcutListener = listenVoiceInputShortcutChange(
+		(shortcut) => {
+			voiceShortcut = shortcut;
+		},
+	);
 	refreshVoiceLexicon();
 	focusComposer();
 	const handleComposerInsert = (event: Event) => {
@@ -1248,6 +1259,7 @@ onMount(() => {
 		window.removeEventListener("blur", releaseVoicePushToTalk);
 		window.removeEventListener("resize", handleViewportResize);
 		window.visualViewport?.removeEventListener("resize", handleViewportResize);
+		stopVoiceShortcutListener();
 		spaceMentionLocalController?.abort();
 		spaceMentionRemoteController?.abort();
 		pastedSpaceResolveController?.abort();
@@ -1741,7 +1753,7 @@ $effect(() => {
 								type="button"
 								class={`voice-record-button relative flex h-9 w-9 shrink-0 items-center justify-center rounded-full border transition-all disabled:cursor-not-allowed disabled:opacity-50 ${isVoiceRecording ? 'border-brand/45 bg-brand text-brand-contrast-fg shadow-sm' : (isVoiceStarting || isVoiceFinishing) ? 'border-border-subtle bg-bg-hover-strong text-text-secondary' : 'border-transparent text-text-tertiary hover:bg-bg-hover hover:text-text-primary'}`}
 								disabled={disabled || sending || showAbort || isVoiceFinishing}
-								title={isVoiceRecording || isVoiceStarting ? "Stop voice input" : "Start voice input"}
+								title={isVoiceRecording || isVoiceStarting ? "Stop voice input" : `Start voice input (${voiceShortcutLabel})`}
 								aria-label={isVoiceRecording || isVoiceStarting ? "Stop voice input" : "Start voice input"}
 								aria-pressed={isVoiceRecording}
 								oncontextmenu={(event) => event.preventDefault()}
