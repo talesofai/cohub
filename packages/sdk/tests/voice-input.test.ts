@@ -756,6 +756,30 @@ test("VoiceInputClient resolves pending ASR start when cancelled before ready", 
   }
 });
 
+test("VoiceInputClient cancels ASR when start times out", async () => {
+  const restore = installVoiceInputMocks();
+  try {
+    autoEmitAsrStarted = false;
+    const client = new VoiceInputClient({
+      url: "ws://localhost",
+      getAccessToken: () => "token-1",
+      WebSocketImpl: MockWebSocket,
+      preferAudioWorklet: false,
+      connectionTimeoutMs: 20,
+    });
+
+    await assert.rejects(client.start(), /Voice connection timed out/);
+
+    assert.deepEqual(
+      lastSocket?.sent.map((message) => message.type),
+      ["auth", "asr.start", "asr.cancel"],
+    );
+    assert.equal(lastSocket?.sent[2]?.requestId, lastSocket?.sent[1]?.requestId);
+  } finally {
+    restore();
+  }
+});
+
 test("VoiceInputClient ignores stale ASR events from previous requests", async () => {
   const restore = installVoiceInputMocks();
   try {

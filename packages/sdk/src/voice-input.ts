@@ -497,10 +497,23 @@ export class VoiceInputClient {
       await this.withConnectionTimeout(this.startAsrSession());
       if (!this.started) this.cleanupAudio();
     } catch (error) {
+      const startError =
+        error instanceof Error ? error : new Error(String(error));
+      const shouldCancelAsr = this.asrStartRequested || this.asrStarted;
+      this.rejectAsrStartWaiter(startError);
+      if (shouldCancelAsr) {
+        this.send({
+          type: "asr.cancel",
+          requestId: this.sessionId ?? undefined,
+          payload: { reason: "error", clientSessionId: this.sessionId },
+        });
+        this.intentionalClose = true;
+        this.closeSocket();
+      }
       this.cleanupAudio();
       this.started = false;
       this.scheduleIdleClose();
-      throw error;
+      throw startError;
     }
   }
 

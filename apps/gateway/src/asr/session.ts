@@ -331,6 +331,8 @@ const failProviderSession = (
   );
   if (!session.telemetry.stopAt) session.telemetry.stopAt = Date.now();
   closeSession(ctx, session);
+  emitAsrTelemetrySummary(logger, session.telemetry, session.asrOptions, "error");
+  scheduleIdleClose(socket, ctx);
 };
 
 const resolveClientInfo = (
