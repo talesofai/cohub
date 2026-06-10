@@ -375,6 +375,41 @@ export type UserRulesResponse = {
   path: string;
 };
 
+export type VoiceLexiconSource = "manual" | "auto" | "correction";
+
+export type VoiceLexiconScope = "user" | "space";
+
+export type VoiceLexiconEntry = {
+  id: string;
+  scope: VoiceLexiconScope;
+  term: string;
+  source: VoiceLexiconSource;
+  originalText: string | null;
+  usageCount: number;
+  createdAt: string | null;
+  updatedAt: string | null;
+};
+
+export type VoiceLexiconInput = {
+  term: string;
+  source?: VoiceLexiconSource;
+  originalText?: string | null;
+};
+
+export type VoiceLexiconPatchInput = {
+  term?: string;
+  source?: VoiceLexiconSource;
+  originalText?: string | null;
+};
+
+export type VoiceLexiconListResponse = {
+  items: VoiceLexiconEntry[];
+};
+
+export type VoiceLexiconEntryResponse = {
+  item: VoiceLexiconEntry;
+};
+
 export type {
   ContentBlock,
   MessageRecord,

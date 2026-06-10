@@ -10,6 +10,7 @@ import { registerProfile } from "./commands/profile.js";
 import { registerSearch } from "./commands/search.js";
 import { registerPrompt, registerSpaces } from "./commands/spaces.js";
 import { registerTasks } from "./commands/tasks.js";
+import { registerVoice } from "./commands/voice.js";
 import { ensureCliSelfUpdated } from "./self-update.js";
 
 const VERSION = (() => {
@@ -38,6 +39,8 @@ Common commands:
   cohub profile avatar ./avatar.png
   cohub spaces ls
   cohub -s <space-id> prompt "Fix the failing tests"
+  cohub voice terms ls
+  cohub -s <space-id> spaces voice-lexicon ls
   cohub search "release notes"
   cohub -s <space-id> spaces sessions turns ls <session-id>
   cohub -s <space-id> spaces files ls
@@ -60,6 +63,7 @@ registerModels(program);
 registerSearch(program);
 registerTasks(program);
 registerCronJobs(program);
+registerVoice(program);
 
 const isVersionRequest = (argv: string[]) => argv.some((arg) => arg === "-v" || arg === "--version");
 

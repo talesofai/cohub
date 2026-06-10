@@ -9,6 +9,7 @@ import { uploadAvatarAsset } from "../avatar.js";
 import { createClient } from "../client.js";
 import { table, json as outJson, jsonRequested, ok, error, handleHttp } from "../output.js";
 import { resolveSpace } from "../space.js";
+import { registerSpaceVoiceLexicon } from "./voice.js";
 
 type ModOptions = {
   json?: boolean;
@@ -429,6 +430,9 @@ export function registerSpaces(program: Command): void {
 
   // ── spaces labels ──
   registerLabels(spacesCmd);
+
+  // ── spaces voice-lexicon ──
+  registerSpaceVoiceLexicon(spacesCmd);
 
   // ── spaces usage ──
   spacesCmd

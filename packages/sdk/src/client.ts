@@ -57,12 +57,10 @@ export class CohubClient {
       getAccessToken: options.websocket?.getAccessToken ?? getAccessToken,
     });
     this.voice = new VoiceApi({
+      ...options.voice,
       env: options.voice?.env ?? options.env,
       url: options.voice?.url,
       getAccessToken: options.voice?.getAccessToken ?? getAccessToken,
-      WebSocketImpl: options.voice?.WebSocketImpl,
-      connectionTimeoutMs: options.voice?.connectionTimeoutMs,
-      idleConnectionTimeoutMs: options.voice?.idleConnectionTimeoutMs,
     });
     this.spaces = new SpacesApi(this.transport);
     this.channels = new ChannelsApi(this.transport);

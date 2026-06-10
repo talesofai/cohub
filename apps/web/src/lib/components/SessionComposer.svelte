@@ -1,13 +1,18 @@
 <script lang="ts">
 import type {
 	PromptTemplateCatalogEntry,
+	VoiceLexiconEntry as ServerVoiceLexiconEntry,
+	VoiceActivityEvent,
+	VoiceInputAsrOptions,
 	VoiceInputClient,
+	VoiceLexiconSource,
 } from "@neta-art/cohub";
 import {
 	ArrowUp,
 	ChevronDown,
 	Mic,
 	Plus,
+	RefreshCw,
 	Square,
 	Upload,
 	X,
@@ -45,11 +50,40 @@ import {
 	entriesFromFiles,
 	type LocalUploadEntry,
 } from "$lib/upload-entries";
+import {
+	addVoiceInputLexiconTerm,
+	getCachedUserVoiceInputLexicon,
+	getVoiceLexiconTermKey,
+	mergeVoiceLexiconForComposer,
+	normalizeVoiceLexiconTerm,
+	removeVoiceInputLexiconTerm,
+	setCachedSpaceVoiceInputLexicon,
+	setCachedUserVoiceInputLexicon,
+	type VoiceInputLexiconEntry,
+} from "$lib/voice-input-lexicon";
+import {
+	formatVoiceInputShortcut,
+	isVoiceInputShortcutRelease,
+	isVoiceInputShortcutTrigger,
+	listenVoiceInputShortcutChange,
+	readVoiceInputShortcut,
+	resetVoiceInputShortcutKeyState,
+} from "$lib/voice-input-shortcut";
 
 type SelectedModel = {
 	provider: string;
 	id: string;
 	name?: string;
+};
+
+type VoiceInsertedSegment = {
+	start: number;
+	end: number;
+	originalText: string;
+	insertedText: string;
+	sessionId: number;
+	snapshot: string;
+	learned: boolean;
 };
 
 type Props = {
@@ -116,6 +150,7 @@ let spaceMentionLocalController: AbortController | null = null;
 let spaceMentionRemoteController: AbortController | null = null;
 let spaceMentionDebounceTimer: number | null = null;
 let pastedSpaceResolveController: AbortController | null = null;
+let composerRootEl = $state<HTMLDivElement | null>(null);
 let spaceMentionTrigger = $state<{
 	start: number;
 	end: number;
@@ -123,13 +158,37 @@ let spaceMentionTrigger = $state<{
 } | null>(null);
 let isComposerExpanded = $state(false);
 let voiceClient: VoiceInputClient | null = null;
+let voiceSessionId = 0;
 let voicePrefix = "";
 let voiceSuffix = "";
 let voiceCommittedText = "";
 let voicePartialText = $state("");
+let voiceActivity = $state<VoiceActivityEvent | null>(null);
 let isVoiceRecording = $state(false);
 let isVoiceStarting = $state(false);
+let isVoiceFinishing = $state(false);
+let voiceStopRequested = false;
+let voiceStopReason: "manual" | "hotkey_release" | "vad_endpoint" | "error" =
+	"manual";
+let voicePushToTalkActive = false;
+let voicePushToTalkSession = false;
 let voiceError = $state<string | null>(null);
+let voiceContinuousMode = $state(false);
+let voiceCandidateAlternatives = $state<string[]>([]);
+let voiceCandidateStart = 0;
+let voiceCandidateEnd = 0;
+let voiceUndoSnapshot = $state<string | null>(null);
+let voiceContinuousUndoSnapshot: string | null = null;
+let voiceLexiconOpen = $state(false);
+let voiceLexiconInput = $state("");
+let voiceLexiconEntries = $state<VoiceInputLexiconEntry[]>([]);
+let voiceLexiconLoadToken = 0;
+let voiceLexiconSyncedSpaceId: string | null | undefined;
+let voiceCorrectionLearnTimer: number | null = null;
+let voiceContinuousRestartTimer: number | null = null;
+let voiceShortcut = $state(readVoiceInputShortcut());
+const voiceShortcutLabel = $derived(formatVoiceInputShortcut(voiceShortcut));
+let lastVoiceInsertedSegment: VoiceInsertedSegment | null = null;
 
 const hasDraft = $derived(Boolean(value.trim() || attachments.length > 0));
 const showAbort = $derived(Boolean(isRunning && !hasDraft));
@@ -311,7 +370,9 @@ function collapseComposer() {
 
 function submitDraft() {
 	if (submitDisabled || !hasDraft) return;
+	learnVoiceCorrectionNow();
 	onsubmit();
+	lastVoiceInsertedSegment = null;
 	collapseComposer();
 }
 
@@ -325,61 +386,600 @@ function applyVoiceText(partialText = "") {
 	});
 }
 
+function rememberVoiceUndoSnapshot() {
+	if (voiceContinuousMode && voiceContinuousUndoSnapshot !== null) {
+		voiceUndoSnapshot = voiceContinuousUndoSnapshot;
+		return;
+	}
+	voiceUndoSnapshot = value;
+	if (voiceContinuousMode) voiceContinuousUndoSnapshot = value;
+}
+
+function resetVoiceCandidates() {
+	voiceCandidateAlternatives = [];
+	voiceCandidateStart = 0;
+	voiceCandidateEnd = 0;
+}
+
+function setVoiceCandidates(
+	alternatives: string[],
+	originalText: string,
+	insertedText: string,
+) {
+	const unique = [originalText, ...alternatives]
+		.map((item) => item.trim())
+		.filter(
+			(item, index, values) =>
+				item && item !== insertedText && values.indexOf(item) === index,
+		)
+		.slice(0, 3);
+	voiceCandidateAlternatives = unique;
+	voiceCandidateEnd = voicePrefix.length + voiceCommittedText.length;
+	voiceCandidateStart = Math.max(
+		voicePrefix.length,
+		voiceCandidateEnd - insertedText.length,
+	);
+}
+
+function applyVoiceCandidate(candidate: string) {
+	if (!candidate || voiceCandidateEnd < voiceCandidateStart) return;
+	value =
+		value.slice(0, voiceCandidateStart) +
+		candidate +
+		value.slice(voiceCandidateEnd);
+	voiceCandidateEnd = voiceCandidateStart + candidate.length;
+	const learnedFrom =
+		lastVoiceInsertedSegment?.originalText ||
+		lastVoiceInsertedSegment?.insertedText ||
+		null;
+	if (isLearnableVoiceCorrection(candidate, learnedFrom)) {
+		if (lastVoiceInsertedSegment) {
+			lastVoiceInsertedSegment = {
+				...lastVoiceInsertedSegment,
+				learned: true,
+			};
+		}
+		void addUserVoiceLexiconTerm(candidate, "correction", learnedFrom);
+	}
+	resetVoiceCandidates();
+	requestAnimationFrame(() => {
+		textareaEl?.focus();
+		textareaEl?.setSelectionRange(voiceCandidateEnd, voiceCandidateEnd);
+		resizeTextarea();
+	});
+}
+
+function undoLastVoiceInput() {
+	if (voiceUndoSnapshot === null) return;
+	value = voiceUndoSnapshot;
+	voiceUndoSnapshot = null;
+	voiceContinuousUndoSnapshot = null;
+	lastVoiceInsertedSegment = null;
+	resetVoiceCandidates();
+	requestAnimationFrame(() => {
+		textareaEl?.focus();
+		resizeTextarea();
+	});
+}
+
+function toServerVoiceLexiconEntry(
+	entry: VoiceInputLexiconEntry,
+): ServerVoiceLexiconEntry | null {
+	if (entry.scope !== "user" && entry.scope !== "space") return null;
+	return {
+		id: entry.id,
+		scope: entry.scope,
+		term: entry.term,
+		source: entry.source,
+		originalText: entry.originalText,
+		usageCount: entry.usageCount,
+		createdAt: entry.createdAt,
+		updatedAt: entry.updatedAt,
+	};
+}
+
+function upsertCachedUserVoiceLexiconEntry(entry: ServerVoiceLexiconEntry) {
+	const key = getVoiceLexiconTermKey(entry.term);
+	const cached = getCachedUserVoiceInputLexicon()
+		.map(toServerVoiceLexiconEntry)
+		.filter((item): item is ServerVoiceLexiconEntry => Boolean(item))
+		.filter(
+			(item) =>
+				item.id !== entry.id && getVoiceLexiconTermKey(item.term) !== key,
+		);
+	setCachedUserVoiceInputLexicon([entry, ...cached]);
+	refreshVoiceLexicon();
+}
+
+function removeCachedUserVoiceLexiconEntry(entryId: string) {
+	const cached = getCachedUserVoiceInputLexicon()
+		.map(toServerVoiceLexiconEntry)
+		.filter((item): item is ServerVoiceLexiconEntry => Boolean(item))
+		.filter((item) => item.id !== entryId);
+	setCachedUserVoiceInputLexicon(cached);
+	refreshVoiceLexicon();
+}
+
+function refreshVoiceLexicon(spaceId = currentSpaceId) {
+	voiceLexiconEntries = mergeVoiceLexiconForComposer(spaceId);
+}
+
+async function syncVoiceLexiconFromServer(spaceId = currentSpaceId) {
+	const token = ++voiceLexiconLoadToken;
+	const [userResult, spaceResult] = await Promise.all([
+		sdk.user.getVoiceLexicon().catch(() => null),
+		spaceId
+			? sdk
+					.space(spaceId)
+					.voiceLexicon.list()
+					.catch(() => null)
+			: Promise.resolve(null),
+	]);
+	if (token !== voiceLexiconLoadToken) return;
+	if (userResult) setCachedUserVoiceInputLexicon(userResult.items);
+	if (spaceId && spaceResult)
+		setCachedSpaceVoiceInputLexicon(spaceId, spaceResult.items);
+	refreshVoiceLexicon(spaceId);
+}
+
+async function addUserVoiceLexiconTerm(
+	term: string,
+	source: VoiceLexiconSource = "manual",
+	originalText?: string | null,
+) {
+	const normalized = normalizeVoiceLexiconTerm(term);
+	if (!normalized) {
+		refreshVoiceLexicon();
+		return;
+	}
+	try {
+		const result = await sdk.user.addVoiceLexiconEntry({
+			term: normalized,
+			source,
+			originalText: originalText ?? null,
+		});
+		upsertCachedUserVoiceLexiconEntry(result.item);
+	} catch (error) {
+		console.warn("[voice-input] failed to save user lexicon term", error);
+		addVoiceInputLexiconTerm(normalized, source, originalText);
+		refreshVoiceLexicon();
+	}
+}
+
+function isLearnableVoiceCorrection(
+	correction: string,
+	originalText?: string | null,
+) {
+	const normalized = normalizeVoiceLexiconTerm(correction);
+	if (!normalized) return false;
+	if (/[\r\n]/.test(normalized)) return false;
+	if (/[。！？!?；;]/.test(normalized)) return false;
+	const wordCount = normalized.split(/\s+/).filter(Boolean).length;
+	if (wordCount > 6) return false;
+	if (wordCount <= 1 && normalized.length > 32) return false;
+	if (normalized.length > 60) return false;
+	const original = normalizeVoiceLexiconTerm(originalText ?? "");
+	return (
+		!original ||
+		getVoiceLexiconTermKey(original) !== getVoiceLexiconTermKey(normalized)
+	);
+}
+
+function getChangedRange(before: string, after: string) {
+	let start = 0;
+	const minLength = Math.min(before.length, after.length);
+	while (start < minLength && before[start] === after[start]) start += 1;
+	let beforeEnd = before.length;
+	let afterEnd = after.length;
+	while (
+		beforeEnd > start &&
+		afterEnd > start &&
+		before[beforeEnd - 1] === after[afterEnd - 1]
+	) {
+		beforeEnd -= 1;
+		afterEnd -= 1;
+	}
+	return { start, beforeEnd, afterEnd };
+}
+
+function getCorrectedVoiceSegmentText(segment: VoiceInsertedSegment) {
+	if (value === segment.snapshot) return null;
+	const change = getChangedRange(segment.snapshot, value);
+	const changedInside =
+		change.start < segment.end && change.beforeEnd > segment.start;
+	const insertedInside =
+		change.beforeEnd === change.start &&
+		change.start > segment.start &&
+		change.start < segment.end;
+	if (!changedInside && !insertedInside) return null;
+	const adjustedEnd = Math.max(
+		segment.start,
+		segment.end + value.length - segment.snapshot.length,
+	);
+	return value.slice(segment.start, adjustedEnd);
+}
+
+function learnVoiceCorrectionNow() {
+	if (voiceCorrectionLearnTimer != null) {
+		window.clearTimeout(voiceCorrectionLearnTimer);
+		voiceCorrectionLearnTimer = null;
+	}
+	const segment = lastVoiceInsertedSegment;
+	if (!segment || segment.learned) return;
+	const correction = getCorrectedVoiceSegmentText(segment);
+	const learnedFrom = segment.originalText || segment.insertedText;
+	if (!correction || !isLearnableVoiceCorrection(correction, learnedFrom))
+		return;
+	segment.learned = true;
+	lastVoiceInsertedSegment = segment;
+	void addUserVoiceLexiconTerm(correction, "correction", learnedFrom);
+}
+
+function scheduleVoiceCorrectionLearning() {
+	if (!lastVoiceInsertedSegment || lastVoiceInsertedSegment.learned) return;
+	if (voiceCorrectionLearnTimer != null)
+		window.clearTimeout(voiceCorrectionLearnTimer);
+	voiceCorrectionLearnTimer = window.setTimeout(() => {
+		learnVoiceCorrectionNow();
+	}, 600);
+}
+
+function handleComposerInput() {
+	resizeTextarea();
+	scheduleVoiceCorrectionLearning();
+}
+
+function addVoiceLexiconInput() {
+	const term = voiceLexiconInput;
+	voiceLexiconInput = "";
+	void addUserVoiceLexiconTerm(term, "manual");
+}
+
+async function removeVoiceLexiconEntry(entry: VoiceInputLexiconEntry) {
+	if (entry.scope === "space") return;
+	if (entry.scope === "user") {
+		try {
+			await sdk.user.deleteVoiceLexiconEntry(entry.id);
+			removeCachedUserVoiceLexiconEntry(entry.id);
+		} catch (error) {
+			console.warn("[voice-input] failed to delete user lexicon term", error);
+		}
+		return;
+	}
+	removeVoiceInputLexiconTerm(entry.term);
+	refreshVoiceLexicon();
+}
+
+function toggleVoiceContinuousMode() {
+	voiceContinuousMode = !voiceContinuousMode;
+	if (voiceContinuousMode) {
+		voiceContinuousUndoSnapshot = value;
+		return;
+	}
+	clearContinuousVoiceInputRestart();
+	voiceContinuousUndoSnapshot = null;
+}
+
+function addVoiceTerm(terms: Set<string>, term: string | null | undefined) {
+	const normalized = term?.replace(/[`*_#[\]()>]/g, "").trim();
+	if (!normalized || normalized.length < 2 || normalized.length > 40) return;
+	terms.add(normalized);
+}
+
+function extractTranscriptVoiceTerms(text: string) {
+	const terms = new Set<string>();
+	for (const token of tokenizeSpaceMentionText(text)) {
+		if (token.type === "spaceMention") addVoiceTerm(terms, token.label);
+	}
+	for (const match of text.matchAll(/\b[A-Z][A-Za-z0-9_-]{1,39}\b/g)) {
+		addVoiceTerm(terms, match[0]);
+	}
+	return Array.from(terms).slice(0, 40);
+}
+
+function extractVoiceContextTerms(text: string) {
+	const terms = new Set<string>();
+	addVoiceTerm(terms, "Cohub");
+	addVoiceTerm(terms, "Neta");
+	addVoiceTerm(terms, currentModel?.name);
+	addVoiceTerm(terms, currentModel?.id);
+	for (const entry of voiceLexiconEntries) addVoiceTerm(terms, entry.term);
+	for (const item of promptTemplates.slice(0, 24))
+		addVoiceTerm(terms, item.name);
+	for (const term of extractTranscriptVoiceTerms(text)) {
+		addVoiceTerm(terms, term);
+	}
+	return Array.from(terms).slice(0, 40);
+}
+
+function buildVoiceAsrOptions(): VoiceInputAsrOptions {
+	const contextSource = `${voicePrefix}${voiceSuffix}`.trim();
+	const contextText =
+		contextSource.length > 0
+			? `Current composer context: ${contextSource.slice(-900)}`
+			: "User is dictating into the Cohub session composer.";
+	return {
+		endWindowSizeMs: 800,
+		forceToSpeechTimeMs: 1000,
+		enableNonstream: true,
+		enablePunctuation: true,
+		enableItn: true,
+		enableDdc: false,
+		hotwords: extractVoiceContextTerms(contextSource),
+		contextText,
+		contextMessages: [
+			currentModel?.name ? `Selected model: ${currentModel.name}` : "",
+			attachments.length > 0
+				? `Composer has ${attachments.length} attachment(s).`
+				: "",
+		].filter(Boolean),
+		postProcessing: {
+			enabled: true,
+			normalizeWhitespace: true,
+			cleanupFillers: true,
+			rewritePunctuation: true,
+			applyContextTerms: true,
+		},
+	};
+}
+
+function getVoiceStatusText() {
+	if (voiceError) return voiceError;
+	if (isVoiceFinishing) return "Finishing";
+	if (isVoiceStarting) return "Starting...";
+	if (!isVoiceRecording) return "";
+	if (!voiceActivity || voiceActivity.state === "waiting")
+		return "Waiting for speech";
+	if (voiceActivity.state === "silence") return "Finishing";
+	return "Listening";
+}
+
+function isCurrentVoiceSession(sessionId: number, client: VoiceInputClient) {
+	return voiceSessionId === sessionId && voiceClient === client;
+}
+
+function canStartVoiceInput() {
+	return (
+		!disabled &&
+		!sending &&
+		!showAbort &&
+		!voiceClient &&
+		!isVoiceStarting &&
+		!isVoiceRecording &&
+		!isVoiceFinishing
+	);
+}
+
+function clearContinuousVoiceInputRestart() {
+	if (voiceContinuousRestartTimer == null) return;
+	window.clearTimeout(voiceContinuousRestartTimer);
+	voiceContinuousRestartTimer = null;
+}
+
+function scheduleContinuousVoiceInput(
+	reason: typeof voiceStopReason,
+	wasPushToTalkSession = false,
+) {
+	clearContinuousVoiceInputRestart();
+	if (
+		!voiceContinuousMode ||
+		reason !== "vad_endpoint" ||
+		voiceError ||
+		wasPushToTalkSession ||
+		voicePushToTalkActive ||
+		disabled ||
+		sending ||
+		showAbort
+	)
+		return;
+	voiceContinuousRestartTimer = window.setTimeout(() => {
+		voiceContinuousRestartTimer = null;
+		if (
+			voiceClient ||
+			isVoiceStarting ||
+			isVoiceRecording ||
+			isVoiceFinishing ||
+			!voiceContinuousMode
+		)
+			return;
+		void startVoiceInput();
+	}, 180);
+}
+
+function finishVoiceInputSession(sessionId: number, client: VoiceInputClient) {
+	if (!isCurrentVoiceSession(sessionId, client)) {
+		client.close();
+		return;
+	}
+	const stopReason = voiceStopReason;
+	const wasPushToTalkSession = voicePushToTalkSession || voicePushToTalkActive;
+	isVoiceRecording = false;
+	isVoiceStarting = false;
+	isVoiceFinishing = false;
+	voiceStopRequested = false;
+	voiceStopReason = "manual";
+	voicePushToTalkActive = false;
+	voicePushToTalkSession = false;
+	client.close();
+	voiceClient = null;
+	voiceActivity = null;
+	if (stopReason !== "vad_endpoint") voiceContinuousUndoSnapshot = null;
+	scheduleContinuousVoiceInput(stopReason, wasPushToTalkSession);
+}
+
 async function startVoiceInput() {
-	if (disabled || sending || isVoiceRecording || isVoiceStarting) return;
+	if (!canStartVoiceInput()) return;
+	clearContinuousVoiceInputRestart();
+	refreshVoiceLexicon();
+	rememberVoiceUndoSnapshot();
+	resetVoiceCandidates();
+	const sessionId = voiceSessionId + 1;
+	voiceSessionId = sessionId;
 	voiceError = null;
+	voiceActivity = null;
+	isVoiceFinishing = false;
 	isVoiceStarting = true;
+	voiceStopRequested = false;
+	voiceStopReason = "manual";
+	voicePushToTalkSession = voicePushToTalkActive;
 	const start = textareaEl?.selectionStart ?? value.length;
 	const end = textareaEl?.selectionEnd ?? start;
 	voicePrefix = value.slice(0, start);
 	voiceSuffix = value.slice(end);
 	voiceCommittedText = "";
 	voicePartialText = "";
-	voiceClient = sdk.voice.createInputClient({
-		onPartial: (text) => {
-			voicePartialText = text;
-			applyVoiceText(text);
+	let client: VoiceInputClient;
+	client = sdk.voice.createInputClient(
+		{
+			onPartial: (text) => {
+				if (!isCurrentVoiceSession(sessionId, client)) return;
+				voicePartialText = text;
+				applyVoiceText(text);
+			},
+			onFinal: (text, event) => {
+				if (!isCurrentVoiceSession(sessionId, client)) return;
+				const segmentStart = voicePrefix.length + voiceCommittedText.length;
+				voiceCommittedText += text;
+				voicePartialText = "";
+				applyVoiceText();
+				lastVoiceInsertedSegment = {
+					start: segmentStart,
+					end: segmentStart + text.length,
+					originalText: event.originalText ?? "",
+					insertedText: text,
+					sessionId,
+					snapshot: voicePrefix + voiceCommittedText + voiceSuffix,
+					learned: false,
+				};
+				setVoiceCandidates(event.alternatives, event.originalText ?? "", text);
+				for (const term of extractTranscriptVoiceTerms(text).slice(0, 6)) {
+					if (/^[A-Z][A-Za-z0-9_-]{2,39}$/.test(term)) {
+						void addUserVoiceLexiconTerm(term, "auto");
+					}
+				}
+			},
+			onVoiceActivity: (event) => {
+				if (!isCurrentVoiceSession(sessionId, client)) return;
+				voiceActivity = event;
+			},
+			onEndpoint: () => {
+				if (!isCurrentVoiceSession(sessionId, client)) return;
+				isVoiceRecording = false;
+				isVoiceFinishing = true;
+				voiceStopRequested = true;
+				voiceStopReason = "vad_endpoint";
+			},
+			onError: (message) => {
+				if (!isCurrentVoiceSession(sessionId, client)) return;
+				voiceError = message;
+				voiceStopReason = "error";
+			},
+			onDone: () => {
+				finishVoiceInputSession(sessionId, client);
+			},
 		},
-		onFinal: (text) => {
-			voiceCommittedText += text;
-			voicePartialText = "";
-			applyVoiceText();
+		{
+			asr: buildVoiceAsrOptions(),
+			vad: {
+				enabled: true,
+				autoStop: true,
+				preRollMs: 400,
+				minSpeechMs: 160,
+				silenceDurationMs: 2400,
+				speechThreshold: 0.008,
+				silenceThreshold: 0.005,
+				peakThreshold: 0.07,
+			},
 		},
-		onError: (message) => {
-			voiceError = message;
-		},
-		onDone: () => {
-			isVoiceRecording = false;
-			isVoiceStarting = false;
-			voiceClient?.close();
-			voiceClient = null;
-		},
-	});
+	);
+	voiceClient = client;
 	try {
-		await voiceClient.start();
+		await client.start();
+		if (!isCurrentVoiceSession(sessionId, client)) {
+			client.close();
+			return;
+		}
+		isVoiceStarting = false;
+		if (voiceStopRequested) {
+			isVoiceFinishing = true;
+			return;
+		}
 		isVoiceRecording = true;
 	} catch (error) {
+		if (!isCurrentVoiceSession(sessionId, client)) {
+			client.close();
+			return;
+		}
 		voiceError = error instanceof Error ? error.message : "Voice input failed";
-		voiceClient?.close();
+		client.close();
 		voiceClient = null;
 		isVoiceRecording = false;
-	} finally {
 		isVoiceStarting = false;
+		isVoiceFinishing = false;
+		voiceStopRequested = false;
+		voiceStopReason = "manual";
+		voicePushToTalkActive = false;
+		voicePushToTalkSession = false;
+		voiceContinuousUndoSnapshot = null;
 	}
 }
 
 function toggleVoiceInput() {
-	if (isVoiceRecording) {
+	if (isVoiceRecording || isVoiceStarting) {
 		stopVoiceInput();
 		return;
 	}
 	void startVoiceInput();
 }
 
-function stopVoiceInput() {
-	if (!isVoiceRecording) return;
+function stopVoiceInput(reason: "manual" | "hotkey_release" = "manual") {
+	const client = voiceClient;
+	if (!client || isVoiceFinishing) return;
+	voiceStopRequested = true;
+	voiceStopReason = reason;
 	isVoiceRecording = false;
-	voiceClient?.stop();
+	isVoiceFinishing = true;
+	client.stop(reason);
+}
+
+function isVoicePushToTalkScope(event: KeyboardEvent) {
+	if (!composerRootEl) return false;
+	const target = event.target;
+	if (target instanceof Node && composerRootEl.contains(target)) return true;
+	const active = document.activeElement;
+	return active instanceof Node && composerRootEl.contains(active);
+}
+
+function handleVoicePushToTalkDown(event: KeyboardEvent) {
+	if (
+		!isVoiceInputShortcutTrigger(event, voiceShortcut) ||
+		!isVoicePushToTalkScope(event)
+	)
+		return;
+	event.preventDefault();
+	event.stopPropagation();
+	if (event.repeat || !canStartVoiceInput()) return;
+	voicePushToTalkActive = true;
+	void startVoiceInput();
+}
+
+function handleVoicePushToTalkUp(event: KeyboardEvent) {
+	if (
+		!voicePushToTalkActive ||
+		!isVoiceInputShortcutRelease(event, voiceShortcut)
+	)
+		return;
+	event.preventDefault();
+	event.stopPropagation();
+	voicePushToTalkActive = false;
+	stopVoiceInput("hotkey_release");
+}
+
+function releaseVoicePushToTalk() {
+	resetVoiceInputShortcutKeyState();
+	if (!voicePushToTalkActive) return;
+	voicePushToTalkActive = false;
+	stopVoiceInput("hotkey_release");
 }
 
 function applyPromptTemplate(item: SlashCommandMenuItem) {
@@ -660,6 +1260,13 @@ function handlePaste(event: ClipboardEvent) {
 }
 
 onMount(() => {
+	voiceShortcut = readVoiceInputShortcut();
+	const stopVoiceShortcutListener = listenVoiceInputShortcutChange(
+		(shortcut) => {
+			voiceShortcut = shortcut;
+		},
+	);
+	refreshVoiceLexicon();
 	focusComposer();
 	const handleComposerInsert = (event: Event) => {
 		const custom = event as CustomEvent<{ snippet?: string }>;
@@ -671,20 +1278,47 @@ onMount(() => {
 	const handleViewportResize = () => resizeTextarea();
 	window.addEventListener("cohub:composer-focus", handleFocusComposer);
 	window.addEventListener("cohub:composer-insert", handleComposerInsert);
+	window.addEventListener("keydown", handleVoicePushToTalkDown, {
+		capture: true,
+	});
+	window.addEventListener("keyup", handleVoicePushToTalkUp, {
+		capture: true,
+	});
+	window.addEventListener("blur", releaseVoicePushToTalk);
 	window.addEventListener("resize", handleViewportResize);
 	window.visualViewport?.addEventListener("resize", handleViewportResize);
 	return () => {
 		window.removeEventListener("cohub:composer-focus", handleFocusComposer);
 		window.removeEventListener("cohub:composer-insert", handleComposerInsert);
+		window.removeEventListener("keydown", handleVoicePushToTalkDown, {
+			capture: true,
+		});
+		window.removeEventListener("keyup", handleVoicePushToTalkUp, {
+			capture: true,
+		});
+		window.removeEventListener("blur", releaseVoicePushToTalk);
 		window.removeEventListener("resize", handleViewportResize);
 		window.visualViewport?.removeEventListener("resize", handleViewportResize);
+		stopVoiceShortcutListener();
 		spaceMentionLocalController?.abort();
 		spaceMentionRemoteController?.abort();
 		pastedSpaceResolveController?.abort();
+		clearContinuousVoiceInputRestart();
 		voiceClient?.close();
+		if (voiceCorrectionLearnTimer != null)
+			window.clearTimeout(voiceCorrectionLearnTimer);
 		if (spaceMentionDebounceTimer != null)
 			window.clearTimeout(spaceMentionDebounceTimer);
 	};
+});
+
+$effect(() => {
+	const spaceId = currentSpaceId;
+	if (spaceId === voiceLexiconSyncedSpaceId) return;
+	voiceLexiconSyncedSpaceId = spaceId;
+	lastVoiceInsertedSegment = null;
+	refreshVoiceLexicon(spaceId);
+	void syncVoiceLexiconFromServer(spaceId);
 });
 
 $effect(() => {
@@ -744,7 +1378,7 @@ $effect(() => {
 });
 </script>
 
-<div class="px-4 pb-[calc(0.75rem+env(safe-area-inset-bottom))] pt-2 sm:px-6 sm:pb-4">
+<div bind:this={composerRootEl} class="px-4 pb-[calc(0.75rem+env(safe-area-inset-bottom))] pt-2 sm:px-6 sm:pb-4">
 	<div class={`relative mx-auto transition-[max-width] duration-200 ${isComposerExpanded ? 'max-w-5xl' : 'max-w-4xl'}`}>
 		{#if streamError}
 			<div class="mb-3 rounded-2xl border border-error-soft/25 bg-error-bg px-3 py-2 text-[11px] text-error-soft">
@@ -848,7 +1482,7 @@ $effect(() => {
 							onpointerdown={() => {
 								isTextareaFocused = true;
 							}}
-							oninput={() => resizeTextarea()}
+							oninput={handleComposerInput}
 							onscroll={syncMentionMirrorScroll}
 							ondragover={handlePathDragOver}
 						ondragleave={handlePathDragLeave}
@@ -1021,8 +1655,8 @@ $effect(() => {
 						onselect={applySpaceMention}
 					/>
 
-					<div class="mt-1.5 flex items-center justify-between gap-2">
-						<div class="flex items-center gap-1">
+					<div class="mt-1.5 flex flex-wrap items-center justify-between gap-2">
+						<div class="flex min-w-0 flex-wrap items-center gap-1">
 							<button
 								type="button"
 								class="-ml-2 flex h-8.5 w-8.5 shrink-0 items-center justify-center rounded-full text-text-tertiary transition-colors hover:bg-bg-hover hover:text-text-primary disabled:cursor-not-allowed disabled:opacity-50"
@@ -1033,10 +1667,87 @@ $effect(() => {
 								<Plus class="h-[17px] w-[17px]" />
 							</button>
 
+							<div class="relative">
+								<button
+									type="button"
+									class={`flex h-7 items-center rounded-full border px-2 text-[11px] transition-colors disabled:cursor-not-allowed disabled:opacity-50 ${voiceLexiconOpen ? 'border-brand/35 bg-brand/8 text-text-primary' : 'border-border-subtle text-text-tertiary hover:bg-bg-hover hover:text-text-primary'}`}
+									onclick={() => {
+										refreshVoiceLexicon();
+										voiceLexiconOpen = !voiceLexiconOpen;
+									}}
+									disabled={disabled || sending}
+									title="Voice terms"
+								>
+									Terms
+								</button>
+								{#if voiceLexiconOpen}
+									<div class="absolute bottom-8 left-0 z-30 w-64 rounded-lg border border-border-subtle bg-bg-elevated p-2 shadow-lg">
+										<div class="flex gap-1">
+											<input
+												bind:value={voiceLexiconInput}
+												class="min-w-0 flex-1 rounded-md border border-border-subtle bg-bg-content px-2 py-1 text-[12px] text-text-primary outline-none focus:border-brand/35"
+												placeholder="Add term"
+												onkeydown={(event) => {
+													if (event.key === 'Enter') {
+														event.preventDefault();
+														addVoiceLexiconInput();
+													}
+												}}
+											/>
+											<button
+												type="button"
+												class="rounded-md bg-text-primary px-2 text-[11px] text-bg-primary disabled:opacity-50"
+												disabled={!voiceLexiconInput.trim()}
+												onclick={addVoiceLexiconInput}
+											>
+												Add
+											</button>
+										</div>
+										<div class="mt-2 max-h-36 overflow-y-auto">
+											{#if voiceLexiconEntries.length === 0}
+												<div class="px-1 py-2 text-[11px] text-text-placeholder">No terms</div>
+											{:else}
+												{#each voiceLexiconEntries as entry (entry.term)}
+													<div class="flex items-center justify-between gap-2 rounded-md px-1.5 py-1 text-[12px] text-text-secondary hover:bg-bg-hover">
+														<div class="min-w-0">
+															<div class="truncate">{entry.term}</div>
+															<div class="text-[10px] text-text-placeholder">
+																{entry.scope === 'space' ? 'Shared' : entry.scope === 'user' ? 'Personal' : 'Local'}
+															</div>
+														</div>
+														{#if entry.scope !== 'space'}
+															<button
+																type="button"
+																class="shrink-0 text-text-tertiary hover:text-text-primary"
+																title="Remove"
+																onclick={() => void removeVoiceLexiconEntry(entry)}
+															>
+																<X class="h-3.5 w-3.5" />
+															</button>
+														{/if}
+													</div>
+												{/each}
+											{/if}
+										</div>
+									</div>
+								{/if}
+							</div>
+
+							<button
+								type="button"
+								class={`flex h-7 items-center rounded-full border px-2 text-[11px] transition-colors disabled:cursor-not-allowed disabled:opacity-50 ${voiceContinuousMode ? 'border-brand/35 bg-brand/8 text-text-primary' : 'border-border-subtle text-text-tertiary hover:bg-bg-hover hover:text-text-primary'}`}
+								onclick={toggleVoiceContinuousMode}
+								disabled={disabled || sending}
+								title="Continuous dictation"
+								aria-pressed={voiceContinuousMode}
+							>
+								Loop
+							</button>
+
 							{#if onModelSelect}
 								<button
 									type="button"
-									class="flex items-center gap-1 h-7 px-2 rounded-full text-[11px] text-text-tertiary transition-colors hover:bg-bg-hover hover:text-text-primary border border-border-subtle disabled:cursor-not-allowed disabled:opacity-50"
+									class="flex h-7 items-center gap-1 rounded-full border border-border-subtle px-2 text-[11px] text-text-tertiary transition-colors hover:bg-bg-hover hover:text-text-primary disabled:cursor-not-allowed disabled:opacity-50"
 									onclick={() => onModelSelect?.()}
 									disabled={disabled || sending}
 									title="Select model"
@@ -1049,18 +1760,42 @@ $effect(() => {
 							{/if}
 						</div>
 
-						<div class="flex items-center gap-2">
-							{#if isVoiceStarting || isVoiceRecording || voiceError}
+						<div class="flex min-w-0 items-center gap-2">
+							{#if voiceCandidateAlternatives.length > 0 || voiceUndoSnapshot !== null}
+								<div class="flex max-w-[46vw] flex-wrap items-center justify-end gap-1 overflow-hidden sm:max-w-[280px]">
+									{#each voiceCandidateAlternatives as candidate}
+										<button
+											type="button"
+											class="max-w-[92px] truncate rounded-full border border-border-subtle px-2 py-1 text-[11px] text-text-secondary hover:bg-bg-hover hover:text-text-primary"
+											title={candidate}
+											onclick={() => applyVoiceCandidate(candidate)}
+										>
+											{candidate}
+										</button>
+									{/each}
+									{#if voiceUndoSnapshot !== null}
+										<button
+											type="button"
+											class="flex h-7 w-7 items-center justify-center rounded-full text-text-tertiary hover:bg-bg-hover hover:text-text-primary"
+											title="Undo voice input"
+											onclick={undoLastVoiceInput}
+										>
+											<RefreshCw class="h-3.5 w-3.5" />
+										</button>
+									{/if}
+								</div>
+							{/if}
+							{#if isVoiceStarting || isVoiceRecording || isVoiceFinishing || voiceError}
 								<span class={`max-w-[160px] truncate text-[11px] leading-none ${voiceError ? 'text-error-soft' : 'text-text-placeholder'}`}>
-									{voiceError ?? (isVoiceStarting ? 'Starting…' : 'Listening')}
+									{getVoiceStatusText()}
 								</span>
 							{/if}
 							<button
 								type="button"
-								class={`voice-record-button relative flex h-9 w-9 shrink-0 items-center justify-center rounded-full border transition-all disabled:cursor-not-allowed disabled:opacity-50 ${isVoiceRecording ? 'border-brand/45 bg-brand text-brand-contrast-fg shadow-sm' : isVoiceStarting ? 'border-border-subtle bg-bg-hover-strong text-text-secondary' : 'border-transparent text-text-tertiary hover:bg-bg-hover hover:text-text-primary'}`}
-								disabled={disabled || sending || showAbort || isVoiceStarting}
-								title={isVoiceRecording ? "Stop voice input" : "Start voice input"}
-								aria-label={isVoiceRecording ? "Stop voice input" : "Start voice input"}
+								class={`voice-record-button relative flex h-9 w-9 shrink-0 items-center justify-center rounded-full border transition-all disabled:cursor-not-allowed disabled:opacity-50 ${isVoiceRecording ? 'border-brand/45 bg-brand text-brand-contrast-fg shadow-sm' : (isVoiceStarting || isVoiceFinishing) ? 'border-border-subtle bg-bg-hover-strong text-text-secondary' : 'border-transparent text-text-tertiary hover:bg-bg-hover hover:text-text-primary'}`}
+								disabled={disabled || sending || showAbort || isVoiceFinishing}
+								title={isVoiceRecording || isVoiceStarting ? "Stop voice input" : `Start voice input (${voiceShortcutLabel})`}
+								aria-label={isVoiceRecording || isVoiceStarting ? "Stop voice input" : "Start voice input"}
 								aria-pressed={isVoiceRecording}
 								oncontextmenu={(event) => event.preventDefault()}
 								onclick={toggleVoiceInput}

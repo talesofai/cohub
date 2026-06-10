@@ -31,6 +31,7 @@ import {
 	Loader2,
 	LogOut,
 	MessageSquare,
+	Mic,
 	Network,
 	NotebookPen,
 	PanelLeftClose,
@@ -442,6 +443,12 @@ const baseSettingsTabs = [
 		label: "User Rules",
 		icon: NotebookPen,
 		href: "/settings/rules",
+	},
+	{
+		id: "voice",
+		label: "Voice",
+		icon: Mic,
+		href: "/settings/voice",
 	},
 	{
 		id: "channels",

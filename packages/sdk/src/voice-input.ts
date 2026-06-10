@@ -1,29 +1,128 @@
 import type { CohubEnvironment } from "./environment.js";
 import { resolveVoiceInputWebsocketUrl } from "./environment.js";
+import {
+  createVoiceInputAudioConstraints,
+  floatToPcm16,
+  resampleTo16k,
+  TARGET_SAMPLE_RATE,
+  VoiceInputAudioChunker,
+  type VoiceActivityEvent,
+  VoiceInputVad,
+  type VoiceInputVadOptions,
+} from "./voice-input-audio.js";
 
 export type VoiceInputEvent = {
   type: string;
+  requestId?: string | null;
   payload?: Record<string, unknown>;
 };
 
+export type VoiceInputStopReason =
+  | "manual"
+  | "hotkey_release"
+  | "vad_endpoint"
+  | "cancel"
+  | "client_close"
+  | "error";
+
+export type VoiceInputTranscriptEvent = {
+  text: string;
+  fullText?: string;
+  originalText?: string;
+  alternatives: string[];
+  rewritten: boolean;
+  requestId?: string | null;
+};
+
+export type VoiceInputTelemetrySummary = {
+  sessionId: string;
+  requestId: string;
+  stopReason: VoiceInputStopReason | "done";
+  audioPipeline: "audio-worklet" | "script-processor" | "unknown";
+  vadEnabled: boolean;
+  timing: {
+    durationMs: number;
+    startToReadyMs?: number;
+    firstAudioToPartialMs?: number;
+    firstAudioToFinalMs?: number;
+    stopToDoneMs?: number;
+  };
+  traffic: {
+    audioBytes: number;
+    audioChunks: number;
+    partialMessages: number;
+    finalMessages: number;
+    insertedChars: number;
+  };
+  vad: {
+    endpointCount: number;
+    speechMs: number;
+    silenceMs: number;
+    peak: number;
+    maxRms: number;
+  };
+  error?: {
+    code?: string | null;
+    message: string;
+  };
+};
+
 export type VoiceInputCallbacks = {
-  onPartial?: (text: string) => void;
-  onFinal?: (text: string) => void;
+  onPartial?: (text: string, event: VoiceInputTranscriptEvent) => void;
+  onFinal?: (text: string, event: VoiceInputTranscriptEvent) => void;
+  onVoiceActivity?: (event: VoiceActivityEvent) => void;
+  onEndpoint?: () => void;
   onError?: (message: string) => void;
   onDone?: () => void;
+  onTelemetry?: (summary: VoiceInputTelemetrySummary) => void;
+};
+
+export type VoiceInputPostProcessingOptions = {
+  enabled?: boolean;
+  normalizeWhitespace?: boolean;
+  cleanupFillers?: boolean;
+  rewritePunctuation?: boolean;
+  applyContextTerms?: boolean;
+};
+
+export type VoiceInputAsrOptions = {
+  language?: string;
+  endWindowSizeMs?: number;
+  forceToSpeechTimeMs?: number;
+  enableNonstream?: boolean;
+  enablePunctuation?: boolean;
+  enableItn?: boolean;
+  enableDdc?: boolean;
+  hotwords?: string[];
+  contextText?: string;
+  contextMessages?: string[];
+  boostingTableName?: string;
+  boostingTableId?: string;
+  correctTableName?: string;
+  correctTableId?: string;
+  postProcessing?: VoiceInputPostProcessingOptions;
 };
 
 export type VoiceInputClientOptions = {
   env?: CohubEnvironment;
   url?: string;
-  getAccessToken?: (options?: { forceRefresh?: boolean }) => Promise<string | null> | string | null;
+  getAccessToken?: (options?: {
+    forceRefresh?: boolean;
+  }) => Promise<string | null> | string | null;
   WebSocketImpl?: WebSocketConstructor;
+  audioConstraints?: MediaTrackConstraints;
+  vad?: VoiceInputVadOptions;
+  asr?: VoiceInputAsrOptions;
+  preferAudioWorklet?: boolean;
   connectionTimeoutMs?: number;
   idleConnectionTimeoutMs?: number;
   callbacks?: VoiceInputCallbacks;
 };
 
-export type VoiceInputCreateOptions = Omit<VoiceInputClientOptions, "callbacks">;
+export type VoiceInputCreateOptions = Omit<
+  VoiceInputClientOptions,
+  "callbacks"
+>;
 
 export type WebSocketLike = {
   readonly readyState: number;
@@ -37,16 +136,32 @@ export type WebSocketLike = {
 
 export type WebSocketConstructor = new (url: string) => WebSocketLike;
 
-const TARGET_SAMPLE_RATE = 16_000;
-const CHUNK_MS = 200;
-const CHUNK_SAMPLES = (TARGET_SAMPLE_RATE * CHUNK_MS) / 1000;
+const SCRIPT_PROCESSOR_BUFFER_SIZE = 2048;
 const DEFAULT_CONNECTION_TIMEOUT_MS = 10_000;
 const DEFAULT_IDLE_CONNECTION_TIMEOUT_MS = 30 * 60_000;
 const WEBSOCKET_OPEN = 1;
+const VOICE_INPUT_WORKLET_NAME = "cohub-voice-input";
+
+const VOICE_INPUT_WORKLET_SOURCE = `
+class CohubVoiceInputProcessor extends AudioWorkletProcessor {
+  process(inputs) {
+    var input = inputs[0];
+    var channel = input && input[0];
+    if (!channel || channel.length === 0) return true;
+
+    var output = new Float32Array(channel);
+    this.port.postMessage(output, [output.buffer]);
+    return true;
+  }
+}
+
+registerProcessor("${VOICE_INPUT_WORKLET_NAME}", CohubVoiceInputProcessor);
+`;
 
 const getDefaultWebSocket = (): WebSocketConstructor => {
   const WebSocketImpl = globalThis.WebSocket;
-  if (!WebSocketImpl) throw new Error("WebSocket is not available in this environment");
+  if (!WebSocketImpl)
+    throw new Error("WebSocket is not available in this environment");
   return WebSocketImpl;
 };
 
@@ -57,42 +172,50 @@ const getDefaultAudioContext = () => {
   return context.AudioContext ?? context.webkitAudioContext;
 };
 
+const createAudioContext = (AudioContextImpl: typeof AudioContext) => {
+  try {
+    return new AudioContextImpl({
+      sampleRate: TARGET_SAMPLE_RATE,
+      latencyHint: "interactive",
+    });
+  } catch {
+    try {
+      return new AudioContextImpl({ latencyHint: "interactive" });
+    } catch {
+      return new AudioContextImpl();
+    }
+  }
+};
+
+const createVoiceInputWorkletUrl = () => {
+  if (!globalThis.URL?.createObjectURL || !globalThis.Blob) return null;
+  return globalThis.URL.createObjectURL(
+    new Blob([VOICE_INPUT_WORKLET_SOURCE], { type: "application/javascript" }),
+  );
+};
+
+const toFloat32Array = (input: unknown) => {
+  if (input instanceof Float32Array) return input;
+  if (input instanceof ArrayBuffer) return new Float32Array(input);
+  return null;
+};
+
 const encodeBase64 = (bytes: Uint8Array) => {
   if (typeof btoa === "function") {
     let binary = "";
-    for (let i = 0; i < bytes.length; i += 1) binary += String.fromCharCode(bytes[i] ?? 0);
+    for (let i = 0; i < bytes.length; i += 1)
+      binary += String.fromCharCode(bytes[i] ?? 0);
     return btoa(binary);
   }
-  const maybeBuffer = (globalThis as typeof globalThis & {
-    Buffer?: { from(input: Uint8Array): { toString(encoding: "base64"): string } };
-  }).Buffer;
+  const maybeBuffer = (
+    globalThis as typeof globalThis & {
+      Buffer?: {
+        from(input: Uint8Array): { toString(encoding: "base64"): string };
+      };
+    }
+  ).Buffer;
   if (maybeBuffer) return maybeBuffer.from(bytes).toString("base64");
   throw new Error("Base64 encoding is not available in this environment");
-};
-
-const floatToPcm16 = (samples: Float32Array) => {
-  const buffer = new ArrayBuffer(samples.length * 2);
-  const view = new DataView(buffer);
-  for (let i = 0; i < samples.length; i += 1) {
-    const sample = Math.max(-1, Math.min(1, samples[i] ?? 0));
-    view.setInt16(i * 2, sample < 0 ? sample * 0x8000 : sample * 0x7fff, true);
-  }
-  return new Uint8Array(buffer);
-};
-
-const resampleTo16k = (input: Float32Array, inputSampleRate: number) => {
-  if (inputSampleRate === TARGET_SAMPLE_RATE) return input;
-  const ratio = inputSampleRate / TARGET_SAMPLE_RATE;
-  const length = Math.floor(input.length / ratio);
-  const output = new Float32Array(length);
-  for (let i = 0; i < length; i += 1) {
-    const index = i * ratio;
-    const left = Math.floor(index);
-    const right = Math.min(left + 1, input.length - 1);
-    const weight = index - left;
-    output[i] = (input[left] ?? 0) * (1 - weight) + (input[right] ?? 0) * weight;
-  }
-  return output;
 };
 
 const getErrorCode = (event: VoiceInputEvent) => {
@@ -105,10 +228,75 @@ const getErrorMessage = (event: VoiceInputEvent) => {
   return typeof message === "string" ? message : "Voice input failed";
 };
 
+const createVoiceInputSessionId = () => {
+  if (globalThis.crypto?.randomUUID) return globalThis.crypto.randomUUID();
+  return `voice_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 10)}`;
+};
+
+const getStringPayload = (event: VoiceInputEvent, key: string) => {
+  const value = event.payload?.[key];
+  return typeof value === "string" ? value : undefined;
+};
+
+const getStringArrayPayload = (event: VoiceInputEvent, key: string) => {
+  const value = event.payload?.[key];
+  if (!Array.isArray(value)) return [];
+  return value.filter(
+    (item): item is string => typeof item === "string" && item.length > 0,
+  );
+};
+
+const buildTranscriptEvent = (
+  event: VoiceInputEvent,
+): VoiceInputTranscriptEvent => {
+  const text = getStringPayload(event, "text") ?? "";
+  const originalText = getStringPayload(event, "originalText");
+  return {
+    text,
+    fullText: getStringPayload(event, "fullText"),
+    originalText,
+    alternatives: getStringArrayPayload(event, "alternatives"),
+    rewritten:
+      event.payload?.rewritten === true ||
+      Boolean(originalText && originalText !== text),
+    requestId: event.requestId ?? null,
+  };
+};
+
+type VoiceTelemetryState = {
+  sessionId: string;
+  startedAt: number;
+  readyAt?: number;
+  firstAudioAt?: number;
+  firstPartialAt?: number;
+  firstFinalAt?: number;
+  stopAt?: number;
+  doneAt?: number;
+  audioBytes: number;
+  audioChunks: number;
+  partialMessages: number;
+  finalMessages: number;
+  insertedChars: number;
+  endpointCount: number;
+  speechMs: number;
+  silenceMs: number;
+  peak: number;
+  maxRms: number;
+  emitted: boolean;
+  error?: {
+    code?: string | null;
+    message: string;
+  };
+};
+
 export class VoiceInputClient {
   private readonly url: string;
   private readonly getAccessToken?: VoiceInputClientOptions["getAccessToken"];
   private readonly WebSocketImpl: WebSocketConstructor;
+  private readonly audioConstraints?: MediaTrackConstraints;
+  private readonly vadOptions?: VoiceInputVadOptions;
+  private readonly asrOptions?: VoiceInputAsrOptions;
+  private readonly preferAudioWorklet: boolean;
   private readonly connectionTimeoutMs: number;
   private readonly idleConnectionTimeoutMs: number;
   private readonly callbacks: VoiceInputCallbacks;
@@ -116,17 +304,22 @@ export class VoiceInputClient {
   private socket: WebSocketLike | null = null;
   private stream: MediaStream | null = null;
   private audioContext: AudioContext | null = null;
+  private workletNode: AudioWorkletNode | null = null;
   private processor: ScriptProcessorNode | null = null;
   private source: MediaStreamAudioSourceNode | null = null;
-  private pendingSamples: number[] = [];
+  private sink: GainNode | null = null;
+  private audioChunker = new VoiceInputAudioChunker();
+  private vad: VoiceInputVad | null = null;
   private pendingAudio: string[] = [];
   private started = false;
+  private asrStartRequested = false;
   private asrStarted = false;
   private authenticated = false;
   private intentionalClose = false;
   private startPromise: Promise<void> | null = null;
   private socketOpenPromise: Promise<void> | null = null;
-  private idleCloseTimer: ReturnType<typeof globalThis.setTimeout> | null = null;
+  private idleCloseTimer: ReturnType<typeof globalThis.setTimeout> | null =
+    null;
   private authWaiter: {
     promise: Promise<void>;
     resolve: () => void;
@@ -137,13 +330,30 @@ export class VoiceInputClient {
     resolve: () => void;
     reject: (error: Error) => void;
   } | null = null;
+  private sessionId: string | null = null;
+  private telemetry: VoiceTelemetryState | null = null;
+  private audioPipeline: VoiceInputTelemetrySummary["audioPipeline"] =
+    "unknown";
+  private stopReason: VoiceInputStopReason | null = null;
+  private pendingStopReason: VoiceInputStopReason | null = null;
+  private doneEmitted = false;
+  private startToken = 0;
 
   constructor(options: VoiceInputClientOptions = {}) {
-    this.url = resolveVoiceInputWebsocketUrl({ env: options.env, url: options.url });
+    this.url = resolveVoiceInputWebsocketUrl({
+      env: options.env,
+      url: options.url,
+    });
     this.getAccessToken = options.getAccessToken;
     this.WebSocketImpl = options.WebSocketImpl ?? getDefaultWebSocket();
-    this.connectionTimeoutMs = options.connectionTimeoutMs ?? DEFAULT_CONNECTION_TIMEOUT_MS;
-    this.idleConnectionTimeoutMs = options.idleConnectionTimeoutMs ?? DEFAULT_IDLE_CONNECTION_TIMEOUT_MS;
+    this.audioConstraints = options.audioConstraints;
+    this.vadOptions = options.vad;
+    this.asrOptions = options.asr;
+    this.preferAudioWorklet = options.preferAudioWorklet ?? true;
+    this.connectionTimeoutMs =
+      options.connectionTimeoutMs ?? DEFAULT_CONNECTION_TIMEOUT_MS;
+    this.idleConnectionTimeoutMs =
+      options.idleConnectionTimeoutMs ?? DEFAULT_IDLE_CONNECTION_TIMEOUT_MS;
     this.callbacks = options.callbacks ?? {};
   }
 
@@ -157,23 +367,65 @@ export class VoiceInputClient {
     return this.startPromise;
   }
 
-  stop() {
-    if (this.pendingSamples.length > 0) this.sendAudio(new Float32Array(this.pendingSamples.splice(0)));
-    this.flushPendingAudio();
-    if (this.asrStarted) this.send({ type: "asr.stop" });
-    this.cleanupAudio();
+  stop(reason: VoiceInputStopReason = "manual") {
+    this.stopReason = reason;
+    if (this.telemetry && !this.telemetry.stopAt)
+      this.telemetry.stopAt = Date.now();
+    const pendingSamples = this.audioChunker.flush();
+    if (pendingSamples) this.sendAudio(pendingSamples);
+    const shouldStopAsr = this.asrStartRequested || this.asrStarted;
+    if (this.asrStarted) {
+      this.flushPendingAudio();
+      this.send({
+        type: "asr.stop",
+        requestId: this.sessionId ?? undefined,
+        payload: { reason, clientSessionId: this.sessionId },
+      });
+    } else if (this.asrStartRequested) {
+      this.pendingStopReason = reason;
+    }
+    if (!this.asrStartRequested) this.resolveAsrStartWaiter();
+    this.cleanupAudio({
+      clearPendingAudio: !this.asrStartRequested,
+      resetAsrState: !this.asrStartRequested,
+    });
     this.started = false;
     this.scheduleIdleClose();
+    if (!shouldStopAsr) {
+      this.emitTelemetry(reason);
+      this.emitDone();
+    }
   }
 
-  cancel() {
-    if (this.asrStarted) this.send({ type: "asr.cancel" });
+  private hasPendingSession() {
+    return (
+      this.started ||
+      this.asrStartRequested ||
+      this.asrStarted ||
+      this.stopReason !== null
+    );
+  }
+
+  cancel(reason: VoiceInputStopReason = "cancel") {
+    this.stopReason = reason;
+    if (this.telemetry && !this.telemetry.stopAt)
+      this.telemetry.stopAt = Date.now();
+    const shouldCancelAsr = this.asrStartRequested || this.asrStarted;
+    if (shouldCancelAsr)
+      this.send({
+        type: "asr.cancel",
+        requestId: this.sessionId ?? undefined,
+        payload: { reason, clientSessionId: this.sessionId },
+      });
     this.cleanupAudio();
     this.started = false;
     this.scheduleIdleClose();
+    this.emitTelemetry(reason);
+    if (!shouldCancelAsr) this.emitDone();
   }
 
   close() {
+    this.emitTelemetry(this.stopReason ?? "client_close");
     this.intentionalClose = true;
     this.clearIdleCloseTimer();
     this.cleanupAudio();
@@ -184,18 +436,80 @@ export class VoiceInputClient {
   private async startInternal() {
     this.clearIdleCloseTimer();
     this.started = true;
+    this.asrStartRequested = false;
     this.asrStarted = false;
+    this.sessionId = createVoiceInputSessionId();
+    this.telemetry = {
+      sessionId: this.sessionId,
+      startedAt: Date.now(),
+      audioBytes: 0,
+      audioChunks: 0,
+      partialMessages: 0,
+      finalMessages: 0,
+      insertedChars: 0,
+      endpointCount: 0,
+      speechMs: 0,
+      silenceMs: 0,
+      peak: 0,
+      maxRms: 0,
+      emitted: false,
+    };
+    this.audioPipeline = "unknown";
+    this.stopReason = null;
+    this.audioChunker.reset();
+    this.vad = new VoiceInputVad({
+      ...this.vadOptions,
+      sampleRate: TARGET_SAMPLE_RATE,
+    });
     this.pendingAudio = [];
     this.intentionalClose = false;
+    this.pendingStopReason = null;
+    this.doneEmitted = false;
+    const startToken = this.startToken + 1;
+    this.startToken = startToken;
 
     try {
-      await this.withConnectionTimeout(Promise.all([this.setupAudio(), this.ensureAuthenticatedSocket()]));
+      await this.withConnectionTimeout(this.ensureAuthenticatedSocket(startToken));
+      if (!this.started) {
+        this.cleanupAudio();
+        return;
+      }
+      await this.withConnectionTimeout(this.setupAudio(startToken));
+      if (!this.started) {
+        this.cleanupAudio();
+        return;
+      }
       await this.withConnectionTimeout(this.startAsrSession());
+      if (!this.started) this.cleanupAudio();
     } catch (error) {
+      const startError =
+        error instanceof Error ? error : new Error(String(error));
+      const wasStoppedDuringStart =
+        this.stopReason !== null || this.intentionalClose;
+      const shouldCancelAsr = this.asrStartRequested || this.asrStarted;
+      if (wasStoppedDuringStart) this.resolveAsrStartWaiter();
+      else this.rejectAsrStartWaiter(startError);
+      if (shouldCancelAsr) {
+        const reason = this.stopReason ?? "error";
+        this.send({
+          type: "asr.cancel",
+          requestId: this.sessionId ?? undefined,
+          payload: { reason, clientSessionId: this.sessionId },
+        });
+      }
+      this.intentionalClose = true;
+      this.closeSocket();
       this.cleanupAudio();
       this.started = false;
+      this.startToken += 1;
+      this.pendingStopReason = null;
       this.scheduleIdleClose();
-      throw error;
+      if (wasStoppedDuringStart) {
+        this.emitTelemetry(this.stopReason ?? "error");
+        this.emitDone();
+        return;
+      }
+      throw startError;
     }
   }
 
@@ -216,17 +530,21 @@ export class VoiceInputClient {
     }
   }
 
-  private async ensureAuthenticatedSocket() {
-    if (this.socket?.readyState === WEBSOCKET_OPEN && this.authenticated) return;
+  private async ensureAuthenticatedSocket(startToken: number) {
+    if (this.socket?.readyState === WEBSOCKET_OPEN && this.authenticated)
+      return;
 
     await this.ensureSocketOpen();
+    if (!this.isCurrentStart(startToken)) return;
     if (this.authenticated) return;
 
     try {
-      await this.authenticate(false);
+      await this.authenticate(false, startToken);
     } catch (error) {
-      if (!(error instanceof Error) || error.message !== "UNAUTHORIZED") throw error;
-      await this.authenticate(true);
+      if (!(error instanceof Error) || error.message !== "UNAUTHORIZED")
+        throw error;
+      if (!this.isCurrentStart(startToken)) return;
+      await this.authenticate(true, startToken);
     }
   }
 
@@ -245,22 +563,32 @@ export class VoiceInputClient {
       socket.onopen = () => resolve();
       socket.onerror = () => reject(new Error("Voice service unavailable"));
       socket.onclose = (event) => {
+        if (this.socket !== socket) return;
         this.authenticated = false;
         this.socketOpenPromise = null;
         this.rejectAuthWaiter(new Error("Voice connection closed"));
         this.rejectAsrStartWaiter(new Error("Voice connection closed"));
         if (this.socket === socket) this.socket = null;
-        if (!this.intentionalClose && this.started) {
+        if (
+          !this.intentionalClose &&
+          !this.doneEmitted &&
+          this.hasPendingSession()
+        ) {
+          if (this.telemetry)
+            this.telemetry.error = { message: "Voice connection closed" };
           this.cleanupAudio();
           this.started = false;
+          this.pendingStopReason = null;
           this.callbacks.onError?.("Voice connection closed. Try again.");
-          this.callbacks.onDone?.();
+          this.emitTelemetry("error");
+          this.emitDone();
         }
         if (socket.readyState !== WEBSOCKET_OPEN) {
           reject(new Error(event.reason || "Voice connection closed"));
         }
       };
       socket.onmessage = (event) => {
+        if (this.socket !== socket) return;
         try {
           this.handleMessage(event);
         } catch {
@@ -274,8 +602,10 @@ export class VoiceInputClient {
     return this.socketOpenPromise;
   }
 
-  private async authenticate(forceRefresh: boolean) {
+  private async authenticate(forceRefresh: boolean, startToken: number) {
     const token = await this.getAccessToken?.({ forceRefresh });
+    if (!this.isCurrentStart(startToken)) return;
+    if (this.socket?.readyState !== WEBSOCKET_OPEN) return;
     if (!token) throw new Error("Sign in to use voice input");
 
     const waiter = this.createAuthWaiter();
@@ -285,7 +615,19 @@ export class VoiceInputClient {
 
   private async startAsrSession() {
     const waiter = this.createAsrStartWaiter();
-    this.send({ type: "asr.start" });
+    this.asrStartRequested = true;
+    this.send({
+      type: "asr.start",
+      requestId: this.sessionId ?? undefined,
+      payload: {
+        ...(this.asrOptions ? { asr: this.asrOptions } : {}),
+        client: {
+          sessionId: this.sessionId,
+          audioPipeline: this.audioPipeline,
+          vadEnabled: this.vadOptions?.enabled ?? true,
+        },
+      },
+    });
     await waiter.promise;
   }
 
@@ -340,56 +682,201 @@ export class VoiceInputClient {
   private closeWithError(message: string) {
     this.callbacks.onError?.(message);
     this.close();
-    this.callbacks.onDone?.();
+    this.emitDone();
   }
 
-  private async setupAudio() {
-    const mediaDevices = globalThis.navigator?.mediaDevices;
-    if (!mediaDevices) throw new Error("Microphone input is not available in this environment");
-    const AudioContextImpl = getDefaultAudioContext();
-    if (!AudioContextImpl) throw new Error("AudioContext is not available in this environment");
+  private isCurrentStart(startToken: number) {
+    return this.startToken === startToken && this.started;
+  }
 
-    this.stream = await mediaDevices.getUserMedia({ audio: true });
-    this.audioContext = new AudioContextImpl();
-    await this.audioContext.resume().catch(() => undefined);
-    this.source = this.audioContext.createMediaStreamSource(this.stream);
-    this.processor = this.audioContext.createScriptProcessor(4096, 1, 1);
+  private cleanupOwnedAudio(startToken: number) {
+    if (this.startToken === startToken) this.cleanupAudio();
+  }
+
+  private async setupAudio(startToken: number) {
+    const mediaDevices = globalThis.navigator?.mediaDevices;
+    if (!mediaDevices)
+      throw new Error("Microphone input is not available in this environment");
+    const AudioContextImpl = getDefaultAudioContext();
+    if (!AudioContextImpl)
+      throw new Error("AudioContext is not available in this environment");
+
+    const stream = await mediaDevices.getUserMedia({
+      audio: createVoiceInputAudioConstraints(this.audioConstraints),
+    });
+    let audioContext: AudioContext | null = null;
+    let source: MediaStreamAudioSourceNode | null = null;
+    const cleanupLocalAudio = () => {
+      source?.disconnect();
+      for (const track of stream.getTracks()) track.stop();
+      void audioContext?.close().catch(() => undefined);
+    };
+    if (!this.isCurrentStart(startToken)) {
+      cleanupLocalAudio();
+      return;
+    }
+    try {
+      audioContext = createAudioContext(AudioContextImpl);
+      await audioContext.resume().catch(() => undefined);
+      if (!this.isCurrentStart(startToken)) {
+        cleanupLocalAudio();
+        return;
+      }
+      source = audioContext.createMediaStreamSource(stream);
+      if (!this.isCurrentStart(startToken)) {
+        cleanupLocalAudio();
+        return;
+      }
+    } catch (error) {
+      cleanupLocalAudio();
+      throw error;
+    }
+    this.stream = stream;
+    this.audioContext = audioContext;
+    this.source = source;
+
+    if (await this.setupAudioWorklet()) {
+      if (!this.isCurrentStart(startToken)) this.cleanupOwnedAudio(startToken);
+      return;
+    }
+    if (!this.isCurrentStart(startToken)) {
+      this.cleanupOwnedAudio(startToken);
+      return;
+    }
+    this.setupScriptProcessor();
+    if (!this.isCurrentStart(startToken)) this.cleanupOwnedAudio(startToken);
+  }
+
+  private async setupAudioWorklet() {
+    if (
+      !this.preferAudioWorklet ||
+      !this.audioContext?.audioWorklet ||
+      !this.source
+    )
+      return false;
+
+    const workletUrl = createVoiceInputWorkletUrl();
+    if (!workletUrl) return false;
+
+    try {
+      await this.audioContext.audioWorklet.addModule(workletUrl);
+    } catch {
+      return false;
+    } finally {
+      globalThis.URL.revokeObjectURL(workletUrl);
+    }
+
+    try {
+      this.workletNode = new AudioWorkletNode(
+        this.audioContext,
+        VOICE_INPUT_WORKLET_NAME,
+        {
+          channelCount: 1,
+          channelCountMode: "explicit",
+          numberOfInputs: 1,
+          numberOfOutputs: 1,
+          outputChannelCount: [1],
+        },
+      );
+      this.workletNode.port.onmessage = (event) => {
+        const samples = toFloat32Array(event.data);
+        if (samples) this.handleAudioSamples(samples);
+      };
+      this.sink = this.audioContext.createGain();
+      this.sink.gain.value = 0;
+      this.source.connect(this.workletNode);
+      this.workletNode.connect(this.sink);
+      this.sink.connect(this.audioContext.destination);
+      this.audioPipeline = "audio-worklet";
+      return true;
+    } catch {
+      this.workletNode?.disconnect();
+      this.workletNode?.port.close();
+      this.sink?.disconnect();
+      this.workletNode = null;
+      this.sink = null;
+      return false;
+    }
+  }
+
+  private setupScriptProcessor() {
+    if (!this.audioContext || !this.source)
+      throw new Error("Audio input is not ready");
+    this.processor = this.audioContext.createScriptProcessor(
+      SCRIPT_PROCESSOR_BUFFER_SIZE,
+      1,
+      1,
+    );
     this.processor.onaudioprocess = (event) => {
       const samples = event.inputBuffer.getChannelData(0);
-      const resampled = resampleTo16k(samples, this.audioContext?.sampleRate ?? TARGET_SAMPLE_RATE);
-      for (const sample of resampled) this.pendingSamples.push(sample);
-      while (this.pendingSamples.length >= CHUNK_SAMPLES) {
-        const chunk = this.pendingSamples.splice(0, CHUNK_SAMPLES);
-        this.sendAudio(new Float32Array(chunk));
-      }
+      this.handleAudioSamples(samples);
     };
+    this.sink = this.audioContext.createGain();
+    this.sink.gain.value = 0;
     this.source.connect(this.processor);
-    this.processor.connect(this.audioContext.destination);
+    this.processor.connect(this.sink);
+    this.sink.connect(this.audioContext.destination);
+    this.audioPipeline = "script-processor";
+  }
+
+  private handleAudioSamples(samples: Float32Array) {
+    if (!this.started) return;
+    const resampled = resampleTo16k(
+      samples,
+      this.audioContext?.sampleRate ?? TARGET_SAMPLE_RATE,
+    );
+    for (const chunk of this.audioChunker.push(resampled)) {
+      const vadResult = this.vad?.process(chunk);
+      if (!vadResult) {
+        this.sendAudio(chunk);
+        continue;
+      }
+
+      this.recordVoiceActivity(vadResult.event);
+      this.callbacks.onVoiceActivity?.(vadResult.event);
+      for (const audioChunk of vadResult.chunks) this.sendAudio(audioChunk);
+      if (vadResult.endpoint) {
+        if (this.telemetry) this.telemetry.endpointCount += 1;
+        this.callbacks.onEndpoint?.();
+        this.stop("vad_endpoint");
+        return;
+      }
+    }
   }
 
   private sendAudio(samples: Float32Array) {
-    const audio = encodeBase64(floatToPcm16(samples));
+    const pcm = floatToPcm16(samples);
+    this.recordAudio(pcm.byteLength);
+    const audio = encodeBase64(pcm);
     if (!this.asrStarted) {
       this.pendingAudio.push(audio);
       return;
     }
-    this.send({ type: "asr.audio", payload: { audio } });
+    this.send({
+      type: "asr.audio",
+      requestId: this.sessionId ?? undefined,
+      payload: { audio },
+    });
   }
 
   private flushPendingAudio() {
     if (!this.asrStarted) return;
     for (const audio of this.pendingAudio.splice(0)) {
-      this.send({ type: "asr.audio", payload: { audio } });
+      this.send({
+        type: "asr.audio",
+        requestId: this.sessionId ?? undefined,
+        payload: { audio },
+      });
     }
   }
 
   private send(message: Record<string, unknown>) {
-    if (this.socket?.readyState === WEBSOCKET_OPEN) this.socket.send(JSON.stringify(message));
+    if (this.socket?.readyState === WEBSOCKET_OPEN)
+      this.socket.send(JSON.stringify(message));
   }
 
   private handleMessage(event: MessageEvent) {
     const data = JSON.parse(String(event.data)) as VoiceInputEvent;
-    const text = typeof data.payload?.text === "string" ? data.payload.text : "";
 
     if (data.type === "system.auth.ok") {
       this.authenticated = true;
@@ -397,9 +884,25 @@ export class VoiceInputClient {
       return data;
     }
 
+    if (this.isStaleAsrEvent(data)) return data;
+
+    const transcript = buildTranscriptEvent(data);
+    const text = transcript.text;
+
     if (data.type === "asr.started") {
+      this.asrStartRequested = false;
       this.asrStarted = true;
+      if (this.telemetry) this.telemetry.readyAt = Date.now();
       this.flushPendingAudio();
+      const pendingStopReason = this.pendingStopReason;
+      if (pendingStopReason) {
+        this.pendingStopReason = null;
+        this.send({
+          type: "asr.stop",
+          requestId: this.sessionId ?? undefined,
+          payload: { reason: pendingStopReason, clientSessionId: this.sessionId },
+        });
+      }
       this.resolveAsrStartWaiter();
       return data;
     }
@@ -407,41 +910,184 @@ export class VoiceInputClient {
     if (data.type === "asr.error") {
       const message = getErrorMessage(data);
       const code = getErrorCode(data);
+      if (code === "UNAUTHORIZED" && this.authWaiter) {
+        this.authenticated = false;
+        this.rejectAuthWaiter(new Error("UNAUTHORIZED"));
+        return data;
+      }
+      const hadStartWaiter = Boolean(this.asrStartWaiter);
+      const shouldFinishPendingStart =
+        hadStartWaiter && (this.stopReason !== null || this.intentionalClose);
+      if (this.telemetry) this.telemetry.error = { code, message };
       if (code === "UNAUTHORIZED") {
         this.authenticated = false;
         this.rejectAuthWaiter(new Error("UNAUTHORIZED"));
       }
-      this.rejectAsrStartWaiter(new Error(message));
+      if (shouldFinishPendingStart) this.resolveAsrStartWaiter();
+      else this.rejectAsrStartWaiter(new Error(message));
       this.callbacks.onError?.(message);
+      this.emitTelemetry("error");
+      if (
+        (shouldFinishPendingStart || !hadStartWaiter) &&
+        !this.doneEmitted &&
+        this.hasPendingSession()
+      ) {
+        this.cleanupAudio();
+        this.started = false;
+        this.pendingStopReason = null;
+        this.scheduleIdleClose();
+        this.emitDone();
+      }
       return data;
     }
 
-    if (data.type === "asr.partial") this.callbacks.onPartial?.(text);
-    if (data.type === "asr.final") this.callbacks.onFinal?.(text);
-    if (data.type === "asr.done") {
+    if (data.type === "asr.partial") {
+      this.recordPartial();
+      this.callbacks.onPartial?.(text, transcript);
+    }
+    if (data.type === "asr.final") {
+      this.recordFinal(text);
+      this.callbacks.onFinal?.(text, transcript);
+    }
+    if (data.type === "asr.done" || data.type === "asr.cancelled") {
+      this.resolveAsrStartWaiter();
+      this.cleanupAudio();
+      this.asrStartRequested = false;
       this.asrStarted = false;
       this.started = false;
+      if (this.telemetry) this.telemetry.doneAt = Date.now();
       this.scheduleIdleClose();
-      this.callbacks.onDone?.();
+      this.emitTelemetry(this.stopReason ?? "done");
+      this.emitDone();
     }
     return data;
   }
 
-  private cleanupAudio() {
+  private isStaleAsrEvent(event: VoiceInputEvent) {
+    if (!event.type.startsWith("asr.")) return false;
+    if (!event.requestId) return false;
+    return event.requestId !== this.sessionId;
+  }
+
+  private emitDone() {
+    if (this.doneEmitted) return;
+    this.doneEmitted = true;
+    this.callbacks.onDone?.();
+  }
+
+  private cleanupAudio(
+    options: { clearPendingAudio?: boolean; resetAsrState?: boolean } = {},
+  ) {
+    const clearPendingAudio = options.clearPendingAudio ?? true;
+    const resetAsrState = options.resetAsrState ?? true;
+    this.workletNode?.disconnect();
+    this.workletNode?.port.close();
     this.processor?.disconnect();
     if (this.processor) this.processor.onaudioprocess = null;
+    this.sink?.disconnect();
     this.source?.disconnect();
     this.stream?.getTracks().forEach((track) => {
       track.stop();
     });
     void this.audioContext?.close().catch(() => undefined);
+    this.workletNode = null;
     this.processor = null;
+    this.sink = null;
     this.source = null;
     this.stream = null;
     this.audioContext = null;
-    this.pendingSamples = [];
-    this.pendingAudio = [];
-    this.asrStarted = false;
+    this.audioChunker.reset();
+    this.vad?.reset();
+    this.vad = null;
+    if (clearPendingAudio) this.pendingAudio = [];
+    if (resetAsrState) {
+      this.asrStartRequested = false;
+      this.asrStarted = false;
+    }
+  }
+
+  private recordAudio(byteLength: number) {
+    if (!this.telemetry) return;
+    const now = Date.now();
+    if (!this.telemetry.firstAudioAt) this.telemetry.firstAudioAt = now;
+    this.telemetry.audioChunks += 1;
+    this.telemetry.audioBytes += byteLength;
+  }
+
+  private recordVoiceActivity(event: VoiceActivityEvent) {
+    if (!this.telemetry) return;
+    this.telemetry.speechMs = Math.max(this.telemetry.speechMs, event.speechMs);
+    this.telemetry.silenceMs = Math.max(
+      this.telemetry.silenceMs,
+      event.silenceMs,
+    );
+    this.telemetry.peak = Math.max(this.telemetry.peak, event.peak);
+    this.telemetry.maxRms = Math.max(this.telemetry.maxRms, event.level);
+  }
+
+  private recordPartial() {
+    if (!this.telemetry) return;
+    const now = Date.now();
+    if (!this.telemetry.firstPartialAt) this.telemetry.firstPartialAt = now;
+    this.telemetry.partialMessages += 1;
+  }
+
+  private recordFinal(text: string) {
+    if (!this.telemetry) return;
+    const now = Date.now();
+    if (!this.telemetry.firstFinalAt) this.telemetry.firstFinalAt = now;
+    this.telemetry.finalMessages += 1;
+    this.telemetry.insertedChars += text.length;
+  }
+
+  private emitTelemetry(
+    stopReason: VoiceInputTelemetrySummary["stopReason"],
+    error?: VoiceTelemetryState["error"],
+  ) {
+    const telemetry = this.telemetry;
+    if (!telemetry || telemetry.emitted) return;
+    const doneAt = telemetry.doneAt ?? Date.now();
+    telemetry.doneAt = doneAt;
+    telemetry.emitted = true;
+    if (error) telemetry.error = error;
+    const firstAudioAt = telemetry.firstAudioAt;
+    this.callbacks.onTelemetry?.({
+      sessionId: telemetry.sessionId,
+      requestId: telemetry.sessionId,
+      stopReason,
+      audioPipeline: this.audioPipeline,
+      vadEnabled: this.vadOptions?.enabled ?? true,
+      timing: {
+        durationMs: doneAt - telemetry.startedAt,
+        ...(telemetry.readyAt
+          ? { startToReadyMs: telemetry.readyAt - telemetry.startedAt }
+          : {}),
+        ...(firstAudioAt && telemetry.firstPartialAt
+          ? { firstAudioToPartialMs: telemetry.firstPartialAt - firstAudioAt }
+          : {}),
+        ...(firstAudioAt && telemetry.firstFinalAt
+          ? { firstAudioToFinalMs: telemetry.firstFinalAt - firstAudioAt }
+          : {}),
+        ...(telemetry.stopAt
+          ? { stopToDoneMs: doneAt - telemetry.stopAt }
+          : {}),
+      },
+      traffic: {
+        audioBytes: telemetry.audioBytes,
+        audioChunks: telemetry.audioChunks,
+        partialMessages: telemetry.partialMessages,
+        finalMessages: telemetry.finalMessages,
+        insertedChars: telemetry.insertedChars,
+      },
+      vad: {
+        endpointCount: telemetry.endpointCount,
+        speechMs: telemetry.speechMs,
+        silenceMs: telemetry.silenceMs,
+        peak: telemetry.peak,
+        maxRms: telemetry.maxRms,
+      },
+      ...(telemetry.error ? { error: telemetry.error } : {}),
+    });
   }
 
   private scheduleIdleClose() {
@@ -472,7 +1118,10 @@ export class VoiceInputClient {
 export class VoiceApi {
   constructor(private readonly defaults: VoiceInputCreateOptions = {}) {}
 
-  createInputClient(callbacks: VoiceInputCallbacks = {}, options: VoiceInputCreateOptions = {}) {
+  createInputClient(
+    callbacks: VoiceInputCallbacks = {},
+    options: VoiceInputCreateOptions = {},
+  ) {
     return new VoiceInputClient({
       ...this.defaults,
       ...options,
@@ -481,4 +1130,5 @@ export class VoiceApi {
   }
 }
 
-export const createVoiceInputClient = (options?: VoiceInputClientOptions) => new VoiceInputClient(options);
+export const createVoiceInputClient = (options?: VoiceInputClientOptions) =>
+  new VoiceInputClient(options);

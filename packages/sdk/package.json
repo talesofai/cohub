@@ -76,11 +76,13 @@
   ],
   "scripts": {
     "build": "tsdown",
+    "test": "tsx --test tests/*.test.ts",
     "typecheck": "tsgo -p tsconfig.json --noEmit"
   },
   "devDependencies": {
     "@cohub/protocol": "workspace:*",
     "tsdown": "^0.22.1",
-    "typescript": "^6.0.3"
+    "typescript": "^6.0.3",
+    "unrun": "^0.3.1"
   }
 }

@@ -27,6 +27,7 @@ import type {
 export type SpaceRole = "host" | "builder" | "guest";
 export type AccessPolicyRole = "builder" | "guest" | null;
 export type AccessPolicyResourceType = "space" | "session";
+export type VoiceLexiconSource = "manual" | "auto" | "correction";
 
 export const v2 = pgSchema("v2");
 
@@ -52,6 +53,27 @@ export const userProfiles = v2.table(
   }),
 );
 
+export const userVoiceLexiconEntries = v2.table(
+  "user_voice_lexicon_entries",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    userUuid: varchar("user_uuid", { length: 255 }).notNull(),
+    term: text("term").notNull(),
+    termKey: varchar("term_key", { length: 120 }).notNull(),
+    source: varchar("source", { length: 20 }).$type<VoiceLexiconSource>().notNull().default("manual"),
+    originalText: text("original_text"),
+    usageCount: integer("usage_count").notNull().default(0),
+    createdAt: timestamp("created_at", { withTimezone: true }).defaultNow(),
+    updatedAt: timestamp("updated_at", { withTimezone: true }).defaultNow(),
+  },
+  (table) => ({
+    userUuidIdx: index("v2_idx_user_voice_lexicon_user_uuid").on(table.userUuid),
+    userTermUniqueIdx: uniqueIndex("v2_uq_user_voice_lexicon_user_term").on(
+      table.userUuid,
+      table.termKey,
+    ),
+  }),
+);
 
 export const userGitAccounts = v2.table(
   "user_git_accounts",
@@ -131,6 +153,29 @@ export const spaces = v2.table(
     ),
     storageRepoNameUniqueIdx: uniqueIndex("v2_uq_spaces_storage_repo_name").on(
       table.storageRepoName,
+    ),
+  }),
+);
+
+export const spaceVoiceLexiconEntries = v2.table(
+  "space_voice_lexicon_entries",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    spaceId: uuid("space_id").notNull(),
+    term: text("term").notNull(),
+    termKey: varchar("term_key", { length: 120 }).notNull(),
+    source: varchar("source", { length: 20 }).$type<VoiceLexiconSource>().notNull().default("manual"),
+    originalText: text("original_text"),
+    usageCount: integer("usage_count").notNull().default(0),
+    createdBy: varchar("created_by", { length: 255 }).notNull(),
+    createdAt: timestamp("created_at", { withTimezone: true }).defaultNow(),
+    updatedAt: timestamp("updated_at", { withTimezone: true }).defaultNow(),
+  },
+  (table) => ({
+    spaceIdx: index("v2_idx_space_voice_lexicon_space_id").on(table.spaceId),
+    spaceTermUniqueIdx: uniqueIndex("v2_uq_space_voice_lexicon_space_term").on(
+      table.spaceId,
+      table.termKey,
     ),
   }),
 );

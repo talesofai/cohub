@@ -63,6 +63,10 @@ import type {
   CanvasCreateInput,
   CanvasDocumentRecord,
   CanvasTransactionInput,
+  VoiceLexiconEntryResponse,
+  VoiceLexiconInput,
+  VoiceLexiconListResponse,
+  VoiceLexiconPatchInput,
 } from "../types.js";
 import { SpaceInvitationsApi } from "./invitations.js";
 
@@ -1236,6 +1240,49 @@ export class SpaceCanvasApi {
 
 }
 
+export class SpaceVoiceLexiconApi {
+  constructor(
+    private readonly transport: HttpTransport,
+    private readonly spaceId: string,
+  ) {}
+
+  list(customFetch?: Fetch) {
+    return this.transport.request<VoiceLexiconListResponse>(
+      `/api/spaces/${this.spaceId}/voice-lexicon`,
+      { fetch: customFetch },
+    );
+  }
+
+  add(input: VoiceLexiconInput) {
+    return this.transport.request<VoiceLexiconEntryResponse>(
+      `/api/spaces/${this.spaceId}/voice-lexicon`,
+      {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(input),
+      },
+    );
+  }
+
+  update(entryId: string, input: VoiceLexiconPatchInput) {
+    return this.transport.request<VoiceLexiconEntryResponse>(
+      `/api/spaces/${this.spaceId}/voice-lexicon/${encodeURIComponent(entryId)}`,
+      {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(input),
+      },
+    );
+  }
+
+  delete(entryId: string) {
+    return this.transport.request<{ ok: true }>(
+      `/api/spaces/${this.spaceId}/voice-lexicon/${encodeURIComponent(entryId)}`,
+      { method: "DELETE" },
+    );
+  }
+}
+
 export class SpaceCheckpointFilesApi {
   constructor(
     private readonly transport: HttpTransport,
@@ -1323,6 +1370,7 @@ export class SpaceClient {
   readonly invitations: SpaceInvitationsApi;
   readonly labels: SpaceLabelsApi;
   readonly canvas: SpaceCanvasApi;
+  readonly voiceLexicon: SpaceVoiceLexiconApi;
 
   constructor(
     readonly id: string,
@@ -1342,6 +1390,7 @@ export class SpaceClient {
     this.invitations = new SpaceInvitationsApi(transport, id);
     this.labels = new SpaceLabelsApi(transport, id);
     this.canvas = new SpaceCanvasApi(transport, id);
+    this.voiceLexicon = new SpaceVoiceLexiconApi(transport, id);
   }
 
   get(customFetch?: Fetch) {

@@ -14,7 +14,7 @@ export type VolcAsrProviderOptions = {
   url: string;
   requestId: string;
   uid: string;
-  language?: string | null;
+  requestConfig?: Omit<VolcAsrRequestConfig, "uid">;
 };
 
 export class VolcAsrProvider extends TypedEventEmitter<VolcAsrProviderEvents> {
@@ -40,16 +40,25 @@ export class VolcAsrProvider extends TypedEventEmitter<VolcAsrProviderEvents> {
         },
       });
       this.socket = socket;
+      let startupSettled = false;
+      let opened = false;
 
-      const failStartup = (error: Error) => {
-        if (socket.readyState !== WebSocket.OPEN) reject(error);
+      const handleSocketError = (error: Error) => {
+        if (!startupSettled) {
+          startupSettled = true;
+          reject(error);
+          return;
+        }
+        if (!opened || this.closed) return;
         this.emit("error", error);
       };
 
       socket.once("open", () => {
+        startupSettled = true;
+        opened = true;
         const config: VolcAsrRequestConfig = {
           uid: this.options.uid,
-          language: this.options.language,
+          ...this.options.requestConfig,
         };
         socket.send(encodeFullClientRequest(config));
         resolve();
@@ -67,9 +76,16 @@ export class VolcAsrProvider extends TypedEventEmitter<VolcAsrProviderEvents> {
           this.emit("error", error instanceof Error ? error : new Error(String(error)));
         }
       });
-      socket.once("error", failStartup);
+      socket.on("error", handleSocketError);
       socket.once("close", () => {
         this.closed = true;
+        if (!opened) {
+          if (!startupSettled) {
+            startupSettled = true;
+            reject(new Error("Volc ASR connection closed"));
+          }
+          return;
+        }
         this.emit("close");
       });
     });

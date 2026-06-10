@@ -4,6 +4,22 @@ import { gunzipSync, gzipSync } from "node:zlib";
 export type VolcAsrRequestConfig = {
   uid: string;
   language?: string | null;
+  endWindowSizeMs?: number | null;
+  forceToSpeechTimeMs?: number | null;
+  enableNonstream?: boolean;
+  ssdVersion?: string | null;
+  enablePunctuation?: boolean;
+  enableItn?: boolean;
+  enableDdc?: boolean;
+  corpus?: VolcAsrCorpusConfig | null;
+};
+
+export type VolcAsrCorpusConfig = {
+  boostingTableName?: string | null;
+  boostingTableId?: string | null;
+  correctTableName?: string | null;
+  correctTableId?: string | null;
+  context?: string | null;
 };
 
 export type VolcAsrResult = {
@@ -57,19 +73,31 @@ const buildRequestPayload = (config: VolcAsrRequestConfig) => {
   };
   if (config.language) audio.language = config.language;
 
+  const corpus: Record<string, unknown> = {};
+  if (config.corpus?.boostingTableName) corpus.boosting_table_name = config.corpus.boostingTableName;
+  if (config.corpus?.boostingTableId) corpus.boosting_table_id = config.corpus.boostingTableId;
+  if (config.corpus?.correctTableName) corpus.correct_table_name = config.corpus.correctTableName;
+  if (config.corpus?.correctTableId) corpus.correct_table_id = config.corpus.correctTableId;
+  if (config.corpus?.context) corpus.context = config.corpus.context;
+
+  const request: Record<string, unknown> = {
+    model_name: "bigmodel",
+    enable_itn: config.enableItn ?? true,
+    enable_punc: config.enablePunctuation ?? true,
+    enable_ddc: config.enableDdc ?? false,
+    enable_nonstream: config.enableNonstream ?? true,
+    show_utterances: true,
+    result_type: "single",
+  };
+  if (request.enable_nonstream === true) request.ssd_version = config.ssdVersion ?? "200";
+  if (config.endWindowSizeMs != null) request.end_window_size = config.endWindowSizeMs;
+  if (config.forceToSpeechTimeMs != null) request.force_to_speech_time = config.forceToSpeechTimeMs;
+  if (Object.keys(corpus).length > 0) request.corpus = corpus;
+
   return {
     user: { uid: config.uid },
     audio,
-    request: {
-      model_name: "bigmodel",
-      enable_itn: true,
-      enable_punc: true,
-      enable_ddc: false,
-      enable_nonstream: true,
-      show_utterances: true,
-      result_type: "single",
-      end_window_size: 800,
-    },
+    request,
   };
 };
 

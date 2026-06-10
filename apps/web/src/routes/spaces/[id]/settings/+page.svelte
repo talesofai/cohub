@@ -10,6 +10,7 @@ import type {
 	SpaceRecord,
 	SpaceRole,
 	SpaceSandboxAutoDestroyPolicy,
+	VoiceLexiconEntry,
 } from "@neta-art/cohub";
 import {
 	ArrowLeft,
@@ -19,6 +20,7 @@ import {
 	Globe,
 	Link,
 	Loader2,
+	Mic,
 	Network,
 	PackagePlus,
 	Pencil,
@@ -32,9 +34,11 @@ import {
 } from "lucide-svelte";
 import { onDestroy } from "svelte";
 import { goto } from "$app/navigation";
+import VoiceLexiconEditor from "$lib/components/VoiceLexiconEditor.svelte";
 import { isComposingKeyboardEvent } from "$lib/keyboard";
 import { sdk } from "$lib/sdk";
 import { cacheSpaceRecordSoon } from "$lib/stores/space-record-cache";
+import { setCachedSpaceVoiceInputLexicon } from "$lib/voice-input-lexicon";
 
 type SandboxInfo = {
 	status: string | null;
@@ -105,6 +109,13 @@ let sandboxIdleTtlSeconds = $state(defaultIdleTtlSeconds);
 let savingSandboxConfig = $state(false);
 let sandboxConfigMessage = $state("");
 let sandboxConfigError = $state("");
+let voiceLexiconEntries = $state<VoiceLexiconEntry[]>([]);
+let voiceLexiconLoading = $state(false);
+let voiceLexiconError = $state("");
+
+const canManageVoiceLexicon = $derived(
+	Boolean(space?.access?.permissions?.includes("space.edit")),
+);
 
 onDestroy(() => {
 	if (inviteNoticeTimer) clearTimeout(inviteNoticeTimer);
@@ -294,6 +305,59 @@ async function loadMods() {
 	mods = result.items;
 }
 
+function cacheSpaceVoiceLexicon(items: VoiceLexiconEntry[]) {
+	voiceLexiconEntries = items;
+	setCachedSpaceVoiceInputLexicon(spaceId, items);
+}
+
+async function loadSpaceVoiceLexicon() {
+	voiceLexiconLoading = true;
+	voiceLexiconError = "";
+	try {
+		const result = await sdk.space(spaceId).voiceLexicon.list();
+		cacheSpaceVoiceLexicon(result.items);
+	} catch (err) {
+		voiceLexiconError =
+			err instanceof Error ? err.message : "Failed to load voice terms";
+	} finally {
+		voiceLexiconLoading = false;
+	}
+}
+
+async function addSpaceVoiceLexiconTerm(term: string) {
+	const result = await sdk.space(spaceId).voiceLexicon.add({
+		term,
+		source: "manual",
+	});
+	cacheSpaceVoiceLexicon([
+		result.item,
+		...voiceLexiconEntries.filter((entry) => entry.id !== result.item.id),
+	]);
+}
+
+async function updateSpaceVoiceLexiconTerm(
+	entry: VoiceLexiconEntry,
+	term: string,
+) {
+	const result = await sdk.space(spaceId).voiceLexicon.update(entry.id, {
+		term,
+		source: entry.source,
+		originalText: entry.originalText,
+	});
+	cacheSpaceVoiceLexicon(
+		voiceLexiconEntries.map((item) =>
+			item.id === entry.id ? result.item : item,
+		),
+	);
+}
+
+async function deleteSpaceVoiceLexiconTerm(entry: VoiceLexiconEntry) {
+	await sdk.space(spaceId).voiceLexicon.delete(entry.id);
+	cacheSpaceVoiceLexicon(
+		voiceLexiconEntries.filter((item) => item.id !== entry.id),
+	);
+}
+
 async function forceRecoverSandbox() {
 	if (recoveringSandbox) return;
 	const confirmed = window.confirm(
@@ -331,6 +395,7 @@ async function loadPage() {
 			allChannelResult,
 			sandboxResult,
 			invitationResult,
+			voiceLexiconResult,
 		] = await Promise.all([
 			sdk.space(spaceId).get(),
 			sdk
@@ -362,6 +427,10 @@ async function loadPage() {
 				.space(spaceId)
 				.invitations.list()
 				.catch(() => ({ items: [] })),
+			sdk
+				.space(spaceId)
+				.voiceLexicon.list()
+				.catch(() => ({ items: [] })),
 		]);
 		space = spaceResult;
 		cacheSpaceRecordSoon(spaceResult);
@@ -373,6 +442,7 @@ async function loadPage() {
 		allChannels = allChannelResult;
 		sandbox = sandboxResult?.sandbox ?? null;
 		invitations = invitationResult.items;
+		cacheSpaceVoiceLexicon(voiceLexiconResult.items);
 		applySandboxConfigFromSpace(spaceResult);
 	} catch (err) {
 		error = err instanceof Error ? err.message : "Failed to load settings";
@@ -828,6 +898,32 @@ $effect(() => {
 						</div>
 					</div>
 				{/if}
+
+				<section class="overflow-hidden rounded-[10px] border border-border-subtle bg-bg-surface">
+					<div class="border-b border-border-subtle px-4 py-3 sm:px-5">
+						<div class="flex items-center gap-2.5">
+							<Mic class="h-4 w-4 text-text-tertiary" />
+							<div>
+								<div class="text-[15px] font-medium text-text-primary">Voice lexicon</div>
+								<div class="text-[12px] text-text-tertiary">Shared words preserved during dictation in this space.</div>
+							</div>
+						</div>
+					</div>
+					<div class="p-4 sm:p-5">
+						<VoiceLexiconEditor
+							entries={voiceLexiconEntries}
+							loading={voiceLexiconLoading}
+							error={voiceLexiconError}
+							canManage={canManageVoiceLexicon}
+							emptyText="No shared voice terms yet"
+							addPlaceholder="Add a space-specific product, person, acronym, or phrase"
+							onrefresh={loadSpaceVoiceLexicon}
+							onadd={addSpaceVoiceLexiconTerm}
+							onupdate={updateSpaceVoiceLexiconTerm}
+							ondelete={deleteSpaceVoiceLexiconTerm}
+						/>
+					</div>
+				</section>
 
 				<section class="overflow-hidden rounded-[10px] border border-border-subtle bg-bg-surface">
 					<div class="border-b border-border-subtle px-4 py-3 sm:px-5"><div class="flex items-center gap-2.5"><Terminal class="h-4 w-4 text-text-tertiary" /><div><div class="text-[15px] font-medium text-text-primary">Runtime inputs</div><div class="text-[12px] text-text-tertiary">Env vars and mounted spaces.</div></div></div></div>
