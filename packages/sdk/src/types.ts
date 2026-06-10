@@ -396,6 +396,12 @@ export type VoiceLexiconInput = {
   originalText?: string | null;
 };
 
+export type VoiceLexiconPatchInput = {
+  term?: string;
+  source?: VoiceLexiconSource;
+  originalText?: string | null;
+};
+
 export type VoiceLexiconListResponse = {
   items: VoiceLexiconEntry[];
 };

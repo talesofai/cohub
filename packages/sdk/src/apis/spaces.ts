@@ -66,6 +66,7 @@ import type {
   VoiceLexiconEntryResponse,
   VoiceLexiconInput,
   VoiceLexiconListResponse,
+  VoiceLexiconPatchInput,
 } from "../types.js";
 import { SpaceInvitationsApi } from "./invitations.js";
 
@@ -1263,7 +1264,7 @@ export class SpaceVoiceLexiconApi {
     );
   }
 
-  update(entryId: string, input: VoiceLexiconInput) {
+  update(entryId: string, input: VoiceLexiconPatchInput) {
     return this.transport.request<VoiceLexiconEntryResponse>(
       `/api/spaces/${this.spaceId}/voice-lexicon/${encodeURIComponent(entryId)}`,
       {

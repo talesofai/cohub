@@ -6,6 +6,7 @@ import type {
   VoiceLexiconEntryResponse,
   VoiceLexiconInput,
   VoiceLexiconListResponse,
+  VoiceLexiconPatchInput,
 } from "../types.js";
 
 export class UserApi {
@@ -50,7 +51,7 @@ export class UserApi {
     });
   }
 
-  updateVoiceLexiconEntry(entryId: string, input: VoiceLexiconInput) {
+  updateVoiceLexiconEntry(entryId: string, input: VoiceLexiconPatchInput) {
     return this.transport.request<VoiceLexiconEntryResponse>(
       `/api/me/voice-lexicon/${encodeURIComponent(entryId)}`,
       {

@@ -59,6 +59,31 @@ function normalizeSource(value: unknown): VoiceLexiconSource {
 	return "auto";
 }
 
+function getSourceRank(source: VoiceLexiconSource) {
+	if (source === "manual") return 0;
+	if (source === "correction") return 1;
+	return 2;
+}
+
+function getScopeRank(scope: VoiceInputLexiconEntry["scope"]) {
+	if (scope === "space") return 0;
+	if (scope === "user") return 1;
+	return 2;
+}
+
+function compareVoiceInputLexiconEntries(
+	a: VoiceInputLexiconEntry,
+	b: VoiceInputLexiconEntry,
+) {
+	const sourceRank = getSourceRank(a.source) - getSourceRank(b.source);
+	if (sourceRank !== 0) return sourceRank;
+	const scopeRank = getScopeRank(a.scope) - getScopeRank(b.scope);
+	if (scopeRank !== 0) return scopeRank;
+	const usageRank = b.usageCount - a.usageCount;
+	if (usageRank !== 0) return usageRank;
+	return b.updatedAtMs - a.updatedAtMs;
+}
+
 function normalizeServerEntry(
 	entry: ServerVoiceLexiconEntry,
 ): VoiceInputLexiconEntry | null {
@@ -142,19 +167,12 @@ export function mergeVoiceInputLexiconEntries(
 			byKey.set(key, normalized);
 			continue;
 		}
-		if (previous.scope === "local" && normalized.scope !== "local") {
-			byKey.set(key, normalized);
-			continue;
-		}
-		if (
-			previous.scope === normalized.scope &&
-			normalized.updatedAtMs >= previous.updatedAtMs
-		) {
+		if (compareVoiceInputLexiconEntries(normalized, previous) < 0) {
 			byKey.set(key, normalized);
 		}
 	}
 	return Array.from(byKey.values())
-		.sort((a, b) => b.updatedAtMs - a.updatedAtMs)
+		.sort(compareVoiceInputLexiconEntries)
 		.slice(0, MAX_TERMS);
 }
 

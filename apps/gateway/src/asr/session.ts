@@ -150,6 +150,7 @@ type AsrConnectionContext = {
   activeSession?: AsrSessionState;
   messageQueue: Promise<void>;
   idleTimeout?: NodeJS.Timeout;
+  closed?: boolean;
 };
 
 const send = (
@@ -238,12 +239,16 @@ const clearIdleTimeout = (ctx: AsrConnectionContext) => {
 
 const scheduleIdleClose = (socket: WebSocket, ctx: AsrConnectionContext) => {
   clearIdleTimeout(ctx);
-  if (ctx.activeSession) return;
+  if (ctx.closed || ctx.activeSession) return;
   ctx.idleTimeout = setTimeout(() => {
-    if (ctx.activeSession || socket.readyState !== WebSocket.OPEN) return;
+    if (ctx.closed || ctx.activeSession || socket.readyState !== WebSocket.OPEN)
+      return;
     socket.close(1000, "asr connection idle timeout");
   }, ASR_IDLE_CONNECTION_MS);
 };
+
+const isConnectionClosed = (socket: WebSocket, ctx: AsrConnectionContext) =>
+  ctx.closed === true || socket.readyState !== WebSocket.OPEN;
 
 const closeSession = (
   ctx: AsrConnectionContext,
@@ -394,6 +399,7 @@ const startAsr = async (
   ctx: AsrConnectionContext,
   message: Extract<AsrMessage, { type: "asr.start" }>,
 ) => {
+  if (isConnectionClosed(socket, ctx)) return;
   if (!ctx.userId) {
     sendError(
       socket,
@@ -404,6 +410,7 @@ const startAsr = async (
     return;
   }
   clearIdleTimeout(ctx);
+  if (isConnectionClosed(socket, ctx)) return;
   const replacedSession = ctx.activeSession;
   if (replacedSession) {
     if (!replacedSession.telemetry.stopReason) {
@@ -471,6 +478,11 @@ const startAsr = async (
     partialText: "",
   };
   ctx.activeSession = session;
+  if (isConnectionClosed(socket, ctx)) {
+    closeSession(ctx, session);
+    emitAsrTelemetrySummary(logger, telemetry, asrOptions, "client_close");
+    return;
+  }
 
   provider.on("result", (result) => {
     if (ctx.activeSession !== session || session.discardResults) return;
@@ -508,8 +520,13 @@ const startAsr = async (
     );
     return;
   }
-  if (ctx.activeSession !== session) {
-    provider.close();
+  if (ctx.activeSession !== session || isConnectionClosed(socket, ctx)) {
+    if (!session.finalized) {
+      closeSession(ctx, session);
+      emitAsrTelemetrySummary(logger, telemetry, asrOptions, "client_close");
+    } else {
+      provider.close();
+    }
     return;
   }
   session.telemetry.providerReadyAt = Date.now();
@@ -603,12 +620,14 @@ export const handleAsrWebSocketConnection = (socket: WebSocket) => {
 
   const handleSocketMessage = async (data: RawData) => {
     try {
+      if (isConnectionClosed(socket, ctx)) return;
       const raw = parseRawMessage(data);
       const authParsed = authMessageSchema.safeParse(raw);
       if (authParsed.success) {
         const result: RealtimeAuthResult = await authenticateRealtimeToken({
           token: authParsed.data.payload.token,
         });
+        if (isConnectionClosed(socket, ctx)) return;
         if (!result.ok) {
           sendError(
             socket,
@@ -628,6 +647,7 @@ export const handleAsrWebSocketConnection = (socket: WebSocket) => {
         return;
       }
 
+      if (isConnectionClosed(socket, ctx)) return;
       if (!ctx.userId) {
         sendError(socket, "UNAUTHORIZED", "authentication required");
         return;
@@ -639,6 +659,7 @@ export const handleAsrWebSocketConnection = (socket: WebSocket) => {
         sendError(socket, "BAD_REQUEST", "invalid asr message");
         return;
       }
+      if (isConnectionClosed(socket, ctx)) return;
       await handleAsrMessage(socket, ctx, parsed.data);
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
@@ -666,11 +687,13 @@ export const handleAsrWebSocketConnection = (socket: WebSocket) => {
   };
 
   socket.on("message", (data) => {
+    if (ctx.closed) return;
     ctx.messageQueue = ctx.messageQueue.then(() => handleSocketMessage(data));
     void ctx.messageQueue;
   });
 
   socket.on("close", (code) => {
+    ctx.closed = true;
     clearIdleTimeout(ctx);
     const session = ctx.activeSession;
     if (session) {
@@ -687,6 +710,7 @@ export const handleAsrWebSocketConnection = (socket: WebSocket) => {
     );
   });
   socket.on("error", () => {
+    ctx.closed = true;
     clearIdleTimeout(ctx);
     const session = ctx.activeSession;
     markAsrError(session?.telemetry, { stage: "gateway", code: "SOCKET_ERROR" });

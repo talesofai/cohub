@@ -110,23 +110,46 @@ function parseInput(input: VoiceLexiconInput) {
 }
 
 function parsePatchInput(input: VoiceLexiconInput) {
-  const term = normalizeVoiceLexiconTerm(input.term);
-  if (!term) {
-    throw new VoiceLexiconValidationError(
-      `term must be 2-${MAX_TERM_LENGTH} characters`,
-    );
+  const parsed: {
+    term?: string;
+    termKey?: string;
+    source?: VoiceLexiconSource;
+    originalText?: string | null;
+  } = {};
+  if (input.term !== undefined) {
+    const term = normalizeVoiceLexiconTerm(input.term);
+    if (!term) {
+      throw new VoiceLexiconValidationError(
+        `term must be 2-${MAX_TERM_LENGTH} characters`,
+      );
+    }
+    parsed.term = term;
+    parsed.termKey = getVoiceLexiconTermKey(term);
   }
-  return {
-    term,
-    termKey: getVoiceLexiconTermKey(term),
-    ...(input.source !== undefined
-      ? { source: normalizeSource(input.source) }
-      : {}),
-    ...(input.originalText !== undefined
-      ? { originalText: normalizeOriginalText(input.originalText) }
-      : {}),
-  };
+  if (input.source !== undefined) parsed.source = normalizeSource(input.source);
+  if (input.originalText !== undefined)
+    parsed.originalText = normalizeOriginalText(input.originalText);
+  if (
+    parsed.term === undefined &&
+    parsed.source === undefined &&
+    parsed.originalText === undefined
+  ) {
+    throw new VoiceLexiconValidationError("at least one field is required");
+  }
+  return parsed;
 }
+
+const userVoiceLexiconSourceRank = sql<number>`case
+  when ${userVoiceLexiconEntries.source} = 'manual' then 0
+  when ${userVoiceLexiconEntries.source} = 'correction' then 1
+  else 2
+end`;
+
+const spaceVoiceLexiconSourceRank = sql<number>`case
+  when ${spaceVoiceLexiconEntries.source} = 'manual' then 0
+  when ${spaceVoiceLexiconEntries.source} = 'correction' then 1
+  else 2
+end`;
 
 function getUniqueViolationConstraint(error: unknown) {
   const record = error as { code?: string; constraint_name?: string; constraint?: string };
@@ -147,7 +170,11 @@ export async function listUserVoiceLexiconEntries(userUuid: string) {
     .select()
     .from(userVoiceLexiconEntries)
     .where(eq(userVoiceLexiconEntries.userUuid, userUuid))
-    .orderBy(desc(userVoiceLexiconEntries.updatedAt))
+    .orderBy(
+      userVoiceLexiconSourceRank,
+      desc(userVoiceLexiconEntries.usageCount),
+      desc(userVoiceLexiconEntries.updatedAt),
+    )
     .limit(MAX_ENTRIES);
   return rows.map((row) => serializeVoiceLexiconEntry("user", row));
 }
@@ -201,12 +228,15 @@ export async function updateUserVoiceLexiconEntry(
 ) {
   const parsed = parsePatchInput(input);
   const now = new Date();
+  const termUpdate =
+    parsed.term !== undefined && parsed.termKey !== undefined
+      ? { term: parsed.term, termKey: parsed.termKey }
+      : {};
   try {
     const [row] = await db
       .update(userVoiceLexiconEntries)
       .set({
-        term: parsed.term,
-        termKey: parsed.termKey,
+        ...termUpdate,
         ...(parsed.source !== undefined ? { source: parsed.source } : {}),
         ...(parsed.originalText !== undefined
           ? { originalText: parsed.originalText }
@@ -240,7 +270,11 @@ export async function listSpaceVoiceLexiconEntries(spaceId: string) {
     .select()
     .from(spaceVoiceLexiconEntries)
     .where(eq(spaceVoiceLexiconEntries.spaceId, spaceId))
-    .orderBy(desc(spaceVoiceLexiconEntries.updatedAt))
+    .orderBy(
+      spaceVoiceLexiconSourceRank,
+      desc(spaceVoiceLexiconEntries.usageCount),
+      desc(spaceVoiceLexiconEntries.updatedAt),
+    )
     .limit(MAX_ENTRIES);
   return rows.map((row) => serializeVoiceLexiconEntry("space", row));
 }
@@ -296,12 +330,15 @@ export async function updateSpaceVoiceLexiconEntry(
 ) {
   const parsed = parsePatchInput(input);
   const now = new Date();
+  const termUpdate =
+    parsed.term !== undefined && parsed.termKey !== undefined
+      ? { term: parsed.term, termKey: parsed.termKey }
+      : {};
   try {
     const [row] = await db
       .update(spaceVoiceLexiconEntries)
       .set({
-        term: parsed.term,
-        termKey: parsed.termKey,
+        ...termUpdate,
         ...(parsed.source !== undefined ? { source: parsed.source } : {}),
         ...(parsed.originalText !== undefined
           ? { originalText: parsed.originalText }
