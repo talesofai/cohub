@@ -34,6 +34,8 @@ const MAX_BATCH_READ_CONCURRENCY = 8;
 const MAX_DIR_ENTRIES = 1000;
 const MAX_UPLOAD_SIZE = 50 * 1024 * 1024;
 const MAX_UPLOAD_COUNT = 20;
+const MAX_DIRECTORY_EXPORT_FILES = 1000;
+const MAX_DIRECTORY_EXPORT_TOTAL_BYTES = 100 * 1024 * 1024;
 
 export class SpaceFsError extends Error {
   constructor(
@@ -371,6 +373,70 @@ export async function readSpaceFile(
   }
   const buffer = await readFile(target);
   return toInlineFileResponse(target, relativePath, stats, buffer, mimeType);
+}
+
+export type SpaceFsDirectoryFile = {
+  path: string;
+  relativePath: string;
+  size: number;
+  mimeType: string | null;
+  content: Buffer;
+};
+
+export async function readSpaceDirectoryFiles(
+  spaceId: string,
+  path: string,
+  options?: { visibility?: SpaceFsVisibility },
+): Promise<{ path: string; files: SpaceFsDirectoryFile[] }> {
+  const { root, target, relativePath } = await resolveTarget(spaceId, path, { allowEmpty: true });
+  let targetStats: Stats;
+  try {
+    targetStats = await lstat(target);
+  } catch {
+    throw new SpaceFsError(404, "path_not_found", "File or directory not found.");
+  }
+  const filter = await createVisibilityFilter(root, options?.visibility ?? "full");
+  await assertVisiblePath(filter, relativePath, { isDirectory: targetStats.isDirectory() });
+  if (targetStats.isSymbolicLink()) throw new SpaceFsError(400, "symlink_not_supported", "Symlink export is not supported.");
+  if (!targetStats.isDirectory()) throw new SpaceFsError(400, "not_a_directory", "The selected path is not a directory.");
+
+  const files: SpaceFsDirectoryFile[] = [];
+  let totalBytes = 0;
+
+  const walk = async (dir: string) => {
+    const names = await readdir(dir);
+    names.sort((a, b) => a.localeCompare(b));
+    for (const name of names) {
+      const absPath = join(dir, name);
+      const stats = await lstat(absPath);
+      const filePath = toRelativePath(root, absPath);
+      await assertVisiblePath(filter, filePath, { isDirectory: stats.isDirectory() });
+      if (stats.isSymbolicLink()) throw new SpaceFsError(400, "symlink_not_supported", "Symlink export is not supported.");
+      if (stats.isDirectory()) {
+        await walk(absPath);
+        continue;
+      }
+      if (!stats.isFile()) continue;
+      if (files.length >= MAX_DIRECTORY_EXPORT_FILES) {
+        throw new SpaceFsError(413, "directory_too_many_files", `Cannot publish more than ${MAX_DIRECTORY_EXPORT_FILES} files from a directory.`);
+      }
+      totalBytes += stats.size;
+      if (totalBytes > MAX_DIRECTORY_EXPORT_TOTAL_BYTES) {
+        throw new SpaceFsError(413, "directory_too_large", "Directory publish size exceeds 100MB.");
+      }
+      const relativeFilePath = relative(target, absPath).replace(/\\/g, "/");
+      files.push({
+        path: filePath,
+        relativePath: relativeFilePath,
+        size: stats.size,
+        mimeType: getMimeType(absPath),
+        content: await readFile(absPath),
+      });
+    }
+  };
+
+  await walk(target);
+  return { path: relativePath, files };
 }
 
 export async function readSpaceFiles(

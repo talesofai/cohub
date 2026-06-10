@@ -8,9 +8,7 @@ export type WorkRecord = {
   id: string;
   spaceId: string;
   userUuid: string;
-  name: string;
   slug: string;
-  description: string | null;
   status: WorkStatus;
   targetType: WorkTargetType;
   targetRef: string;
@@ -25,9 +23,7 @@ export type WorkRecord = {
 
 export type WorkCreateInput = {
   spaceId: string;
-  name: string;
   slug: string;
-  description?: string | null;
   status?: WorkStatus;
   targetType: WorkTargetType;
   targetRef: string;

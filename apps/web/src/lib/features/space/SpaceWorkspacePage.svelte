@@ -9400,7 +9400,7 @@ $effect(() => {
         observedAt={inlinePortEndpoint?.observedAt}
         focused={previewFocusMode}
         onToggleFocus={isMobile ? undefined : togglePreviewFocusMode}
-        onPublish={() => openWorkPublish("port", inlinePortPreview!.url)}
+        onPublish={() => openWorkPublish("port", inlinePortPreview!.port)}
         onClose={closeInlinePort}
       />
     </WorkspacePreviewPane>
@@ -9500,6 +9500,11 @@ $effect(() => {
     spaceSlug={space?.slug ?? null}
     targetType={workPublishTarget?.targetType ?? "file"}
     targetRef={workPublishTarget?.targetRef ?? ""}
+    onSpaceUpdated={(nextSpace) => {
+      space = nextSpace;
+      cacheSpaceRecordSoon(nextSpace);
+      patchCachedSpaceList((items) => items.map((item) => item.id === spaceId ? nextSpace : item));
+    }}
     onClose={() => workPublishTarget = null}
   />
   <!-- Share Modal -->
