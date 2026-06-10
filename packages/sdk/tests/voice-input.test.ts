@@ -607,6 +607,37 @@ test("VoiceInputClient reports session telemetry and transcript alternatives", a
   }
 });
 
+test("VoiceInputClient cleans up audio when the server ends the session", async () => {
+  const restore = installVoiceInputMocks();
+  try {
+    let doneCount = 0;
+    const client = new VoiceInputClient({
+      url: "ws://localhost",
+      getAccessToken: () => "token-1",
+      WebSocketImpl: MockWebSocket,
+      preferAudioWorklet: false,
+      callbacks: {
+        onDone: () => {
+          doneCount += 1;
+        },
+      },
+    });
+
+    await client.start();
+    const requestId = lastSocket?.sent.find(
+      (message) => message.type === "asr.start",
+    )?.requestId;
+    lastSocket?.emit({ type: "asr.done", requestId });
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    client.close();
+
+    assert.equal(doneCount, 1);
+    assert.equal(stoppedMediaTracks, 1);
+  } finally {
+    restore();
+  }
+});
+
 test("VoiceInputClient VAD timing uses the resampled target sample rate", async () => {
   const restore = installVoiceInputMocks();
   try {

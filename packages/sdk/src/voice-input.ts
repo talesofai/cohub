@@ -975,6 +975,7 @@ export class VoiceInputClient {
     }
     if (data.type === "asr.done" || data.type === "asr.cancelled") {
       this.resolveAsrStartWaiter();
+      this.cleanupAudio();
       this.asrStartRequested = false;
       this.asrStarted = false;
       this.started = false;
