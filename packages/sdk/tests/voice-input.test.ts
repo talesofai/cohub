@@ -73,6 +73,12 @@ class MockWebSocket {
 
   close() {}
 
+  emitClose(code = 1006, reason = "network closed") {
+    queueMicrotask(() => {
+      this.onclose?.({ code, reason } as CloseEvent);
+    });
+  }
+
   emit(message: Record<string, unknown>) {
     queueMicrotask(() => {
       this.onmessage?.({
@@ -628,6 +634,48 @@ test("VoiceInputClient treats active ASR errors as terminal", async () => {
         .length,
       0,
     );
+  } finally {
+    restore();
+  }
+});
+
+test("VoiceInputClient emits done when connection closes during pending stop", async () => {
+  const restore = installVoiceInputMocks();
+  try {
+    let doneCount = 0;
+    let errorMessage = "";
+    let summaryStopReason = "";
+    const client = new VoiceInputClient({
+      url: "ws://localhost",
+      getAccessToken: () => "token-1",
+      WebSocketImpl: MockWebSocket,
+      preferAudioWorklet: false,
+      callbacks: {
+        onError: (message) => {
+          errorMessage = message;
+        },
+        onDone: () => {
+          doneCount += 1;
+        },
+        onTelemetry: (summary) => {
+          summaryStopReason = summary.stopReason;
+        },
+      },
+    });
+
+    await client.start();
+    client.stop("hotkey_release");
+    await new Promise((resolve) => setTimeout(resolve, 0));
+
+    assert.equal(doneCount, 0);
+
+    lastSocket?.emitClose();
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    client.close();
+
+    assert.equal(errorMessage, "Voice connection closed. Try again.");
+    assert.equal(doneCount, 1);
+    assert.equal(summaryStopReason, "error");
   } finally {
     restore();
   }

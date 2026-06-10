@@ -570,11 +570,17 @@ export class VoiceInputClient {
         this.rejectAuthWaiter(new Error("Voice connection closed"));
         this.rejectAsrStartWaiter(new Error("Voice connection closed"));
         if (this.socket === socket) this.socket = null;
-        if (!this.intentionalClose && this.started) {
+        const hasPendingSession =
+          this.started ||
+          this.asrStartRequested ||
+          this.asrStarted ||
+          this.stopReason !== null;
+        if (!this.intentionalClose && !this.doneEmitted && hasPendingSession) {
           if (this.telemetry)
             this.telemetry.error = { message: "Voice connection closed" };
           this.cleanupAudio();
           this.started = false;
+          this.pendingStopReason = null;
           this.callbacks.onError?.("Voice connection closed. Try again.");
           this.emitTelemetry("error");
           this.emitDone();

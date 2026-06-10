@@ -43,13 +43,7 @@ let editingTerm = $state("");
 let busyAction = $state<string | null>(null);
 let inlineError = $state("");
 
-const sortedEntries = $derived(
-	[...entries].sort((a, b) => {
-		const aTime = a.updatedAt ? Date.parse(a.updatedAt) : 0;
-		const bTime = b.updatedAt ? Date.parse(b.updatedAt) : 0;
-		return bTime - aTime;
-	}),
-);
+const sortedEntries = $derived(entries);
 
 function getErrorMessage(error: unknown, fallback: string) {
 	return error instanceof Error ? error.message : fallback;
