@@ -136,7 +136,6 @@ export type WebSocketLike = {
 
 export type WebSocketConstructor = new (url: string) => WebSocketLike;
 
-const AUDIO_WORKLET_FRAME_CHUNK = 1024;
 const SCRIPT_PROCESSOR_BUFFER_SIZE = 2048;
 const DEFAULT_CONNECTION_TIMEOUT_MS = 10_000;
 const DEFAULT_IDLE_CONNECTION_TIMEOUT_MS = 30 * 60_000;
@@ -145,42 +144,13 @@ const VOICE_INPUT_WORKLET_NAME = "cohub-voice-input";
 
 const VOICE_INPUT_WORKLET_SOURCE = `
 class CohubVoiceInputProcessor extends AudioWorkletProcessor {
-  constructor() {
-    super();
-    this.pending = [];
-    this.pendingLength = 0;
-    this.chunkSamples = ${AUDIO_WORKLET_FRAME_CHUNK};
-  }
-
   process(inputs) {
     var input = inputs[0];
     var channel = input && input[0];
     if (!channel || channel.length === 0) return true;
 
-    this.pending.push(new Float32Array(channel));
-    this.pendingLength += channel.length;
-
-    while (this.pendingLength >= this.chunkSamples) {
-      var output = new Float32Array(this.chunkSamples);
-      var offset = 0;
-
-      while (offset < this.chunkSamples && this.pending.length > 0) {
-        var first = this.pending[0];
-        var take = Math.min(first.length, this.chunkSamples - offset);
-        output.set(first.subarray(0, take), offset);
-        offset += take;
-
-        if (take === first.length) {
-          this.pending.shift();
-        } else {
-          this.pending[0] = first.subarray(take);
-        }
-      }
-
-      this.pendingLength -= this.chunkSamples;
-      this.port.postMessage(output, [output.buffer]);
-    }
-
+    var output = new Float32Array(channel);
+    this.port.postMessage(output, [output.buffer]);
     return true;
   }
 }
@@ -593,6 +563,7 @@ export class VoiceInputClient {
       socket.onopen = () => resolve();
       socket.onerror = () => reject(new Error("Voice service unavailable"));
       socket.onclose = (event) => {
+        if (this.socket !== socket) return;
         this.authenticated = false;
         this.socketOpenPromise = null;
         this.rejectAuthWaiter(new Error("Voice connection closed"));

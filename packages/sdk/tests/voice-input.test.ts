@@ -33,6 +33,7 @@ type SentVoiceMessage = {
 
 let lastSocket: MockWebSocket | null = null;
 let lastProcessor: MockScriptProcessorNode | null = null;
+let lastWorkletNode: MockAudioWorkletNode | null = null;
 let requestedAudioConstraints: unknown = null;
 let autoEmitAsrStarted = true;
 let autoEmitAuthOk = true;
@@ -116,6 +117,25 @@ class MockScriptProcessorNode {
   }
 }
 
+class MockAudioWorkletNode {
+  port = {
+    onmessage: null as ((event: MessageEvent) => void) | null,
+    close() {},
+  };
+
+  constructor() {
+    lastWorkletNode = this;
+  }
+
+  connect() {}
+
+  disconnect() {}
+
+  emit(samples: Float32Array) {
+    this.port.onmessage?.({ data: samples } as MessageEvent);
+  }
+}
+
 class MockAudioContext {
   readonly sampleRate = 16000;
   readonly destination = {};
@@ -148,6 +168,7 @@ class MockAudioContext {
 const installVoiceInputMocks = () => {
   lastSocket = null;
   lastProcessor = null;
+  lastWorkletNode = null;
   requestedAudioConstraints = null;
   autoEmitAsrStarted = true;
   autoEmitAuthOk = true;
@@ -163,6 +184,10 @@ const installVoiceInputMocks = () => {
   const originalAudioContext = Object.getOwnPropertyDescriptor(
     globalThis,
     "AudioContext",
+  );
+  const originalAudioWorkletNode = Object.getOwnPropertyDescriptor(
+    globalThis,
+    "AudioWorkletNode",
   );
 
   Object.defineProperty(globalThis, "navigator", {
@@ -202,6 +227,13 @@ const installVoiceInputMocks = () => {
     if (originalAudioContext)
       Object.defineProperty(globalThis, "AudioContext", originalAudioContext);
     else Reflect.deleteProperty(globalThis, "AudioContext");
+    if (originalAudioWorkletNode)
+      Object.defineProperty(
+        globalThis,
+        "AudioWorkletNode",
+        originalAudioWorkletNode,
+      );
+    else Reflect.deleteProperty(globalThis, "AudioWorkletNode");
   };
 };
 
@@ -358,6 +390,42 @@ test("VoiceInputClient sends captured audio over the ASR websocket", async () =>
   }
 });
 
+test("VoiceInputClient flushes a short AudioWorklet quantum on stop", async () => {
+  const restore = installVoiceInputMocks();
+  try {
+    class WorkletAudioContext extends MockAudioContext {
+      readonly audioWorklet = {
+        addModule: async () => {},
+      };
+    }
+    Object.defineProperty(globalThis, "AudioContext", {
+      configurable: true,
+      value: WorkletAudioContext,
+    });
+    Object.defineProperty(globalThis, "AudioWorkletNode", {
+      configurable: true,
+      value: MockAudioWorkletNode,
+    });
+    const client = new VoiceInputClient({
+      url: "ws://localhost",
+      getAccessToken: () => "token-1",
+      WebSocketImpl: MockWebSocket,
+    });
+
+    await client.start();
+    lastWorkletNode?.emit(Float32Array.from({ length: 128 }, () => 0.08));
+    client.stop("hotkey_release");
+    client.close();
+
+    assert.deepEqual(
+      lastSocket?.sent.map((message) => message.type),
+      ["auth", "asr.start", "asr.audio", "asr.stop"],
+    );
+  } finally {
+    restore();
+  }
+});
+
 test("VoiceInputClient retries auth without ending the voice session", async () => {
   const restore = installVoiceInputMocks();
   try {
@@ -496,6 +564,13 @@ test("VoiceInputClient ignores late access tokens from timed out starts", async 
     assert.deepEqual(
       lastSocket?.sent.map((message) => message.type),
       ["auth", "asr.start"],
+    );
+    timedOutSocket?.emitClose();
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    client.stop();
+    assert.equal(
+      lastSocket?.sent.some((message) => message.type === "asr.stop"),
+      true,
     );
     client.close();
   } finally {
