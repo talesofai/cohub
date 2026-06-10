@@ -1,4 +1,4 @@
-import { and, desc, eq } from "drizzle-orm";
+import { and, desc, eq, sql } from "drizzle-orm";
 import {
   spaceVoiceLexiconEntries,
   userVoiceLexiconEntries,
@@ -76,21 +76,6 @@ function normalizeOriginalText(value: unknown) {
   if (typeof value !== "string") return null;
   const trimmed = value.replace(/\s+/g, " ").trim();
   return trimmed ? trimmed.slice(0, MAX_ORIGINAL_TEXT_LENGTH) : null;
-}
-
-function getSourceRank(source: VoiceLexiconSource) {
-  switch (source) {
-    case "manual":
-      return 3;
-    case "correction":
-      return 2;
-    case "auto":
-      return 1;
-  }
-}
-
-function chooseSource(current: VoiceLexiconSource, next: VoiceLexiconSource) {
-  return getSourceRank(next) > getSourceRank(current) ? next : current;
 }
 
 function serializeVoiceLexiconEntry(
@@ -173,31 +158,6 @@ export async function upsertUserVoiceLexiconEntry(
 ) {
   const parsed = parseInput(input);
   const now = new Date();
-  const [existing] = await db
-    .select()
-    .from(userVoiceLexiconEntries)
-    .where(and(
-      eq(userVoiceLexiconEntries.userUuid, userUuid),
-      eq(userVoiceLexiconEntries.termKey, parsed.termKey),
-    ))
-    .limit(1);
-
-  if (existing) {
-    const [row] = await db
-      .update(userVoiceLexiconEntries)
-      .set({
-        term: parsed.term,
-        source: chooseSource(existing.source, parsed.source),
-        originalText: parsed.originalText ?? existing.originalText,
-        usageCount: existing.usageCount + 1,
-        updatedAt: now,
-      })
-      .where(eq(userVoiceLexiconEntries.id, existing.id))
-      .returning();
-    if (!row) throw new Error("failed to update user voice lexicon entry");
-    return serializeVoiceLexiconEntry("user", row);
-  }
-
   const [row] = await db
     .insert(userVoiceLexiconEntries)
     .values({
@@ -209,8 +169,25 @@ export async function upsertUserVoiceLexiconEntry(
       usageCount: parsed.source === "manual" ? 0 : 1,
       updatedAt: now,
     })
+    .onConflictDoUpdate({
+      target: [
+        userVoiceLexiconEntries.userUuid,
+        userVoiceLexiconEntries.termKey,
+      ],
+      set: {
+        term: parsed.term,
+        source: sql<VoiceLexiconSource>`case
+          when excluded.source = 'manual' or ${userVoiceLexiconEntries.source} = 'manual' then 'manual'
+          when excluded.source = 'correction' or ${userVoiceLexiconEntries.source} = 'correction' then 'correction'
+          else 'auto'
+        end`,
+        originalText: sql<string | null>`coalesce(excluded.original_text, ${userVoiceLexiconEntries.originalText})`,
+        usageCount: sql<number>`${userVoiceLexiconEntries.usageCount} + 1`,
+        updatedAt: now,
+      },
+    })
     .returning();
-  if (!row) throw new Error("failed to create user voice lexicon entry");
+  if (!row) throw new Error("failed to upsert user voice lexicon entry");
   return serializeVoiceLexiconEntry("user", row);
 }
 
@@ -272,31 +249,6 @@ export async function upsertSpaceVoiceLexiconEntry(
 ) {
   const parsed = parseInput(input);
   const now = new Date();
-  const [existing] = await db
-    .select()
-    .from(spaceVoiceLexiconEntries)
-    .where(and(
-      eq(spaceVoiceLexiconEntries.spaceId, spaceId),
-      eq(spaceVoiceLexiconEntries.termKey, parsed.termKey),
-    ))
-    .limit(1);
-
-  if (existing) {
-    const [row] = await db
-      .update(spaceVoiceLexiconEntries)
-      .set({
-        term: parsed.term,
-        source: chooseSource(existing.source, parsed.source),
-        originalText: parsed.originalText ?? existing.originalText,
-        usageCount: existing.usageCount + 1,
-        updatedAt: now,
-      })
-      .where(eq(spaceVoiceLexiconEntries.id, existing.id))
-      .returning();
-    if (!row) throw new Error("failed to update space voice lexicon entry");
-    return serializeVoiceLexiconEntry("space", row);
-  }
-
   const [row] = await db
     .insert(spaceVoiceLexiconEntries)
     .values({
@@ -309,8 +261,25 @@ export async function upsertSpaceVoiceLexiconEntry(
       usageCount: parsed.source === "manual" ? 0 : 1,
       updatedAt: now,
     })
+    .onConflictDoUpdate({
+      target: [
+        spaceVoiceLexiconEntries.spaceId,
+        spaceVoiceLexiconEntries.termKey,
+      ],
+      set: {
+        term: parsed.term,
+        source: sql<VoiceLexiconSource>`case
+          when excluded.source = 'manual' or ${spaceVoiceLexiconEntries.source} = 'manual' then 'manual'
+          when excluded.source = 'correction' or ${spaceVoiceLexiconEntries.source} = 'correction' then 'correction'
+          else 'auto'
+        end`,
+        originalText: sql<string | null>`coalesce(excluded.original_text, ${spaceVoiceLexiconEntries.originalText})`,
+        usageCount: sql<number>`${spaceVoiceLexiconEntries.usageCount} + 1`,
+        updatedAt: now,
+      },
+    })
     .returning();
-  if (!row) throw new Error("failed to create space voice lexicon entry");
+  if (!row) throw new Error("failed to upsert space voice lexicon entry");
   return serializeVoiceLexiconEntry("space", row);
 }
 

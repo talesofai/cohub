@@ -556,6 +556,43 @@ test("VoiceInputClient treats active ASR errors as terminal", async () => {
   }
 });
 
+test("VoiceInputClient emits done when cancelled before ASR starts", async () => {
+  const restore = installVoiceInputMocks();
+  try {
+    let doneCount = 0;
+    let summaryStopReason = "";
+    const client = new VoiceInputClient({
+      url: "ws://localhost",
+      getAccessToken: () => "token-1",
+      WebSocketImpl: MockWebSocket,
+      preferAudioWorklet: false,
+      callbacks: {
+        onDone: () => {
+          doneCount += 1;
+        },
+        onTelemetry: (summary) => {
+          summaryStopReason = summary.stopReason;
+        },
+      },
+    });
+
+    const startPromise = client.start();
+    client.cancel();
+    await startPromise;
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    client.close();
+
+    assert.equal(doneCount, 1);
+    assert.equal(summaryStopReason, "cancel");
+    assert.equal(
+      lastSocket?.sent.some((message) => message.type === "asr.cancel"),
+      false,
+    );
+  } finally {
+    restore();
+  }
+});
+
 test("VoiceInputClient ignores stale ASR events from previous requests", async () => {
   const restore = installVoiceInputMocks();
   try {

@@ -441,6 +441,7 @@ export class VoiceInputClient {
     this.started = false;
     this.scheduleIdleClose();
     this.emitTelemetry(reason);
+    if (!shouldCancelAsr) this.emitDone();
   }
 
   close() {
