@@ -409,7 +409,7 @@ const handleAsrResult = async (
   });
 };
 
-const startAsr = async (
+const startAsr = (
   socket: WebSocket,
   ctx: AsrConnectionContext,
   message: Extract<AsrMessage, { type: "asr.start" }>,
@@ -527,56 +527,64 @@ const startAsr = async (
     finalizeSession(socket, ctx, session);
   });
 
-  session.telemetry.providerStartAt = Date.now();
-  try {
-    await provider.start();
-  } catch (error) {
-    failProviderSession(
-      socket,
-      ctx,
-      session,
-      error instanceof Error ? error : new Error(String(error)),
-    );
-    return;
-  }
-  if (ctx.activeSession !== session || isConnectionClosed(socket, ctx)) {
-    if (!session.finalized) {
-      closeSession(ctx, session);
-      emitAsrTelemetrySummary(logger, telemetry, asrOptions, "client_close");
-    } else {
-      provider.close();
+  const startProvider = async () => {
+    session.telemetry.providerStartAt = Date.now();
+    try {
+      await provider.start();
+    } catch (error) {
+      failProviderSession(
+        socket,
+        ctx,
+        session,
+        error instanceof Error ? error : new Error(String(error)),
+      );
+      return;
     }
-    return;
-  }
-  session.telemetry.providerReadyAt = Date.now();
-  session.timeout = setTimeout(() => {
-    if (ctx.activeSession !== session) return;
-    session.telemetry.stopReason = "error";
-    session.telemetry.stopAt = Date.now();
-    provider.stop();
-    scheduleStopFinalize(socket, ctx, session);
-    sendError(
-      socket,
-      "MAX_DURATION_EXCEEDED",
-      "Voice input reached the time limit",
+    if (ctx.activeSession !== session || isConnectionClosed(socket, ctx)) {
+      if (!session.finalized) {
+        closeSession(ctx, session);
+        emitAsrTelemetrySummary(logger, telemetry, asrOptions, "client_close");
+      } else {
+        provider.close();
+      }
+      return;
+    }
+    if (session.telemetry.stopReason) {
+      provider.stop();
+      if (!session.stopTimeout) scheduleStopFinalize(socket, ctx, session);
+      return;
+    }
+    session.telemetry.providerReadyAt = Date.now();
+    session.timeout = setTimeout(() => {
+      if (ctx.activeSession !== session) return;
+      session.telemetry.stopReason = "error";
+      session.telemetry.stopAt = Date.now();
+      provider.stop();
+      scheduleStopFinalize(socket, ctx, session);
+      sendError(
+        socket,
+        "MAX_DURATION_EXCEEDED",
+        "Voice input reached the time limit",
+        requestId,
+      );
+    }, ASR_MAX_SESSION_MS);
+    send(socket, {
+      type: "asr.started",
       requestId,
-    );
-  }, ASR_MAX_SESSION_MS);
-  send(socket, {
-    type: "asr.started",
-    requestId,
-    payload: {
-      endpoint: {
-        endWindowSizeMs: asrOptions.endWindowSizeMs,
-        forceToSpeechTimeMs: asrOptions.forceToSpeechTimeMs,
+      payload: {
+        endpoint: {
+          endWindowSizeMs: asrOptions.endWindowSizeMs,
+          forceToSpeechTimeMs: asrOptions.forceToSpeechTimeMs,
+        },
+        hotwordCount: asrOptions.hotwords.length,
+        contextEnabled: Boolean(corpusContext),
+        postProcessing: asrOptions.postProcessing,
+        experiment: selection.experiment,
+        variant: selection.variant,
       },
-      hotwordCount: asrOptions.hotwords.length,
-      contextEnabled: Boolean(corpusContext),
-      postProcessing: asrOptions.postProcessing,
-      experiment: selection.experiment,
-      variant: selection.variant,
-    },
-  });
+    });
+  };
+  void startProvider();
 };
 
 const handleAsrMessage = async (
@@ -589,7 +597,7 @@ const handleAsrMessage = async (
     return;
   }
   if (message.type === "asr.start") {
-    await startAsr(socket, ctx, message);
+    startAsr(socket, ctx, message);
     return;
   }
   const session = ctx.activeSession;

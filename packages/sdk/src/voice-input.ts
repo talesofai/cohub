@@ -487,7 +487,10 @@ export class VoiceInputClient {
     this.audioPipeline = "unknown";
     this.stopReason = null;
     this.audioChunker.reset();
-    this.vad = new VoiceInputVad(this.vadOptions);
+    this.vad = new VoiceInputVad({
+      ...this.vadOptions,
+      sampleRate: TARGET_SAMPLE_RATE,
+    });
     this.pendingAudio = [];
     this.intentionalClose = false;
     this.pendingStopReason = null;

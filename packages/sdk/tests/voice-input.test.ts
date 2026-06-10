@@ -607,6 +607,44 @@ test("VoiceInputClient reports session telemetry and transcript alternatives", a
   }
 });
 
+test("VoiceInputClient VAD timing uses the resampled target sample rate", async () => {
+  const restore = installVoiceInputMocks();
+  try {
+    let endpointCount = 0;
+    const client = new VoiceInputClient({
+      url: "ws://localhost",
+      getAccessToken: () => "token-1",
+      WebSocketImpl: MockWebSocket,
+      preferAudioWorklet: false,
+      vad: {
+        sampleRate: 48_000,
+        preRollMs: 0,
+        minSpeechMs: 0,
+        silenceDurationMs: 400,
+        speechThreshold: 0.008,
+        silenceThreshold: 0.005,
+        peakThreshold: 0.07,
+      },
+      callbacks: {
+        onEndpoint: () => {
+          endpointCount += 1;
+        },
+      },
+    });
+
+    await client.start();
+    lastProcessor?.emit(Float32Array.from({ length: 3200 }, () => 0.08));
+    lastProcessor?.emit(Float32Array.from({ length: 3200 }, () => 0.001));
+    assert.equal(endpointCount, 0);
+    lastProcessor?.emit(Float32Array.from({ length: 3200 }, () => 0.001));
+    client.close();
+
+    assert.equal(endpointCount, 1);
+  } finally {
+    restore();
+  }
+});
+
 test("VoiceInputClient stops a pending ASR start on hotkey release", async () => {
   const restore = installVoiceInputMocks();
   try {
