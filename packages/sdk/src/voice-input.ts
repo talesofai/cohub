@@ -484,9 +484,12 @@ export class VoiceInputClient {
     this.doneEmitted = false;
 
     try {
-      await this.withConnectionTimeout(
-        Promise.all([this.setupAudio(), this.ensureAuthenticatedSocket()]),
-      );
+      await this.withConnectionTimeout(this.ensureAuthenticatedSocket());
+      if (!this.started) {
+        this.cleanupAudio();
+        return;
+      }
+      await this.withConnectionTimeout(this.setupAudio());
       if (!this.started) {
         this.cleanupAudio();
         return;
@@ -877,6 +880,7 @@ export class VoiceInputClient {
       this.callbacks.onFinal?.(text, transcript);
     }
     if (data.type === "asr.done" || data.type === "asr.cancelled") {
+      this.resolveAsrStartWaiter();
       this.asrStartRequested = false;
       this.asrStarted = false;
       this.started = false;

@@ -368,6 +368,30 @@ test("VoiceInputClient retries auth without ending the voice session", async () 
   }
 });
 
+test("VoiceInputClient does not request microphone when auth fails", async () => {
+  const restore = installVoiceInputMocks();
+  try {
+    authFailuresRemaining = 2;
+    const client = new VoiceInputClient({
+      url: "ws://localhost",
+      getAccessToken: () => "token-1",
+      WebSocketImpl: MockWebSocket,
+      preferAudioWorklet: false,
+    });
+
+    await assert.rejects(client.start(), /UNAUTHORIZED/);
+    client.close();
+
+    assert.equal(requestedAudioConstraints, null);
+    assert.deepEqual(
+      lastSocket?.sent.map((message) => message.type),
+      ["auth", "auth"],
+    );
+  } finally {
+    restore();
+  }
+});
+
 test("VoiceInputClient sends ASR tuning and context in start payload", async () => {
   const restore = installVoiceInputMocks();
   try {
@@ -681,6 +705,48 @@ test("VoiceInputClient emits done when active ASR is cancelled", async () => {
     );
 
     lastSocket?.emit({ type: "asr.cancelled", requestId });
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    client.close();
+
+    assert.equal(doneCount, 1);
+  } finally {
+    restore();
+  }
+});
+
+test("VoiceInputClient resolves pending ASR start when cancelled before ready", async () => {
+  const restore = installVoiceInputMocks();
+  try {
+    autoEmitAsrStarted = false;
+    let doneCount = 0;
+    const client = new VoiceInputClient({
+      url: "ws://localhost",
+      getAccessToken: () => "token-1",
+      WebSocketImpl: MockWebSocket,
+      preferAudioWorklet: false,
+      callbacks: {
+        onDone: () => {
+          doneCount += 1;
+        },
+      },
+    });
+
+    const startPromise = client.start();
+    await waitForSentMessage("asr.start");
+    const requestId = lastSocket?.sent.find(
+      (message) => message.type === "asr.start",
+    )?.requestId;
+    client.cancel();
+    await new Promise((resolve) => setTimeout(resolve, 0));
+
+    assert.equal(doneCount, 0);
+    assert.equal(
+      lastSocket?.sent.some((message) => message.type === "asr.cancel"),
+      true,
+    );
+
+    lastSocket?.emit({ type: "asr.cancelled", requestId });
+    await startPromise;
     await new Promise((resolve) => setTimeout(resolve, 0));
     client.close();
 

@@ -140,6 +140,7 @@ type AsrSessionState = {
   timeout?: NodeJS.Timeout;
   stopTimeout?: NodeJS.Timeout;
   finalized?: boolean;
+  discardResults?: boolean;
 };
 
 type AsrConnectionContext = {
@@ -249,6 +250,8 @@ const closeSession = (
   session = ctx.activeSession,
 ) => {
   if (!session) return;
+  session.finalized = true;
+  session.discardResults = true;
   clearSessionTimers(session);
   if (ctx.activeSession === session) ctx.activeSession = undefined;
   session.provider.close();
@@ -346,9 +349,11 @@ const handleAsrResult = async (
     definite: boolean;
   },
 ) => {
+  if (session.discardResults) return;
   const rewrite = await rewriteAsrText(input.text, session.asrOptions, {
     llm: input.definite,
   });
+  if (session.discardResults) return;
   const text = rewrite.text;
   if (!text) return;
   recordAsrResult(session.telemetry, input.definite);
@@ -457,7 +462,7 @@ const startAsr = async (
   ctx.activeSession = session;
 
   provider.on("result", (result) => {
-    if (ctx.activeSession !== session) return;
+    if (ctx.activeSession !== session || session.discardResults) return;
     session.resultQueue = session.resultQueue
       .then(() =>
         handleAsrResult(socket, session, {

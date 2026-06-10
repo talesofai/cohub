@@ -40,16 +40,22 @@ export class VolcAsrProvider extends TypedEventEmitter<VolcAsrProviderEvents> {
         },
       });
       this.socket = socket;
+      let startupSettled = false;
+      let opened = false;
 
-      const failStartup = (error: Error) => {
-        if (socket.readyState !== WebSocket.OPEN) {
+      const handleSocketError = (error: Error) => {
+        if (!startupSettled) {
+          startupSettled = true;
           reject(error);
           return;
         }
+        if (!opened || this.closed) return;
         this.emit("error", error);
       };
 
       socket.once("open", () => {
+        startupSettled = true;
+        opened = true;
         const config: VolcAsrRequestConfig = {
           uid: this.options.uid,
           ...this.options.requestConfig,
@@ -70,9 +76,16 @@ export class VolcAsrProvider extends TypedEventEmitter<VolcAsrProviderEvents> {
           this.emit("error", error instanceof Error ? error : new Error(String(error)));
         }
       });
-      socket.once("error", failStartup);
+      socket.on("error", handleSocketError);
       socket.once("close", () => {
         this.closed = true;
+        if (!opened) {
+          if (!startupSettled) {
+            startupSettled = true;
+            reject(new Error("Volc ASR connection closed"));
+          }
+          return;
+        }
         this.emit("close");
       });
     });
