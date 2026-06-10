@@ -657,25 +657,34 @@ function toggleVoiceContinuousMode() {
 	voiceContinuousUndoSnapshot = null;
 }
 
-function extractVoiceTerms(text: string) {
-	const terms = new Set<string>();
-	const add = (term: string | null | undefined) => {
-		const normalized = term?.replace(/[`*_#[\]()>]/g, "").trim();
-		if (!normalized || normalized.length < 2 || normalized.length > 40) return;
-		terms.add(normalized);
-	};
+function addVoiceTerm(terms: Set<string>, term: string | null | undefined) {
+	const normalized = term?.replace(/[`*_#[\]()>]/g, "").trim();
+	if (!normalized || normalized.length < 2 || normalized.length > 40) return;
+	terms.add(normalized);
+}
 
-	add("Cohub");
-	add("Neta");
-	add(currentModel?.name);
-	add(currentModel?.id);
-	for (const entry of voiceLexiconEntries) add(entry.term);
-	for (const item of promptTemplates.slice(0, 24)) add(item.name);
+function extractTranscriptVoiceTerms(text: string) {
+	const terms = new Set<string>();
 	for (const token of tokenizeSpaceMentionText(text)) {
-		if (token.type === "spaceMention") add(token.label);
+		if (token.type === "spaceMention") addVoiceTerm(terms, token.label);
 	}
 	for (const match of text.matchAll(/\b[A-Z][A-Za-z0-9_-]{1,39}\b/g)) {
-		add(match[0]);
+		addVoiceTerm(terms, match[0]);
+	}
+	return Array.from(terms).slice(0, 40);
+}
+
+function extractVoiceContextTerms(text: string) {
+	const terms = new Set<string>();
+	addVoiceTerm(terms, "Cohub");
+	addVoiceTerm(terms, "Neta");
+	addVoiceTerm(terms, currentModel?.name);
+	addVoiceTerm(terms, currentModel?.id);
+	for (const entry of voiceLexiconEntries) addVoiceTerm(terms, entry.term);
+	for (const item of promptTemplates.slice(0, 24))
+		addVoiceTerm(terms, item.name);
+	for (const term of extractTranscriptVoiceTerms(text)) {
+		addVoiceTerm(terms, term);
 	}
 	return Array.from(terms).slice(0, 40);
 }
@@ -693,7 +702,7 @@ function buildVoiceAsrOptions(): VoiceInputAsrOptions {
 		enablePunctuation: true,
 		enableItn: true,
 		enableDdc: false,
-		hotwords: extractVoiceTerms(contextSource),
+		hotwords: extractVoiceContextTerms(contextSource),
 		contextText,
 		contextMessages: [
 			currentModel?.name ? `Selected model: ${currentModel.name}` : "",
@@ -824,7 +833,7 @@ async function startVoiceInput() {
 					learned: false,
 				};
 				setVoiceCandidates(event.alternatives, event.originalText ?? "", text);
-				for (const term of extractVoiceTerms(text).slice(0, 6)) {
+				for (const term of extractTranscriptVoiceTerms(text).slice(0, 6)) {
 					if (/^[A-Z][A-Za-z0-9_-]{2,39}$/.test(term)) {
 						void addUserVoiceLexiconTerm(term, "auto");
 					}

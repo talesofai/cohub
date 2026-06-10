@@ -404,11 +404,20 @@ const startAsr = async (
     return;
   }
   clearIdleTimeout(ctx);
-  if (ctx.activeSession && !ctx.activeSession.telemetry.stopReason) {
-    ctx.activeSession.telemetry.stopReason = "client_close";
-    ctx.activeSession.telemetry.stopAt = Date.now();
+  const replacedSession = ctx.activeSession;
+  if (replacedSession) {
+    if (!replacedSession.telemetry.stopReason) {
+      replacedSession.telemetry.stopReason = "client_close";
+      replacedSession.telemetry.stopAt = Date.now();
+    }
+    closeSession(ctx, replacedSession);
+    emitAsrTelemetrySummary(
+      logger,
+      replacedSession.telemetry,
+      replacedSession.asrOptions,
+      replacedSession.telemetry.stopReason ?? "client_close",
+    );
   }
-  closeSession(ctx);
 
   const volcConfig = getVolcConfig();
   const requestId = message.requestId ?? randomUUID();
