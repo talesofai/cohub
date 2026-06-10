@@ -13,6 +13,7 @@ import {
 	isVoiceInputShortcutRelease,
 	readVoiceInputShortcut,
 	resetVoiceInputShortcut,
+	resetVoiceInputShortcutKeyState,
 	type VoiceInputShortcut,
 	voiceInputShortcutFromKeyboardEvent,
 	writeVoiceInputShortcut,
@@ -88,6 +89,7 @@ function saveShortcut(next: VoiceInputShortcut) {
 	shortcut = writeVoiceInputShortcut(next);
 	recordingShortcut = false;
 	pendingModifierShortcut = null;
+	resetVoiceInputShortcutKeyState();
 }
 
 function beginShortcutRecording() {
@@ -98,6 +100,7 @@ function beginShortcutRecording() {
 function cancelShortcutRecording() {
 	recordingShortcut = false;
 	pendingModifierShortcut = null;
+	resetVoiceInputShortcutKeyState();
 }
 
 function handleShortcutKeydown(event: KeyboardEvent) {
@@ -131,6 +134,7 @@ function restoreDefaultShortcut() {
 	shortcut = resetVoiceInputShortcut();
 	recordingShortcut = false;
 	pendingModifierShortcut = null;
+	resetVoiceInputShortcutKeyState();
 }
 
 onMount(() => {
@@ -143,6 +147,7 @@ onMount(() => {
 	return () => {
 		window.removeEventListener("keydown", onKeydown, { capture: true });
 		window.removeEventListener("keyup", onKeyup, { capture: true });
+		resetVoiceInputShortcutKeyState();
 	};
 });
 </script>

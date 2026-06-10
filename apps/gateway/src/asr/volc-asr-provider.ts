@@ -42,7 +42,10 @@ export class VolcAsrProvider extends TypedEventEmitter<VolcAsrProviderEvents> {
       this.socket = socket;
 
       const failStartup = (error: Error) => {
-        if (socket.readyState !== WebSocket.OPEN) reject(error);
+        if (socket.readyState !== WebSocket.OPEN) {
+          reject(error);
+          return;
+        }
         this.emit("error", error);
       };
 

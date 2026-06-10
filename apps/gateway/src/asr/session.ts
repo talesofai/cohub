@@ -29,6 +29,7 @@ const logger = createLogger({ serviceName: "cohub-gateway" });
 const ASR_MAX_MESSAGE_BYTES = 1024 * 1024;
 const ASR_MAX_SESSION_MS = 10 * 60_000;
 const ASR_IDLE_CONNECTION_MS = 30 * 60_000;
+const ASR_STOP_FINALIZE_MS = 12_000;
 
 const authMessageSchema = z.object({
   type: z.literal("auth"),
@@ -137,6 +138,8 @@ type AsrSessionState = {
   committedText: string;
   partialText: string;
   timeout?: NodeJS.Timeout;
+  stopTimeout?: NodeJS.Timeout;
+  finalized?: boolean;
 };
 
 type AsrConnectionContext = {
@@ -217,6 +220,16 @@ const clearSessionTimeout = (session: AsrSessionState | undefined) => {
   if (session) session.timeout = undefined;
 };
 
+const clearStopTimeout = (session: AsrSessionState | undefined) => {
+  if (session?.stopTimeout) clearTimeout(session.stopTimeout);
+  if (session) session.stopTimeout = undefined;
+};
+
+const clearSessionTimers = (session: AsrSessionState | undefined) => {
+  clearSessionTimeout(session);
+  clearStopTimeout(session);
+};
+
 const clearIdleTimeout = (ctx: AsrConnectionContext) => {
   if (ctx.idleTimeout) clearTimeout(ctx.idleTimeout);
   ctx.idleTimeout = undefined;
@@ -236,7 +249,7 @@ const closeSession = (
   session = ctx.activeSession,
 ) => {
   if (!session) return;
-  clearSessionTimeout(session);
+  clearSessionTimers(session);
   if (ctx.activeSession === session) ctx.activeSession = undefined;
   session.provider.close();
 };
@@ -246,8 +259,75 @@ const markSessionClosed = (
   session: AsrSessionState,
 ) => {
   if (ctx.activeSession !== session) return;
-  clearSessionTimeout(session);
+  clearSessionTimers(session);
   ctx.activeSession = undefined;
+};
+
+const finalizeSession = (
+  socket: WebSocket,
+  ctx: AsrConnectionContext,
+  session: AsrSessionState,
+  reason = session.telemetry.stopReason ?? "done",
+) => {
+  if (session.finalized) return;
+  session.finalized = true;
+  markSessionClosed(ctx, session);
+  void session.resultQueue.finally(() => {
+    session.telemetry.doneAt = Date.now();
+    emitAsrTelemetrySummary(logger, session.telemetry, session.asrOptions, reason);
+    send(socket, { type: "asr.done", requestId: session.requestId });
+    scheduleIdleClose(socket, ctx);
+  });
+};
+
+const scheduleStopFinalize = (
+  socket: WebSocket,
+  ctx: AsrConnectionContext,
+  session: AsrSessionState,
+) => {
+  clearSessionTimeout(session);
+  clearStopTimeout(session);
+  session.stopTimeout = setTimeout(() => {
+    if (ctx.activeSession !== session || session.finalized) return;
+    logger.warn("[ASR] provider did not close after stop; finalizing session", {
+      connectionId: ctx.connectionId,
+      requestId: session.requestId,
+      stopReason: session.telemetry.stopReason,
+    });
+    session.provider.close();
+    finalizeSession(
+      socket,
+      ctx,
+      session,
+      session.telemetry.stopReason ?? "manual",
+    );
+  }, ASR_STOP_FINALIZE_MS);
+};
+
+const failProviderSession = (
+  socket: WebSocket,
+  ctx: AsrConnectionContext,
+  session: AsrSessionState,
+  error: Error,
+) => {
+  if (ctx.activeSession !== session) return;
+  markAsrError(session.telemetry, {
+    stage: "provider",
+    code: error.message.slice(0, 80),
+  });
+  logger.warn("[ASR] provider error", {
+    connectionId: ctx.connectionId,
+    requestId: session.requestId,
+    error: error.message,
+  });
+  sendError(
+    socket,
+    "PROVIDER_ERROR",
+    "Voice input is unavailable. Try again later.",
+    session.requestId,
+  );
+  if (!session.telemetry.stopAt) session.telemetry.stopAt = Date.now();
+  closeSession(ctx, session);
 };
 
 const resolveClientInfo = (
@@ -394,42 +474,24 @@ const startAsr = async (
       });
   });
   provider.on("error", (error) => {
-    if (ctx.activeSession !== session) return;
-    markAsrError(session.telemetry, {
-      stage: "provider",
-      code: error.message.slice(0, 80),
-    });
-    logger.warn("[ASR] provider error", {
-      connectionId: ctx.connectionId,
-      requestId,
-      error: error.message,
-    });
-    sendError(
-      socket,
-      "PROVIDER_ERROR",
-      "Voice input is unavailable. Try again later.",
-      requestId,
-    );
-    if (!session.telemetry.stopAt) session.telemetry.stopAt = Date.now();
-    closeSession(ctx, session);
+    failProviderSession(socket, ctx, session, error);
   });
   provider.on("close", () => {
-    markSessionClosed(ctx, session);
-    void session.resultQueue.finally(() => {
-      session.telemetry.doneAt = Date.now();
-      emitAsrTelemetrySummary(
-        logger,
-        session.telemetry,
-        session.asrOptions,
-        session.telemetry.stopReason ?? "done",
-      );
-      send(socket, { type: "asr.done", requestId });
-      scheduleIdleClose(socket, ctx);
-    });
+    finalizeSession(socket, ctx, session);
   });
 
   session.telemetry.providerStartAt = Date.now();
-  await provider.start();
+  try {
+    await provider.start();
+  } catch (error) {
+    failProviderSession(
+      socket,
+      ctx,
+      session,
+      error instanceof Error ? error : new Error(String(error)),
+    );
+    return;
+  }
   if (ctx.activeSession !== session) {
     provider.close();
     return;
@@ -440,6 +502,7 @@ const startAsr = async (
     session.telemetry.stopReason = "error";
     session.telemetry.stopAt = Date.now();
     provider.stop();
+    scheduleStopFinalize(socket, ctx, session);
     sendError(
       socket,
       "MAX_DURATION_EXCEEDED",
@@ -498,7 +561,7 @@ const handleAsrMessage = async (
     session.telemetry.stopReason = message.payload?.reason ?? "manual";
     session.telemetry.stopAt = Date.now();
     session.provider.stop();
-    clearSessionTimeout(session);
+    scheduleStopFinalize(socket, ctx, session);
     return;
   }
   if (message.type === "asr.cancel") {

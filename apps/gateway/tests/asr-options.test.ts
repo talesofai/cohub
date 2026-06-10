@@ -90,6 +90,7 @@ test("encodeFullClientRequest maps ASR tuning into the Volc request payload", ()
   assert.equal(request.end_window_size, 600);
   assert.equal(request.force_to_speech_time, 1000);
   assert.equal(request.enable_nonstream, true);
+  assert.equal(request.ssd_version, "200");
   assert.equal(corpus.boosting_table_id, "table-1");
   assert.equal(
     corpus.context,

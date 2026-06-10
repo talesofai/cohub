@@ -67,6 +67,7 @@ import {
 	isVoiceInputShortcutTrigger,
 	listenVoiceInputShortcutChange,
 	readVoiceInputShortcut,
+	resetVoiceInputShortcutKeyState,
 } from "$lib/voice-input-shortcut";
 
 type SelectedModel = {
@@ -923,12 +924,12 @@ function isVoicePushToTalkScope(event: KeyboardEvent) {
 function handleVoicePushToTalkDown(event: KeyboardEvent) {
 	if (
 		!isVoiceInputShortcutTrigger(event, voiceShortcut) ||
-		event.repeat ||
-		!isVoicePushToTalkScope(event) ||
-		!canStartVoiceInput()
+		!isVoicePushToTalkScope(event)
 	)
 		return;
 	event.preventDefault();
+	event.stopPropagation();
+	if (event.repeat || !canStartVoiceInput()) return;
 	voicePushToTalkActive = true;
 	void startVoiceInput();
 }
@@ -940,11 +941,13 @@ function handleVoicePushToTalkUp(event: KeyboardEvent) {
 	)
 		return;
 	event.preventDefault();
+	event.stopPropagation();
 	voicePushToTalkActive = false;
 	stopVoiceInput("hotkey_release");
 }
 
 function releaseVoicePushToTalk() {
+	resetVoiceInputShortcutKeyState();
 	if (!voicePushToTalkActive) return;
 	voicePushToTalkActive = false;
 	stopVoiceInput("hotkey_release");
@@ -1246,16 +1249,24 @@ onMount(() => {
 	const handleViewportResize = () => resizeTextarea();
 	window.addEventListener("cohub:composer-focus", handleFocusComposer);
 	window.addEventListener("cohub:composer-insert", handleComposerInsert);
-	window.addEventListener("keydown", handleVoicePushToTalkDown);
-	window.addEventListener("keyup", handleVoicePushToTalkUp);
+	window.addEventListener("keydown", handleVoicePushToTalkDown, {
+		capture: true,
+	});
+	window.addEventListener("keyup", handleVoicePushToTalkUp, {
+		capture: true,
+	});
 	window.addEventListener("blur", releaseVoicePushToTalk);
 	window.addEventListener("resize", handleViewportResize);
 	window.visualViewport?.addEventListener("resize", handleViewportResize);
 	return () => {
 		window.removeEventListener("cohub:composer-focus", handleFocusComposer);
 		window.removeEventListener("cohub:composer-insert", handleComposerInsert);
-		window.removeEventListener("keydown", handleVoicePushToTalkDown);
-		window.removeEventListener("keyup", handleVoicePushToTalkUp);
+		window.removeEventListener("keydown", handleVoicePushToTalkDown, {
+			capture: true,
+		});
+		window.removeEventListener("keyup", handleVoicePushToTalkUp, {
+			capture: true,
+		});
 		window.removeEventListener("blur", releaseVoicePushToTalk);
 		window.removeEventListener("resize", handleViewportResize);
 		window.visualViewport?.removeEventListener("resize", handleViewportResize);

@@ -7,6 +7,7 @@ export type VolcAsrRequestConfig = {
   endWindowSizeMs?: number | null;
   forceToSpeechTimeMs?: number | null;
   enableNonstream?: boolean;
+  ssdVersion?: string | null;
   enablePunctuation?: boolean;
   enableItn?: boolean;
   enableDdc?: boolean;
@@ -88,6 +89,7 @@ const buildRequestPayload = (config: VolcAsrRequestConfig) => {
     show_utterances: true,
     result_type: "single",
   };
+  if (request.enable_nonstream === true) request.ssd_version = config.ssdVersion ?? "200";
   if (config.endWindowSizeMs != null) request.end_window_size = config.endWindowSizeMs;
   if (config.forceToSpeechTimeMs != null) request.force_to_speech_time = config.forceToSpeechTimeMs;
   if (Object.keys(corpus).length > 0) request.corpus = corpus;

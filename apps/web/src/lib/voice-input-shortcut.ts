@@ -10,6 +10,7 @@ export type VoiceInputShortcut = {
 
 const STORAGE_KEY = "cohub:voice-input:push-to-talk-shortcut";
 const CHANGE_EVENT = "cohub:voice-input-shortcut-changed";
+let fnKeyPressed = false;
 
 const MODIFIER_KEYS = new Set([
 	"alt",
@@ -55,12 +56,24 @@ function isModifierKey(key: string) {
 	return MODIFIER_KEYS.has(key);
 }
 
+function rememberFnKeyState(event: KeyboardEvent, key: string) {
+	if (key !== "fn") return;
+	if (event.type === "keyup") {
+		fnKeyPressed = false;
+		return;
+	}
+	if (event.type === "keydown") fnKeyPressed = true;
+}
+
 function getEventFnState(event: KeyboardEvent, key: string) {
-	return key === "fn" || event.getModifierState?.("Fn") === true;
+	return (
+		key === "fn" || event.getModifierState?.("Fn") === true || fnKeyPressed
+	);
 }
 
 function getEventShortcut(event: KeyboardEvent): VoiceInputShortcut {
 	const key = normalizeKey(event.key);
+	rememberFnKeyState(event, key);
 	return {
 		key,
 		code: normalizeCode(event.code),
@@ -174,6 +187,10 @@ export function resetVoiceInputShortcut() {
 	return next;
 }
 
+export function resetVoiceInputShortcutKeyState() {
+	fnKeyPressed = false;
+}
+
 export function listenVoiceInputShortcutChange(
 	callback: (shortcut: VoiceInputShortcut) => void,
 ) {
@@ -217,6 +234,7 @@ export function isVoiceInputShortcutTrigger(
 	event: KeyboardEvent,
 	shortcut: VoiceInputShortcut,
 ) {
+	rememberFnKeyState(event, normalizeKey(event.key));
 	return keyMatchesEvent(event, shortcut) && modifiersMatch(event, shortcut);
 }
 
@@ -225,6 +243,7 @@ export function isVoiceInputShortcutRelease(
 	shortcut: VoiceInputShortcut,
 ) {
 	const key = normalizeKey(event.key);
+	rememberFnKeyState(event, key);
 	if (keyMatchesEvent(event, shortcut)) return true;
 	if (shortcut.ctrlKey && key === "ctrl") return true;
 	if (shortcut.metaKey && key === "meta") return true;
