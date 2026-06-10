@@ -526,9 +526,9 @@ export class VoiceInputClient {
           requestId: this.sessionId ?? undefined,
           payload: { reason, clientSessionId: this.sessionId },
         });
-        this.intentionalClose = true;
-        this.closeSocket();
       }
+      this.intentionalClose = true;
+      this.closeSocket();
       this.cleanupAudio();
       this.started = false;
       this.startToken += 1;
@@ -615,6 +615,7 @@ export class VoiceInputClient {
         }
       };
       socket.onmessage = (event) => {
+        if (this.socket !== socket) return;
         try {
           this.handleMessage(event);
         } catch {

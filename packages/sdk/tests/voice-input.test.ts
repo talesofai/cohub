@@ -35,17 +35,20 @@ let lastSocket: MockWebSocket | null = null;
 let lastProcessor: MockScriptProcessorNode | null = null;
 let requestedAudioConstraints: unknown = null;
 let autoEmitAsrStarted = true;
+let autoEmitAuthOk = true;
 let authFailuresRemaining = 0;
 let getUserMediaDelayMs = 0;
 let stoppedMediaTracks = 0;
+let closedSockets = 0;
 
 class MockWebSocket {
-  readonly readyState = 1;
+  readyState = 1;
   onopen: ((event: Event) => void) | null = null;
   onmessage: ((event: MessageEvent) => void) | null = null;
   onerror: ((event: Event) => void) | null = null;
   onclose: ((event: CloseEvent) => void) | null = null;
   readonly sent: SentVoiceMessage[] = [];
+  closed = false;
 
   constructor(readonly url: string) {
     lastSocket = this;
@@ -64,6 +67,7 @@ class MockWebSocket {
         });
         return;
       }
+      if (!autoEmitAuthOk) return;
       this.emit({
         type: "system.auth.ok",
         payload: { user: { uuid: "user-1" } },
@@ -74,7 +78,12 @@ class MockWebSocket {
     }
   }
 
-  close() {}
+  close() {
+    if (this.closed) return;
+    this.closed = true;
+    this.readyState = 3;
+    closedSockets += 1;
+  }
 
   emitClose(code = 1006, reason = "network closed") {
     queueMicrotask(() => {
@@ -141,9 +150,11 @@ const installVoiceInputMocks = () => {
   lastProcessor = null;
   requestedAudioConstraints = null;
   autoEmitAsrStarted = true;
+  autoEmitAuthOk = true;
   authFailuresRemaining = 0;
   getUserMediaDelayMs = 0;
   stoppedMediaTracks = 0;
+  closedSockets = 0;
 
   const originalNavigator = Object.getOwnPropertyDescriptor(
     globalThis,
@@ -409,6 +420,47 @@ test("VoiceInputClient does not request microphone when auth fails", async () =>
       lastSocket?.sent.map((message) => message.type),
       ["auth", "auth"],
     );
+  } finally {
+    restore();
+  }
+});
+
+test("VoiceInputClient closes auth socket after start timeout", async () => {
+  const restore = installVoiceInputMocks();
+  try {
+    autoEmitAuthOk = false;
+    const client = new VoiceInputClient({
+      url: "ws://localhost",
+      getAccessToken: () => "token-1",
+      WebSocketImpl: MockWebSocket,
+      preferAudioWorklet: false,
+      connectionTimeoutMs: 5,
+    });
+
+    await assert.rejects(client.start(), /Voice connection timed out/);
+    const timedOutSocket = lastSocket;
+    assert.equal(timedOutSocket?.closed, true);
+    assert.equal(closedSockets, 1);
+
+    timedOutSocket?.emit({
+      type: "system.auth.ok",
+      payload: { user: { uuid: "user-1" } },
+    });
+    await new Promise((resolve) => setTimeout(resolve, 0));
+
+    autoEmitAuthOk = true;
+    await client.start();
+    assert.notEqual(lastSocket, timedOutSocket);
+    assert.deepEqual(
+      timedOutSocket?.sent.map((message) => message.type),
+      ["auth"],
+    );
+    assert.deepEqual(
+      lastSocket?.sent.map((message) => message.type),
+      ["auth", "asr.start"],
+    );
+    client.close();
+    assert.equal(closedSockets, 2);
   } finally {
     restore();
   }
