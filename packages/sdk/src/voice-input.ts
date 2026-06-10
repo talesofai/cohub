@@ -511,13 +511,16 @@ export class VoiceInputClient {
     } catch (error) {
       const startError =
         error instanceof Error ? error : new Error(String(error));
+      const wasStoppedDuringStart = this.stopReason !== null || !this.started;
       const shouldCancelAsr = this.asrStartRequested || this.asrStarted;
-      this.rejectAsrStartWaiter(startError);
+      if (wasStoppedDuringStart) this.resolveAsrStartWaiter();
+      else this.rejectAsrStartWaiter(startError);
       if (shouldCancelAsr) {
+        const reason = this.stopReason ?? "error";
         this.send({
           type: "asr.cancel",
           requestId: this.sessionId ?? undefined,
-          payload: { reason: "error", clientSessionId: this.sessionId },
+          payload: { reason, clientSessionId: this.sessionId },
         });
         this.intentionalClose = true;
         this.closeSocket();
@@ -525,7 +528,13 @@ export class VoiceInputClient {
       this.cleanupAudio();
       this.started = false;
       this.startToken += 1;
+      this.pendingStopReason = null;
       this.scheduleIdleClose();
+      if (wasStoppedDuringStart) {
+        this.emitTelemetry(this.stopReason ?? "error");
+        this.emitDone();
+        return;
+      }
       throw startError;
     }
   }
@@ -918,15 +927,22 @@ export class VoiceInputClient {
         return data;
       }
       const hadStartWaiter = Boolean(this.asrStartWaiter);
+      const shouldFinishPendingStart =
+        hadStartWaiter && (this.stopReason !== null || !this.started);
       if (this.telemetry) this.telemetry.error = { code, message };
       if (code === "UNAUTHORIZED") {
         this.authenticated = false;
         this.rejectAuthWaiter(new Error("UNAUTHORIZED"));
       }
-      this.rejectAsrStartWaiter(new Error(message));
+      if (shouldFinishPendingStart) this.resolveAsrStartWaiter();
+      else this.rejectAsrStartWaiter(new Error(message));
       this.callbacks.onError?.(message);
       this.emitTelemetry("error");
-      if (!hadStartWaiter && !this.doneEmitted && this.hasPendingSession()) {
+      if (
+        (shouldFinishPendingStart || !hadStartWaiter) &&
+        !this.doneEmitted &&
+        this.hasPendingSession()
+      ) {
         this.cleanupAudio();
         this.started = false;
         this.pendingStopReason = null;

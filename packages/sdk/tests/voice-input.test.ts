@@ -638,6 +638,62 @@ test("VoiceInputClient stops a pending ASR start on hotkey release", async () =>
   }
 });
 
+test("VoiceInputClient emits done when pending ASR start errors after stop", async () => {
+  const restore = installVoiceInputMocks();
+  try {
+    autoEmitAsrStarted = false;
+    let doneCount = 0;
+    let errorMessage = "";
+    let summaryStopReason = "";
+    const client = new VoiceInputClient({
+      url: "ws://localhost",
+      getAccessToken: () => "token-1",
+      WebSocketImpl: MockWebSocket,
+      preferAudioWorklet: false,
+      callbacks: {
+        onError: (message) => {
+          errorMessage = message;
+        },
+        onDone: () => {
+          doneCount += 1;
+        },
+        onTelemetry: (summary) => {
+          summaryStopReason = summary.stopReason;
+        },
+      },
+    });
+
+    const startPromise = client.start();
+    await waitForSentMessage("asr.start");
+    const requestId = lastSocket?.sent.find(
+      (message) => message.type === "asr.start",
+    )?.requestId;
+    client.stop("hotkey_release");
+
+    lastSocket?.emit({
+      type: "asr.error",
+      requestId,
+      payload: {
+        code: "PROVIDER_ERROR",
+        message: "Voice input is unavailable. Try again later.",
+      },
+    });
+    await startPromise;
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    client.close();
+
+    assert.equal(errorMessage, "Voice input is unavailable. Try again later.");
+    assert.equal(doneCount, 1);
+    assert.equal(summaryStopReason, "error");
+    assert.deepEqual(
+      lastSocket?.sent.map((message) => message.type),
+      ["auth", "asr.start"],
+    );
+  } finally {
+    restore();
+  }
+});
+
 test("VoiceInputClient flushes captured audio before a pending hotkey stop", async () => {
   const restore = installVoiceInputMocks();
   try {
@@ -851,6 +907,62 @@ test("VoiceInputClient emits done when cancelled before ASR starts", async () =>
     assert.equal(
       lastSocket?.sent.some((message) => message.type === "asr.cancel"),
       false,
+    );
+  } finally {
+    restore();
+  }
+});
+
+test("VoiceInputClient emits done when pending ASR start errors after cancel", async () => {
+  const restore = installVoiceInputMocks();
+  try {
+    autoEmitAsrStarted = false;
+    let doneCount = 0;
+    let errorMessage = "";
+    let summaryStopReason = "";
+    const client = new VoiceInputClient({
+      url: "ws://localhost",
+      getAccessToken: () => "token-1",
+      WebSocketImpl: MockWebSocket,
+      preferAudioWorklet: false,
+      callbacks: {
+        onError: (message) => {
+          errorMessage = message;
+        },
+        onDone: () => {
+          doneCount += 1;
+        },
+        onTelemetry: (summary) => {
+          summaryStopReason = summary.stopReason;
+        },
+      },
+    });
+
+    const startPromise = client.start();
+    await waitForSentMessage("asr.start");
+    const requestId = lastSocket?.sent.find(
+      (message) => message.type === "asr.start",
+    )?.requestId;
+    client.cancel();
+
+    lastSocket?.emit({
+      type: "asr.error",
+      requestId,
+      payload: {
+        code: "PROVIDER_ERROR",
+        message: "Voice input is unavailable. Try again later.",
+      },
+    });
+    await startPromise;
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    client.close();
+
+    assert.equal(errorMessage, "Voice input is unavailable. Try again later.");
+    assert.equal(doneCount, 1);
+    assert.equal(summaryStopReason, "cancel");
+    assert.deepEqual(
+      lastSocket?.sent.map((message) => message.type),
+      ["auth", "asr.start", "asr.cancel"],
     );
   } finally {
     restore();
