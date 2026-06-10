@@ -133,6 +133,7 @@ type AsrConnectionContext = {
   provider?: VolcAsrProvider;
   asrOptions?: ReturnType<typeof normalizeAsrSessionOptions>;
   telemetry?: AsrTelemetryState;
+  messageQueue: Promise<void>;
   resultQueue: Promise<void>;
   committedText: string;
   partialText: string;
@@ -398,6 +399,11 @@ const startAsr = async (
       "Voice input is unavailable. Try again later.",
       requestId,
     );
+    if (ctx.provider === provider) {
+      if (ctx.telemetry && !ctx.telemetry.stopAt)
+        ctx.telemetry.stopAt = Date.now();
+      closeProvider(ctx);
+    }
   });
   provider.on("close", () => {
     markProviderClosed(ctx, provider);
@@ -499,6 +505,7 @@ const handleAsrMessage = async (
 export const handleAsrWebSocketConnection = (socket: WebSocket) => {
   const ctx: AsrConnectionContext = {
     connectionId: randomUUID(),
+    messageQueue: Promise.resolve(),
     resultQueue: Promise.resolve(),
     committedText: "",
     partialText: "",
@@ -509,70 +516,73 @@ export const handleAsrWebSocketConnection = (socket: WebSocket) => {
   });
   scheduleIdleClose(socket, ctx);
 
-  socket.on("message", (data) => {
-    void (async () => {
-      try {
-        const raw = parseRawMessage(data);
-        const authParsed = authMessageSchema.safeParse(raw);
-        if (authParsed.success) {
-          const result: RealtimeAuthResult = await authenticateRealtimeToken({
-            token: authParsed.data.payload.token,
-          });
-          if (!result.ok) {
-            sendError(
-              socket,
-              "UNAUTHORIZED",
-              result.error.message,
-              authParsed.data.requestId,
-            );
-            return;
-          }
-          ctx.userId = result.user.uuid;
-          ctx.token = authParsed.data.payload.token;
-          send(socket, {
-            type: "system.auth.ok",
-            requestId: authParsed.data.requestId,
-            payload: { user: result.user },
-          });
-          return;
-        }
-
-        if (!ctx.userId) {
-          sendError(socket, "UNAUTHORIZED", "authentication required");
-          return;
-        }
-
-        const parsed = asrMessageSchema.safeParse(raw);
-        if (!parsed.success) {
-          if (ctx.telemetry) ctx.telemetry.invalidMessages += 1;
-          sendError(socket, "BAD_REQUEST", "invalid asr message");
-          return;
-        }
-        await handleAsrMessage(socket, ctx, parsed.data);
-      } catch (error) {
-        const message = error instanceof Error ? error.message : String(error);
-        markAsrError(ctx.telemetry, {
-          stage: "gateway",
-          code:
-            message === "message too large"
-              ? "MESSAGE_TOO_LARGE"
-              : "INTERNAL_ERROR",
+  const handleSocketMessage = async (data: RawData) => {
+    try {
+      const raw = parseRawMessage(data);
+      const authParsed = authMessageSchema.safeParse(raw);
+      if (authParsed.success) {
+        const result: RealtimeAuthResult = await authenticateRealtimeToken({
+          token: authParsed.data.payload.token,
         });
-        logger.warn("[ASR] message handling failed", {
-          connectionId: ctx.connectionId,
-          error: message,
+        if (!result.ok) {
+          sendError(
+            socket,
+            "UNAUTHORIZED",
+            result.error.message,
+            authParsed.data.requestId,
+          );
+          return;
+        }
+        ctx.userId = result.user.uuid;
+        ctx.token = authParsed.data.payload.token;
+        send(socket, {
+          type: "system.auth.ok",
+          requestId: authParsed.data.requestId,
+          payload: { user: result.user },
         });
-        sendError(
-          socket,
+        return;
+      }
+
+      if (!ctx.userId) {
+        sendError(socket, "UNAUTHORIZED", "authentication required");
+        return;
+      }
+
+      const parsed = asrMessageSchema.safeParse(raw);
+      if (!parsed.success) {
+        if (ctx.telemetry) ctx.telemetry.invalidMessages += 1;
+        sendError(socket, "BAD_REQUEST", "invalid asr message");
+        return;
+      }
+      await handleAsrMessage(socket, ctx, parsed.data);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      markAsrError(ctx.telemetry, {
+        stage: "gateway",
+        code:
           message === "message too large"
             ? "MESSAGE_TOO_LARGE"
             : "INTERNAL_ERROR",
-          message === "message too large"
-            ? "Voice data is too large"
-            : "Voice input is unavailable. Try again later",
-        );
-      }
-    })();
+      });
+      logger.warn("[ASR] message handling failed", {
+        connectionId: ctx.connectionId,
+        error: message,
+      });
+      sendError(
+        socket,
+        message === "message too large"
+          ? "MESSAGE_TOO_LARGE"
+          : "INTERNAL_ERROR",
+        message === "message too large"
+          ? "Voice data is too large"
+          : "Voice input is unavailable. Try again later",
+      );
+    }
+  };
+
+  socket.on("message", (data) => {
+    ctx.messageQueue = ctx.messageQueue.then(() => handleSocketMessage(data));
+    void ctx.messageQueue;
   });
 
   socket.on("close", (code) => {

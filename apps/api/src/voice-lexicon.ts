@@ -115,6 +115,25 @@ function parseInput(input: VoiceLexiconInput) {
   };
 }
 
+function parsePatchInput(input: VoiceLexiconInput) {
+  const term = normalizeVoiceLexiconTerm(input.term);
+  if (!term) {
+    throw new VoiceLexiconValidationError(
+      `term must be 2-${MAX_TERM_LENGTH} characters`,
+    );
+  }
+  return {
+    term,
+    termKey: getVoiceLexiconTermKey(term),
+    ...(input.source !== undefined
+      ? { source: normalizeSource(input.source) }
+      : {}),
+    ...(input.originalText !== undefined
+      ? { originalText: normalizeOriginalText(input.originalText) }
+      : {}),
+  };
+}
+
 function getUniqueViolationConstraint(error: unknown) {
   const record = error as { code?: string; constraint_name?: string; constraint?: string };
   if (record.code !== "23505") return null;
@@ -191,7 +210,7 @@ export async function updateUserVoiceLexiconEntry(
   entryId: string,
   input: VoiceLexiconInput,
 ) {
-  const parsed = parseInput(input);
+  const parsed = parsePatchInput(input);
   const now = new Date();
   try {
     const [row] = await db
@@ -199,8 +218,10 @@ export async function updateUserVoiceLexiconEntry(
       .set({
         term: parsed.term,
         termKey: parsed.termKey,
-        source: parsed.source,
-        originalText: parsed.originalText,
+        ...(parsed.source !== undefined ? { source: parsed.source } : {}),
+        ...(parsed.originalText !== undefined
+          ? { originalText: parsed.originalText }
+          : {}),
         updatedAt: now,
       })
       .where(and(
@@ -289,7 +310,7 @@ export async function updateSpaceVoiceLexiconEntry(
   entryId: string,
   input: VoiceLexiconInput,
 ) {
-  const parsed = parseInput(input);
+  const parsed = parsePatchInput(input);
   const now = new Date();
   try {
     const [row] = await db
@@ -297,8 +318,10 @@ export async function updateSpaceVoiceLexiconEntry(
       .set({
         term: parsed.term,
         termKey: parsed.termKey,
-        source: parsed.source,
-        originalText: parsed.originalText,
+        ...(parsed.source !== undefined ? { source: parsed.source } : {}),
+        ...(parsed.originalText !== undefined
+          ? { originalText: parsed.originalText }
+          : {}),
         updatedAt: now,
       })
       .where(and(

@@ -12,8 +12,11 @@ type VoiceLexiconOptions = {
 
 const VOICE_LEXICON_SOURCES = ["manual", "auto", "correction"] as const;
 
-function parseVoiceLexiconSource(value: string | undefined): VoiceLexiconSource {
-  if (value === undefined) return "manual";
+function parseVoiceLexiconSource(
+  value: string | undefined,
+  fallback: VoiceLexiconSource | undefined = "manual",
+): VoiceLexiconSource | undefined {
+  if (value === undefined) return fallback;
   if ((VOICE_LEXICON_SOURCES as readonly string[]).includes(value)) {
     return value as VoiceLexiconSource;
   }
@@ -85,7 +88,7 @@ export function registerVoice(program: Command): void {
       try {
         const result = await client.user.updateVoiceLexiconEntry(entryId, {
           term,
-          source: parseVoiceLexiconSource(opts.source),
+          source: parseVoiceLexiconSource(opts.source, undefined),
           originalText: opts.originalText,
         });
         if (jsonRequested(opts)) return outJson(result);
@@ -167,7 +170,7 @@ export function registerSpaceVoiceLexicon(spacesCmd: Command): void {
       try {
         const result = await client.space(spaceId).voiceLexicon.update(entryId, {
           term,
-          source: parseVoiceLexiconSource(opts.source),
+          source: parseVoiceLexiconSource(opts.source, undefined),
           originalText: opts.originalText,
         });
         if (jsonRequested(opts)) return outJson(result);
