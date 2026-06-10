@@ -145,6 +145,23 @@ test("parseAsrExperimentVariants accepts safe endpoint variants", () => {
   });
 });
 
+test("parseAsrExperimentVariants clamps endpoint variant tuning", () => {
+  const variants = parseAsrExperimentVariants(
+    JSON.stringify([
+      {
+        name: "unsafe",
+        weight: 1,
+        options: { endWindowSizeMs: -1, forceToSpeechTimeMs: 50_000 },
+      },
+    ]),
+  );
+
+  assert.deepEqual(variants[0]?.options, {
+    endWindowSizeMs: 200,
+    forceToSpeechTimeMs: 10_000,
+  });
+});
+
 test("selectAsrExperimentVariant is stable for the same seed", () => {
   const variants = parseAsrExperimentVariants(
     JSON.stringify([

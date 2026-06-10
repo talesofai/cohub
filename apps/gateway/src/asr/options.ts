@@ -1,4 +1,8 @@
 import { gatewayConfig } from "../config.js";
+import {
+  clampAsrEndWindowSizeMs,
+  clampAsrForceToSpeechTimeMs,
+} from "./limits.js";
 
 export type AsrPostProcessingOptions = {
   enabled: boolean;
@@ -52,8 +56,6 @@ const MAX_HOTWORD_CHARS = 40;
 const MAX_CONTEXT_CHARS = 1200;
 const MAX_CONTEXT_MESSAGES = 12;
 
-const clamp = (value: number, min: number, max: number) => Math.min(Math.max(Math.trunc(value), min), max);
-
 const textOrNull = (value: string | null | undefined, maxLength = 120) => {
   const normalized = value?.trim();
   if (!normalized) return null;
@@ -91,8 +93,12 @@ export const normalizeAsrSessionOptions = (payload: AsrStartPayloadInput | undef
   const input = payload?.asr;
   return {
     language: textOrNull(input?.language ?? payload?.language, 24),
-    endWindowSizeMs: clamp(input?.endWindowSizeMs ?? gatewayConfig.volcAsr.endWindowSizeMs, 200, 3000),
-    forceToSpeechTimeMs: clamp(input?.forceToSpeechTimeMs ?? gatewayConfig.volcAsr.forceToSpeechTimeMs, 1, 10_000),
+    endWindowSizeMs: clampAsrEndWindowSizeMs(
+      input?.endWindowSizeMs ?? gatewayConfig.volcAsr.endWindowSizeMs,
+    ),
+    forceToSpeechTimeMs: clampAsrForceToSpeechTimeMs(
+      input?.forceToSpeechTimeMs ?? gatewayConfig.volcAsr.forceToSpeechTimeMs,
+    ),
     enableNonstream: input?.enableNonstream ?? gatewayConfig.volcAsr.enableNonstream,
     enablePunctuation: input?.enablePunctuation ?? gatewayConfig.volcAsr.enablePunctuation,
     enableItn: input?.enableItn ?? gatewayConfig.volcAsr.enableItn,

@@ -1,4 +1,8 @@
 import { createHash } from "node:crypto";
+import {
+  clampAsrEndWindowSizeMs,
+  clampAsrForceToSpeechTimeMs,
+} from "./limits.js";
 import type { AsrSessionOptions } from "./options.js";
 
 export type AsrExperimentVariant = {
@@ -44,17 +48,20 @@ const normalizeVariant = (value: unknown): AsrExperimentVariant | null => {
     return null;
   const options = rawOptions as Record<string, unknown>;
   const output: AsrExperimentVariant["options"] = {};
-  const copyNumber = (key: "endWindowSizeMs" | "forceToSpeechTimeMs") => {
+  const copyNumber = (
+    key: "endWindowSizeMs" | "forceToSpeechTimeMs",
+    clamp: (value: number) => number,
+  ) => {
     const number = Number(options[key]);
-    if (Number.isFinite(number)) output[key] = Math.trunc(number);
+    if (Number.isFinite(number)) output[key] = clamp(number);
   };
   const copyBoolean = (
     key: "enableNonstream" | "enablePunctuation" | "enableItn" | "enableDdc",
   ) => {
     if (typeof options[key] === "boolean") output[key] = options[key];
   };
-  copyNumber("endWindowSizeMs");
-  copyNumber("forceToSpeechTimeMs");
+  copyNumber("endWindowSizeMs", clampAsrEndWindowSizeMs);
+  copyNumber("forceToSpeechTimeMs", clampAsrForceToSpeechTimeMs);
   copyBoolean("enableNonstream");
   copyBoolean("enablePunctuation");
   copyBoolean("enableItn");
