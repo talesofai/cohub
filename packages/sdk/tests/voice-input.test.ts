@@ -555,3 +555,62 @@ test("VoiceInputClient treats active ASR errors as terminal", async () => {
     restore();
   }
 });
+
+test("VoiceInputClient ignores stale ASR events from previous requests", async () => {
+  const restore = installVoiceInputMocks();
+  try {
+    let doneCount = 0;
+    const finals: string[] = [];
+    const client = new VoiceInputClient({
+      url: "ws://localhost",
+      getAccessToken: () => "token-1",
+      WebSocketImpl: MockWebSocket,
+      preferAudioWorklet: false,
+      callbacks: {
+        onFinal: (text) => {
+          finals.push(text);
+        },
+        onDone: () => {
+          doneCount += 1;
+        },
+      },
+    });
+
+    await client.start();
+    const firstRequestId = lastSocket?.sent.find(
+      (message) => message.type === "asr.start",
+    )?.requestId;
+    client.stop("manual");
+
+    await client.start();
+    const startMessages =
+      lastSocket?.sent.filter((message) => message.type === "asr.start") ?? [];
+    const secondRequestId = startMessages[1]?.requestId;
+    assert.notEqual(firstRequestId, secondRequestId);
+
+    lastSocket?.emit({
+      type: "asr.final",
+      requestId: firstRequestId,
+      payload: { text: "old text" },
+    });
+    lastSocket?.emit({ type: "asr.done", requestId: firstRequestId });
+    await new Promise((resolve) => setTimeout(resolve, 0));
+
+    assert.deepEqual(finals, []);
+    assert.equal(doneCount, 0);
+
+    lastSocket?.emit({
+      type: "asr.final",
+      requestId: secondRequestId,
+      payload: { text: "new text" },
+    });
+    lastSocket?.emit({ type: "asr.done", requestId: secondRequestId });
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    client.close();
+
+    assert.deepEqual(finals, ["new text"]);
+    assert.equal(doneCount, 1);
+  } finally {
+    restore();
+  }
+});

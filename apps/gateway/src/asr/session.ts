@@ -126,18 +126,25 @@ const asrMessageSchema = z.discriminatedUnion("type", [
 
 type AsrMessage = z.infer<typeof asrMessageSchema>;
 
-type AsrConnectionContext = {
-  connectionId: string;
-  userId?: string;
-  token?: string;
-  provider?: VolcAsrProvider;
-  asrOptions?: ReturnType<typeof normalizeAsrSessionOptions>;
-  telemetry?: AsrTelemetryState;
-  messageQueue: Promise<void>;
+type NormalizedAsrSessionOptions = ReturnType<typeof normalizeAsrSessionOptions>;
+
+type AsrSessionState = {
+  requestId: string;
+  provider: VolcAsrProvider;
+  asrOptions: NormalizedAsrSessionOptions;
+  telemetry: AsrTelemetryState;
   resultQueue: Promise<void>;
   committedText: string;
   partialText: string;
   timeout?: NodeJS.Timeout;
+};
+
+type AsrConnectionContext = {
+  connectionId: string;
+  userId?: string;
+  token?: string;
+  activeSession?: AsrSessionState;
+  messageQueue: Promise<void>;
   idleTimeout?: NodeJS.Timeout;
 };
 
@@ -205,9 +212,9 @@ const getVolcConfig = () => {
   };
 };
 
-const clearSessionTimeout = (ctx: AsrConnectionContext) => {
-  if (ctx.timeout) clearTimeout(ctx.timeout);
-  ctx.timeout = undefined;
+const clearSessionTimeout = (session: AsrSessionState | undefined) => {
+  if (session?.timeout) clearTimeout(session.timeout);
+  if (session) session.timeout = undefined;
 };
 
 const clearIdleTimeout = (ctx: AsrConnectionContext) => {
@@ -217,27 +224,30 @@ const clearIdleTimeout = (ctx: AsrConnectionContext) => {
 
 const scheduleIdleClose = (socket: WebSocket, ctx: AsrConnectionContext) => {
   clearIdleTimeout(ctx);
-  if (ctx.provider) return;
+  if (ctx.activeSession) return;
   ctx.idleTimeout = setTimeout(() => {
-    if (ctx.provider || socket.readyState !== WebSocket.OPEN) return;
+    if (ctx.activeSession || socket.readyState !== WebSocket.OPEN) return;
     socket.close(1000, "asr connection idle timeout");
   }, ASR_IDLE_CONNECTION_MS);
 };
 
-const closeProvider = (ctx: AsrConnectionContext) => {
-  clearSessionTimeout(ctx);
-  const provider = ctx.provider;
-  ctx.provider = undefined;
-  provider?.close();
+const closeSession = (
+  ctx: AsrConnectionContext,
+  session = ctx.activeSession,
+) => {
+  if (!session) return;
+  clearSessionTimeout(session);
+  if (ctx.activeSession === session) ctx.activeSession = undefined;
+  session.provider.close();
 };
 
-const markProviderClosed = (
+const markSessionClosed = (
   ctx: AsrConnectionContext,
-  provider: VolcAsrProvider,
+  session: AsrSessionState,
 ) => {
-  if (ctx.provider !== provider) return;
-  clearSessionTimeout(ctx);
-  ctx.provider = undefined;
+  if (ctx.activeSession !== session) return;
+  clearSessionTimeout(session);
+  ctx.activeSession = undefined;
 };
 
 const resolveClientInfo = (
@@ -250,29 +260,27 @@ const resolveClientInfo = (
 
 const handleAsrResult = async (
   socket: WebSocket,
-  ctx: AsrConnectionContext,
+  session: AsrSessionState,
   input: {
-    requestId: string;
     text: string;
     definite: boolean;
-    options: ReturnType<typeof normalizeAsrSessionOptions>;
   },
 ) => {
-  const rewrite = await rewriteAsrText(input.text, input.options, {
+  const rewrite = await rewriteAsrText(input.text, session.asrOptions, {
     llm: input.definite,
   });
   const text = rewrite.text;
   if (!text) return;
-  recordAsrResult(ctx.telemetry, input.definite);
+  recordAsrResult(session.telemetry, input.definite);
   if (input.definite) {
-    ctx.committedText += text;
-    ctx.partialText = "";
+    session.committedText += text;
+    session.partialText = "";
     send(socket, {
       type: "asr.final",
-      requestId: input.requestId,
+      requestId: session.requestId,
       payload: {
         text,
-        fullText: ctx.committedText,
+        fullText: session.committedText,
         originalText: rewrite.originalText,
         alternatives: rewrite.alternatives,
         rewritten: rewrite.rewritten,
@@ -280,13 +288,13 @@ const handleAsrResult = async (
     });
     return;
   }
-  ctx.partialText = text;
+  session.partialText = text;
   send(socket, {
     type: "asr.partial",
-    requestId: input.requestId,
+    requestId: session.requestId,
     payload: {
       text,
-      fullText: ctx.committedText + ctx.partialText,
+      fullText: session.committedText + session.partialText,
       originalText: rewrite.originalText,
       alternatives: rewrite.alternatives,
       rewritten: rewrite.rewritten,
@@ -309,16 +317,11 @@ const startAsr = async (
     return;
   }
   clearIdleTimeout(ctx);
-  closeProvider(ctx);
-  if (ctx.telemetry && !ctx.telemetry.emitted)
-    emitAsrTelemetrySummary(
-      logger,
-      ctx.telemetry,
-      ctx.asrOptions,
-      "client_close",
-    );
-  ctx.committedText = "";
-  ctx.partialText = "";
+  if (ctx.activeSession && !ctx.activeSession.telemetry.stopReason) {
+    ctx.activeSession.telemetry.stopReason = "client_close";
+    ctx.activeSession.telemetry.stopAt = Date.now();
+  }
+  closeSession(ctx);
 
   const volcConfig = getVolcConfig();
   const requestId = message.requestId ?? randomUUID();
@@ -333,8 +336,7 @@ const startAsr = async (
   );
   const asrOptions = selection.options;
   const corpusContext = buildVolcCorpusContext(asrOptions);
-  ctx.asrOptions = asrOptions;
-  ctx.telemetry = createAsrTelemetryState({
+  const telemetry = createAsrTelemetryState({
     connectionId: ctx.connectionId,
     requestId,
     userId: ctx.userId,
@@ -363,16 +365,24 @@ const startAsr = async (
       },
     },
   });
-  ctx.provider = provider;
+  const session: AsrSessionState = {
+    requestId,
+    provider,
+    asrOptions,
+    telemetry,
+    resultQueue: Promise.resolve(),
+    committedText: "",
+    partialText: "",
+  };
+  ctx.activeSession = session;
 
   provider.on("result", (result) => {
-    ctx.resultQueue = ctx.resultQueue
+    if (ctx.activeSession !== session) return;
+    session.resultQueue = session.resultQueue
       .then(() =>
-        handleAsrResult(socket, ctx, {
-          requestId,
+        handleAsrResult(socket, session, {
           text: result.text,
           definite: result.definite,
-          options: asrOptions,
         }),
       )
       .catch((error) => {
@@ -384,7 +394,8 @@ const startAsr = async (
       });
   });
   provider.on("error", (error) => {
-    markAsrError(ctx.telemetry, {
+    if (ctx.activeSession !== session) return;
+    markAsrError(session.telemetry, {
       stage: "provider",
       code: error.message.slice(0, 80),
     });
@@ -399,35 +410,35 @@ const startAsr = async (
       "Voice input is unavailable. Try again later.",
       requestId,
     );
-    if (ctx.provider === provider) {
-      if (ctx.telemetry && !ctx.telemetry.stopAt)
-        ctx.telemetry.stopAt = Date.now();
-      closeProvider(ctx);
-    }
+    if (!session.telemetry.stopAt) session.telemetry.stopAt = Date.now();
+    closeSession(ctx, session);
   });
   provider.on("close", () => {
-    markProviderClosed(ctx, provider);
-    void ctx.resultQueue.finally(() => {
-      if (ctx.telemetry) ctx.telemetry.doneAt = Date.now();
+    markSessionClosed(ctx, session);
+    void session.resultQueue.finally(() => {
+      session.telemetry.doneAt = Date.now();
       emitAsrTelemetrySummary(
         logger,
-        ctx.telemetry,
-        ctx.asrOptions,
-        ctx.telemetry?.stopReason ?? "done",
+        session.telemetry,
+        session.asrOptions,
+        session.telemetry.stopReason ?? "done",
       );
       send(socket, { type: "asr.done", requestId });
       scheduleIdleClose(socket, ctx);
     });
   });
 
-  if (ctx.telemetry) ctx.telemetry.providerStartAt = Date.now();
+  session.telemetry.providerStartAt = Date.now();
   await provider.start();
-  if (ctx.telemetry) ctx.telemetry.providerReadyAt = Date.now();
-  ctx.timeout = setTimeout(() => {
-    if (ctx.telemetry) {
-      ctx.telemetry.stopReason = "error";
-      ctx.telemetry.stopAt = Date.now();
-    }
+  if (ctx.activeSession !== session) {
+    provider.close();
+    return;
+  }
+  session.telemetry.providerReadyAt = Date.now();
+  session.timeout = setTimeout(() => {
+    if (ctx.activeSession !== session) return;
+    session.telemetry.stopReason = "error";
+    session.telemetry.stopAt = Date.now();
     provider.stop();
     sendError(
       socket,
@@ -466,7 +477,8 @@ const handleAsrMessage = async (
     await startAsr(socket, ctx, message);
     return;
   }
-  if (!ctx.provider) {
+  const session = ctx.activeSession;
+  if (!session) {
     sendError(
       socket,
       "ASR_NOT_STARTED",
@@ -475,28 +487,25 @@ const handleAsrMessage = async (
     );
     return;
   }
+  if (message.requestId && message.requestId !== session.requestId) return;
   if (message.type === "asr.audio") {
     const audio = Buffer.from(message.payload.audio, "base64");
-    recordAsrAudio(ctx.telemetry, audio.byteLength);
-    ctx.provider.sendAudio(audio);
+    recordAsrAudio(session.telemetry, audio.byteLength);
+    session.provider.sendAudio(audio);
     return;
   }
   if (message.type === "asr.stop") {
-    if (ctx.telemetry) {
-      ctx.telemetry.stopReason = message.payload?.reason ?? "manual";
-      ctx.telemetry.stopAt = Date.now();
-    }
-    ctx.provider.stop();
-    clearSessionTimeout(ctx);
+    session.telemetry.stopReason = message.payload?.reason ?? "manual";
+    session.telemetry.stopAt = Date.now();
+    session.provider.stop();
+    clearSessionTimeout(session);
     return;
   }
   if (message.type === "asr.cancel") {
-    if (ctx.telemetry) {
-      ctx.telemetry.stopReason = message.payload?.reason ?? "cancel";
-      ctx.telemetry.stopAt = Date.now();
-    }
-    closeProvider(ctx);
-    emitAsrTelemetrySummary(logger, ctx.telemetry, ctx.asrOptions, "cancel");
+    session.telemetry.stopReason = message.payload?.reason ?? "cancel";
+    session.telemetry.stopAt = Date.now();
+    closeSession(ctx, session);
+    emitAsrTelemetrySummary(logger, session.telemetry, session.asrOptions, "cancel");
     send(socket, { type: "asr.cancelled", requestId: message.requestId });
     scheduleIdleClose(socket, ctx);
   }
@@ -506,9 +515,6 @@ export const handleAsrWebSocketConnection = (socket: WebSocket) => {
   const ctx: AsrConnectionContext = {
     connectionId: randomUUID(),
     messageQueue: Promise.resolve(),
-    resultQueue: Promise.resolve(),
-    committedText: "",
-    partialText: "",
   };
   send(socket, {
     type: "system.ready",
@@ -550,14 +556,14 @@ export const handleAsrWebSocketConnection = (socket: WebSocket) => {
 
       const parsed = asrMessageSchema.safeParse(raw);
       if (!parsed.success) {
-        if (ctx.telemetry) ctx.telemetry.invalidMessages += 1;
+        if (ctx.activeSession) ctx.activeSession.telemetry.invalidMessages += 1;
         sendError(socket, "BAD_REQUEST", "invalid asr message");
         return;
       }
       await handleAsrMessage(socket, ctx, parsed.data);
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
-      markAsrError(ctx.telemetry, {
+      markAsrError(ctx.activeSession?.telemetry, {
         stage: "gateway",
         code:
           message === "message too large"
@@ -587,22 +593,30 @@ export const handleAsrWebSocketConnection = (socket: WebSocket) => {
 
   socket.on("close", (code) => {
     clearIdleTimeout(ctx);
-    if (ctx.telemetry) {
-      ctx.telemetry.closeCode = code;
-      if (!ctx.telemetry.stopReason) ctx.telemetry.stopReason = "client_close";
+    const session = ctx.activeSession;
+    if (session) {
+      session.telemetry.closeCode = code;
+      if (!session.telemetry.stopReason)
+        session.telemetry.stopReason = "client_close";
     }
-    closeProvider(ctx);
+    closeSession(ctx, session);
     emitAsrTelemetrySummary(
       logger,
-      ctx.telemetry,
-      ctx.asrOptions,
+      session?.telemetry,
+      session?.asrOptions,
       "client_close",
     );
   });
   socket.on("error", () => {
     clearIdleTimeout(ctx);
-    markAsrError(ctx.telemetry, { stage: "gateway", code: "SOCKET_ERROR" });
-    closeProvider(ctx);
-    emitAsrTelemetrySummary(logger, ctx.telemetry, ctx.asrOptions, "error");
+    const session = ctx.activeSession;
+    markAsrError(session?.telemetry, { stage: "gateway", code: "SOCKET_ERROR" });
+    closeSession(ctx, session);
+    emitAsrTelemetrySummary(
+      logger,
+      session?.telemetry,
+      session?.asrOptions,
+      "error",
+    );
   });
 };

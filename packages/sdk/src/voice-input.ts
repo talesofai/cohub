@@ -810,14 +810,17 @@ export class VoiceInputClient {
 
   private handleMessage(event: MessageEvent) {
     const data = JSON.parse(String(event.data)) as VoiceInputEvent;
-    const transcript = buildTranscriptEvent(data);
-    const text = transcript.text;
 
     if (data.type === "system.auth.ok") {
       this.authenticated = true;
       this.resolveAuthWaiter();
       return data;
     }
+
+    if (this.isStaleAsrEvent(data)) return data;
+
+    const transcript = buildTranscriptEvent(data);
+    const text = transcript.text;
 
     if (data.type === "asr.started") {
       this.asrStartRequested = false;
@@ -877,6 +880,12 @@ export class VoiceInputClient {
       this.emitDone();
     }
     return data;
+  }
+
+  private isStaleAsrEvent(event: VoiceInputEvent) {
+    if (!event.type.startsWith("asr.")) return false;
+    if (!event.requestId) return false;
+    return event.requestId !== this.sessionId;
   }
 
   private emitDone() {

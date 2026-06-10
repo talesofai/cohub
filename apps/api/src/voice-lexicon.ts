@@ -56,11 +56,20 @@ export function getVoiceLexiconTermKey(term: string) {
   return term.toLowerCase();
 }
 
-function normalizeSource(value: unknown): VoiceLexiconSource {
-  if (typeof value !== "string") return "manual";
-  return VALID_SOURCES.has(value as VoiceLexiconSource)
-    ? value as VoiceLexiconSource
-    : "manual";
+function normalizeSource(
+  value: unknown,
+  fallback: VoiceLexiconSource | undefined = "manual",
+): VoiceLexiconSource {
+  if (value === undefined && fallback) return fallback;
+  if (
+    typeof value === "string" &&
+    VALID_SOURCES.has(value as VoiceLexiconSource)
+  ) {
+    return value as VoiceLexiconSource;
+  }
+  throw new VoiceLexiconValidationError(
+    "source must be manual, auto, or correction",
+  );
 }
 
 function normalizeOriginalText(value: unknown) {
