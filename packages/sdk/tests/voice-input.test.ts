@@ -9,6 +9,7 @@ import {
   VoiceInputAudioChunker,
   VoiceInputVad,
 } from "../src/voice-input-audio.js";
+import { CohubClient } from "../src/client.js";
 import { VoiceInputClient } from "../src/voice-input.js";
 
 type SentVoiceMessage = {
@@ -429,6 +430,54 @@ test("VoiceInputClient sends ASR tuning and context in start payload", async () 
   }
 });
 
+test("CohubClient forwards voice defaults to created input clients", async () => {
+  const restore = installVoiceInputMocks();
+  try {
+    const client = new CohubClient({
+      websocket: {
+        WebSocketImpl: MockWebSocket,
+      },
+      voice: {
+        url: "ws://localhost",
+        getAccessToken: () => "token-1",
+        WebSocketImpl: MockWebSocket,
+        preferAudioWorklet: false,
+        audioConstraints: { noiseSuppression: false },
+        vad: { enabled: false },
+        asr: {
+          endWindowSizeMs: 700,
+          hotwords: ["Cohub"],
+          contextText: "composer context",
+        },
+      },
+    });
+
+    const input = client.voice.createInputClient();
+    await input.start();
+    input.close();
+
+    assert.deepEqual(
+      requestedAudioConstraints,
+      createVoiceInputAudioConstraints({ noiseSuppression: false }),
+    );
+    const startMessage = lastSocket?.sent.find(
+      (message) => message.type === "asr.start",
+    );
+    assert.deepEqual(startMessage?.payload?.asr, {
+      endWindowSizeMs: 700,
+      hotwords: ["Cohub"],
+      contextText: "composer context",
+    });
+    assert.equal(startMessage?.payload?.client?.vadEnabled, false);
+    assert.equal(
+      startMessage?.payload?.client?.audioPipeline,
+      "script-processor",
+    );
+  } finally {
+    restore();
+  }
+});
+
 test("VoiceInputClient reports session telemetry and transcript alternatives", async () => {
   const restore = installVoiceInputMocks();
   try {
@@ -674,6 +723,58 @@ test("VoiceInputClient emits done when connection closes during pending stop", a
     client.close();
 
     assert.equal(errorMessage, "Voice connection closed. Try again.");
+    assert.equal(doneCount, 1);
+    assert.equal(summaryStopReason, "error");
+  } finally {
+    restore();
+  }
+});
+
+test("VoiceInputClient emits done when ASR errors during pending stop", async () => {
+  const restore = installVoiceInputMocks();
+  try {
+    let doneCount = 0;
+    let errorMessage = "";
+    let summaryStopReason = "";
+    const client = new VoiceInputClient({
+      url: "ws://localhost",
+      getAccessToken: () => "token-1",
+      WebSocketImpl: MockWebSocket,
+      preferAudioWorklet: false,
+      callbacks: {
+        onError: (message) => {
+          errorMessage = message;
+        },
+        onDone: () => {
+          doneCount += 1;
+        },
+        onTelemetry: (summary) => {
+          summaryStopReason = summary.stopReason;
+        },
+      },
+    });
+
+    await client.start();
+    const requestId = lastSocket?.sent.find(
+      (message) => message.type === "asr.start",
+    )?.requestId;
+    client.stop("hotkey_release");
+    await new Promise((resolve) => setTimeout(resolve, 0));
+
+    assert.equal(doneCount, 0);
+
+    lastSocket?.emit({
+      type: "asr.error",
+      requestId,
+      payload: {
+        code: "PROVIDER_ERROR",
+        message: "Voice input is unavailable. Try again later.",
+      },
+    });
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    client.close();
+
+    assert.equal(errorMessage, "Voice input is unavailable. Try again later.");
     assert.equal(doneCount, 1);
     assert.equal(summaryStopReason, "error");
   } finally {

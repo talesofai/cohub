@@ -426,6 +426,15 @@ export class VoiceInputClient {
     }
   }
 
+  private hasPendingSession() {
+    return (
+      this.started ||
+      this.asrStartRequested ||
+      this.asrStarted ||
+      this.stopReason !== null
+    );
+  }
+
   cancel(reason: VoiceInputStopReason = "cancel") {
     this.stopReason = reason;
     if (this.telemetry && !this.telemetry.stopAt)
@@ -570,12 +579,11 @@ export class VoiceInputClient {
         this.rejectAuthWaiter(new Error("Voice connection closed"));
         this.rejectAsrStartWaiter(new Error("Voice connection closed"));
         if (this.socket === socket) this.socket = null;
-        const hasPendingSession =
-          this.started ||
-          this.asrStartRequested ||
-          this.asrStarted ||
-          this.stopReason !== null;
-        if (!this.intentionalClose && !this.doneEmitted && hasPendingSession) {
+        if (
+          !this.intentionalClose &&
+          !this.doneEmitted &&
+          this.hasPendingSession()
+        ) {
           if (this.telemetry)
             this.telemetry.error = { message: "Voice connection closed" };
           this.cleanupAudio();
@@ -880,7 +888,7 @@ export class VoiceInputClient {
       this.rejectAsrStartWaiter(new Error(message));
       this.callbacks.onError?.(message);
       this.emitTelemetry("error");
-      if (!hadStartWaiter && (this.started || this.asrStarted)) {
+      if (!hadStartWaiter && !this.doneEmitted && this.hasPendingSession()) {
         this.cleanupAudio();
         this.started = false;
         this.pendingStopReason = null;
