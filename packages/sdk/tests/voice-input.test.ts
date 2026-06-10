@@ -437,6 +437,34 @@ test("VoiceInputClient stops late microphone streams after setup timeout", async
   }
 });
 
+test("VoiceInputClient stops microphone stream when audio source setup fails", async () => {
+  const restore = installVoiceInputMocks();
+  try {
+    class FailingAudioContext extends MockAudioContext {
+      createMediaStreamSource() {
+        throw new Error("source setup failed");
+      }
+    }
+    Object.defineProperty(globalThis, "AudioContext", {
+      configurable: true,
+      value: FailingAudioContext,
+    });
+    const client = new VoiceInputClient({
+      url: "ws://localhost",
+      getAccessToken: () => "token-1",
+      WebSocketImpl: MockWebSocket,
+      preferAudioWorklet: false,
+    });
+
+    await assert.rejects(client.start(), /source setup failed/);
+    client.close();
+
+    assert.equal(stoppedMediaTracks, 1);
+  } finally {
+    restore();
+  }
+});
+
 test("VoiceInputClient sends ASR tuning and context in start payload", async () => {
   const restore = installVoiceInputMocks();
   try {
@@ -689,6 +717,28 @@ test("VoiceInputClient emits done when pending ASR start errors after stop", asy
       lastSocket?.sent.map((message) => message.type),
       ["auth", "asr.start"],
     );
+  } finally {
+    restore();
+  }
+});
+
+test("VoiceInputClient rejects start when connection closes before ASR starts", async () => {
+  const restore = installVoiceInputMocks();
+  try {
+    autoEmitAsrStarted = false;
+    const client = new VoiceInputClient({
+      url: "ws://localhost",
+      getAccessToken: () => "token-1",
+      WebSocketImpl: MockWebSocket,
+      preferAudioWorklet: false,
+    });
+
+    const startPromise = client.start();
+    await waitForSentMessage("asr.start");
+    lastSocket?.emitClose();
+
+    await assert.rejects(startPromise, /Voice connection closed/);
+    client.close();
   } finally {
     restore();
   }

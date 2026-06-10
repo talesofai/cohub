@@ -511,7 +511,8 @@ export class VoiceInputClient {
     } catch (error) {
       const startError =
         error instanceof Error ? error : new Error(String(error));
-      const wasStoppedDuringStart = this.stopReason !== null || !this.started;
+      const wasStoppedDuringStart =
+        this.stopReason !== null || this.intentionalClose;
       const shouldCancelAsr = this.asrStartRequested || this.asrStarted;
       if (wasStoppedDuringStart) this.resolveAsrStartWaiter();
       else this.rejectAsrStartWaiter(startError);
@@ -724,23 +725,32 @@ export class VoiceInputClient {
     const stream = await mediaDevices.getUserMedia({
       audio: createVoiceInputAudioConstraints(this.audioConstraints),
     });
-    if (!this.isCurrentStart(startToken)) {
+    let audioContext: AudioContext | null = null;
+    let source: MediaStreamAudioSourceNode | null = null;
+    const cleanupLocalAudio = () => {
+      source?.disconnect();
       for (const track of stream.getTracks()) track.stop();
+      void audioContext?.close().catch(() => undefined);
+    };
+    if (!this.isCurrentStart(startToken)) {
+      cleanupLocalAudio();
       return;
     }
-    const audioContext = createAudioContext(AudioContextImpl);
-    await audioContext.resume().catch(() => undefined);
-    if (!this.isCurrentStart(startToken)) {
-      for (const track of stream.getTracks()) track.stop();
-      void audioContext.close().catch(() => undefined);
-      return;
-    }
-    const source = audioContext.createMediaStreamSource(stream);
-    if (!this.isCurrentStart(startToken)) {
-      source.disconnect();
-      for (const track of stream.getTracks()) track.stop();
-      void audioContext.close().catch(() => undefined);
-      return;
+    try {
+      audioContext = createAudioContext(AudioContextImpl);
+      await audioContext.resume().catch(() => undefined);
+      if (!this.isCurrentStart(startToken)) {
+        cleanupLocalAudio();
+        return;
+      }
+      source = audioContext.createMediaStreamSource(stream);
+      if (!this.isCurrentStart(startToken)) {
+        cleanupLocalAudio();
+        return;
+      }
+    } catch (error) {
+      cleanupLocalAudio();
+      throw error;
     }
     this.stream = stream;
     this.audioContext = audioContext;
@@ -928,7 +938,7 @@ export class VoiceInputClient {
       }
       const hadStartWaiter = Boolean(this.asrStartWaiter);
       const shouldFinishPendingStart =
-        hadStartWaiter && (this.stopReason !== null || !this.started);
+        hadStartWaiter && (this.stopReason !== null || this.intentionalClose);
       if (this.telemetry) this.telemetry.error = { code, message };
       if (code === "UNAUTHORIZED") {
         this.authenticated = false;
