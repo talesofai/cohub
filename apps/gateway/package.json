@@ -11,6 +11,7 @@
     "lint": "biome lint .",
     "lint:fix": "biome lint --write .",
     "asr:experiment": "tsx scripts/volc-asr-experiment.ts",
+    "asr:benchmark": "tsx scripts/volc-asr-benchmark.ts",
     "test": "tsx --test tests/*.test.ts",
     "typecheck": "tsgo -p tsconfig.json --noEmit",
     "start": "node dist/index.js"
