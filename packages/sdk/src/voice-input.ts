@@ -844,6 +844,11 @@ export class VoiceInputClient {
     if (data.type === "asr.error") {
       const message = getErrorMessage(data);
       const code = getErrorCode(data);
+      if (code === "UNAUTHORIZED" && this.authWaiter) {
+        this.authenticated = false;
+        this.rejectAuthWaiter(new Error("UNAUTHORIZED"));
+        return data;
+      }
       const hadStartWaiter = Boolean(this.asrStartWaiter);
       if (this.telemetry) this.telemetry.error = { code, message };
       if (code === "UNAUTHORIZED") {

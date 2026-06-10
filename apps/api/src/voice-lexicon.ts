@@ -182,7 +182,10 @@ export async function upsertUserVoiceLexiconEntry(
           else 'auto'
         end`,
         originalText: sql<string | null>`coalesce(excluded.original_text, ${userVoiceLexiconEntries.originalText})`,
-        usageCount: sql<number>`${userVoiceLexiconEntries.usageCount} + 1`,
+        usageCount: sql<number>`case
+          when excluded.source = 'manual' then ${userVoiceLexiconEntries.usageCount}
+          else ${userVoiceLexiconEntries.usageCount} + 1
+        end`,
         updatedAt: now,
       },
     })
@@ -274,7 +277,10 @@ export async function upsertSpaceVoiceLexiconEntry(
           else 'auto'
         end`,
         originalText: sql<string | null>`coalesce(excluded.original_text, ${spaceVoiceLexiconEntries.originalText})`,
-        usageCount: sql<number>`${spaceVoiceLexiconEntries.usageCount} + 1`,
+        usageCount: sql<number>`case
+          when excluded.source = 'manual' then ${spaceVoiceLexiconEntries.usageCount}
+          else ${spaceVoiceLexiconEntries.usageCount} + 1
+        end`,
         updatedAt: now,
       },
     })

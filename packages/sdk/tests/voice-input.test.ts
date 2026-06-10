@@ -34,6 +34,7 @@ let lastSocket: MockWebSocket | null = null;
 let lastProcessor: MockScriptProcessorNode | null = null;
 let requestedAudioConstraints: unknown = null;
 let autoEmitAsrStarted = true;
+let authFailuresRemaining = 0;
 
 class MockWebSocket {
   readonly readyState = 1;
@@ -52,6 +53,14 @@ class MockWebSocket {
     const message = JSON.parse(data) as SentVoiceMessage;
     this.sent.push(message);
     if (message.type === "auth") {
+      if (authFailuresRemaining > 0) {
+        authFailuresRemaining -= 1;
+        this.emit({
+          type: "asr.error",
+          payload: { code: "UNAUTHORIZED", message: "unauthorized" },
+        });
+        return;
+      }
       this.emit({
         type: "system.auth.ok",
         payload: { user: { uuid: "user-1" } },
@@ -123,6 +132,7 @@ const installVoiceInputMocks = () => {
   lastProcessor = null;
   requestedAudioConstraints = null;
   autoEmitAsrStarted = true;
+  authFailuresRemaining = 0;
 
   const originalNavigator = Object.getOwnPropertyDescriptor(
     globalThis,
@@ -310,6 +320,49 @@ test("VoiceInputClient sends captured audio over the ASR websocket", async () =>
     );
     assert.equal(typeof audioMessage?.payload?.audio, "string");
     assert.ok((audioMessage?.payload?.audio.length ?? 0) > 0);
+  } finally {
+    restore();
+  }
+});
+
+test("VoiceInputClient retries auth without ending the voice session", async () => {
+  const restore = installVoiceInputMocks();
+  try {
+    authFailuresRemaining = 1;
+    const forceRefreshRequests: boolean[] = [];
+    let doneCount = 0;
+    let errorMessage = "";
+    const client = new VoiceInputClient({
+      url: "ws://localhost",
+      getAccessToken: (options) => {
+        const forceRefresh = Boolean(options?.forceRefresh);
+        forceRefreshRequests.push(forceRefresh);
+        return forceRefresh ? "fresh-token" : "stale-token";
+      },
+      WebSocketImpl: MockWebSocket,
+      preferAudioWorklet: false,
+      callbacks: {
+        onDone: () => {
+          doneCount += 1;
+        },
+        onError: (message) => {
+          errorMessage = message;
+        },
+      },
+    });
+
+    await client.start();
+    client.close();
+
+    assert.deepEqual(forceRefreshRequests, [false, true]);
+    assert.deepEqual(
+      lastSocket?.sent.map((message) => message.type),
+      ["auth", "auth", "asr.start"],
+    );
+    assert.equal(lastSocket?.sent[0]?.payload?.token, "stale-token");
+    assert.equal(lastSocket?.sent[1]?.payload?.token, "fresh-token");
+    assert.equal(doneCount, 0);
+    assert.equal(errorMessage, "");
   } finally {
     restore();
   }
