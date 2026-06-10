@@ -876,7 +876,7 @@ export class VoiceInputClient {
       this.recordFinal(text);
       this.callbacks.onFinal?.(text, transcript);
     }
-    if (data.type === "asr.done") {
+    if (data.type === "asr.done" || data.type === "asr.cancelled") {
       this.asrStartRequested = false;
       this.asrStarted = false;
       this.started = false;
