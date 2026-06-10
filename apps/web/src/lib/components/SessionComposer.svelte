@@ -184,6 +184,7 @@ let voiceLexiconEntries = $state<VoiceInputLexiconEntry[]>([]);
 let voiceLexiconLoadToken = 0;
 let voiceLexiconSyncedSpaceId: string | null | undefined;
 let voiceCorrectionLearnTimer: number | null = null;
+let voiceContinuousRestartTimer: number | null = null;
 let voiceShortcut = $state(readVoiceInputShortcut());
 const voiceShortcutLabel = $derived(formatVoiceInputShortcut(voiceShortcut));
 let lastVoiceInsertedSegment: VoiceInsertedSegment | null = null;
@@ -654,6 +655,7 @@ function toggleVoiceContinuousMode() {
 		voiceContinuousUndoSnapshot = value;
 		return;
 	}
+	clearContinuousVoiceInputRestart();
 	voiceContinuousUndoSnapshot = null;
 }
 
@@ -747,7 +749,14 @@ function canStartVoiceInput() {
 	);
 }
 
+function clearContinuousVoiceInputRestart() {
+	if (voiceContinuousRestartTimer == null) return;
+	window.clearTimeout(voiceContinuousRestartTimer);
+	voiceContinuousRestartTimer = null;
+}
+
 function scheduleContinuousVoiceInput(reason: typeof voiceStopReason) {
+	clearContinuousVoiceInputRestart();
 	if (
 		!voiceContinuousMode ||
 		reason !== "vad_endpoint" ||
@@ -758,7 +767,8 @@ function scheduleContinuousVoiceInput(reason: typeof voiceStopReason) {
 		showAbort
 	)
 		return;
-	window.setTimeout(() => {
+	voiceContinuousRestartTimer = window.setTimeout(() => {
+		voiceContinuousRestartTimer = null;
 		if (
 			voiceClient ||
 			isVoiceStarting ||
@@ -792,6 +802,7 @@ function finishVoiceInputSession(sessionId: number, client: VoiceInputClient) {
 
 async function startVoiceInput() {
 	if (!canStartVoiceInput()) return;
+	clearContinuousVoiceInputRestart();
 	refreshVoiceLexicon();
 	rememberVoiceUndoSnapshot();
 	resetVoiceCandidates();
@@ -1283,6 +1294,7 @@ onMount(() => {
 		spaceMentionLocalController?.abort();
 		spaceMentionRemoteController?.abort();
 		pastedSpaceResolveController?.abort();
+		clearContinuousVoiceInputRestart();
 		voiceClient?.close();
 		if (voiceCorrectionLearnTimer != null)
 			window.clearTimeout(voiceCorrectionLearnTimer);
