@@ -4,9 +4,26 @@ import tailwindcss from "@tailwindcss/vite";
 import { defineConfig } from "vite";
 import { VitePWA } from "vite-plugin-pwa";
 
-interface RolldownChecks {
-	eval?: boolean;
-	pluginTimings?: boolean;
+const MIN_CHUNK_SIZE = 32 * 1024;
+
+function getShikiPackageChunkName(id: string) {
+	const normalized = id.replaceAll("\\", "/");
+	const languageMatch = normalized.match(
+		/@shikijs\/langs\/dist\/([^/?]+)\.mjs/,
+	);
+	if (languageMatch?.[1]) return `shiki-lang-${languageMatch[1]}`;
+
+	const themeMatch = normalized.match(/@shikijs\/themes\/dist\/([^/?]+)\.mjs/);
+	if (themeMatch?.[1]) return `shiki-theme-${themeMatch[1]}`;
+
+	return null;
+}
+
+function manualChunkName(id: string) {
+	const normalized = id.replaceAll("\\", "/");
+	const shikiChunkName = getShikiPackageChunkName(normalized);
+	if (shikiChunkName) return shikiChunkName;
+	return undefined;
 }
 
 const protocolDir = fileURLToPath(
@@ -103,11 +120,12 @@ export default defineConfig({
 	},
 	build: {
 		chunkSizeWarningLimit: 1200,
-		rolldownOptions: {
-			checks: {
-				eval: false,
-				pluginTimings: false,
-			} satisfies RolldownChecks,
+		rollupOptions: {
+			output: {
+				experimentalMinChunkSize: MIN_CHUNK_SIZE,
+				manualChunks: manualChunkName,
+				onlyExplicitManualChunks: true,
+			},
 		},
 	},
 	plugins: [
@@ -139,8 +157,27 @@ export default defineConfig({
 				],
 			},
 			workbox: {
-				globPatterns: ["**/*.{js,css,html,ico,png,svg,woff2}"],
+				globPatterns: [
+					"**/*.{css,html,ico,png,svg,woff2}",
+					"_app/immutable/entry/*.js",
+					"_app/immutable/nodes/*.js",
+					"_app/version.json",
+				],
 				navigateFallback: undefined,
+				runtimeCaching: [
+					{
+						urlPattern: ({ url }) =>
+							url.pathname.startsWith("/_app/immutable/"),
+						handler: "CacheFirst",
+						options: {
+							cacheName: "immutable-assets",
+							expiration: {
+								maxEntries: 240,
+								maxAgeSeconds: 60 * 60 * 24 * 30,
+							},
+						},
+					},
+				],
 			},
 		}),
 	],

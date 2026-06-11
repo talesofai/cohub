@@ -2,11 +2,11 @@ import DOMPurify from "isomorphic-dompurify";
 import { marked, type Token, type Tokens } from "marked";
 import remend from "remend";
 import {
-	type BundledLanguage,
-	type BundledTheme,
-	createHighlighter,
-	type HighlighterGeneric,
-} from "shiki";
+	createHighlighterCore,
+	type HighlighterCore,
+	type LanguageRegistration,
+} from "shiki/core";
+import { createJavaScriptRegexEngine } from "shiki/engine/javascript";
 
 const MARKDOWN_RENDER_CACHE_LIMIT = 256;
 const markdownRenderCache = new Map<string, Promise<string>>();
@@ -30,51 +30,151 @@ function cacheMarkdownRender(key: string, render: () => Promise<string>) {
 }
 
 // Shiki highlighter — singleton, lazily initialized
-let highlighterPromise: Promise<
-	HighlighterGeneric<BundledLanguage, BundledTheme>
-> | null = null;
+let highlighterPromise: Promise<HighlighterCore> | null = null;
+type ShikiLanguageLoader = () => Promise<{ default: LanguageRegistration[] }>;
+
+const shikiLanguageLoaders = {
+	bash: () => import("@shikijs/langs/bash"),
+	c: () => import("@shikijs/langs/c"),
+	cpp: () => import("@shikijs/langs/cpp"),
+	css: () => import("@shikijs/langs/css"),
+	diff: () => import("@shikijs/langs/diff"),
+	dockerfile: () => import("@shikijs/langs/dockerfile"),
+	go: () => import("@shikijs/langs/go"),
+	graphql: () => import("@shikijs/langs/graphql"),
+	html: () => import("@shikijs/langs/html"),
+	ini: () => import("@shikijs/langs/ini"),
+	java: () => import("@shikijs/langs/java"),
+	javascript: () => import("@shikijs/langs/javascript"),
+	json: () => import("@shikijs/langs/json"),
+	jsx: () => import("@shikijs/langs/jsx"),
+	markdown: () => import("@shikijs/langs/markdown"),
+	mermaid: () => import("@shikijs/langs/mermaid"),
+	protobuf: () => import("@shikijs/langs/protobuf"),
+	python: () => import("@shikijs/langs/python"),
+	rust: () => import("@shikijs/langs/rust"),
+	shellscript: () => import("@shikijs/langs/shellscript"),
+	sql: () => import("@shikijs/langs/sql"),
+	toml: () => import("@shikijs/langs/toml"),
+	tsx: () => import("@shikijs/langs/tsx"),
+	typescript: () => import("@shikijs/langs/typescript"),
+	xml: () => import("@shikijs/langs/xml"),
+	yaml: () => import("@shikijs/langs/yaml"),
+} satisfies Record<string, ShikiLanguageLoader>;
+
+type SupportedShikiLanguage = keyof typeof shikiLanguageLoaders;
+
+const shikiLanguageAliases = new Map<string, SupportedShikiLanguage>([
+	["bash", "bash"],
+	["c++", "cpp"],
+	["cpp", "cpp"],
+	["cxx", "cpp"],
+	["c", "c"],
+	["css", "css"],
+	["diff", "diff"],
+	["docker", "dockerfile"],
+	["dockerfile", "dockerfile"],
+	["go", "go"],
+	["golang", "go"],
+	["graphql", "graphql"],
+	["gql", "graphql"],
+	["html", "html"],
+	["ini", "ini"],
+	["java", "java"],
+	["javascript", "javascript"],
+	["js", "javascript"],
+	["json", "json"],
+	["jsx", "jsx"],
+	["markdown", "markdown"],
+	["md", "markdown"],
+	["mdx", "markdown"],
+	["mermaid", "mermaid"],
+	["proto", "protobuf"],
+	["protobuf", "protobuf"],
+	["py", "python"],
+	["python", "python"],
+	["rs", "rust"],
+	["rust", "rust"],
+	["sh", "shellscript"],
+	["shell", "shellscript"],
+	["shellscript", "shellscript"],
+	["sql", "sql"],
+	["toml", "toml"],
+	["tsx", "tsx"],
+	["ts", "typescript"],
+	["typescript", "typescript"],
+	["xml", "xml"],
+	["yaml", "yaml"],
+	["yml", "yaml"],
+]);
+
+const loadedShikiLanguages = new Set<SupportedShikiLanguage>();
+
+function normalizeShikiLanguage(rawLang: string) {
+	return shikiLanguageAliases.get(rawLang.toLowerCase()) ?? null;
+}
+
+function collectCodeTokenLanguages(
+	tokens: Token[],
+	languages = new Set<SupportedShikiLanguage>(),
+) {
+	for (const token of tokens) {
+		if (token.type === "code" && "lang" in token && token.lang) {
+			const rawLang = token.lang.split(" ")[0];
+			if (rawLang) {
+				const lang = normalizeShikiLanguage(rawLang);
+				if (lang) languages.add(lang);
+			}
+		}
+
+		if ("tokens" in token && Array.isArray(token.tokens)) {
+			collectCodeTokenLanguages(token.tokens, languages);
+		}
+	}
+
+	return languages;
+}
+
+async function createMarkdownHighlighter() {
+	return createHighlighterCore({
+		engine: createJavaScriptRegexEngine(),
+		themes: [
+			import("@shikijs/themes/github-light"),
+			import("@shikijs/themes/github-dark"),
+			import("@shikijs/themes/solarized-light"),
+			import("@shikijs/themes/solarized-dark"),
+		],
+		langs: [],
+	});
+}
 
 function getHighlighter() {
 	if (!highlighterPromise) {
-		highlighterPromise = createHighlighter({
-			themes: [
-				"github-light",
-				"github-dark",
-				"solarized-light",
-				"solarized-dark",
-			],
-			langs: [
-				"typescript",
-				"javascript",
-				"python",
-				"bash",
-				"shell",
-				"json",
-				"yaml",
-				"yml",
-				"html",
-				"css",
-				"sql",
-				"rust",
-				"go",
-				"java",
-				"c",
-				"cpp",
-				"tsx",
-				"jsx",
-				"toml",
-				"ini",
-				"diff",
-				"markdown",
-				"dockerfile",
-				"mermaid",
-				"xml",
-				"graphql",
-				"protobuf",
-			],
-		});
+		highlighterPromise = createMarkdownHighlighter();
 	}
 	return highlighterPromise;
+}
+
+async function loadShikiLanguages(
+	highlighter: HighlighterCore,
+	languages: Set<SupportedShikiLanguage>,
+) {
+	const pending = [...languages].filter(
+		(lang) => !loadedShikiLanguages.has(lang),
+	);
+	if (pending.length === 0) return;
+
+	const modules = await Promise.all(
+		pending.map(async (lang) => ({
+			lang,
+			registration: (await shikiLanguageLoaders[lang]()).default,
+		})),
+	);
+
+	await highlighter.loadLanguage(
+		...modules.map(({ registration }) => registration),
+	);
+	for (const { lang } of modules) loadedShikiLanguages.add(lang);
 }
 
 /**
@@ -86,21 +186,18 @@ function getHighlighter() {
  */
 async function highlightCodeTokens(tokens: Token[]) {
 	const highlighter = await getHighlighter();
+	await loadShikiLanguages(highlighter, collectCodeTokenLanguages(tokens));
 
 	for (let i = 0; i < tokens.length; i++) {
 		const token = tokens[i];
 		if (token.type === "code" && "lang" in token && token.lang) {
 			const rawLang = token.lang.split(" ")[0]; // handle e.g. "ts {1-3}"
-			const lang = rawLang.toLowerCase();
+			const lang = rawLang ? normalizeShikiLanguage(rawLang) : null;
+			if (!lang) continue;
 
 			try {
-				const supportedLangs = highlighter.getLoadedLanguages();
-				const useLang = supportedLangs.includes(lang as BundledLanguage)
-					? lang
-					: "plaintext";
-
 				const highlighted = highlighter.codeToHtml(token.text, {
-					lang: useLang as BundledLanguage,
+					lang,
 					themes: {
 						light: "github-light",
 						dark: "github-dark",

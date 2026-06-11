@@ -3,7 +3,6 @@ import type { ContentBlock } from "@cohub/protocol/core";
 import { onDestroy, untrack } from "svelte";
 import MarkdownFrontmatter from "$lib/components/MarkdownFrontmatter.svelte";
 import MarkdownSurface from "$lib/components/MarkdownSurface.svelte";
-import { renderMarkdown } from "$lib/markdown";
 import { parseMarkdownFrontmatter } from "$lib/markdown-frontmatter";
 import { StreamingMarkdownController } from "$lib/streaming-markdown-controller";
 
@@ -66,7 +65,8 @@ function destroyController() {
 function renderFullMarkdown(markdownSource: string) {
 	const seq = ++renderSeq;
 	untrack(() => onStart?.());
-	void renderMarkdown(markdownSource)
+	void import("$lib/markdown")
+		.then(({ renderMarkdown }) => renderMarkdown(markdownSource))
 		.then((html) => {
 			if (seq !== renderSeq) return;
 			renderedHtml = html;

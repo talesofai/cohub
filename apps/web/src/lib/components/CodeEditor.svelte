@@ -6,14 +6,6 @@ import {
 	historyKeymap,
 	indentWithTab,
 } from "@codemirror/commands";
-import { css } from "@codemirror/lang-css";
-import { html } from "@codemirror/lang-html";
-import { javascript } from "@codemirror/lang-javascript";
-import { json } from "@codemirror/lang-json";
-import { markdown } from "@codemirror/lang-markdown";
-import { python } from "@codemirror/lang-python";
-import { xml } from "@codemirror/lang-xml";
-import { yaml } from "@codemirror/lang-yaml";
 import {
 	bracketMatching,
 	foldGutter,
@@ -63,33 +55,69 @@ let view: EditorView | undefined = $state();
 const langConf = new Compartment();
 const themeConf = new Compartment();
 const readOnlyConf = new Compartment();
+let languageLoadId = 0;
 
-function getLanguageExtension(lang: string) {
+async function getLanguageExtension(lang: string): Promise<Extension> {
 	const l = lang.toLowerCase();
-	const map: Record<string, () => import("@codemirror/state").Extension> = {
-		js: () => javascript({ typescript: false, jsx: false }),
-		javascript: () => javascript({ typescript: false, jsx: false }),
-		ts: () => javascript({ typescript: true, jsx: false }),
-		typescript: () => javascript({ typescript: true, jsx: false }),
-		jsx: () => javascript({ typescript: false, jsx: true }),
-		tsx: () => javascript({ typescript: true, jsx: true }),
-		py: () => python(),
-		python: () => python(),
-		json: () => json(),
-		jsonc: () => json(),
-		html: () => html(),
-		htm: () => html(),
-		svelte: () => html(),
-		css: () => css(),
-		scss: () => css(),
-		md: () => markdown(),
-		markdown: () => markdown(),
-		yaml: () => yaml(),
-		yml: () => yaml(),
-		xml: () => xml(),
-		svg: () => xml(),
+	const map: Record<string, () => Promise<Extension>> = {
+		js: async () =>
+			(await import("@codemirror/lang-javascript")).javascript({
+				typescript: false,
+				jsx: false,
+			}),
+		javascript: async () =>
+			(await import("@codemirror/lang-javascript")).javascript({
+				typescript: false,
+				jsx: false,
+			}),
+		ts: async () =>
+			(await import("@codemirror/lang-javascript")).javascript({
+				typescript: true,
+				jsx: false,
+			}),
+		typescript: async () =>
+			(await import("@codemirror/lang-javascript")).javascript({
+				typescript: true,
+				jsx: false,
+			}),
+		jsx: async () =>
+			(await import("@codemirror/lang-javascript")).javascript({
+				typescript: false,
+				jsx: true,
+			}),
+		tsx: async () =>
+			(await import("@codemirror/lang-javascript")).javascript({
+				typescript: true,
+				jsx: true,
+			}),
+		py: async () => (await import("@codemirror/lang-python")).python(),
+		python: async () => (await import("@codemirror/lang-python")).python(),
+		json: async () => (await import("@codemirror/lang-json")).json(),
+		jsonc: async () => (await import("@codemirror/lang-json")).json(),
+		html: async () => (await import("@codemirror/lang-html")).html(),
+		htm: async () => (await import("@codemirror/lang-html")).html(),
+		svelte: async () => (await import("@codemirror/lang-html")).html(),
+		css: async () => (await import("@codemirror/lang-css")).css(),
+		scss: async () => (await import("@codemirror/lang-css")).css(),
+		md: async () => (await import("@codemirror/lang-markdown")).markdown(),
+		markdown: async () =>
+			(await import("@codemirror/lang-markdown")).markdown(),
+		yaml: async () => (await import("@codemirror/lang-yaml")).yaml(),
+		yml: async () => (await import("@codemirror/lang-yaml")).yaml(),
+		xml: async () => (await import("@codemirror/lang-xml")).xml(),
+		svg: async () => (await import("@codemirror/lang-xml")).xml(),
 	};
-	return map[l]?.() ?? [];
+	return (await map[l]?.()) ?? [];
+}
+
+async function reconfigureLanguage(lang: string) {
+	if (!view) return;
+	const loadId = ++languageLoadId;
+	const extension = await getLanguageExtension(lang);
+	if (!view || loadId !== languageLoadId) return;
+	view.dispatch({
+		effects: langConf.reconfigure(extension),
+	});
 }
 
 function isMobile(): boolean {
@@ -284,9 +312,7 @@ let currentTheme = $state(resolveTheme());
 
 $effect(() => {
 	if (!view) return;
-	view.dispatch({
-		effects: langConf.reconfigure(getLanguageExtension(currentLanguage)),
-	});
+	void reconfigureLanguage(currentLanguage);
 });
 
 $effect(() => {
@@ -356,7 +382,7 @@ onMount(() => {
 					...foldKeymap,
 					indentWithTab,
 				]),
-				langConf.of(getLanguageExtension(language)),
+				langConf.of([]),
 				themeConf.of(getThemeExtension(theme)),
 				readOnlyConf.of([
 					EditorView.editable.of(!readonly),
@@ -374,6 +400,7 @@ onMount(() => {
 		}),
 		parent: container,
 	});
+	void reconfigureLanguage(language);
 
 	const themeObserver = new MutationObserver(() => reconfigureTheme());
 	themeObserver.observe(document.documentElement, {

@@ -15,6 +15,9 @@ const config = {
 	},
 	kit: {
 		adapter: adapter(),
+		output: {
+			bundleStrategy: "split",
+		},
 		alias: {
 			// protocol subpaths — must come before bare package alias to avoid prefix matching
 			"@cohub/protocol/core": `${protocolDir}/core/index.ts`,

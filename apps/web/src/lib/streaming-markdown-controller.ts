@@ -1,5 +1,3 @@
-import { renderStreamingMarkdownBlocks } from "$lib/markdown";
-
 type StreamingMarkdownSnapshot = {
 	html: string;
 	source: string;
@@ -164,6 +162,7 @@ export class StreamingMarkdownController {
 		}
 
 		try {
+			const { renderStreamingMarkdownBlocks } = await import("$lib/markdown");
 			const html = await renderStreamingMarkdownBlocks(source);
 			if (
 				this.#disposed ||

@@ -95,15 +95,12 @@ import { ensureCovasExtension, isCovasFile } from "$lib/canvas/canvas-file";
 import type { CovasDocument } from "$lib/canvas/canvas-schema";
 import { pollCheckpointJob } from "$lib/checkpoints";
 import ChatTimeline from "$lib/components/ChatTimeline.svelte";
-import CodeEditor from "$lib/components/CodeEditor.svelte";
-import CanvasPanel from "$lib/components/canvas/CanvasPanel.svelte";
 import Dialog from "$lib/components/Dialog.svelte";
 import FileUploadPane from "$lib/components/FileUploadPane.svelte";
 import MobileRightDrawer from "$lib/components/MobileRightDrawer.svelte";
 import ModelSelector from "$lib/components/ModelSelector.svelte";
 import PageHeader from "$lib/components/PageHeader.svelte";
 import PortPreview from "$lib/components/PortPreview.svelte";
-import RenderedFilePreview from "$lib/components/RenderedFilePreview.svelte";
 import ResourceLabelPicker from "$lib/components/ResourceLabelPicker.svelte";
 import SessionComposer from "$lib/components/SessionComposer.svelte";
 import SessionTaskTray, {
@@ -8329,24 +8326,39 @@ $effect(() => {
             </div>
             <div class="flex-1 min-h-0">
               {#if fileEdit}
-                <CodeEditor
-                  value={openFileDraft}
-                  language={openFileExt}
-                  onInput={(v) => openFileDraft = v}
-                  readonly={!canEditFiles}
-                />
+                {#await import("$lib/components/CodeEditor.svelte") then editorModule}
+                  {@const LazyCodeEditor = editorModule.default}
+                  <LazyCodeEditor
+                    value={openFileDraft}
+                    language={openFileExt}
+                    onInput={(v) => openFileDraft = v}
+                    readonly={!canEditFiles}
+                  />
+                {:catch}
+                  <div class="flex h-full items-center justify-center text-[12px] text-error-soft">Editor failed to load.</div>
+                {/await}
               {:else if openFileHasRenderedPreview}
-                <RenderedFilePreview
-                  name={openFile.name}
-                  source={openFileDraft}
-                  type={openFileIsMarkdown ? "markdown" : "html"}
-                />
+                {#await import("$lib/components/RenderedFilePreview.svelte") then previewModule}
+                  {@const LazyRenderedFilePreview = previewModule.default}
+                  <LazyRenderedFilePreview
+                    name={openFile.name}
+                    source={openFileDraft}
+                    type={openFileIsMarkdown ? "markdown" : "html"}
+                  />
+                {:catch}
+                  <div class="flex h-full items-center justify-center text-[12px] text-error-soft">Preview failed to load.</div>
+                {/await}
               {:else}
-                <CodeEditor
-                  value={openFileDraft}
-                  language={openFileExt}
-                  readonly={true}
-                />
+                {#await import("$lib/components/CodeEditor.svelte") then editorModule}
+                  {@const LazyCodeEditor = editorModule.default}
+                  <LazyCodeEditor
+                    value={openFileDraft}
+                    language={openFileExt}
+                    readonly={true}
+                  />
+                {:catch}
+                  <div class="flex h-full items-center justify-center text-[12px] text-error-soft">Editor failed to load.</div>
+                {/await}
               {/if}
             </div>
           {:else if openFileIsImage && openFileDataUrl}
@@ -9062,15 +9074,30 @@ $effect(() => {
           </div>
           <div class="flex-1 min-h-0">
             {#if inlineFileEdit}
-              <CodeEditor value={inlineFile.draft} language={inlineFileExt} onInput={(v) => { if (inlineFile) inlineFile.draft = v; }} readonly={!canEditFiles || activeFsReadonly} />
+              {#await import("$lib/components/CodeEditor.svelte") then editorModule}
+                {@const LazyCodeEditor = editorModule.default}
+                <LazyCodeEditor value={inlineFile.draft} language={inlineFileExt} onInput={(v) => { if (inlineFile) inlineFile.draft = v; }} readonly={!canEditFiles || activeFsReadonly} />
+              {:catch}
+                <div class="flex h-full items-center justify-center text-[12px] text-error-soft">Editor failed to load.</div>
+              {/await}
             {:else if inlineFileHasRenderedPreview}
-              <RenderedFilePreview
-                name={inlineFile.response.name}
-                source={inlineFile.draft}
-                type={inlineFileIsMarkdown ? "markdown" : "html"}
-              />
+              {#await import("$lib/components/RenderedFilePreview.svelte") then previewModule}
+                {@const LazyRenderedFilePreview = previewModule.default}
+                <LazyRenderedFilePreview
+                  name={inlineFile.response.name}
+                  source={inlineFile.draft}
+                  type={inlineFileIsMarkdown ? "markdown" : "html"}
+                />
+              {:catch}
+                <div class="flex h-full items-center justify-center text-[12px] text-error-soft">Preview failed to load.</div>
+              {/await}
             {:else}
-              <CodeEditor value={inlineFile.draft} language={inlineFileExt} readonly={true} />
+              {#await import("$lib/components/CodeEditor.svelte") then editorModule}
+                {@const LazyCodeEditor = editorModule.default}
+                <LazyCodeEditor value={inlineFile.draft} language={inlineFileExt} readonly={true} />
+              {:catch}
+                <div class="flex h-full items-center justify-center text-[12px] text-error-soft">Editor failed to load.</div>
+              {/await}
             {/if}
           </div>
         {:else if inlineFileIsImage && inlineFileDataUrl}
@@ -9223,24 +9250,39 @@ $effect(() => {
             </div>
             <div class="flex-1 min-h-0">
               {#if inlineFileEdit}
-                <CodeEditor
-                  value={inlineFile.draft}
-                  language={inlineFileExt}
-                  onInput={(v) => { if (inlineFile) inlineFile.draft = v; }}
-                  readonly={!canEditFiles}
-                />
+                {#await import("$lib/components/CodeEditor.svelte") then editorModule}
+                  {@const LazyCodeEditor = editorModule.default}
+                  <LazyCodeEditor
+                    value={inlineFile.draft}
+                    language={inlineFileExt}
+                    onInput={(v) => { if (inlineFile) inlineFile.draft = v; }}
+                    readonly={!canEditFiles}
+                  />
+                {:catch}
+                  <div class="flex h-full items-center justify-center text-[12px] text-error-soft">Editor failed to load.</div>
+                {/await}
               {:else if inlineFileHasRenderedPreview}
-                <RenderedFilePreview
-                  name={inlineFile.response.name}
-                  source={inlineFile.draft}
-                  type={inlineFileIsMarkdown ? "markdown" : "html"}
-                />
+                {#await import("$lib/components/RenderedFilePreview.svelte") then previewModule}
+                  {@const LazyRenderedFilePreview = previewModule.default}
+                  <LazyRenderedFilePreview
+                    name={inlineFile.response.name}
+                    source={inlineFile.draft}
+                    type={inlineFileIsMarkdown ? "markdown" : "html"}
+                  />
+                {:catch}
+                  <div class="flex h-full items-center justify-center text-[12px] text-error-soft">Preview failed to load.</div>
+                {/await}
               {:else}
-                <CodeEditor
-                  value={inlineFile.draft}
-                  language={inlineFileExt}
-                  readonly={true}
-                />
+                {#await import("$lib/components/CodeEditor.svelte") then editorModule}
+                  {@const LazyCodeEditor = editorModule.default}
+                  <LazyCodeEditor
+                    value={inlineFile.draft}
+                    language={inlineFileExt}
+                    readonly={true}
+                  />
+                {:catch}
+                  <div class="flex h-full items-center justify-center text-[12px] text-error-soft">Editor failed to load.</div>
+                {/await}
               {/if}
             </div>
           {:else if inlineFileIsImage && inlineFileDataUrl}
@@ -9362,15 +9404,26 @@ $effect(() => {
           <div class="m-4 rounded-lg border border-error-soft/30 bg-error-bg p-4 text-sm text-error-soft">{inlineCanvas.error}</div>
         </div>
       {:else if inlineCanvas.document}
-        <CanvasPanel
-          path={inlineCanvas.path}
-          document={inlineCanvas.document}
-          saving={inlineCanvas.saving}
-          focused={previewFocusMode}
-          onToggleFocus={isMobile ? undefined : togglePreviewFocusMode}
-          onCommit={(document, ops) => commitInlineCanvas(document, ops)}
-          onClose={closeInlineCanvas}
-        />
+        {#await import("$lib/components/canvas/CanvasPanel.svelte") then canvasPanelModule}
+          {@const LazyCanvasPanel = canvasPanelModule.default}
+          <LazyCanvasPanel
+            path={inlineCanvas.path}
+            document={inlineCanvas.document}
+            saving={inlineCanvas.saving}
+            focused={previewFocusMode}
+            onToggleFocus={isMobile ? undefined : togglePreviewFocusMode}
+            onCommit={(document, ops) => commitInlineCanvas(document, ops)}
+            onClose={closeInlineCanvas}
+          />
+        {:catch}
+          <div class="flex h-full min-w-0 flex-col bg-bg-content">
+            <div class="flex h-10 items-center gap-2 border-b border-border-subtle px-3">
+              <span class="min-w-0 flex-1 truncate text-xs text-text-secondary">{inlineCanvas.path}</span>
+              <button type="button" class="icon-btn" onclick={closeInlineCanvas} title="Close canvas"><X class="w-4 h-4" /></button>
+            </div>
+            <div class="m-4 rounded-lg border border-error-soft/30 bg-error-bg p-4 text-sm text-error-soft">Canvas failed to load.</div>
+          </div>
+        {/await}
       {:else}
         <div class="flex h-full min-w-0 flex-col bg-bg-content">
           <div class="flex h-10 items-center gap-2 border-b border-border-subtle px-3">
