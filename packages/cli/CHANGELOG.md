@@ -1,5 +1,17 @@
 # @neta-art/cohub-cli
 
+## 1.17.0
+
+### Minor Changes
+
+- 9a523d0: Upgrade `@neta-art/generation` dependency to `^0.1.4`.
+
+### Patch Changes
+
+- Updated dependencies [9a523d0]
+- Updated dependencies [9a523d0]
+  - @neta-art/cohub@1.27.0
+
 ## 1.16.0
 
 ### Minor Changes

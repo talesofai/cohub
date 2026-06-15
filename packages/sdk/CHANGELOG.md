@@ -1,5 +1,12 @@
 # @neta-art/cohub
 
+## 1.27.0
+
+### Minor Changes
+
+- 9a523d0: Refactor billing API: replace `getUsageRecords` / `getOverages` with unified `getBalanceActivities`, replace `purchaseAddon` / `subscribePlan` with `createOrder` / `createSubscription`, add `createRedemption`, remove `getOrders` / `cancelOrderCheckout`, and update `cancelSubscriptionCheckout` / `cancelSubscriptionAutoRenew` method signatures. Remove related legacy types.
+- 9a523d0: Remove `SessionMessagesClient.send()` method and related `SessionSendMessageInput` type. Messages are now sent exclusively through the websocket-based generation stream API.
+
 ## 1.26.0
 
 ### Minor Changes
