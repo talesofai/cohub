@@ -1,5 +1,12 @@
 # @neta-art/cohub
 
+## 1.28.0
+
+### Minor Changes
+
+- e79488b: Add generation.create permission
+- e79488b: Add works management APIs (get, update, delete) and WorkUpdateInput type
+
 ## 1.27.1
 
 ### Patch Changes
