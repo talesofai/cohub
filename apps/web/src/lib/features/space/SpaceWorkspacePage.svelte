@@ -142,6 +142,7 @@ import {
 	parseResourceLabelRealtimePayload,
 	syncResourceLabelsToCache,
 } from "$lib/labels/resource-label-cache-sync";
+import { notifyTaskFinished } from "$lib/notifications/desktop-task-notifications";
 import { extractSpaceMentionsFromText } from "$lib/mentions/space";
 import { sdk } from "$lib/sdk";
 import { mergeSessionRecord } from "$lib/session-record-merge";
@@ -5634,10 +5635,18 @@ function handleTaskRealtimeEvent(payload: ChannelEnvelope) {
 		});
 	}
 	if (payload.type === "task.updated") {
-		if (
-			eventPayload.changed?.includes("status") &&
-			task.status === "completed"
-		) {
+		if (eventPayload.changed?.includes("status")) {
+			if (task.status === "completed" || task.status === "failed") {
+				notifyTaskFinished({
+					...(task as Partial<TaskRunRecord>),
+					id: task.id,
+					type: task.type,
+					userId: task.userId,
+				});
+			}
+			if (task.status === "completed") {
+				void loadSpaceCheckpoints();
+			}
 		}
 	}
 }
