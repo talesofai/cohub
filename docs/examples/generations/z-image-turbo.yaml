@@ -1,0 +1,34 @@
+schema: neta.generation.model.v1
+model: z-image-turbo
+title: Z-Image Turbo
+description: Fast text-to-image generation through Neta Router. Z-Image Turbo accepts prompt text only; it does not support reference images.
+adapter:
+  type: openai.images
+content:
+  input:
+    - type: text
+      required: true
+      min: 1
+      max: 16
+      merge: newline
+      description: Prompt text.
+parameters:
+  size:
+    type: string
+    optional: true
+    default: 1024*1024
+    enum:
+      - 1024*1024
+      - 1536*1024
+      - 1024*1536
+      - 2048*2048
+    description: Output image size.
+examples:
+  - title: Text to image
+    request:
+      model: z-image-turbo
+      content:
+        - type: text
+          text: a clean product-style image of a small red toy robot standing on a white desk
+      parameters:
+        size: 1024*1024

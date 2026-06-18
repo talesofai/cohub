@@ -85,6 +85,8 @@ parameters:
 See the full examples:
 
 - [`docs/examples/generations/gpt-image-2.yaml`](./examples/generations/gpt-image-2.yaml)
+- [`docs/examples/generations/z-image-turbo.yaml`](./examples/generations/z-image-turbo.yaml)
+- [`docs/examples/generations/qwen-image-edit.yaml`](./examples/generations/qwen-image-edit.yaml)
 - [`docs/examples/generations/gemini-3.1-flash-image-preview.yaml`](./examples/generations/gemini-3.1-flash-image-preview.yaml)
 - [`docs/examples/generations/seedance-2-0-fast.yaml`](./examples/generations/seedance-2-0-fast.yaml)
 - [`docs/examples/generations/seedance-2-0.yaml`](./examples/generations/seedance-2-0.yaml)
@@ -99,6 +101,15 @@ cohub generate "a cyberpunk cat in neon rain" \
   --model gpt-image-2 \
   --param size=1024x1024 \
   --param quality=high
+
+cohub generate "a clean product-style image of a small red toy robot" \
+  --model z-image-turbo \
+  --param 'size=1024*1024'
+
+cohub generate "change the background to a clean white studio backdrop" \
+  --model qwen-image-edit \
+  --image https://example.com/input.png \
+  --param size=1024x1024
 
 cohub generate "same character, smiling" \
   --model gpt-image-2 \

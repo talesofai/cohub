@@ -11,6 +11,7 @@ import { createGenerationDeclarationLoader } from "@cohub/infra/config-runtime/g
 import { GENERATION_TASK_TYPE, type GenerationTaskData, type GenerationTaskResult } from "@cohub/protocol/generation";
 import type { TaskPayload } from "@cohub/protocol/task";
 import { config } from "../config.js";
+import { openAiImageEditsAdapter } from "../generations/openai-image-edits-adapter.js";
 import { redisCommandClient } from "../redis.js";
 import { registerTask } from "./registry.js";
 
@@ -154,6 +155,9 @@ registerTask(GENERATION_TASK_TYPE, async (job: Job, context) => {
       models: [declaration],
       includeBuiltinModels: false,
       apiKey: getNetaRouterApiKey(),
+      adapters: {
+        "openai.imageEdits": openAiImageEditsAdapter,
+      },
     }).generate({
       model: data.model,
       content: data.content,
