@@ -1,5 +1,13 @@
 # @neta-art/cohub
 
+## 1.29.0
+
+### Minor Changes
+
+- 4393131: Add `env` field to `CreateSpacePromptInput` and `SendMessageCronJobPayload` for prompt-scoped environment variables.
+- 4393131: Enhance `CheckpointRecord` type with optional `rootCheckpointId` and `saveVersion` fields, and make `meta` optional.
+- 4393131: Add WeChat channel login methods `startWeChatLogin()` and `waitWeChatLogin()` on `ChannelsApi`, with optional verify code flow support.
+
 ## 1.28.2
 
 ### Patch Changes

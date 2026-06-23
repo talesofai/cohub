@@ -1,5 +1,18 @@
 # @neta-art/cohub-cli
 
+## 1.18.0
+
+### Minor Changes
+
+- 4393131: Add `--env` option to `prompt` and `spaces send` commands for setting per-turn environment variables. Use `--env KEY=value` and repeat for multiple variables.
+
+### Patch Changes
+
+- Updated dependencies [4393131]
+- Updated dependencies [4393131]
+- Updated dependencies [4393131]
+  - @neta-art/cohub@1.29.0
+
 ## 1.17.5
 
 ### Patch Changes
