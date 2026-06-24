@@ -1,5 +1,11 @@
 # @neta-art/cohub
 
+## 1.31.0
+
+### Minor Changes
+
+- 3936634: Add SDK and CLI support for work presentation metadata, including Cohub bar visibility controls, and expose billing feature entitlement checks.
+
 ## 1.30.0
 
 ### Minor Changes
