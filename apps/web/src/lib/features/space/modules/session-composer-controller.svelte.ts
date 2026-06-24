@@ -126,6 +126,7 @@ export function createSessionComposerController() {
 						size: file.size,
 						status: "ready",
 					});
+					if (file.size === 0) throw new Error(`File "${file.name}" is empty.`);
 					if (!isSupportedComposerAttachmentFile(file))
 						return fallbackFileAttachment();
 					if (!isComposerImageFile(file)) {
@@ -139,17 +140,27 @@ export function createSessionComposerController() {
 					}
 					if (!isSupportedComposerImageFile(file))
 						return fallbackFileAttachment();
-					const compressed = await prepareChatImageAttachment(file);
-					return {
-						kind: "image",
-						id: createComposerAttachmentId(file),
-						name: compressed.name,
-						mediaType: compressed.mediaType,
-						file: compressed.file,
-						previewUrl: compressed.previewUrl,
-						size: compressed.size,
-						status: "ready",
-					} satisfies ComposerImageAttachment;
+					try {
+						const compressed = await prepareChatImageAttachment(file);
+						return {
+							kind: "image",
+							id: createComposerAttachmentId(file),
+							name: compressed.name,
+							mediaType: compressed.mediaType,
+							file: compressed.file,
+							previewUrl: compressed.previewUrl,
+							size: compressed.size,
+							status: "ready",
+						} satisfies ComposerImageAttachment;
+					} catch (error) {
+						console.warn("[composer] image preprocessing failed", {
+							name: file.name,
+							type: file.type,
+							size: file.size,
+							error,
+						});
+						return fallbackFileAttachment();
+					}
 				}),
 			);
 			attachments = [...attachments, ...nextAttachments];
