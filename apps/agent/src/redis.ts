@@ -52,12 +52,34 @@ type SessionStreamSnapshot = {
   updatedAt: number;
 };
 
+const getSnapshotMessageKey = (
+  message: Pick<SessionStreamSnapshotMessage, "messageId" | "messageOrdinal">,
+) => {
+  if (message.messageId) return `id:${message.messageId}`;
+  if (message.messageOrdinal != null) return `ordinal:${message.messageOrdinal}`;
+  return null;
+};
+
 const isSameSnapshotMessage = (
   a: Pick<SessionStreamSnapshotMessage, "messageId" | "messageOrdinal">,
   b: Pick<SessionStreamSnapshotMessage, "messageId" | "messageOrdinal">,
 ) => {
-  if (a.messageId && b.messageId) return a.messageId === b.messageId;
-  return a.messageOrdinal != null && b.messageOrdinal != null && a.messageOrdinal === b.messageOrdinal;
+  const aKey = getSnapshotMessageKey(a);
+  const bKey = getSnapshotMessageKey(b);
+  if (!aKey && !bKey) return true;
+  if (!aKey || !bKey) return false;
+  return aKey === bKey;
+};
+
+const upsertSnapshotMessage = (
+  messages: SessionStreamSnapshotMessage[],
+  message: SessionStreamSnapshotMessage,
+) => {
+  const key = getSnapshotMessageKey(message);
+  if (!key) return [...messages, message];
+  const index = messages.findIndex((item) => getSnapshotMessageKey(item) === key);
+  if (index < 0) return [...messages, message];
+  return messages.map((item, itemIndex) => itemIndex === index ? { ...item, ...message } : item);
 };
 
 const parseSessionStreamSnapshot = (raw: string | null): SessionStreamSnapshot | null => {
@@ -183,11 +205,11 @@ const cacheSessionStreamSnapshot = async (event: SessionStreamEvent) => {
   const messageChanged = Boolean(sameTurnSnapshot && !isSameSnapshotMessage(sameTurnSnapshot.current, incoming));
   const intermediateMessages = sameTurnSnapshot
     ? messageChanged
-      ? [...sameTurnSnapshot.intermediateMessages, {
+      ? upsertSnapshotMessage(sameTurnSnapshot.intermediateMessages, {
           messageId: sameTurnSnapshot.current.messageId,
           messageOrdinal: sameTurnSnapshot.current.messageOrdinal,
           content: sameTurnSnapshot.current.content,
-        }]
+        })
       : sameTurnSnapshot.intermediateMessages
     : [];
 

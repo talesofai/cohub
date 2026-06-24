@@ -88,7 +88,10 @@ function resolveStreamMessageId(input: {
 }
 
 function normalizeIntermediateMessages(
-	messages: GenerationStreamStateEvent["intermediateMessages"] | undefined,
+	messages:
+		| GenerationStreamStateEvent["intermediateMessages"]
+		| StreamingIntermediateMessage[]
+		| undefined,
 ): StreamingIntermediateMessage[] {
 	return (messages ?? [])
 		.filter((message) => Array.isArray(message.content))
@@ -100,6 +103,56 @@ function normalizeIntermediateMessages(
 		}));
 }
 
+function getIntermediateMessageKey(message: StreamingIntermediateMessage) {
+	if (message.messageId) return `id:${message.messageId}`;
+	if (message.id) return `id:${message.id}`;
+	if (message.messageOrdinal != null)
+		return `ordinal:${message.messageOrdinal}`;
+	return null;
+}
+
+function mergeIntermediateMessages(
+	current: StreamingIntermediateMessage[],
+	incoming: StreamingIntermediateMessage[],
+) {
+	if (current.length === 0) return incoming;
+	if (incoming.length === 0) return current;
+	let changed = false;
+	const merged = [...current];
+	for (const message of incoming) {
+		const key = getIntermediateMessageKey(message);
+		const index = key
+			? merged.findIndex(
+					(existing) => getIntermediateMessageKey(existing) === key,
+				)
+			: -1;
+		if (index < 0) {
+			merged.push(message);
+			changed = true;
+			continue;
+		}
+		merged[index] = { ...merged[index], ...message };
+		changed = true;
+	}
+	return changed ? merged : current;
+}
+
+function resolveIntermediateMessagesForState(
+	sessionId: string,
+	event: GenerationStreamStateEvent,
+) {
+	const incoming = normalizeIntermediateMessages(event.intermediateMessages);
+	const current = sessionGenerationStore.get(sessionId);
+	const sameTurn = Boolean(
+		current?.turnId &&
+			event.state.turnId &&
+			current.turnId === event.state.turnId,
+	);
+	return sameTurn
+		? mergeIntermediateMessages(current?.intermediateMessages ?? [], incoming)
+		: incoming;
+}
+
 function applyGenerationState(
 	sessionId: string,
 	event: GenerationStreamStateEvent,
@@ -107,9 +160,7 @@ function applyGenerationState(
 	sessionGenerationStore.applyProgress(sessionId, {
 		spaceId: event.state.spaceId,
 		contentBlocks: event.state.contentBlocks,
-		intermediateMessages: normalizeIntermediateMessages(
-			event.intermediateMessages,
-		),
+		intermediateMessages: resolveIntermediateMessagesForState(sessionId, event),
 		streamMessageId: event.messageId,
 		messageOrdinal: event.messageOrdinal,
 		anchorUserMessageId: event.state.anchorUserMessageId,
@@ -191,10 +242,20 @@ export function applyGenerationStreamSnapshot(
 	const skipContentUpdate =
 		snapshotBlocks.length > 0 &&
 		isContentTextuallySame(currentBlocks, snapshotBlocks);
+	const currentIntermediateMessages = current?.intermediateMessages ?? [];
+	const incomingIntermediateMessages = normalizeIntermediateMessages(
+		input.intermediateMessages,
+	);
 	sessionGenerationStore.applyProgress(sessionId, {
 		spaceId: input.spaceId ?? current?.spaceId ?? null,
 		contentBlocks: skipContentUpdate ? currentBlocks : snapshotBlocks,
-		intermediateMessages: input.intermediateMessages ?? [],
+		intermediateMessages:
+			current?.turnId && resolvedTurnId && current.turnId === resolvedTurnId
+				? mergeIntermediateMessages(
+						currentIntermediateMessages,
+						incomingIntermediateMessages,
+					)
+				: incomingIntermediateMessages,
 		streamMessageId: resolveStreamMessageId({
 			sessionId,
 			turnId: resolvedTurnId,

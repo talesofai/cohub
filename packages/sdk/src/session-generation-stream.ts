@@ -10,6 +10,7 @@ import {
   type SessionPatchApplyResult,
   type SessionPatchState,
 } from "./session-patch-reducer.js";
+import type { SessionTurnStreamSnapshotResponse } from "./types.js";
 import type { WebsocketClient, WebsocketEventPayload } from "./websocket.js";
 
 export type AssistantMessageCommit =
@@ -55,12 +56,12 @@ export type GenerationStreamIntermediateMessage = {
 
 export type GenerationStreamStateEvent = {
   type: "state";
-  source: "patch";
+  source: "patch" | "snapshot";
   state: SessionPatchState;
   messageId: string | null;
   messageOrdinal: number | null;
   intermediateMessages: GenerationStreamIntermediateMessage[];
-  rawEvent: WebsocketEventPayload;
+  rawEvent: WebsocketEventPayload | null;
 };
 
 export type GenerationStreamCommitEvent = {
@@ -126,6 +127,18 @@ export type GenerationStreamSubscriptionHandlers = {
   error?: (event: GenerationStreamErrorEvent) => void;
   outOfSync?: (event: GenerationStreamOutOfSyncEvent) => void;
 };
+
+export type GenerationStreamSubscribeOptions = {
+  /** Seed the stream reducer from the server-side active stream snapshot. */
+  recover?: boolean;
+  /** Optional host-provided snapshot to avoid an extra HTTP request. */
+  initialSnapshot?: SessionTurnStreamSnapshotResponse["snapshot"] | null;
+  /** Emit a state event after snapshot seed. Defaults to true. */
+  emitSnapshotState?: boolean;
+};
+
+const SNAPSHOT_RECOVERY_TIMEOUT_MS = 2500;
+const SNAPSHOT_RECOVERY_MAX_BUFFERED_EVENTS = 256;
 
 const isRecord = (value: unknown): value is Record<string, unknown> =>
   Boolean(value && typeof value === "object" && !Array.isArray(value));
@@ -212,6 +225,58 @@ function getTurnIdFromMessage(message: MessageRecord) {
   return typeof turnId === "string" ? turnId : null;
 }
 
+function isGenerationRealtimeEvent(event: WebsocketEventPayload) {
+  return (
+    event.type === "session.turn.patch" ||
+    event.type === "session.message.persisted" ||
+    event.type === "session.turn.finalized" ||
+    event.type === "session.turn.updated" ||
+    event.type === "session.turn.lifecycle" ||
+    event.type === "session.turn.error"
+  );
+}
+
+function getPatchSeq(event: WebsocketEventPayload) {
+  if (event.type !== "session.turn.patch") return null;
+  const seq = event.payload.seq;
+  return typeof seq === "number" ? seq : null;
+}
+
+function getPatchTurnId(event: WebsocketEventPayload) {
+  if (event.type !== "session.turn.patch") return null;
+  const turnId = event.payload.turnId;
+  return typeof turnId === "string" ? turnId : null;
+}
+
+async function withTimeout<T>(promise: Promise<T>, timeoutMs: number) {
+  let timeout: ReturnType<typeof setTimeout> | null = null;
+  try {
+    return await Promise.race([
+      promise,
+      new Promise<T>((_, reject) => {
+        timeout = setTimeout(() => {
+          reject(new Error(`stream snapshot recovery timed out after ${timeoutMs}ms`));
+        }, timeoutMs);
+      }),
+    ]);
+  } finally {
+    if (timeout) clearTimeout(timeout);
+  }
+}
+
+function normalizeSnapshotIntermediateMessages(
+  messages: NonNullable<SessionTurnStreamSnapshotResponse["snapshot"]>["intermediateMessages"],
+): GenerationStreamIntermediateMessage[] {
+  return messages
+    .filter((message) => Array.isArray(message.content))
+    .map((message) => ({
+      ...message,
+      messageId: message.messageId ?? null,
+      messageOrdinal: message.messageOrdinal ?? null,
+      content: message.content,
+    }));
+}
+
 export class SessionGenerationStreamClient {
   private readonly reducer = new SessionPatchReducer();
   private messageId: string | null = null;
@@ -223,9 +288,13 @@ export class SessionGenerationStreamClient {
     private readonly websocketClient: WebsocketClient | null,
     private readonly spaceId: string,
     private readonly sessionId: string,
+    private readonly fetchStreamSnapshot?: () => Promise<SessionTurnStreamSnapshotResponse>,
   ) {}
 
-  subscribe(handlers: GenerationStreamSubscriptionHandlers) {
+  subscribe(
+    handlers: GenerationStreamSubscriptionHandlers,
+    options: GenerationStreamSubscribeOptions = {},
+  ) {
     if (!this.websocketClient) {
       throw new Error("realtime transport is not configured for this client");
     }
@@ -234,14 +303,128 @@ export class SessionGenerationStreamClient {
       this.websocketClient,
       this.spaceId,
       this.sessionId,
+      this.fetchStreamSnapshot,
     );
+    const shouldRecover =
+      options.recover === true || options.initialSnapshot !== undefined;
+    let recovering = shouldRecover;
+    let disposed = false;
+    const bufferedEvents: WebsocketEventPayload[] = [];
     const unsubscribe = this.websocketClient.on("event", (event) => {
       if (event.spaceId !== this.spaceId || event.sessionId !== this.sessionId) {
         return;
       }
+      if (recovering && isGenerationRealtimeEvent(event)) {
+        bufferedEvents.push(event);
+        if (bufferedEvents.length > SNAPSHOT_RECOVERY_MAX_BUFFERED_EVENTS) {
+          recovering = false;
+          stream.replayBufferedEvents(bufferedEvents, handlers);
+          bufferedEvents.length = 0;
+        }
+        return;
+      }
       stream.handleEvent(event, handlers);
     });
-    return () => unsubscribe();
+
+    if (shouldRecover) {
+      void stream.recoverFromSnapshot(handlers, options).finally(() => {
+        if (disposed) return;
+        recovering = false;
+        stream.replayBufferedEvents(bufferedEvents, handlers);
+      });
+    }
+
+    return () => {
+      disposed = true;
+      unsubscribe();
+    };
+  }
+
+  private async recoverFromSnapshot(
+    handlers: GenerationStreamSubscriptionHandlers,
+    options: GenerationStreamSubscribeOptions,
+  ) {
+    const snapshot =
+      options.initialSnapshot !== undefined
+        ? options.initialSnapshot
+        : options.recover === true && this.fetchStreamSnapshot
+          ? (
+              await withTimeout(
+                this.fetchStreamSnapshot(),
+                SNAPSHOT_RECOVERY_TIMEOUT_MS,
+              ).catch((error) => {
+                console.warn(
+                  "[SessionGenerationStreamClient] Failed to recover stream snapshot:",
+                  error,
+                );
+                return { snapshot: null };
+              })
+            ).snapshot
+          : null;
+    if (!snapshot) return;
+    this.seedFromSnapshot(snapshot, handlers, options);
+  }
+
+  private seedFromSnapshot(
+    snapshot: NonNullable<SessionTurnStreamSnapshotResponse["snapshot"]>,
+    handlers: GenerationStreamSubscriptionHandlers,
+    options?: GenerationStreamSubscribeOptions,
+  ) {
+    if (snapshot.spaceId !== this.spaceId || snapshot.sessionId !== this.sessionId) return false;
+    const intermediateMessages = normalizeSnapshotIntermediateMessages(
+      snapshot.intermediateMessages,
+    );
+    const result = this.reducer.applySnapshot({
+      spaceId: snapshot.spaceId,
+      sessionId: snapshot.sessionId,
+      turnId: snapshot.turnId,
+      seq: snapshot.seq,
+      contentBlocks: snapshot.current.content,
+      anchorUserMessageId: snapshot.anchorUserMessageId,
+      appendPath: snapshot.current.appendPath,
+    });
+    if (!result.applied) return false;
+    this.patchState = result.state;
+    this.messageId = snapshot.current.messageId;
+    this.messageOrdinal = snapshot.current.messageOrdinal;
+    this.intermediateMessages = intermediateMessages;
+    if (options?.emitSnapshotState !== false) {
+      this.emit(handlers, {
+        type: "state",
+        source: "snapshot",
+        state: result.state,
+        messageId: this.messageId,
+        messageOrdinal: this.messageOrdinal,
+        intermediateMessages: [...this.intermediateMessages],
+        rawEvent: null,
+      });
+    }
+    return true;
+  }
+
+  private replayBufferedEvents(
+    events: WebsocketEventPayload[],
+    handlers: GenerationStreamSubscriptionHandlers,
+  ) {
+    for (const event of events) {
+      const seq = getPatchSeq(event);
+      const turnId = getPatchTurnId(event);
+      const sameTurn = Boolean(
+        seq != null &&
+          this.patchState?.turnId &&
+          turnId &&
+          this.patchState.turnId === turnId,
+      );
+      if (
+        sameTurn &&
+        this.patchState &&
+        seq != null &&
+        seq <= this.patchState.patchSeq
+      ) {
+        continue;
+      }
+      this.handleEvent(event, handlers);
+    }
   }
 
   private emit(
@@ -294,7 +477,7 @@ export class SessionGenerationStreamClient {
 
   private handleAppliedState(
     handlers: GenerationStreamSubscriptionHandlers,
-    source: GenerationStreamStateEvent["source"],
+    source: "patch",
     result: SessionPatchApplyResult,
     rawEvent: WebsocketEventPayload,
     messageId: string | null,
@@ -563,10 +746,12 @@ export function createSessionGenerationStreamClient(input: {
   websocketClient: WebsocketClient | null;
   spaceId: string;
   sessionId: string;
+  fetchStreamSnapshot?: () => Promise<SessionTurnStreamSnapshotResponse>;
 }) {
   return new SessionGenerationStreamClient(
     input.websocketClient,
     input.spaceId,
     input.sessionId,
+    input.fetchStreamSnapshot,
   );
 }

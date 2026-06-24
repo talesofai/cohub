@@ -422,7 +422,9 @@ class SessionGenerationStore {
 			lastEventAt: Date.now(),
 			contentBlocks: input.contentBlocks,
 			intermediateMessages:
-				input.intermediateMessages ?? current.intermediateMessages ?? [],
+				input.intermediateMessages !== undefined
+					? input.intermediateMessages
+					: (current.intermediateMessages ?? []),
 			streamMessageId:
 				input.streamMessageId !== undefined
 					? input.streamMessageId

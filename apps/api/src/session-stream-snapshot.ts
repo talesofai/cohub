@@ -100,6 +100,23 @@ const toSnapshotIntermediateMessage = (row: typeof sessionMessages.$inferSelect,
   createdAt: toIso(row.createdAt),
 });
 
+const getSnapshotMessageKey = (message: Pick<EnrichedSessionStreamSnapshotMessage, "messageId" | "messageOrdinal">) => {
+  if (message.messageId) return `id:${message.messageId}`;
+  if (message.messageOrdinal != null) return `ordinal:${message.messageOrdinal}`;
+  return null;
+};
+
+const mergeSnapshotMessage = (
+  snapshotMessage: EnrichedSessionStreamSnapshotMessage,
+  persistedMessage: EnrichedSessionStreamSnapshotMessage,
+): EnrichedSessionStreamSnapshotMessage => ({
+  ...snapshotMessage,
+  ...persistedMessage,
+  messageId: snapshotMessage.messageId ?? persistedMessage.messageId,
+  messageOrdinal: snapshotMessage.messageOrdinal ?? persistedMessage.messageOrdinal,
+  content: persistedMessage.content,
+});
+
 const listPersistedIntermediateMessages = async (input: { sessionId: string; turnId: string }) => {
   const rows = await db.select().from(sessionMessages).where(and(
     eq(sessionMessages.sessionId, input.sessionId),
@@ -115,19 +132,22 @@ const enrichSessionStreamSnapshot = async (snapshot: SessionStreamSnapshot): Pro
   const persisted = await listPersistedIntermediateMessages({ sessionId: snapshot.sessionId, turnId: snapshot.turnId }).catch(() => []);
   if (persisted.length === 0) return snapshot;
 
+  const persistedByKey = new Map(
+    persisted
+      .map((message) => [getSnapshotMessageKey(message), message] as const)
+      .filter((entry): entry is [string, EnrichedSessionStreamSnapshotMessage] => Boolean(entry[0])),
+  );
+  const usedPersisted = new Set<EnrichedSessionStreamSnapshotMessage>();
   const merged = snapshot.intermediateMessages.map((message, index) => {
-    const persistedMessage = persisted[index];
-    return persistedMessage
-      ? {
-          ...message,
-          ...persistedMessage,
-          messageId: message.messageId ?? persistedMessage.messageId,
-          messageOrdinal: message.messageOrdinal ?? persistedMessage.messageOrdinal,
-          content: persistedMessage.content,
-        }
-      : message;
+    const key = getSnapshotMessageKey(message);
+    const persistedMessage = (key ? persistedByKey.get(key) : undefined) ?? persisted[index];
+    if (!persistedMessage) return message;
+    usedPersisted.add(persistedMessage);
+    return mergeSnapshotMessage(message, persistedMessage);
   });
-  if (persisted.length > merged.length) merged.push(...persisted.slice(merged.length));
+  for (const message of persisted) {
+    if (!usedPersisted.has(message)) merged.push(message);
+  }
   return { ...snapshot, intermediateMessages: merged };
 };
 

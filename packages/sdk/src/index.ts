@@ -64,6 +64,7 @@ export type {
   GenerationStreamLifecycleEvent,
   GenerationStreamOutOfSyncEvent,
   GenerationStreamStateEvent,
+  GenerationStreamSubscribeOptions,
   GenerationStreamSubscriptionHandlers,
   GenerationStreamTurnUpdatedEvent,
 } from "./session-generation-stream.js";

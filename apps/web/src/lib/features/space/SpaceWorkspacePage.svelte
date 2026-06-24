@@ -4380,11 +4380,14 @@ $effect(() => {
 	return sdk
 		.space(currentSpaceId)
 		.session(sessionId)
-		.subscribeGeneration({
-			event: (event) => {
-				void handleGenerationStreamEvent(sessionId, event);
+		.subscribeGeneration(
+			{
+				event: (event) => {
+					void handleGenerationStreamEvent(sessionId, event);
+				},
 			},
-		});
+			{ recover: true },
+		);
 });
 $effect(() => {
 	const currentSpaceId = spaceId;

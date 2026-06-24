@@ -9,6 +9,7 @@ import {
 } from "../session-patch-reducer.js";
 import {
   SessionGenerationStreamClient,
+  type GenerationStreamSubscribeOptions,
   type GenerationStreamSubscriptionHandlers,
 } from "../session-generation-stream.js";
 import type {
@@ -590,7 +591,12 @@ export class SessionClient {
     this.messages = new SessionMessagesClient(transport, id);
     this.turns = new SessionTurnsClient(transport, id);
     this.realtime = new SessionRealtimeClient(websocketClient, spaceId, id);
-    this.generation = new SessionGenerationStreamClient(websocketClient, spaceId, id);
+    this.generation = new SessionGenerationStreamClient(
+      websocketClient,
+      spaceId,
+      id,
+      () => this.turns.streamSnapshot(),
+    );
   }
 
   get(customFetch?: Fetch) {
@@ -658,8 +664,11 @@ export class SessionClient {
     return this.realtime.subscribe(handlers);
   }
 
-  subscribeGeneration(handlers: GenerationStreamSubscriptionHandlers) {
-    return this.generation.subscribe(handlers);
+  subscribeGeneration(
+    handlers: GenerationStreamSubscriptionHandlers,
+    options?: GenerationStreamSubscribeOptions,
+  ) {
+    return this.generation.subscribe(handlers, options);
   }
 
   on(type: SessionEventName, handler: (event: WebsocketEventPayload) => void) {
