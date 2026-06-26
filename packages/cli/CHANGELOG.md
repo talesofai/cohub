@@ -1,5 +1,11 @@
 # @neta-art/cohub-cli
 
+## 1.20.2
+
+### Patch Changes
+
+- 20a4cc1: Add CLI commands for updating profile usernames and Space slugs.
+
 ## 1.20.1
 
 ### Patch Changes
