@@ -1,5 +1,11 @@
 # @neta-art/cohub-cli
 
+## 1.20.3
+
+### Patch Changes
+
+- 6eee05e: Show Space slugs in CLI output and allow `spaces get` to use the configured target Space.
+
 ## 1.20.2
 
 ### Patch Changes
