@@ -1,5 +1,13 @@
 # @neta-art/cohub-cli
 
+## 1.20.4
+
+### Patch Changes
+
+- a8c3181: Release enriched work responses, mod prompt templates, streaming snapshot recovery fixes, and Cohub Ask rendering updates.
+- Updated dependencies [a8c3181]
+  - @neta-art/cohub@1.33.0
+
 ## 1.20.3
 
 ### Patch Changes

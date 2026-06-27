@@ -1,5 +1,11 @@
 # @neta-art/cohub
 
+## 1.33.0
+
+### Minor Changes
+
+- a8c3181: Release enriched work responses, mod prompt templates, streaming snapshot recovery fixes, and Cohub Ask rendering updates.
+
 ## 1.32.0
 
 ### Minor Changes
