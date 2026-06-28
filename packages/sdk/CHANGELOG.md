@@ -1,5 +1,11 @@
 # @neta-art/cohub
 
+## 1.33.1
+
+### Patch Changes
+
+- 1caff2c: Fix realtime room routing in the websocket SDK and keep the package publish flow aligned with the updated gateway routing.
+
 ## 1.33.0
 
 ### Minor Changes
