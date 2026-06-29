@@ -1,5 +1,12 @@
 # web
 
+## 0.1.41
+
+### Patch Changes
+
+- Updated dependencies [f853227]
+  - @neta-art/cohub@2.0.0
+
 ## 0.1.40
 
 ### Patch Changes
