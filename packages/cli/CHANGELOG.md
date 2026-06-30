@@ -1,5 +1,19 @@
 # @neta-art/cohub-cli
 
+## 2.1.0
+
+### Minor Changes
+
+- ba31079: Expand CLI commerce support.
+
+  - Replace the compact space commerce commands with explicit product, benefit, bind, unbind, and paginated order subcommands under `cohub spaces commerce`.
+  - Add work commerce debugging commands under `cohub works commerce` for product resolution, entitlement checks, checkout creation, and order lookup.
+
+### Patch Changes
+
+- Updated dependencies [5220dc0]
+  - @neta-art/cohub@2.1.0
+
 ## 2.0.0
 
 ### Major Changes

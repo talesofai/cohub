@@ -1,5 +1,12 @@
 # @cohub/agent
 
+## 1.1.5
+
+### Patch Changes
+
+- Updated dependencies [5220dc0]
+  - @cohub/core@1.1.0
+
 ## 1.1.4
 
 ### Patch Changes
