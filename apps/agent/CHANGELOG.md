@@ -1,5 +1,11 @@
 # @cohub/agent
 
+## 1.1.6
+
+### Patch Changes
+
+- @cohub/core@1.1.1
+
 ## 1.1.5
 
 ### Patch Changes
