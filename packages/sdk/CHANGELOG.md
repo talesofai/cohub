@@ -1,5 +1,11 @@
 # @neta-art/cohub
 
+## 2.2.1
+
+### Patch Changes
+
+- 7907e1d: Show buyer profiles on commerce orders and enforce the minimum product price.
+
 ## 2.2.0
 
 ### Minor Changes
