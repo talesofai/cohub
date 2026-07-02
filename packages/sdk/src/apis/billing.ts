@@ -74,6 +74,13 @@ export class BillingApi {
     );
   }
 
+  async recoverSubscriptionCheckout(subscriptionId: string) {
+    return this.transport.request<{ checkout: BillingCheckoutResult }>(
+      `/api/billing/subscriptions/${encodeURIComponent(subscriptionId)}/checkout`,
+      { method: "POST" },
+    );
+  }
+
   async cancelSubscriptionCheckout(subscriptionId: string) {
     return this.transport.request<{ subscription: BillingSubscriptionHistoryStatus }>(
       `/api/billing/subscriptions/${encodeURIComponent(subscriptionId)}/checkout`,

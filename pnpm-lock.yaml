@@ -16,8 +16,8 @@ importers:
         specifier: ^2.31.0
         version: 2.31.0(@types/node@25.9.1)
       '@talesofai-billing/cli':
-        specifier: ^1.6.0
-        version: 1.6.0
+        specifier: ^1.7.2
+        version: 1.7.2
       '@typescript/native-preview':
         specifier: 7.0.0-dev.20260527.2
         version: 7.0.0-dev.20260527.2
@@ -194,8 +194,8 @@ importers:
         specifier: ^1.41.1
         version: 1.41.1
       '@talesofai-billing/sdk':
-        specifier: ^1.6.0
-        version: 1.6.0
+        specifier: ^1.10.0
+        version: 1.10.0
       bullmq:
         specifier: ^5.77.6
         version: 5.77.6
@@ -402,6 +402,9 @@ importers:
       '@shikijs/themes':
         specifier: ^4.2.0
         version: 4.2.0
+      '@stripe/stripe-js':
+        specifier: ^9.9.0
+        version: 9.9.0
       codemirror:
         specifier: ^6.0.2
         version: 6.0.2
@@ -582,8 +585,8 @@ importers:
   packages/billing:
     dependencies:
       '@talesofai-billing/sdk':
-        specifier: ^1.6.0
-        version: 1.6.0
+        specifier: ^1.10.0
+        version: 1.10.0
       ioredis:
         specifier: 5.10.1
         version: 5.10.1
@@ -3462,6 +3465,10 @@ packages:
   '@standard-schema/spec@1.1.0':
     resolution: {integrity: sha512-l2aFy5jALhniG5HgqrD6jXLi/rUWrKvqN/qJx6yoJsgKhblVd+iqqU4RCXavm/jPityDo5TCvKMnpjKnOriy0w==}
 
+  '@stripe/stripe-js@9.9.0':
+    resolution: {integrity: sha512-Vwqe6Q5cU4i82tPyAv2BpaW/fQSNdOSO4/J8EeDLPp5/oIZiMmdB+Hgh863zFH+rtoxpuWGvD1L7QPh8k1Rdvw==}
+    engines: {node: '>=12.16'}
+
   '@sveltejs/acorn-typescript@1.0.10':
     resolution: {integrity: sha512-4WfKk68eTih+MiJD4fSbxN7E8kVBmTMPWHUPYjvl2N0rMs53YLTT8/YjKU5Dtnz5LqDjl7LEw4U7lXR2W3J5WA==}
     peerDependencies:
@@ -3603,13 +3610,12 @@ packages:
     peerDependencies:
       vite: ^5.2.0 || ^6 || ^7 || ^8
 
-  '@talesofai-billing/cli@1.6.0':
-    resolution: {integrity: sha512-dxDRKN7NrxaNZf0slEhnYY6Sb1n/OBzi1FqEbTZBHfsC+qhnEXIvI1BtCJGzUcXfZ+/8E+z68BnwowShMhH+eA==, tarball: https://git.talesofai.com/api/packages/talesofai/npm/%40talesofai-billing%2Fcli/-/1.6.0/cli-1.6.0.tgz}
-    engines: {node: '>=20'}
+  '@talesofai-billing/cli@1.7.2':
+    resolution: {integrity: sha512-mxCLG/0PhmfqVaq0BJaHO3OZ5j32dArgCvOSnYWyWXw0t43LMIXaYH9l4ZH5FXDDu6Xf9WSEzWpm2jj6Jl7ppw==, tarball: https://git.talesofai.com/api/packages/talesofai/npm/%40talesofai-billing%2Fcli/-/1.7.2/cli-1.7.2.tgz}
     hasBin: true
 
-  '@talesofai-billing/sdk@1.6.0':
-    resolution: {integrity: sha512-GqqhTzlzpnJeR4jTC47RXwL/TWHNOZL1HSK/+BelbCeAa57T6y9jdq3KKvDmco0qRgSViykUuDJ5t45Xs6y13Q==, tarball: https://git.talesofai.com/api/packages/talesofai/npm/%40talesofai-billing%2Fsdk/-/1.6.0/sdk-1.6.0.tgz}
+  '@talesofai-billing/sdk@1.10.0':
+    resolution: {integrity: sha512-He0FGbrt0JG4JHUykovoMZJySaZrXFyYyHc1sNY8L4K3ZITBGlDWfGUygcczw0VqCCnHvRv1xEouRiM5KpJCDA==, tarball: https://git.talesofai.com/api/packages/talesofai/npm/%40talesofai-billing%2Fsdk/-/1.10.0/sdk-1.10.0.tgz}
     engines: {node: '>=18'}
 
   '@trickfilm400/rollup-plugin-off-main-thread@3.0.0-pre1':
@@ -9438,6 +9444,8 @@ snapshots:
 
   '@standard-schema/spec@1.1.0': {}
 
+  '@stripe/stripe-js@9.9.0': {}
+
   '@sveltejs/acorn-typescript@1.0.10(acorn@8.16.0)':
     dependencies:
       acorn: 8.16.0
@@ -9560,13 +9568,13 @@ snapshots:
       tailwindcss: 4.3.0
       vite: 7.3.5(@types/node@25.9.1)(jiti@2.7.0)(lightningcss@1.32.0)(terser@5.48.0)(tsx@4.22.3)(yaml@2.9.0)
 
-  '@talesofai-billing/cli@1.6.0':
+  '@talesofai-billing/cli@1.7.2':
     dependencies:
       '@commander-js/extra-typings': 14.0.0(commander@14.0.3)
-      '@talesofai-billing/sdk': 1.6.0
+      '@talesofai-billing/sdk': 1.10.0
       commander: 14.0.3
 
-  '@talesofai-billing/sdk@1.6.0':
+  '@talesofai-billing/sdk@1.10.0':
     dependencies:
       zod: 4.4.3
 

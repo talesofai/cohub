@@ -86,9 +86,11 @@ jobs:
           if [[ "${{ steps.env.outputs.env }}" == "prod" ]]; then
             echo "PUBLIC_API_ORIGIN=https://api.cohub.run" >> .env
             echo "PUBLIC_GATEWAY_ORIGIN=https://gateway.cohub.run" >> .env
+            echo "PUBLIC_STRIPE_PUBLISHABLE_KEY=pk_live_51SYJ1w0hIk0rCwosX4Qxw8y6agSRruF9RDYafMyM2dlcJmvn9nNsqYdJyCVE9OqnFEgLv7BdQn5Yc6TiE5jR85NC00ND4wtitx" >> .env
           else
             echo "PUBLIC_API_ORIGIN=https://api-dev.cohub.run" >> .env
             echo "PUBLIC_GATEWAY_ORIGIN=https://gateway-dev.cohub.run" >> .env
+            echo "PUBLIC_STRIPE_PUBLISHABLE_KEY=pk_test_51SYJ1w0hIk0rCwosusvVnsEoK7jupdIumnDI0cECxL1b8IvY9SIh9sIaKXhpslWiHeU0ZjIiGPHMpmna9xMONlJY00vL1MpLvM" >> .env
           fi
 
       - name: Lint

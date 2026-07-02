@@ -278,9 +278,14 @@ export type BillingSubscriptionSummary = {
   cancelAtPeriodEnd: boolean;
 };
 
+export type BillingPaymentProviderKey = "waffo" | "stripe";
+export type BillingActivePaymentProviderKey = "not_configured" | BillingPaymentProviderKey;
+
 export type BillingPaymentStatus = {
   available: boolean;
   reason: string | null;
+  activeProviderKey: BillingActivePaymentProviderKey;
+  availableProviderKeys: BillingPaymentProviderKey[];
 };
 
 export type BillingCatalog = {
@@ -303,6 +308,8 @@ export type BillingHistoryPagination = {
 export type BillingCheckoutActionState = {
   canPay: boolean;
   checkoutUrl: string | null;
+  checkoutClientSecret: string | null;
+  checkoutUiMode: string | null;
   checkoutUsable: boolean;
   canCancelCheckout: boolean;
   canCancelAutoRenew: boolean;
@@ -354,6 +361,8 @@ export type BillingCheckoutResult = {
   payment: BillingPaymentStatus;
   productKey: string;
   checkoutUrl: string | null;
+  checkoutClientSecret: string | null;
+  checkoutUiMode: string | null;
   checkoutUsable: boolean;
   message: string | null;
   orderId: string | null;

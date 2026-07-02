@@ -4,7 +4,7 @@ import { authzDenied, getOptionalAuth, requireValidId, useAuth } from "../lib/mi
 import { handleWorkCommerceRouteError } from "../lib/commerce-http.js";
 import { hasPermission } from "../permissions.js";
 import {
-  buildWorkCheckoutReturnUrls,
+  buildProviderAwareWorkCheckoutRedirects,
   createSpaceCommerceSdk,
   createSpaceBusinessBillingOperations,
   getWorkCommerceContextById,
@@ -177,9 +177,24 @@ router.post("/works/:id/commerce/purchase", async (c) => {
   const resolved = await getPublishedWorkOrDeny(workId, user.uuid);
   if ("error" in resolved) return c.json({ message: resolved.error }, 404);
   if ((resolved.work.workVisibility ?? "public") === "space" && !(await hasPermission(user, "space.view", { spaceId: resolved.work.spaceId }))) return authzDenied(c);
-  const body = await c.req.json().catch(() => null) as { productKey?: unknown } | null;
+  const body = await c.req.json().catch(() => null) as {
+    productKey?: unknown;
+    checkoutMode?: unknown;
+  } | null;
   const productKey = typeof body?.productKey === "string" ? body.productKey.trim() : "";
   if (!productKey) return c.json({ message: "productKey is required" }, 400);
+  if (
+    body?.checkoutMode !== undefined &&
+    body.checkoutMode !== null &&
+    body.checkoutMode !== "hosted_page" &&
+    body.checkoutMode !== "embedded_page"
+  ) {
+    return c.json({ message: "checkoutMode must be hosted_page or embedded_page" }, 400);
+  }
+  const checkoutMode =
+    body?.checkoutMode === "hosted_page" || body?.checkoutMode === "embedded_page"
+      ? body.checkoutMode
+      : null;
   try {
     const businessKey = await requireSpaceCommerceBusinessKey(resolved.work.spaceId);
     const sdk = createSpaceCommerceSdk();
@@ -192,15 +207,28 @@ router.post("/works/:id/commerce/purchase", async (c) => {
       workSlug: resolved.work.workSlug,
     });
     if (!workUrl) return c.json({ message: "work public url is unavailable" }, 409);
-    const provisionalRedirects = buildWorkCheckoutReturnUrls({ workUrl });
+    const providerStatus = await sdk.admin.providers.status();
+    if (providerStatus.status !== "available" || !providerStatus.checkout_available) {
+      return c.json({
+        message:
+          providerStatus.active_provider_key === "not_configured"
+            ? "No active payment provider"
+            : "Checkout is currently unavailable",
+      }, 409);
+    }
+    if (checkoutMode === "embedded_page" && providerStatus.active_provider_key !== "stripe") {
+      return c.json({ message: "Embedded checkout is only available with Stripe" }, 409);
+    }
     const result = await sdk.admin.orders.create({
       business_key: businessKey,
       external_user_id: user.uuid,
       product_key: product.key,
       billing_reason: "purchase",
-      success_redirect_url: provisionalRedirects.successRedirectUrl,
-      failed_redirect_url: provisionalRedirects.failedRedirectUrl,
-      cancel_redirect_url: provisionalRedirects.cancelRedirectUrl,
+      ...buildProviderAwareWorkCheckoutRedirects({
+        workUrl,
+        activeProviderKey: providerStatus.active_provider_key,
+        checkoutMode,
+      }),
       metadata: {
         source: "cohub",
         source_type: "work",
@@ -211,6 +239,8 @@ router.post("/works/:id/commerce/purchase", async (c) => {
     return c.json({ checkout: {
       providerKey: result.checkout?.provider_key ?? null,
       checkoutUrl: result.checkout?.checkout_url ?? null,
+      checkoutClientSecret: result.checkout?.checkout_client_secret ?? null,
+      checkoutUiMode: result.checkout?.checkout_ui_mode ?? null,
       checkoutUsable: result.checkout?.checkout_usable === true,
       status: result.checkout?.status ?? null,
       message: result.checkout?.message ?? null,

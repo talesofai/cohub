@@ -5,6 +5,7 @@ import type {
 	BillingCreditStatus,
 } from "@neta-art/cohub";
 import { AlertCircle, Check, CreditCard, Loader2, X } from "lucide-svelte";
+import EmbeddedCheckoutDialog from "$lib/components/billing/EmbeddedCheckoutDialog.svelte";
 import { sdk } from "$lib/sdk";
 import { billingCatalogStore } from "$lib/stores/billing-catalog.svelte";
 import { billingConversion } from "$lib/stores/billing-conversion.svelte";
@@ -19,6 +20,10 @@ let checkoutError = $state("");
 let credit = $state<BillingCreditStatus | null>(null);
 let creditLoading = $state(false);
 let creditError = $state("");
+let embeddedCheckout = $state<{
+	clientSecret: string;
+	title: string;
+} | null>(null);
 let wasOpen = false;
 let selectedPlanInterval = $state<PlanInterval>("monthly");
 
@@ -279,6 +284,13 @@ async function startCheckout(product: BillingCatalogProduct) {
 						returnUrl: returnUrl(),
 					});
 		const checkout = result.checkout;
+		if (checkout.checkoutUsable && checkout.checkoutClientSecret) {
+			embeddedCheckout = {
+				clientSecret: checkout.checkoutClientSecret,
+				title: product.name,
+			};
+			return;
+		}
 		if (checkout.checkoutUsable && checkout.checkoutUrl) {
 			window.location.href = checkout.checkoutUrl;
 			return;
@@ -297,6 +309,18 @@ async function startCheckout(product: BillingCatalogProduct) {
 	}
 }
 </script>
+
+<EmbeddedCheckoutDialog
+	open={embeddedCheckout !== null}
+	clientSecret={embeddedCheckout?.clientSecret ?? null}
+	title={embeddedCheckout?.title ?? "Checkout"}
+	onClose={() => (embeddedCheckout = null)}
+	onComplete={() => {
+		embeddedCheckout = null;
+		billingConversion.close();
+		void loadBillingData({ force: true });
+	}}
+/>
 
 {#if open && intent}
 	<div class="fixed inset-0 z-[110] flex items-end justify-center lg:items-center lg:p-4" role="dialog" aria-modal="true">

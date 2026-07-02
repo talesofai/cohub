@@ -5,6 +5,7 @@ import { onMount } from "svelte";
 import { goto } from "$app/navigation";
 import { page } from "$app/state";
 import { signInWithRedirectPath } from "$lib/auth";
+import EmbeddedCheckoutDialog from "$lib/components/billing/EmbeddedCheckoutDialog.svelte";
 import { sdk } from "$lib/sdk";
 import { authStore } from "$lib/stores/auth.svelte";
 import { billingCatalogStore } from "$lib/stores/billing-catalog.svelte";
@@ -18,6 +19,10 @@ let catalogLoading = $state(true);
 let catalogError = $state("");
 let checkoutBusyKey = $state<string | null>(null);
 let checkoutError = $state("");
+let embeddedCheckout = $state<{
+	clientSecret: string;
+	title: string;
+} | null>(null);
 let interval = $state<PlanInterval>("monthly");
 
 const CHECKOUT_BUTTON_BASE =
@@ -202,6 +207,13 @@ async function startCheckout(product: BillingCatalogProduct) {
 			product.kind === "plan"
 				? await sdk.billing.createSubscription(product.key, input)
 				: await sdk.billing.createOrder(product.key, input);
+		if (checkout.checkoutUsable && checkout.checkoutClientSecret) {
+			embeddedCheckout = {
+				clientSecret: checkout.checkoutClientSecret,
+				title: product.name,
+			};
+			return;
+		}
 		if (checkout.checkoutUsable && checkout.checkoutUrl) {
 			window.location.href = checkout.checkoutUrl;
 			return;
@@ -222,6 +234,17 @@ onMount(() => {
 	void loadCatalog();
 });
 </script>
+
+<EmbeddedCheckoutDialog
+	open={embeddedCheckout !== null}
+	clientSecret={embeddedCheckout?.clientSecret ?? null}
+	title={embeddedCheckout?.title ?? "Checkout"}
+	onClose={() => (embeddedCheckout = null)}
+	onComplete={() => {
+		embeddedCheckout = null;
+		void goto("/settings/billing");
+	}}
+/>
 
 <svelte:head>
 	<title>Pricing — Cohub</title>

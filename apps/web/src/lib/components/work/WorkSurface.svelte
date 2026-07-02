@@ -11,6 +11,7 @@ import { onDestroy, onMount } from "svelte";
 import { page } from "$app/state";
 import { PUBLIC_API_ORIGIN } from "$env/static/public";
 import { getAuthToken, signInWithRedirectPath } from "$lib/auth";
+import EmbeddedCheckoutDialog from "$lib/components/billing/EmbeddedCheckoutDialog.svelte";
 import Dialog from "$lib/components/Dialog.svelte";
 import SpaceAvatar from "$lib/components/SpaceAvatar.svelte";
 import UserAvatar from "$lib/components/UserAvatar.svelte";
@@ -42,6 +43,23 @@ type WorkOwner = {
 	displayName: string;
 	avatarUrl?: string | null;
 } | null;
+type WorkCheckoutStatus = "success" | "failed" | "cancel";
+type WorkPurchaseCheckout = {
+	providerKey: string | null;
+	checkoutUrl: string | null;
+	checkoutClientSecret: string | null;
+	checkoutUiMode: string | null;
+	checkoutUsable: boolean;
+	status: string | null;
+	message: string | null;
+	orderId: string;
+	productKey: string;
+};
+type WorkCommerceOrder = {
+	id: string;
+	status: string;
+	paidAt: string | null;
+};
 
 type Props = {
 	work: Pick<
@@ -81,6 +99,17 @@ let purchaseSaving = $state(false);
 let pendingPurchase = $state<{ requestId: string; productKey: string } | null>(
 	null,
 );
+let embeddedCheckout = $state<{
+	clientSecret: string;
+	title: string;
+	orderId: string;
+	requestId: string;
+	checkout: WorkPurchaseCheckout;
+} | null>(null);
+let completedCheckout = $state<{
+	status: WorkCheckoutStatus;
+	orderId: string;
+} | null>(null);
 let pendingAuth = $state<{
 	requestId: string;
 	scopes: Permission[];
@@ -130,6 +159,10 @@ const frameSandbox =
 	"allow-scripts allow-same-origin allow-forms allow-popups allow-downloads allow-modals";
 const checkoutState = $derived(readWorkCheckoutState(page.url));
 const pendingPurchaseStorageKey = $derived(`cohub-work-purchase:${work.id}`);
+const completedPurchaseStorageKey = $derived(
+	`cohub-work-purchase:${work.id}:completed`,
+);
+const CHECKOUT_COMPLETION_TTL_MS = 24 * 60 * 60 * 1000;
 
 function readTokenResponse(value: unknown) {
 	if (!value || typeof value !== "object") return null;
@@ -266,6 +299,16 @@ function replyPurchaseCancel() {
 	purchaseSaving = false;
 }
 
+function isWorkPurchaseCheckout(value: unknown): value is WorkPurchaseCheckout {
+	if (!value || typeof value !== "object") return false;
+	const checkout = value as Record<string, unknown>;
+	return (
+		typeof checkout.orderId === "string" &&
+		typeof checkout.productKey === "string" &&
+		typeof checkout.checkoutUsable === "boolean"
+	);
+}
+
 function writePendingPurchase(input: { orderId: string; productKey: string }) {
 	if (typeof sessionStorage === "undefined") return;
 	try {
@@ -306,6 +349,67 @@ function readPendingPurchase(): {
 	}
 }
 
+function writeCheckoutCompletion(input: {
+	status: WorkCheckoutStatus;
+	orderId: string;
+}) {
+	if (typeof sessionStorage === "undefined") return;
+	try {
+		sessionStorage.setItem(
+			completedPurchaseStorageKey,
+			JSON.stringify({ ...input, at: Date.now() }),
+		);
+	} catch {
+		// ignore storage failures
+	}
+}
+
+function readCheckoutCompletion(): {
+	status: WorkCheckoutStatus;
+	orderId: string;
+	at: number;
+} | null {
+	if (typeof sessionStorage === "undefined") return null;
+	try {
+		const raw = sessionStorage.getItem(completedPurchaseStorageKey);
+		if (!raw) return null;
+		const parsed = JSON.parse(raw) as {
+			status?: unknown;
+			orderId?: unknown;
+			at?: unknown;
+		};
+		if (
+			typeof parsed.at === "number" &&
+			Date.now() - parsed.at > CHECKOUT_COMPLETION_TTL_MS
+		) {
+			sessionStorage.removeItem(completedPurchaseStorageKey);
+			return null;
+		}
+		return (parsed.status === "success" ||
+			parsed.status === "failed" ||
+			parsed.status === "cancel") &&
+			typeof parsed.orderId === "string" &&
+			typeof parsed.at === "number"
+			? {
+					status: parsed.status,
+					orderId: parsed.orderId,
+					at: parsed.at,
+				}
+			: null;
+	} catch {
+		return null;
+	}
+}
+
+function clearCheckoutCompletion() {
+	if (typeof sessionStorage === "undefined") return;
+	try {
+		sessionStorage.removeItem(completedPurchaseStorageKey);
+	} catch {
+		// ignore storage failures
+	}
+}
+
 function clearPendingPurchase() {
 	if (typeof sessionStorage === "undefined") return;
 	try {
@@ -340,6 +444,70 @@ async function createPurchase(productKey: string) {
 		);
 	const json = await response.json();
 	return (json as { checkout?: unknown }).checkout ?? null;
+}
+
+async function getWorkOrder(
+	orderId: string,
+): Promise<WorkCommerceOrder | null> {
+	const userToken = await getAuthToken();
+	if (!userToken) return null;
+	const response = await fetch(
+		`${PUBLIC_API_ORIGIN ?? ""}/api/works/${work.id}/commerce/orders/${encodeURIComponent(orderId)}`,
+		{
+			headers: { Authorization: `Bearer ${userToken}` },
+		},
+	);
+	if (!response.ok) return null;
+	const json = (await response.json().catch(() => null)) as {
+		order?: unknown;
+	} | null;
+	const order = json?.order;
+	if (!order || typeof order !== "object") return null;
+	const record = order as Record<string, unknown>;
+	return typeof record.id === "string" && typeof record.status === "string"
+		? {
+				id: record.id,
+				status: record.status,
+				paidAt: typeof record.paidAt === "string" ? record.paidAt : null,
+			}
+		: null;
+}
+
+function checkoutStatusFromOrder(
+	order: WorkCommerceOrder,
+): WorkCheckoutStatus | null {
+	const status = order.status.toLowerCase();
+	if (
+		order.paidAt ||
+		status === "paid" ||
+		status === "success" ||
+		status === "succeeded" ||
+		status === "completed"
+	) {
+		return "success";
+	}
+	if (status === "failed" || status === "payment_failed") return "failed";
+	if (
+		status === "cancel" ||
+		status === "canceled" ||
+		status === "cancelled" ||
+		status === "expired"
+	) {
+		return "cancel";
+	}
+	return null;
+}
+
+async function recoverRedirectCheckoutState(orderId: string) {
+	const order = await getWorkOrder(orderId);
+	if (!order) return null;
+	const status = checkoutStatusFromOrder(order);
+	if (!status) return null;
+	const completion = { status, orderId };
+	completedCheckout = completion;
+	writeCheckoutCompletion(completion);
+	clearPendingPurchase();
+	return completion;
 }
 
 async function handleMessage(event: MessageEvent) {
@@ -388,11 +556,32 @@ async function handleMessage(event: MessageEvent) {
 		}
 		if (data.type === "cohub.work.checkout-state") {
 			const pendingPurchase = readPendingPurchase();
-			const orderId = checkoutState.orderId ?? pendingPurchase?.orderId ?? null;
-			if (checkoutState.status && checkoutState.orderId) clearPendingPurchase();
+			const completedPurchase = readCheckoutCompletion();
+			let status =
+				completedCheckout?.status ??
+				completedPurchase?.status ??
+				checkoutState.status;
+			let orderId =
+				completedCheckout?.orderId ??
+				completedPurchase?.orderId ??
+				checkoutState.orderId ??
+				pendingPurchase?.orderId ??
+				null;
+			if (
+				!status &&
+				pendingPurchase?.orderId &&
+				page.url.searchParams.has("checkout_session_id")
+			) {
+				const recovered = await recoverRedirectCheckoutState(
+					pendingPurchase.orderId,
+				);
+				status = recovered?.status ?? status;
+				orderId = recovered?.orderId ?? orderId;
+			}
+			if (status && orderId) clearPendingPurchase();
 			reply(data.requestId, {
 				type: "cohub.work.checkout-state.result",
-				status: checkoutState.status,
+				status,
 				orderId,
 			});
 		}
@@ -407,6 +596,8 @@ async function handleMessage(event: MessageEvent) {
 				return;
 			}
 			pendingPurchase = { requestId: data.requestId, productKey };
+			completedCheckout = null;
+			clearCheckoutCompletion();
 			purchaseError = null;
 			purchaseOpen = true;
 		}
@@ -467,38 +658,64 @@ async function handleMessage(event: MessageEvent) {
 	}
 }
 
+function finishEmbeddedCheckout(status: WorkCheckoutStatus) {
+	if (!embeddedCheckout) return;
+	const current = embeddedCheckout;
+	const completion = {
+		status,
+		orderId: current.orderId,
+	};
+	completedCheckout = completion;
+	writeCheckoutCompletion(completion);
+	clearPendingPurchase();
+	reply(current.requestId, {
+		type: "cohub.work.purchase.result",
+		checkout:
+			status === "success" ? { ...current.checkout, status: "success" } : null,
+	});
+	embeddedCheckout = null;
+}
+
 async function confirmPurchase() {
 	if (!pendingPurchase || purchaseSaving) return;
+	const currentPurchase = pendingPurchase;
 	purchaseSaving = true;
 	purchaseError = null;
 	try {
-		const checkout = await createPurchase(pendingPurchase.productKey);
-		reply(pendingPurchase.requestId, {
-			type: "cohub.work.purchase.result",
-			checkout,
-		});
-		if (checkout && typeof checkout === "object") {
-			const next = checkout as {
-				checkoutUrl?: unknown;
-				checkoutUsable?: unknown;
-				orderId?: unknown;
-				productKey?: unknown;
-			};
+		const checkout = await createPurchase(currentPurchase.productKey);
+		if (isWorkPurchaseCheckout(checkout)) {
+			writePendingPurchase({
+				orderId: checkout.orderId,
+				productKey: checkout.productKey,
+			});
+			const secret = checkout.checkoutClientSecret;
+			const usable = checkout.checkoutUsable === true;
 			if (
-				typeof next.orderId === "string" &&
-				typeof next.productKey === "string"
+				usable &&
+				checkout.checkoutUiMode === "embedded_page" &&
+				typeof secret === "string" &&
+				secret
 			) {
-				writePendingPurchase({
-					orderId: next.orderId,
-					productKey: next.productKey,
-				});
+				embeddedCheckout = {
+					clientSecret: secret,
+					title: currentPurchase.productKey,
+					orderId: checkout.orderId,
+					requestId: currentPurchase.requestId,
+					checkout,
+				};
+				purchaseOpen = false;
+				pendingPurchase = null;
+				return;
 			}
-			const url = next.checkoutUrl;
-			const usable = next.checkoutUsable === true;
+			const url = checkout.checkoutUrl;
 			if (usable && typeof url === "string" && url) {
 				window.location.href = url;
 			}
 		}
+		reply(currentPurchase.requestId, {
+			type: "cohub.work.purchase.result",
+			checkout,
+		});
 		purchaseOpen = false;
 		pendingPurchase = null;
 	} catch (error) {
@@ -586,6 +803,14 @@ onDestroy(() => window.removeEventListener("message", handleMessage));
 		</footer>
 	{/if}
 </div>
+
+<EmbeddedCheckoutDialog
+	open={embeddedCheckout !== null}
+	clientSecret={embeddedCheckout?.clientSecret ?? null}
+	title={embeddedCheckout?.title ?? "Checkout"}
+	onClose={() => finishEmbeddedCheckout("cancel")}
+	onComplete={() => finishEmbeddedCheckout("success")}
+/>
 
 <Dialog open={purchaseOpen && !!pendingPurchase} onClose={replyPurchaseCancel} title="Complete purchase" maxWidth="420px">
 	{#if pendingPurchase}

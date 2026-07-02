@@ -36,6 +36,8 @@ export type WorkCommercePurchaseResponse = {
   checkout: {
     providerKey: string | null;
     checkoutUrl: string | null;
+    checkoutClientSecret: string | null;
+    checkoutUiMode: string | null;
     checkoutUsable: boolean;
     status: string | null;
     message: string | null;
@@ -43,6 +45,8 @@ export type WorkCommercePurchaseResponse = {
     productKey: string;
   };
 };
+
+export type WorkCommerceCheckoutMode = "hosted_page" | "embedded_page";
 
 export type WorkCommerceOrder = {
   id: string;
@@ -87,7 +91,7 @@ export class WorkCommerceApi {
     );
   }
 
-  purchase(workId: string, input: { productKey: string }) {
+  purchase(workId: string, input: { productKey: string; checkoutMode?: WorkCommerceCheckoutMode }) {
     return this.transport.request<WorkCommercePurchaseResponse>(
       `/api/works/${encodeURIComponent(workId)}/commerce/purchase`,
       {

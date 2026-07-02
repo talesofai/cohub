@@ -3,6 +3,7 @@ import type {
 	BillingBalanceActivityList,
 	BillingCatalog,
 	BillingCatalogProduct,
+	BillingCheckoutResult,
 	BillingCreditStatus,
 	BillingProductBillingInterval,
 	BillingSubscriptionHistoryList,
@@ -22,6 +23,7 @@ import { goto } from "$app/navigation";
 import { page } from "$app/state";
 import { ensureAuth } from "$lib/auth";
 import { handleUnauthorizedError } from "$lib/auth-redirect";
+import EmbeddedCheckoutDialog from "$lib/components/billing/EmbeddedCheckoutDialog.svelte";
 import { sdk } from "$lib/sdk";
 import { billingCatalogStore } from "$lib/stores/billing-catalog.svelte";
 
@@ -54,6 +56,10 @@ let selectedPlanInterval =
 	);
 let checkoutBusyKey = $state<string | null>(null);
 let billingActionBusyKey = $state<string | null>(null);
+let embeddedCheckout = $state<{
+	clientSecret: string;
+	title: string;
+} | null>(null);
 let redemptionLoading = $state(false);
 let checkoutNow = $state(Date.now());
 let creditRequest: Promise<void> | null = null;
@@ -322,7 +328,11 @@ function isCheckoutExpired(item: BillingSubscriptionHistoryStatus): boolean {
 function canPayCheckout(item: BillingSubscriptionHistoryStatus): boolean {
 	return (
 		item.actions.canPay &&
-		!!item.actions.checkoutUrl &&
+		Boolean(
+			item.actions.checkoutUrl ||
+				item.actions.checkoutClientSecret ||
+				item.actions.checkoutUiMode === "embedded_page",
+		) &&
 		!isCheckoutExpired(item)
 	);
 }
@@ -582,18 +592,41 @@ async function createSubscription(product: BillingCatalogProduct) {
 	}
 	checkoutBusyKey = product.key;
 	checkoutError = "";
+	await startSubscriptionCheckout({
+		productKey: product.key,
+		title: product.name,
+	});
+}
+
+function openCheckoutResult(checkout: BillingCheckoutResult, title: string) {
+	if (checkout.checkoutUsable && checkout.checkoutClientSecret) {
+		embeddedCheckout = {
+			clientSecret: checkout.checkoutClientSecret,
+			title,
+		};
+		return true;
+	}
+	if (checkout.checkoutUsable && checkout.checkoutUrl) {
+		window.location.href = checkout.checkoutUrl;
+		return true;
+	}
+	checkoutError =
+		checkout.payment.reason ?? checkout.message ?? "Not available for purchase";
+	return false;
+}
+
+async function startSubscriptionCheckout(input: {
+	productKey: string;
+	title: string;
+}) {
 	try {
-		const { checkout } = await sdk.billing.createSubscription(product.key, {
-			returnUrl: returnUrl(),
-		});
-		if (checkout.checkoutUsable && checkout.checkoutUrl) {
-			window.location.href = checkout.checkoutUrl;
-			return;
-		}
-		checkoutError =
-			checkout.payment.reason ??
-			checkout.message ??
-			"Not available for purchase";
+		const { checkout } = await sdk.billing.createSubscription(
+			input.productKey,
+			{
+				returnUrl: returnUrl(),
+			},
+		);
+		openCheckoutResult(checkout, input.title);
 	} catch (error) {
 		if (
 			await handleUnauthorizedError(error, `${currentPath}${currentSearch}`)
@@ -607,9 +640,37 @@ async function createSubscription(product: BillingCatalogProduct) {
 	}
 }
 
-function payCheckout(item: BillingSubscriptionHistoryStatus) {
-	if (!canPayCheckout(item) || !item.actions.checkoutUrl) return;
-	window.location.href = item.actions.checkoutUrl;
+async function payCheckout(item: BillingSubscriptionHistoryStatus) {
+	if (!canPayCheckout(item)) return;
+	if (item.actions.checkoutClientSecret) {
+		embeddedCheckout = {
+			clientSecret: item.actions.checkoutClientSecret,
+			title: item.productName,
+		};
+		return;
+	}
+	if (item.actions.checkoutUrl) {
+		window.location.href = item.actions.checkoutUrl;
+		return;
+	}
+	if (item.actions.checkoutUiMode !== "embedded_page") return;
+	if (checkoutBusyKey) return;
+	checkoutBusyKey = `subscription:${item.id}:checkout`;
+	checkoutError = "";
+	try {
+		const { checkout } = await sdk.billing.recoverSubscriptionCheckout(item.id);
+		openCheckoutResult(checkout, item.productName);
+	} catch (error) {
+		if (
+			await handleUnauthorizedError(error, `${currentPath}${currentSearch}`)
+		) {
+			return;
+		}
+		checkoutError =
+			error instanceof Error ? error.message : "Failed to recover checkout";
+	} finally {
+		checkoutBusyKey = null;
+	}
 }
 
 async function cancelSubscriptionCheckout(
@@ -714,6 +775,20 @@ $effect(() => {
 	return () => window.clearTimeout(timeout);
 });
 </script>
+
+<EmbeddedCheckoutDialog
+	open={embeddedCheckout !== null}
+	clientSecret={embeddedCheckout?.clientSecret ?? null}
+	title={embeddedCheckout?.title ?? "Checkout"}
+	onClose={() => (embeddedCheckout = null)}
+	onComplete={() => {
+		embeddedCheckout = null;
+		void Promise.all([
+			loadCatalog({ force: true }),
+			loadSubscriptionsPage(subscriptionsPage, { force: true }),
+		]);
+	}}
+/>
 
 <svelte:head>
 	<title>Billing — Cohub</title>

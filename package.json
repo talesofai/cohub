@@ -34,7 +34,7 @@
   "devDependencies": {
     "@biomejs/biome": "2.4.16",
     "@changesets/cli": "^2.31.0",
-    "@talesofai-billing/cli": "^1.6.0",
+    "@talesofai-billing/cli": "^1.7.2",
     "@typescript/native-preview": "7.0.0-dev.20260527.2",
     "husky": "^9.1.7",
     "lint-staged": "^17.0.5",
