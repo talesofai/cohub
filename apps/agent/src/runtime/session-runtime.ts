@@ -42,6 +42,8 @@ type ToolLike = AgentTool;
 const AGENT_RETRY_ENABLED = true;
 const AGENT_RETRY_MAX_RETRIES = 2;
 const AGENT_RETRY_BASE_DELAY_MS = 1000;
+const LLM_REQUEST_MAX_BYTES = 30 * 1024 * 1024;
+const LLM_REQUEST_IMAGE_OMISSION_TEXT = "Image omitted from this LLM request to stay under request size limit.";
 
 const COMPACTION_SUMMARY_PREFIX = "The conversation history before this point was compacted into the following summary:\n\n<summary>\n";
 const COMPACTION_SUMMARY_SUFFIX = "\n</summary>";
@@ -187,6 +189,77 @@ function isSupportedLlmImageMimeType(mimeType: string | null | undefined): boole
   return mimeType != null && SUPPORTED_LLM_IMAGE_MIME_TYPES.has(mimeType);
 }
 
+function estimateLlmPayloadBytes(value: unknown): number {
+  if (value == null) return 4;
+  if (typeof value === "string") return Buffer.byteLength(value, "utf8") + 2;
+  if (typeof value === "number" || typeof value === "boolean") return 8;
+  if (Array.isArray(value)) return 2 + value.reduce((sum, item) => sum + estimateLlmPayloadBytes(item) + 1, 0);
+  if (typeof value !== "object") return 0;
+  let bytes = 2;
+  for (const [key, item] of Object.entries(value as Record<string, unknown>)) {
+    bytes += Buffer.byteLength(key, "utf8") + estimateLlmPayloadBytes(item) + 4;
+  }
+  return bytes;
+}
+
+function isLlmImageBlock(value: unknown): value is { type: "image"; data: string; mimeType: string; text?: string } {
+  return Boolean(value && typeof value === "object" && !Array.isArray(value)
+    && (value as Record<string, unknown>).type === "image"
+    && typeof (value as Record<string, unknown>).data === "string"
+    && typeof (value as Record<string, unknown>).mimeType === "string");
+}
+
+function collectOmittableHistoryImageBlocks(messages: unknown[]) {
+  const images: Array<{ block: { type: "image"; data: string; mimeType: string; text?: string }; bytes: number }> = [];
+  let currentUserIndex = -1;
+  for (let index = messages.length - 1; index >= 0; index -= 1) {
+    const message = messages[index];
+    if (message && typeof message === "object" && !Array.isArray(message) && (message as Record<string, unknown>).role === "user") {
+      currentUserIndex = index;
+      break;
+    }
+  }
+  const historyEnd = currentUserIndex < 0 ? messages.length : currentUserIndex;
+  for (let index = 0; index < historyEnd; index += 1) {
+    const message = messages[index];
+    const content = message && typeof message === "object" && !Array.isArray(message)
+      ? (message as Record<string, unknown>).content
+      : null;
+    if (!Array.isArray(content)) continue;
+    for (const block of content) {
+      if (!isLlmImageBlock(block)) continue;
+      images.push({ block, bytes: block.data.length + Buffer.byteLength(block.mimeType, "utf8") });
+    }
+  }
+  return images;
+}
+
+function applyLlmRequestSizeGuard(messages: unknown[]) {
+  let estimatedBytes = estimateLlmPayloadBytes(messages);
+  if (estimatedBytes <= LLM_REQUEST_MAX_BYTES) return messages;
+
+  let omittedImages = 0;
+  let omittedBytes = 0;
+  for (const image of collectOmittableHistoryImageBlocks(messages)) {
+    omittedImages += 1;
+    omittedBytes += image.bytes;
+    image.block.type = "text" as never;
+    image.block.text = LLM_REQUEST_IMAGE_OMISSION_TEXT;
+    delete (image.block as Partial<typeof image.block>).data;
+    delete (image.block as Partial<typeof image.block>).mimeType;
+    estimatedBytes = estimateLlmPayloadBytes(messages);
+    if (estimatedBytes <= LLM_REQUEST_MAX_BYTES) break;
+  }
+
+  if (omittedImages > 0) {
+    logger.info(`[Agent] omitted ${omittedImages} history image(s) from LLM request to fit request size estimatedBytes=${estimatedBytes} omittedImageBytes=${omittedBytes}`);
+  }
+  if (estimatedBytes > LLM_REQUEST_MAX_BYTES) {
+    logger.warn(`[Agent] LLM request still exceeds size guard after image omission estimatedBytes=${estimatedBytes} maxBytes=${LLM_REQUEST_MAX_BYTES}`);
+  }
+  return messages;
+}
+
 function toLlmImageContent(block: Record<string, unknown>): ImageContent | null {
   const directData = typeof block.data === "string" && block.data.trim() ? block.data : null;
   if (directData) {
@@ -317,7 +390,7 @@ function toLlmMessages(messages: AgentMessage[]) {
       });
     }
   }
-  return result as never;
+  return applyLlmRequestSizeGuard(result) as never;
 }
 
 function normalizeUserId(userId?: string | null) {

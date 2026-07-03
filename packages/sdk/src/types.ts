@@ -1131,9 +1131,18 @@ export type LabelAssignmentPageInfo = {
   nextCursor: string | null;
 };
 
+export type PatchResourceLabelsInput = {
+  addLabelRefs?: string[];
+  removeLabelRefs?: string[];
+};
+
 export type ResourceLabelsResponse = {
   labels: LabelListItem[];
   assignments: LabelAssignmentRecord[];
+};
+
+export type PatchResourceLabelsResponse = ResourceLabelsResponse & {
+  changed: boolean;
 };
 
 export type SpaceModListItem = {

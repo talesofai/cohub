@@ -28,7 +28,7 @@ export async function uploadAvatarAsset(input: {
   });
 }
 
-const CHAT_IMAGE_MAX_EDGE = 2160;
+const CHAT_IMAGE_MAX_EDGE = 1984;
 const CHAT_IMAGE_QUALITY = 86;
 
 export async function normalizeChatImageFile(path: string): Promise<Buffer> {

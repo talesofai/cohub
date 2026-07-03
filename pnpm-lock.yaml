@@ -105,6 +105,9 @@ importers:
       postgres:
         specifier: ^3.4.9
         version: 3.4.9
+      sharp:
+        specifier: ^0.34.5
+        version: 0.34.5
       ws:
         specifier: ^8.21.0
         version: 8.21.0

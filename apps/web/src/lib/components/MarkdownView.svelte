@@ -23,7 +23,7 @@ function loadMarkdownModule() {
 
 <script lang="ts">
 import type { ContentBlock } from "@cohub/protocol/core";
-import { onDestroy, untrack } from "svelte";
+import { onDestroy, tick, untrack } from "svelte";
 import MarkdownFrontmatter from "$lib/components/MarkdownFrontmatter.svelte";
 import MarkdownSurface from "$lib/components/MarkdownSurface.svelte";
 import { parseMarkdownFrontmatter } from "$lib/markdown-frontmatter";
@@ -80,7 +80,7 @@ function ensureController() {
 	unsubscribeController = controller.subscribe((snapshot) => {
 		stableHtml = snapshot.stableHtml;
 		tailHtml = snapshot.tailHtml;
-		requestAnimationFrame(() => untrack(() => onRendered?.()));
+		void tick().then(() => untrack(() => onRendered?.()));
 	});
 	return controller;
 }
@@ -103,13 +103,13 @@ function renderFullMarkdown(markdownSource: string) {
 			if (seq !== renderSeq) return;
 			stableHtml = html;
 			tailHtml = "";
-			requestAnimationFrame(() => {
+			void tick().then(() => {
 				if (seq === renderSeq) untrack(() => onRendered?.());
 			});
 		})
 		.catch(() => {
 			if (seq !== renderSeq) return;
-			requestAnimationFrame(() => untrack(() => onRendered?.()));
+			void tick().then(() => untrack(() => onRendered?.()));
 		});
 }
 

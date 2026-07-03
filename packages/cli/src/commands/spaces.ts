@@ -716,6 +716,27 @@ function registerLabels(spacesCmd: Command): void {
     });
 
   labelsCmd
+    .command("patch <resourceType> <resourceRef>")
+    .description("Patch resource labels")
+    .option("--add <refs>", "Comma-separated label refs to add")
+    .option("--remove <refs>", "Comma-separated label refs to remove")
+    .option("--json", "Output as JSON")
+    .action(async (resourceType: string, resourceRef: string, opts: { add?: string; remove?: string; json?: boolean }) => {
+      const spaceId = resolveSpace(spacesCmd);
+      const client = createClient();
+      try {
+        const result = await client.space(spaceId).labels.patchResourceLabels(parseLabelResourceType(resourceType), resourceRef, {
+          addLabelRefs: parseLabelRefs(opts.add),
+          removeLabelRefs: parseLabelRefs(opts.remove),
+        });
+        if (jsonRequested(opts)) return outJson(result);
+        ok("Resource labels patched");
+      } catch (e: unknown) {
+        handleHttp(e);
+      }
+    });
+
+  labelsCmd
     .command("set <resourceType> <resourceRef> [labelRefs...]")
     .description("Set resource labels")
     .option("--labels <refs>", "Comma-separated label refs")

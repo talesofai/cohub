@@ -9,6 +9,8 @@ export type SessionScrollAnchor = {
 	updatedAt: number;
 };
 
+const AUTO_FOLLOW_THRESHOLD_PX = 60;
+
 export function createSessionScrollController() {
 	let listEl = $state<HTMLDivElement | null>(null);
 	let chatTimelineRef = $state<ChatTimelineHandle | null>(null);
@@ -98,6 +100,22 @@ export function createSessionScrollController() {
 		timelineScrollTop = listEl.scrollTop;
 		timelineScrollHeight = listEl.scrollHeight;
 		timelineClientHeight = listEl.clientHeight;
+	}
+
+	function getTimelineBottomScrollTop() {
+		if (!listEl) return 0;
+		return Math.max(0, listEl.scrollHeight - listEl.clientHeight);
+	}
+
+	function updateAutoFollow(threshold = AUTO_FOLLOW_THRESHOLD_PX) {
+		if (!listEl) return;
+		const distanceFromBottom =
+			listEl.scrollHeight - listEl.scrollTop - listEl.clientHeight;
+		shouldAutoFollow = distanceFromBottom <= threshold;
+	}
+
+	function shouldPinToBottom(options?: { immediate?: boolean }) {
+		return Boolean(listEl && (options?.immediate || shouldAutoFollow));
 	}
 
 	function measureTurnMarkerPositions(turnScrollAnchorOffset: number) {
@@ -339,6 +357,9 @@ export function createSessionScrollController() {
 		clearSessionScrollAnchor,
 		getMessageElementAbsoluteTop,
 		updateTimelineScrollMetrics,
+		getTimelineBottomScrollTop,
+		updateAutoFollow,
+		shouldPinToBottom,
 		measureTurnMarkerPositions,
 		stopVimScroll,
 		scrollTimelineByLines,

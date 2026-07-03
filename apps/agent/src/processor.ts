@@ -3,6 +3,7 @@ import type { Job } from "bullmq";
 import type { ContentBlock } from "@cohub/protocol/core";
 import type { ImageContent } from "@earendil-works/pi-ai";
 import { readPublicAssetImageUrl } from "./public-asset-storage.js";
+import { imageOmittedText, normalizeAgentImage, normalizeContentBlocksImages } from "./image-normalizer.js";
 import type { AgentMessage, AgentTool } from "@earendil-works/pi-agent-core";
 import { context, trace } from "@opentelemetry/api";
 import { getActiveTraceIdentifiers, getOrCreateRequestId, setRequestContextAttributes } from "@cohub/infra/tracing";
@@ -140,7 +141,15 @@ function contentBlockToBase64ImageContent(block: ContentBlock): ImageContent | n
 
 async function fetchUrlImageContent(url: string): Promise<ImageContent | null> {
   const publicAsset = await readPublicAssetImageUrl(url).catch(() => null);
-  return publicAsset ? { type: "image", ...publicAsset } : null;
+  if (!publicAsset) return null;
+  const normalized = await normalizeAgentImage({
+    data: publicAsset.data,
+    mimeType: publicAsset.mimeType,
+    sourceKind: "public_asset",
+    originalSource: "url",
+    originalUrl: url,
+  });
+  return normalized ? { type: "image", data: normalized.data, mimeType: normalized.mimeType } : null;
 }
 
 async function contentBlockToImageContent(block: ContentBlock): Promise<ImageContent | null> {
@@ -151,7 +160,10 @@ async function contentBlockToImageContent(block: ContentBlock): Promise<ImageCon
 
 async function contentBlockToAgentContent(block: ContentBlock): Promise<{ type: "text"; text: string } | ImageContent | null> {
   if (block.type === "text") return { type: "text", text: block.text };
-  if (block.type === "image") return contentBlockToImageContent(block);
+  if (block.type === "image") {
+    const image = await contentBlockToImageContent(block);
+    return image ?? { type: "text", text: imageOmittedText("image could not be loaded") };
+  }
   return null;
 }
 
@@ -267,7 +279,8 @@ async function appendAndPersistUserMessage(input: {
   user: TurnUserMessage;
   meta: Record<string, unknown>;
 }) {
-  const message = await contentToAgentMessage(input.user.content, input.meta);
+  const content = await normalizeContentBlocksImages(input.user.content, { readUrlImage: readPublicAssetImageUrl });
+  const message = await contentToAgentMessage(content, input.meta);
   const startedAt = new Date().toISOString();
   input.handle.session.agent.state.messages.push(message);
   const entryId = input.handle.sessionManager.appendMessage(message);
@@ -278,7 +291,7 @@ async function appendAndPersistUserMessage(input: {
     sessionId: input.sessionId,
     userMessageId: input.user.userMessageId,
     turnId: input.user.turnId,
-    content: input.user.content,
+    content,
     meta: input.meta,
     startedAt,
   });
@@ -320,6 +333,7 @@ async function runDirectShellCommandTurn(input: {
 
   setCurrentSessionExecutionAuth({
     sessionId: input.sessionId,
+    turnId: user.turnId,
     actorUserId: input.actorUserId,
     executionToken: input.executionToken,
     executionScopes: input.executionScopes ?? [],
@@ -786,7 +800,7 @@ export async function processAgentTurnJob(job: Job<AgentTurnJobData>) {
 
       if (accessMode === "full_access") warmupSandboxConnection(data.spaceId);
 
-      const turnUserMessages: TurnUserMessage[] = buildUserMessagesForBatch(batch)
+      const rawTurnUserMessages: TurnUserMessage[] = buildUserMessagesForBatch(batch)
         .filter((item) => Boolean(item.userMessageId))
         .map((item) => ({
           turnId: item.turnId,
@@ -795,6 +809,10 @@ export async function processAgentTurnJob(job: Job<AgentTurnJobData>) {
           content: item.content,
           meta: item.meta,
         }));
+      const turnUserMessages = await Promise.all(rawTurnUserMessages.map(async (item) => ({
+        ...item,
+        content: await normalizeContentBlocksImages(item.content, { readUrlImage: readPublicAssetImageUrl }),
+      })));
       for (const item of turnUserMessages) {
         const meta = normalizeTurnUserMeta(item);
         ensurePendingUserMessage(activeHandle, {
@@ -1060,9 +1078,24 @@ export async function processAgentTurnJob(job: Job<AgentTurnJobData>) {
         });
         if (reconciled) drainAfterRelease = drainAfterRelease ?? { spaceId: data.spaceId, sessionId: data.sessionId, reason: "turn_reconciled" };
       }
+      // Reset residual per-turn state to prevent leakage into the next turn
+      // on the same reused session handle. handleSettled is true only on
+      // normal exits (success/abort) where event handlers + settleSessionHandle
+      // have already cleaned up; on error exits — even when failActiveTurn
+      // marked the DB turn terminal — the agent may still be streaming and
+      // per-turn fields are still set.
       if (handle && !handleSettled) {
+        await handle.session.abort().catch(() => undefined);
+        clearActiveTurnContext(handle, data.sessionId);
+        handle.toolExecutionStartedAtById.clear();
+        if (claimedBatch) {
+          for (const userMessageId of claimedBatch.executionBatch.userMessageIds) {
+            removePendingUserMessage(handle, userMessageId);
+          }
+        }
         await settleSessionHandle(handle, terminalHandled ? "strict" : "best_effort");
       }
+      if (claimedBatch) clearRetryState(data);
       await lock.release();
       if (drainAfterRelease) await drainNextQueuedTurn(drainAfterRelease);
     }

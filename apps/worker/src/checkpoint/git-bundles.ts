@@ -4,6 +4,7 @@ import { mkdir, readFile, rm, stat, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { uploadObjectFileIfMissing } from "./assets.js";
 import { runGitWithOutput } from "./git.js";
+import { ensureWorkerLocalTmpDir, getWorkerLocalTmpDir, removeWorkerLocalTmpDir } from "../local-tmp.js";
 
 export type UserGitRemote = {
   name: string;
@@ -128,35 +129,40 @@ export async function collectUserGitRepos(input: {
   repoPaths: string[];
 }): Promise<UserGitRepoRecord[]> {
   const cache = await loadCache(input.systemDir);
-  const bundleTmpDir = join(input.tmpDir, "git-bundles");
+  const bundleTmpDir = getWorkerLocalTmpDir("git-bundles", crypto.randomUUID());
   const records: UserGitRepoRecord[] = [];
 
-  for (const repoPath of [...new Set(input.repoPaths)].sort()) {
-    const repoDir = repoPath === "." ? input.workspaceDir : join(input.workspaceDir, repoPath);
-    const [fingerprint, remotes] = await Promise.all([getRepoFingerprint(repoDir), getRemotes(repoDir)]);
-    let bundle: UserGitRepoBundle | null = null;
+  try {
+    await ensureWorkerLocalTmpDir(bundleTmpDir);
+    for (const repoPath of [...new Set(input.repoPaths)].sort()) {
+      const repoDir = repoPath === "." ? input.workspaceDir : join(input.workspaceDir, repoPath);
+      const [fingerprint, remotes] = await Promise.all([getRepoFingerprint(repoDir), getRemotes(repoDir)]);
+      let bundle: UserGitRepoBundle | null = null;
 
-    if (fingerprint.fingerprint) {
-      const cached = cache.repos[repoPath];
-      if (cached?.fingerprint === fingerprint.fingerprint) {
-        bundle = cached.bundle;
-      } else {
-        bundle = await createBundle({ repoDir, tmpDir: bundleTmpDir });
-        cache.repos[repoPath] = { fingerprint: fingerprint.fingerprint, bundle };
+      if (fingerprint.fingerprint) {
+        const cached = cache.repos[repoPath];
+        if (cached?.fingerprint === fingerprint.fingerprint) {
+          bundle = cached.bundle;
+        } else {
+          bundle = await createBundle({ repoDir, tmpDir: bundleTmpDir });
+          cache.repos[repoPath] = { fingerprint: fingerprint.fingerprint, bundle };
+        }
       }
+
+      records.push({
+        path: repoPath,
+        head: fingerprint.head,
+        branch: fingerprint.branch,
+        dirty: fingerprint.dirty,
+        fingerprint: fingerprint.fingerprint,
+        bundle,
+        remotes,
+      });
     }
 
-    records.push({
-      path: repoPath,
-      head: fingerprint.head,
-      branch: fingerprint.branch,
-      dirty: fingerprint.dirty,
-      fingerprint: fingerprint.fingerprint,
-      bundle,
-      remotes,
-    });
+    await saveCache(input.systemDir, cache);
+    return records;
+  } finally {
+    await removeWorkerLocalTmpDir(bundleTmpDir).catch(() => undefined);
   }
-
-  await saveCache(input.systemDir, cache);
-  return records;
 }

@@ -12,7 +12,6 @@ import type {
 import type { ChannelEnvelope } from "@cohub/protocol/realtime";
 import type { CanvasSemanticOp } from "@neta-art/cohub";
 import {
-	type GenerationStreamEvent,
 	HttpError,
 	type Permission,
 	type SessionRecord,
@@ -710,8 +709,6 @@ const visibleInitialLoadingSessionIds = $derived(
 	sessionWorkspace.visibleInitialLoadingSessionIds,
 );
 const sessionScroll = createSessionScrollController();
-let bottomFollowFrame: number | null = null;
-let bottomFollowActive = false;
 let composerHostEl = $state<HTMLDivElement | null>(null);
 const shouldAutoFollow = $derived(sessionScroll.shouldAutoFollow);
 const composerHeight = $derived(sessionScroll.composerHeight);
@@ -725,7 +722,6 @@ let hasUnread = $derived.by(() => {
 		return false;
 	return unreadTracker.isUnread(session, session.lastMessageId);
 });
-let autoScrollGuard = $state(false);
 let restoringBottomSessionId = $state<string | null>(null);
 let programmaticScrollActive = false;
 let programmaticScrollTarget: number | null = null;
@@ -3268,12 +3264,6 @@ function completeGenerationForTurn(sessionId: string, turnId: string | null) {
 	completeGeneration(sessionId);
 }
 
-function handleGenerationStreamEvent(
-	sessionId: string,
-	event: GenerationStreamEvent,
-) {
-	return generationRealtime.handleGenerationStreamEvent(sessionId, event);
-}
 async function handleForkTurn(turn: SessionTurnRecord) {
 	if (!activeSessionId || forkingTurnId) return;
 	forkingTurnId = turn.id;
@@ -3714,53 +3704,14 @@ async function handleSend() {
 }
 function scrollToBottomNow() {
 	if (!listEl) return;
-	autoScrollGuard = true;
-	setProgrammaticScrollTop(listEl.scrollHeight - listEl.clientHeight);
+	setProgrammaticScrollTop(sessionScroll.getTimelineBottomScrollTop());
 	if (activeSessionId) {
 		writeBottomScrollAnchor(activeSessionId);
 	}
-	requestAnimationFrame(() => {
-		autoScrollGuard = false;
-	});
-}
-function stopBottomFollow() {
-	bottomFollowActive = false;
-	if (bottomFollowFrame != null) {
-		cancelAnimationFrame(bottomFollowFrame);
-		bottomFollowFrame = null;
-	}
 }
 function requestBottomFollow(options?: { immediate?: boolean }) {
-	if (!listEl || !shouldAutoFollow) return;
-	if (options?.immediate) {
-		scrollToBottomNow();
-		return;
-	}
-	bottomFollowActive = true;
-	if (bottomFollowFrame == null) {
-		bottomFollowFrame = requestAnimationFrame(runBottomFollowFrame);
-	}
-}
-function runBottomFollowFrame() {
-	bottomFollowFrame = null;
-	if (!bottomFollowActive || !listEl || !shouldAutoFollow) {
-		bottomFollowActive = false;
-		return;
-	}
-	const maxScroll = Math.max(0, listEl.scrollHeight - listEl.clientHeight);
-	const distance = maxScroll - listEl.scrollTop;
-	if (Math.abs(distance) <= 1) {
-		setProgrammaticScrollTop(maxScroll);
-		bottomFollowActive = false;
-		return;
-	}
-	const velocity = Math.max(8, Math.min(96, Math.abs(distance) * 0.34));
-	const next = listEl.scrollTop + Math.sign(distance) * velocity;
-	setProgrammaticScrollTop(
-		distance > 0 ? Math.min(next, maxScroll) : Math.max(next, maxScroll),
-	);
-	if (activeSessionId) writeBottomScrollAnchor(activeSessionId);
-	bottomFollowFrame = requestAnimationFrame(runBottomFollowFrame);
+	if (!sessionScroll.shouldPinToBottom(options)) return;
+	scrollToBottomNow();
 }
 async function forceScrollToBottom() {
 	await tick();
@@ -3772,11 +3723,7 @@ async function forceScrollToBottom() {
 	});
 }
 function updateAutoFollow() {
-	if (!listEl) return;
-	const threshold = 60;
-	const distanceFromBottom =
-		listEl.scrollHeight - listEl.scrollTop - listEl.clientHeight;
-	sessionScroll.shouldAutoFollow = distanceFromBottom <= threshold;
+	sessionScroll.updateAutoFollow();
 }
 function updateCurrentTurnSequence() {
 	if (!listEl) return;
@@ -3817,7 +3764,6 @@ function setProgrammaticScrollTop(scrollTop: number) {
 }
 function beginUserScroll() {
 	if (!activeSessionId) return;
-	stopBottomFollow();
 	userScrollActive = true;
 	programmaticScrollActive = false;
 	programmaticScrollTarget = null;
@@ -3913,7 +3859,7 @@ function handleTimelineMarkdownRendered() {
 		activeSessionId &&
 		(restoringBottomSessionId === activeSessionId || shouldAutoFollow)
 	) {
-		requestAnimationFrame(() => requestBottomFollow());
+		requestBottomFollow();
 	}
 	maybeCompleteAnchorRestore();
 }
@@ -4542,7 +4488,6 @@ onMount(() => {
 			cancelAnimationFrame(turnMarkerMeasureFrame);
 		stopVimScroll();
 		clearPendingVimG();
-		stopBottomFollow();
 		generationRealtime.dispose();
 		persistSessionScrollAnchorsNow();
 		pageMounted = false;
@@ -4674,18 +4619,9 @@ $effect(() => {
 $effect(() => {
 	const currentSpaceId = spaceId;
 	const sessionId = activeSessionId;
-	if (!pageMounted || !currentSpaceId || !sessionId) return;
-	return sdk
-		.space(currentSpaceId)
-		.session(sessionId)
-		.subscribeGeneration(
-			{
-				event: (event) => {
-					void handleGenerationStreamEvent(sessionId, event);
-				},
-			},
-			{ recover: true },
-		);
+	generationRealtime.syncActiveSubscription(
+		pageMounted && Boolean(currentSpaceId && sessionId),
+	);
 });
 $effect(() => {
 	const currentSpaceId = spaceId;
@@ -5012,15 +4948,13 @@ $effect(() => {
 });
 $effect(() => {
 	if (!listEl || !activeSessionId) return;
-	requestAnimationFrame(() => {
-		updateTimelineScrollMetrics();
-		updateAutoFollow();
-	});
+	updateTimelineScrollMetrics();
+	updateAutoFollow();
 });
 // ResizeObserver: when the scroll container's content grows and the user
-// is already near the bottom (shouldAutoFollow), keep them pinned. This
-// replaces fragile tick()/setTimeout-based scroll logic and naturally
-// catches async markdown rendering, image loading, etc.
+// is already near the bottom (shouldAutoFollow), keep them pinned before
+// the next paint. This naturally catches async markdown rendering, image
+// loading, etc.
 $effect(() => {
 	const el = listEl;
 	if (!el) return;
@@ -5028,12 +4962,9 @@ $effect(() => {
 	const ro = new ResizeObserver(() => {
 		if (!listEl) return;
 		const currentHeight = listEl.scrollHeight;
-		if (
-			currentHeight > prevHeight &&
-			(shouldAutoFollow || restoringBottomSessionId === activeSessionId) &&
-			!autoScrollGuard
-		) {
-			requestBottomFollow();
+		const restoringBottom = restoringBottomSessionId === activeSessionId;
+		if (currentHeight > prevHeight && (shouldAutoFollow || restoringBottom)) {
+			requestBottomFollow({ immediate: restoringBottom });
 		}
 		prevHeight = currentHeight;
 		updateTimelineScrollMetrics();

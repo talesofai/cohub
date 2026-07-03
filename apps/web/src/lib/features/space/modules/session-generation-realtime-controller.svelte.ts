@@ -3,6 +3,7 @@ import { tick } from "svelte";
 import { sessionTurnsRepo } from "$lib/cache/repositories/session-turns-repo";
 import { sdk } from "$lib/sdk";
 import { sessionGenerationStore } from "$lib/stores/session-generation.svelte";
+import { completeGeneration } from "$lib/stores/session-generation-controller";
 import {
 	applyGenerationStreamEvent,
 	applyGenerationStreamSnapshot,
@@ -25,8 +26,17 @@ type ConnectionState =
 	| "closed"
 	| "error";
 
+const FINALIZED_COMMIT_FALLBACK_MS = 250;
+const FINALIZED_COMMIT_FALLBACK_MAX_ATTEMPTS = 6;
 const POST_SEND_RECOVERY_GRACE_MS = 2500;
 const STREAM_SNAPSHOT_RECOVERY_COOLDOWN_MS = 15000;
+const TERMINAL_TURN_STATUSES = new Set([
+	"completed",
+	"failed",
+	"interrupted",
+	"merged",
+	"cancelled",
+]);
 
 export function createSessionGenerationRealtimeController(options: {
 	getSpaceId: () => string;
@@ -56,6 +66,13 @@ export function createSessionGenerationRealtimeController(options: {
 	onRecovered: () => void;
 	onExhausted: (sessionId: string) => void;
 }) {
+	let activeGenerationSubscriptionKey = "";
+	let activeGenerationSubscriptionCleanup: (() => void) | null = null;
+	const finalizedFallbackTimers = new Map<
+		string,
+		ReturnType<typeof setTimeout>
+	>();
+	const finalCommitSeenAtByKey = new Map<string, number>();
 	const streamSnapshotRecoveryInFlight = new Map<string, Promise<boolean>>();
 	const reconcileSessionTailInFlight = new Map<string, Promise<void>>();
 	const postSendRecoveryTimers = new Map<
@@ -271,19 +288,164 @@ export function createSessionGenerationRealtimeController(options: {
 		postSendRecoveryTimers.set(sessionId, timer);
 	}
 
+	function getFinalizedFallbackKey(sessionId: string, turnId: string | null) {
+		return `${sessionId}:${turnId ?? "unknown"}`;
+	}
+
+	function clearFinalizedFallback(sessionId: string, turnId: string | null) {
+		const key = getFinalizedFallbackKey(sessionId, turnId);
+		const timer = finalizedFallbackTimers.get(key);
+		if (!timer) return;
+		clearTimeout(timer);
+		finalizedFallbackTimers.delete(key);
+	}
+
+	function clearAllFinalizedFallbacks() {
+		for (const timer of finalizedFallbackTimers.values()) clearTimeout(timer);
+		finalizedFallbackTimers.clear();
+		finalCommitSeenAtByKey.clear();
+	}
+
+	function rememberFinalCommit(sessionId: string, turnId: string | null) {
+		const now = Date.now();
+		finalCommitSeenAtByKey.set(getFinalizedFallbackKey(sessionId, null), now);
+		if (turnId) {
+			finalCommitSeenAtByKey.set(
+				getFinalizedFallbackKey(sessionId, turnId),
+				now,
+			);
+		}
+	}
+
+	function hasRecentFinalCommit(sessionId: string, turnId: string | null) {
+		const keys = [
+			getFinalizedFallbackKey(sessionId, turnId),
+			getFinalizedFallbackKey(sessionId, null),
+		];
+		return keys.some((key) => {
+			const seenAt = finalCommitSeenAtByKey.get(key) ?? 0;
+			const isRecent = Date.now() - seenAt < FINALIZED_COMMIT_FALLBACK_MS * 4;
+			if (!isRecent) finalCommitSeenAtByKey.delete(key);
+			return isRecent;
+		});
+	}
+
+	function getMessageTurnId(message: {
+		meta?: Record<string, unknown> | null;
+	}) {
+		const turnId = message.meta?.turnId;
+		return typeof turnId === "string" && turnId.trim() ? turnId.trim() : null;
+	}
+
+	function getRawEventTurnId(event: GenerationStreamEvent) {
+		const turn = event.rawEvent?.payload?.turn;
+		if (turn && typeof turn === "object" && !Array.isArray(turn)) {
+			const turnId = (turn as { id?: unknown }).id;
+			if (typeof turnId === "string" && turnId.trim()) return turnId.trim();
+		}
+		const message = event.rawEvent?.payload?.message;
+		if (message && typeof message === "object" && !Array.isArray(message)) {
+			const meta = (message as { meta?: unknown }).meta;
+			if (meta && typeof meta === "object" && !Array.isArray(meta)) {
+				const turnId = (meta as { turnId?: unknown }).turnId;
+				if (typeof turnId === "string" && turnId.trim()) return turnId.trim();
+			}
+		}
+		return null;
+	}
+
+	function getEventTurnId(sessionId: string, event: GenerationStreamEvent) {
+		if (event.type === "state" || event.type === "out_of_sync") {
+			return event.state.turnId ?? null;
+		}
+		if (event.type === "finalized") return event.turn.id ?? null;
+		if (event.type === "turn_updated") {
+			return typeof event.turn.id === "string" ? event.turn.id : null;
+		}
+		if (event.type === "lifecycle") return event.turnId ?? null;
+		return (
+			(event.type === "commit"
+				? getMessageTurnId(event.commit.message)
+				: null) ??
+			getRawEventTurnId(event) ??
+			sessionGenerationStore.get(sessionId)?.turnId ??
+			null
+		);
+	}
+
+	function hasConfirmedFinalTurn(sessionId: string, turnId: string | null) {
+		if (!turnId) return false;
+		const turn = options
+			.getSessionState(sessionId)
+			?.turns.find((item) => item.id === turnId);
+		return Boolean(turn && TERMINAL_TURN_STATUSES.has(turn.status));
+	}
+
+	function scheduleFinalizedFallback(
+		sessionId: string,
+		turnId: string | null,
+		attempt = 0,
+	) {
+		if (hasRecentFinalCommit(sessionId, turnId)) return;
+		const key = getFinalizedFallbackKey(sessionId, turnId);
+		clearFinalizedFallback(sessionId, turnId);
+		const timer = setTimeout(() => {
+			finalizedFallbackTimers.delete(key);
+			void finalizeAfterMissingCommit(sessionId, turnId, attempt);
+		}, FINALIZED_COMMIT_FALLBACK_MS);
+		finalizedFallbackTimers.set(key, timer);
+	}
+
+	async function finalizeAfterMissingCommit(
+		sessionId: string,
+		turnId: string | null,
+		attempt: number,
+	) {
+		const current = sessionGenerationStore.get(sessionId);
+		if (!sessionGenerationStore.isGenerating(sessionId)) return;
+		if (turnId && current?.turnId && current.turnId !== turnId) return;
+		await restoreSessionStreamSnapshot(sessionId, { turnId, force: true });
+		await reconcileSessionTail(sessionId);
+		const latest = sessionGenerationStore.get(sessionId);
+		if (!sessionGenerationStore.isGenerating(sessionId)) return;
+		if (turnId && latest?.turnId && latest.turnId !== turnId) return;
+		if (!hasConfirmedFinalTurn(sessionId, turnId)) {
+			if (attempt + 1 < FINALIZED_COMMIT_FALLBACK_MAX_ATTEMPTS) {
+				scheduleFinalizedFallback(sessionId, turnId, attempt + 1);
+			}
+			return;
+		}
+		completeGeneration(sessionId);
+		if (
+			sessionId === options.getActiveSessionId() &&
+			options.shouldAutoFollow()
+		) {
+			await tick();
+			options.requestBottomFollow();
+		}
+	}
+
 	async function handleGenerationStreamEvent(
 		sessionId: string,
 		event: GenerationStreamEvent,
 	) {
 		try {
+			const turnId = getEventTurnId(sessionId, event);
+			if (
+				event.type === "commit" &&
+				(event.commit.kind === "final" || event.commit.kind === "error")
+			) {
+				rememberFinalCommit(sessionId, turnId);
+				clearFinalizedFallback(sessionId, turnId);
+			}
 			const generationEffect = applyGenerationStreamEvent(sessionId, event);
 			if (!generationEffect.handled) return;
 			clearPostSendRecovery(sessionId);
+			if (event.type === "finalized") {
+				scheduleFinalizedFallback(sessionId, turnId);
+			}
 			if (generationEffect.shouldRestoreSnapshot) {
-				void restoreSessionStreamSnapshot(sessionId, {
-					turnId:
-						"state" in event && event.state.turnId ? event.state.turnId : null,
-				});
+				void restoreSessionStreamSnapshot(sessionId, { turnId });
 			}
 			if (
 				generationEffect.shouldReconcile &&
@@ -307,11 +469,49 @@ export function createSessionGenerationRealtimeController(options: {
 		}
 	}
 
+	function clearActiveGenerationSubscription() {
+		activeGenerationSubscriptionCleanup?.();
+		activeGenerationSubscriptionCleanup = null;
+		activeGenerationSubscriptionKey = "";
+	}
+
+	function syncActiveSubscription(enabled: boolean) {
+		const spaceId = options.getSpaceId();
+		const sessionId = options.getActiveSessionId();
+		if (!enabled || !spaceId || !sessionId) {
+			clearActiveGenerationSubscription();
+			return;
+		}
+		const key = `${spaceId}:${sessionId}`;
+		if (activeGenerationSubscriptionKey === key) return;
+		clearActiveGenerationSubscription();
+		activeGenerationSubscriptionKey = key;
+		try {
+			activeGenerationSubscriptionCleanup = sdk
+				.space(spaceId)
+				.session(sessionId)
+				.subscribeGeneration(
+					{
+						event: (event) => {
+							if (activeGenerationSubscriptionKey !== key) return;
+							void handleGenerationStreamEvent(sessionId, event);
+						},
+					},
+					{ recover: true },
+				);
+		} catch (error) {
+			clearActiveGenerationSubscription();
+			console.warn("[GenerationRealtime] subscribeGeneration failed:", error);
+		}
+	}
+
 	function clearStreamSnapshotRecoveryCooldowns() {
 		lastStreamSnapshotRecoveryByTurn.clear();
 	}
 
 	function dispose() {
+		clearActiveGenerationSubscription();
+		clearAllFinalizedFallbacks();
 		clearAllPostSendRecovery();
 		recoveryCoordinator.dispose();
 		lastStreamSnapshotRecoveryByTurn.clear();
@@ -323,7 +523,7 @@ export function createSessionGenerationRealtimeController(options: {
 		clearPostSendRecovery,
 		clearAllPostSendRecovery,
 		schedulePostSendRecoveryCheck,
-		handleGenerationStreamEvent,
+		syncActiveSubscription,
 		clearStreamSnapshotRecoveryCooldowns,
 		reconcileAfterReconnect: (sessionId: string | null) =>
 			recoveryCoordinator.reconcileAfterReconnect(sessionId),

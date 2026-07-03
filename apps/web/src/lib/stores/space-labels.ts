@@ -329,6 +329,76 @@ export async function markLabelItemsStale(spaceId: string, labelId: string) {
 	return labelItemsRepo.markStale(spaceId, labelId);
 }
 
+async function cacheResourceLabelMutation(input: {
+	spaceId: string;
+	resourceType: LabelResourceType;
+	resourceRef: string;
+	result: { labels: LabelListItem[]; assignments: LabelAssignmentRecord[] };
+	affectedRefs: string[];
+}) {
+	await Promise.all([
+		labelTreeRepo.set(input.spaceId, input.result.labels, {
+			source: "network",
+		}),
+		resourceLabelsRepo.set(
+			input.spaceId,
+			input.resourceType,
+			input.resourceRef,
+			input.result,
+			{ source: "network" },
+		),
+	]);
+	queueHydrateUserLabelProfiles(input.result.labels);
+
+	const affectedLabelIds = getLabelIdsByRefs(
+		input.result.labels,
+		input.affectedRefs,
+	);
+	await Promise.all(
+		affectedLabelIds.map((labelId) =>
+			markLabelItemsStale(input.spaceId, labelId),
+		),
+	).catch(() => undefined);
+
+	if (typeof window !== "undefined") {
+		window.dispatchEvent(
+			new CustomEvent("cohub:label-assignments-updated", {
+				detail: {
+					spaceId: input.spaceId,
+					resourceType: input.resourceType,
+					resourceRef: input.resourceRef,
+					affectedLabelIds,
+				},
+			}),
+		);
+	}
+}
+
+export async function patchResourceLabels(
+	spaceId: string,
+	resourceType: LabelResourceType,
+	resourceRef: string,
+	input: { addLabelRefs?: string[]; removeLabelRefs?: string[] },
+): Promise<{
+	labels: LabelListItem[];
+	assignments: LabelAssignmentRecord[];
+	changed: boolean;
+}> {
+	const result = await sdk
+		.space(spaceId)
+		.labels.patchResourceLabels(resourceType, resourceRef, input);
+	await cacheResourceLabelMutation({
+		spaceId,
+		resourceType,
+		resourceRef,
+		result,
+		affectedRefs: result.changed
+			? [...(input.addLabelRefs ?? []), ...(input.removeLabelRefs ?? [])]
+			: [],
+	});
+	return result;
+}
+
 export async function setResourceLabels(
 	spaceId: string,
 	resourceType: LabelResourceType,
@@ -346,35 +416,15 @@ export async function setResourceLabels(
 	const result = await sdk
 		.space(spaceId)
 		.labels.setResourceLabels(resourceType, resourceRef, labelRefs);
-	await Promise.all([
-		labelTreeRepo.set(spaceId, result.labels, { source: "network" }),
-		resourceLabelsRepo.set(spaceId, resourceType, resourceRef, result, {
-			source: "network",
-		}),
-	]);
-	queueHydrateUserLabelProfiles(result.labels);
-
-	const affectedRefs = previousLabelRefs
-		? Array.from(new Set([...previousLabelRefs, ...labelRefs]))
-		: labelRefs;
-	const affectedLabelIds = getLabelIdsByRefs(result.labels, affectedRefs);
-	await Promise.all(
-		affectedLabelIds.map((labelId) => markLabelItemsStale(spaceId, labelId)),
-	).catch(() => undefined);
-
-	if (typeof window !== "undefined") {
-		window.dispatchEvent(
-			new CustomEvent("cohub:label-assignments-updated", {
-				detail: {
-					spaceId,
-					resourceType,
-					resourceRef,
-					labelRefs,
-					affectedLabelIds,
-				},
-			}),
-		);
-	}
+	await cacheResourceLabelMutation({
+		spaceId,
+		resourceType,
+		resourceRef,
+		result,
+		affectedRefs: previousLabelRefs
+			? Array.from(new Set([...previousLabelRefs, ...labelRefs]))
+			: labelRefs,
+	});
 	return result;
 }
 

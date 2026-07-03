@@ -52,6 +52,8 @@ import type {
   LabelAssignmentRecord,
   LabelListItem,
   LabelResourceType,
+  PatchResourceLabelsInput,
+  PatchResourceLabelsResponse,
   SpaceModListItem,
   SpaceMember,
   SpaceRecord,
@@ -1175,6 +1177,18 @@ export class SpaceLabelsApi {
     const params = new URLSearchParams({ resourceRef });
     return this.transport.request<{ labels: LabelListItem[]; assignments: LabelAssignmentRecord[] }>(
       `/api/spaces/${this.spaceId}/resources/${resourceType}/labels?${params.toString()}`,
+    );
+  }
+
+  patchResourceLabels(resourceType: LabelResourceType, resourceRef: string, input: PatchResourceLabelsInput) {
+    const params = new URLSearchParams({ resourceRef });
+    return this.transport.request<PatchResourceLabelsResponse>(
+      `/api/spaces/${this.spaceId}/resources/${resourceType}/labels?${params.toString()}`,
+      {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(input),
+      },
     );
   }
 

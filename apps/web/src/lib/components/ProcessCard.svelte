@@ -78,6 +78,46 @@ const effectiveMessages = $derived(
 		: (readyMessages ?? []),
 );
 const expandedMessages = $derived(effectiveMessages);
+
+// DEBUG(each_key_duplicate 排查): 核心疑点——这里是 {#each expandedMessages as msg (msg.id)}
+// 实际拿到的数据，最贴近崩溃现场的一层。上游疑点是：页面刷新重连时，快照恢复
+// (seedFromSnapshot,SDK session-generation-stream.ts) 与 WebSocket 补发的 patch 事件
+// (prepareMessageBoundary -> appendCurrentMessage) 之间存在竟态,可能把同一个
+// ordinal/tool_use.id 的中间消息以不同形态写入两次,导致这里 msg.id 重复,
+// 触发 Svelte each_key_duplicate 崩溃且无法展开。
+$effect(() => {
+	const ids = expandedMessages.map((m) => m.id);
+	const seen = new Map<string, number>();
+	const duplicates: string[] = [];
+	for (const id of ids) {
+		seen.set(id, (seen.get(id) ?? 0) + 1);
+	}
+	for (const [id, count] of seen) {
+		if (count > 1) duplicates.push(id);
+	}
+	if (duplicates.length > 0) {
+		console.log(
+			"[each_key_duplicate DEBUG] ProcessCard expandedMessages has duplicate msg.id",
+			{
+				turnId: turn.id,
+				streaming,
+				duplicateIds: duplicates,
+				allIds: ids,
+				allOrdinals: expandedMessages.map(
+					(m) => m.meta?.messageOrdinal ?? null,
+				),
+				allToolUseIds: expandedMessages.map((m) =>
+					(m.content ?? [])
+						.filter(
+							(b): b is Extract<typeof b, { type: "tool_use" }> =>
+								b.type === "tool_use",
+						)
+						.map((b) => b.id),
+				),
+			},
+		);
+	}
+});
 const hasLiveMessages = $derived(liveMessages.length > 0);
 const hasPersistedMessages = $derived(
 	summary?.messageCount != null && summary.messageCount > 0,

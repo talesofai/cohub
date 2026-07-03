@@ -114,6 +114,13 @@ function getVisibleParticipants(
 	currentUserUuid: string | null,
 ) {
 	if (!currentUserUuid) return participants;
+	// In shared sessions (other participants present) show the full group,
+	// including the current user, so it's clear who is involved. In solo
+	// sessions hide the current user's own avatar to keep the row clean.
+	const hasOtherParticipants = participants.some(
+		(participant) => participant.key !== currentUserUuid,
+	);
+	if (hasOtherParticipants) return participants;
 	return participants.filter(
 		(participant) => participant.key !== currentUserUuid,
 	);

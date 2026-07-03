@@ -292,6 +292,20 @@ function getIntermediateMessageKey(message: GenerationStreamIntermediateMessage)
   }
 }
 
+function debugToolUseIds(content: ContentBlock[]): string[] {
+  return content
+    .filter((block): block is Extract<ContentBlock, { type: "tool_use" }> => block.type === "tool_use")
+    .map((block) => block.id);
+}
+
+// DEBUG(each_key_duplicate 排查): 核心疑点——快照恢复(seedFromSnapshot)拿到的
+// intermediateMessages 里，最后一条(ordinal N)可能和 snapshot.current(仍在流式中的
+// 同一条 ordinal N)内容完全重复(同一个 tool_use.id)。随后 WebSocket 补发的 patch 事件
+// 推进到 ordinal N+2 时，prepareMessageBoundary 判定 messageChanged，会把 reducer 里
+// 残留的 ordinal N 内容通过 appendCurrentMessage 再 push 一次。这里按 ordinal 做 key 去重
+// 理论上会合并成一条，但如果合并前后两条记录的 content 里 tool_use.id 不一致(即 key 相同
+// 但内容不同，或反过来 key 不同但 tool_use.id 相同)，就会在下游 ProcessCard/ToolCallList
+// 的 {#each ... (id)} 渲染时产生重复 key，导致 each_key_duplicate 崩溃。
 function compactIntermediateMessages(messages: GenerationStreamIntermediateMessage[]) {
   const merged: GenerationStreamIntermediateMessage[] = [];
   const indexByKey = new Map<string, number>();
@@ -307,7 +321,49 @@ function compactIntermediateMessages(messages: GenerationStreamIntermediateMessa
       merged.push(message);
       continue;
     }
+    const prevToolIds = debugToolUseIds(merged[index]?.content ?? []);
+    const nextToolIds = debugToolUseIds(message.content ?? []);
+    const toolIdsDiffer = JSON.stringify(prevToolIds) !== JSON.stringify(nextToolIds);
+    console.log(
+      "[each_key_duplicate DEBUG] compactIntermediateMessages merge",
+      {
+        key,
+        prevOrdinal: merged[index]?.messageOrdinal,
+        nextOrdinal: message.messageOrdinal,
+        prevMessageId: merged[index]?.messageId,
+        nextMessageId: message.messageId,
+        prevToolIds,
+        nextToolIds,
+        toolIdsDiffer,
+      },
+    );
     merged[index] = { ...merged[index], ...message };
+  }
+  // 合并结束后再做一次全量扫描：检查最终数组里是否存在 tool_use.id 跨消息重复
+  // (即不同 ordinal/messageId 的两条消息里，各自 content 出现了同一个 tool_use.id)。
+  // 这直接对应 ToolCallList.svelte 的 {#each tools as tool (tool.id)} 潜在冲突源。
+  const toolIdOwners = new Map<string, number[]>();
+  merged.forEach((message, idx) => {
+    for (const toolId of debugToolUseIds(message.content ?? [])) {
+      const owners = toolIdOwners.get(toolId) ?? [];
+      owners.push(idx);
+      toolIdOwners.set(toolId, owners);
+    }
+  });
+  for (const [toolId, owners] of toolIdOwners) {
+    if (owners.length > 1) {
+      console.log(
+        "[each_key_duplicate DEBUG] duplicate tool_use.id across merged intermediateMessages",
+        {
+          toolId,
+          ownerIndexes: owners,
+          owners: owners.map((idx) => ({
+            ordinal: merged[idx]?.messageOrdinal,
+            messageId: merged[idx]?.messageId,
+          })),
+        },
+      );
+    }
   }
   return merged;
 }
@@ -439,6 +495,32 @@ export class SessionGenerationStreamClient {
     const intermediateMessages = normalizeSnapshotIntermediateMessages(
       snapshot.intermediateMessages,
     );
+    // DEBUG(each_key_duplicate 排查): 核心疑点——后端 enrichSessionStreamSnapshot 会把
+    // Redis 实时快照的 current(仍在流式中的那条) 和 DB 已持久化的 intermediateMessages
+    // 拼接同一次返回，当 current.messageOrdinal 恰好等于 intermediateMessages 最后一条的
+    // ordinal 时，两边携带的内容(包含 tool_use.id)完全重叠。seedFromSnapshot 把
+    // this.messageId/this.messageOrdinal 定位到这条重叠的消息上，后面 WebSocket 补发的
+    // 新 patch(ordinal 推进后)会触发 prepareMessageBoundary 的 appendCurrentMessage，
+    // 把这条重叠内容再次追加进 intermediateMessages，最终可能导致下游渲染层
+    // (ProcessCard/ToolCallList 的 {#each ... (id)}) 出现重复 key。
+    const lastIntermediate = intermediateMessages[intermediateMessages.length - 1] ?? null;
+    const currentOverlapsLastIntermediate =
+      lastIntermediate != null &&
+      lastIntermediate.messageOrdinal != null &&
+      snapshot.current.messageOrdinal != null &&
+      lastIntermediate.messageOrdinal === snapshot.current.messageOrdinal;
+    console.log("[each_key_duplicate DEBUG] seedFromSnapshot", {
+      turnId: snapshot.turnId,
+      snapshotSeq: snapshot.seq,
+      currentMessageId: snapshot.current.messageId,
+      currentMessageOrdinal: snapshot.current.messageOrdinal,
+      currentToolUseIds: debugToolUseIds(snapshot.current.content ?? []),
+      intermediateMessagesCount: intermediateMessages.length,
+      lastIntermediateOrdinal: lastIntermediate?.messageOrdinal ?? null,
+      lastIntermediateMessageId: lastIntermediate?.messageId ?? null,
+      lastIntermediateToolUseIds: debugToolUseIds(lastIntermediate?.content ?? []),
+      currentOverlapsLastIntermediate,
+    });
     const result = this.reducer.applySnapshot({
       spaceId: snapshot.spaceId,
       sessionId: snapshot.sessionId,
@@ -614,6 +696,23 @@ export class SessionGenerationStreamClient {
         turnId: input.turnId,
       });
     } else if (messageChanged) {
+      // DEBUG(each_key_duplicate 排查): 核心疑点——这里把 reducer 当前累积的
+      // contentBlocks(可能是快照恢复时留下的、代表某个旧 ordinal 的内容)
+      // 作为一条新记录 append 进 intermediateMessages。如果此时这个 ordinal
+      // 已经存在于快照返回的 intermediateMessages 里(见 seedFromSnapshot 的
+      // currentOverlapsLastIntermediate)，理论上会被 compactIntermediateMessages 按
+      // ordinal 合并，但如果合并前后两边 tool_use.id 不一致或者合并逻辑失效，
+      // 就会在 intermediateMessages 数组里留下两条带相同 tool_use.id 的记录，
+      // 最终让 ProcessCard/ToolCallList 的 {#each ... (id)} 报 each_key_duplicate。
+      console.log("[each_key_duplicate DEBUG] appendCurrentMessage triggered by messageChanged", {
+        prevMessageId: this.messageId,
+        prevMessageOrdinal: this.messageOrdinal,
+        nextMessageId,
+        nextMessageOrdinal: input.messageOrdinal,
+        appendedToolUseIds: debugToolUseIds(current.contentBlocks ?? []),
+        existingIntermediateOrdinals: this.intermediateMessages.map((m) => m.messageOrdinal),
+        existingIntermediateToolUseIds: this.intermediateMessages.map((m) => debugToolUseIds(m.content ?? [])),
+      });
       this.appendCurrentMessage(current);
       this.resetCurrentMessage();
       this.reducer.start({

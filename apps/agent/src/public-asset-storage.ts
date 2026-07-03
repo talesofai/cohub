@@ -1,8 +1,8 @@
 import { GetObjectCommand, S3Client } from "@aws-sdk/client-s3";
+import { AGENT_IMAGE_MAX_INPUT_BYTES } from "./image-normalizer.js";
 import { env } from "./env.js";
 
-const SUPPORTED_IMAGE_MIME_TYPES = new Set(["image/jpeg", "image/png", "image/gif", "image/webp"]);
-const MAX_PUBLIC_ASSET_IMAGE_BYTES = 8 * 1024 * 1024;
+const RELAXED_IMAGE_MIME_TYPES = new Set(["image/jpeg", "image/png", "image/gif", "image/webp", "image/avif", "image/tiff", "application/octet-stream"]);
 
 let publicAssetS3Client: S3Client | null = null;
 
@@ -99,12 +99,12 @@ export async function readPublicAssetImageUrl(url: string) {
       Bucket: env.PUBLIC_ASSET_OSS_BUCKET,
       Key: objectKey,
     }), { abortSignal: abortController.signal });
-    const mimeType = result.ContentType?.split(";")[0]?.trim().toLowerCase() ?? "";
-    if (!SUPPORTED_IMAGE_MIME_TYPES.has(mimeType)) return null;
-    if (result.ContentLength && result.ContentLength > MAX_PUBLIC_ASSET_IMAGE_BYTES) return null;
-    const buffer = await bodyToBuffer(result.Body, MAX_PUBLIC_ASSET_IMAGE_BYTES);
+    const mimeType = result.ContentType?.split(";")[0]?.trim().toLowerCase() ?? "application/octet-stream";
+    if (mimeType && !RELAXED_IMAGE_MIME_TYPES.has(mimeType) && !mimeType.startsWith("image/")) return null;
+    if (result.ContentLength && result.ContentLength > AGENT_IMAGE_MAX_INPUT_BYTES) return null;
+    const buffer = await bodyToBuffer(result.Body, AGENT_IMAGE_MAX_INPUT_BYTES);
     if (!buffer) return null;
-    return { data: buffer.toString("base64"), mimeType };
+    return { data: buffer, mimeType };
   } finally {
     clearTimeout(timeout);
   }

@@ -476,7 +476,7 @@ function createRemoteBashOperations(): BashOperations {
               const connection = await getCurrentConnection();
               const sandboxCwd = mapLocalAbsolutePathToSandboxPath(cwd);
               const ctx = getCurrentToolExecutionContext();
-              const sessionExecutionAuth = ctx?.sessionId ? getCurrentSessionExecutionAuth(ctx.sessionId) : null;
+              const sessionExecutionAuth = ctx?.sessionId && ctx.turnId ? getCurrentSessionExecutionAuth(ctx.sessionId, ctx.turnId) : null;
               const actorUserId = ctx?.actorUserId ?? sessionExecutionAuth?.actorUserId ?? null;
               const executionToken = ctx?.executionToken ?? sessionExecutionAuth?.executionToken ?? null;
               const injectedEnv: Record<string, string> = {
@@ -522,57 +522,62 @@ function createRemoteBashOperations(): BashOperations {
                 else signal.addEventListener("abort", onAbort, { once: true });
               }
 
-              await tracedRpc(
-                connection,
-                "process.start",
-                {
-                  command,
-                  timeoutSecs: timeout,
-                  cwd: sandboxCwd,
-                  env: Object.keys(injectedEnv).length > 0 ? injectedEnv : undefined,
-                },
-                {
-                  onEvent(event) {
-                    if (event.type === "started") {
-                      processId = event.processId;
-                      logger.info(`[Tool:bash] process started processId=${event.processId} turnId=${rpcContext.turnId ?? ""} toolCallId=${toolCallId}`);
-                      if (rpcContext.turnId) {
-                        unregisterProcessAbort = registerActiveAbortHandle(rpcContext.turnId, {
-                          id: `bash:${toolCallId}:${event.processId}`,
-                          kind: "tool",
-                          toolName: "bash",
-                          abort: () => abortProcess(event.processId),
-                        });
-                      }
-                      if (aborting) {
-                        abortProcess(event.processId);
-                      }
-                      return;
-                    }
-
-                    if (event.type === "stdout" || event.type === "stderr") {
-                      const rawChunk = typeof event.chunk === "string" ? event.chunk : "";
-                      if (!rawChunk) return;
-                      const chunk = executionToken
-                        ? rawChunk.split(executionToken).join("[REDACTED_TOKEN]")
-                        : rawChunk;
-                      outputPreview = `${outputPreview}${chunk}`.slice(-2000);
-                      onData(Buffer.from(chunk, "utf8"));
-                      return;
-                    }
-
-                    if (event.type === "exit") {
-                      cleanupAbort();
-                      const exitCode = event.exitCode ?? null;
-                      logger.debug(`[Tool:bash] exit code=${exitCode} reason=${event.termination?.reason ?? "exited"} summary="${cmdSummary}"`);
-                      finish(() => resolve({
-                        exitCode,
-                        termination: event.termination ?? { reason: "exited", exitCode },
-                      }));
-                    }
+              try {
+                await tracedRpc(
+                  connection,
+                  "process.start",
+                  {
+                    command,
+                    timeoutSecs: timeout,
+                    cwd: sandboxCwd,
+                    env: Object.keys(injectedEnv).length > 0 ? injectedEnv : undefined,
                   },
-                },
-              );
+                  {
+                    onEvent(event) {
+                      if (event.type === "started") {
+                        processId = event.processId;
+                        logger.info(`[Tool:bash] process started processId=${event.processId} turnId=${rpcContext.turnId ?? ""} toolCallId=${toolCallId}`);
+                        if (rpcContext.turnId) {
+                          unregisterProcessAbort = registerActiveAbortHandle(rpcContext.turnId, {
+                            id: `bash:${toolCallId}:${event.processId}`,
+                            kind: "tool",
+                            toolName: "bash",
+                            abort: () => abortProcess(event.processId),
+                          });
+                        }
+                        if (aborting) {
+                          abortProcess(event.processId);
+                        }
+                        return;
+                      }
+
+                      if (event.type === "stdout" || event.type === "stderr") {
+                        const rawChunk = typeof event.chunk === "string" ? event.chunk : "";
+                        if (!rawChunk) return;
+                        const chunk = executionToken
+                          ? rawChunk.split(executionToken).join("[REDACTED_TOKEN]")
+                          : rawChunk;
+                        outputPreview = `${outputPreview}${chunk}`.slice(-2000);
+                        onData(Buffer.from(chunk, "utf8"));
+                        return;
+                      }
+
+                      if (event.type === "exit") {
+                        cleanupAbort();
+                        const exitCode = event.exitCode ?? null;
+                        logger.debug(`[Tool:bash] exit code=${exitCode} reason=${event.termination?.reason ?? "exited"} summary="${cmdSummary}"`);
+                        finish(() => resolve({
+                          exitCode,
+                          termination: event.termination ?? { reason: "exited", exitCode },
+                        }));
+                      }
+                    },
+                  },
+                );
+              } finally {
+                if (!settled && processId) abortProcess(processId);
+                cleanupAbort();
+              }
             }));
           } catch (error) {
             if (isSandboxRpcError(error)) {
@@ -599,7 +604,7 @@ function createRemoteBashOperations(): BashOperations {
     async startBackground({ command, cwd, signal, timeout, toolCallId }) {
       if (signal?.aborted) throw new Error("Operation aborted");
       const ctx = getCurrentToolExecutionContext();
-      const sessionExecutionAuth = ctx?.sessionId ? getCurrentSessionExecutionAuth(ctx.sessionId) : null;
+      const sessionExecutionAuth = ctx?.sessionId && ctx.turnId ? getCurrentSessionExecutionAuth(ctx.sessionId, ctx.turnId) : null;
       const userId = ctx?.actorUserId ?? sessionExecutionAuth?.actorUserId ?? null;
       const executionScopes = ctx?.executionScopes ?? sessionExecutionAuth?.executionScopes ?? [];
       if (!ctx?.spaceId || !ctx.sessionId || !ctx.turnId || !userId) {
@@ -1211,7 +1216,7 @@ async function tracedRpcAbortProcess(connection: SandboxConnection, processId: s
 function getCurrentActorUserId() {
   const ctx = getCurrentToolExecutionContext();
   if (ctx?.actorUserId) return ctx.actorUserId;
-  if (ctx?.sessionId) return getCurrentSessionExecutionAuth(ctx.sessionId)?.actorUserId ?? null;
+  if (ctx?.sessionId && ctx.turnId) return getCurrentSessionExecutionAuth(ctx.sessionId, ctx.turnId)?.actorUserId ?? null;
   return null;
 }
 

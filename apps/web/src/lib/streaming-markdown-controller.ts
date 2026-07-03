@@ -11,14 +11,17 @@ type StreamingMarkdownSubscriber = (
 const STREAM_COMMIT_INTERVAL_MS = 80;
 const STREAM_FRAME_MS = 24;
 const STREAM_MIN_STEP = 2;
-const STREAM_MAX_STEP = 48;
-const STREAM_CATCHUP_THRESHOLD = 900;
+const STREAM_MAX_STEP = 14;
+const STREAM_PRESSURE_BACKLOG = 36;
 
 function getVisibleStepSize(remaining: number) {
-	if (remaining > STREAM_CATCHUP_THRESHOLD) return STREAM_MAX_STEP;
-	if (remaining > 420) return 28;
-	if (remaining > 160) return 14;
-	return STREAM_MIN_STEP + Math.min(10, Math.floor(remaining / 28));
+	const pressure = Math.min(
+		1,
+		Math.max(0, remaining / STREAM_PRESSURE_BACKLOG),
+	);
+	return Math.round(
+		STREAM_MIN_STEP + (STREAM_MAX_STEP - STREAM_MIN_STEP) * pressure,
+	);
 }
 
 function isWordBoundary(value: string) {

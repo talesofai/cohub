@@ -104,7 +104,7 @@ export type SessionHandle = {
   idleTimer: ReturnType<typeof setTimeout> | null;
   onIdle?: ((handle: SessionHandle) => void) | null;
   pendingUserMessages: PendingUserMessage[];
-  pendingExecutionAuths: Array<{ actorUserId: string | null; executionToken: string | null; executionScopes?: Permission[] | null }>;
+  pendingExecutionAuths: Array<{ turnId?: string | null; actorUserId: string | null; executionToken: string | null; executionScopes?: Permission[] | null }>;
   steerDrainPromise: Promise<void> | null;
   pendingSteerCompletions: Array<{
     ack: () => Promise<void>;
@@ -788,6 +788,7 @@ export function subscribeSessionEvents(handle: SessionHandle) {
         if (nextExecutionAuth) {
           setCurrentSessionExecutionAuth({
             sessionId: handle.sessionId,
+            turnId: nextExecutionAuth.turnId ?? handle.currentTurnId,
             actorUserId: nextExecutionAuth.actorUserId,
             executionToken: nextExecutionAuth.executionToken,
             executionScopes: nextExecutionAuth.executionScopes ?? [],

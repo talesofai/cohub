@@ -16,6 +16,7 @@ import { materializeLatest } from "../checkpoint/materialize.js";
 import { scanWorkspace } from "../checkpoint/scan.js";
 import { buildInternalRepoRemoteUrl, createInternalRepository } from "../gitea.js";
 import { runGit as runSystemGit } from "../checkpoint/git.js";
+import { ensureWorkerLocalTmpDir, getWorkerLocalTmpDir, removeWorkerLocalTmpDir } from "../local-tmp.js";
 
 const logger = createLogger({ serviceName: "cohub-worker" });
 const SAVE_VERSION = 2;
@@ -239,10 +240,12 @@ const createSpaceHandler = async (job: Job) => {
     let result: Record<string, unknown>;
 
     if (source.type === "checkpoint") {
-      const dirs = await ensureCheckpointDirs(currentSpace.id);
-      const restoreTmpDir = `${dirs.workspaceDir}/../restore-tmp/${taskRunId}`;
+      const restoreTmpDir = getWorkerLocalTmpDir("restore", currentSpace.id, taskRunId);
+      await ensureWorkerLocalTmpDir(restoreTmpDir);
       await progress("restore_workspace", { checkpointId: source.checkpointId });
-      const { result: restoreResult, duration: restoreDuration } = await timeIt("restoreWorkspaceFromCheckpoint", () => restoreWorkspaceFromCheckpoint({ checkpointId: source.checkpointId, targetWorkspaceDir: workspaceDir, restoreTmpDir }));
+      const { result: restoreResult, duration: restoreDuration } = await timeIt("restoreWorkspaceFromCheckpoint", () => restoreWorkspaceFromCheckpoint({ checkpointId: source.checkpointId, targetWorkspaceDir: workspaceDir, restoreTmpDir })).finally(async () => {
+        await removeWorkerLocalTmpDir(restoreTmpDir).catch((error) => logger.warn(`[CreateSpace] failed to clean restore tmp ${restoreTmpDir}: ${error instanceof Error ? error.message : String(error)}`));
+      });
       stageTimings.restoreWorkspaceFromCheckpoint = restoreDuration;
       await progress("create_checkpoint_alias");
       const { result: aliasResult, duration: aliasDuration } = await timeIt("createCheckpointAlias", () => createCheckpointAlias({ targetSpace: currentSpace, sourceCheckpoint: restoreResult.checkpoint }));

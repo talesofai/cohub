@@ -1,5 +1,5 @@
 import { Hono, type Context } from "hono";
-import { and, count, desc, eq, inArray, max, sql } from "drizzle-orm";
+import { and, asc, count, desc, eq, inArray, max, sql } from "drizzle-orm";
 import { checkpoints, labelAssignments, labels, spaceSessions } from "@cohub/db";
 import { listLabelsByRank, normalizeLabelName, parseLabelRef, parseLabelRefs, resolveLabelPaths, resolveOrCreateLabelPaths, slugifyLabelName } from "@cohub/core/labels";
 import { db } from "../../db/index.js";
@@ -117,10 +117,17 @@ async function resolveOrCreateRefs(spaceId: string, labelRefs: unknown, userId: 
 async function resolveRefsWithCreatePermission(c: Context, access: { user: ReturnType<typeof getOptionalAuth>; spaceId: string }, labelRefs: unknown) {
   const paths = parseLabelRefs(labelRefs);
   const resolved = await resolveLabelPaths({ db, spaceId: access.spaceId, paths });
-  if (resolved.missingPaths.length > 0 && !(await hasPermission(access.user, "space.label.manage", { spaceId: access.spaceId }))) {
+  if (resolved.missingPaths.length === 0) return { labelIds: resolved.labelIds };
+  if (!(await hasPermission(access.user, "space.label.manage", { spaceId: access.spaceId }))) {
     return { error: authzDenied(c) };
   }
-  return resolveOrCreateLabelPaths({ db, spaceId: access.spaceId, paths, userId: access.user?.uuid ?? null });
+  await resolveOrCreateLabelPaths({ db, spaceId: access.spaceId, paths: resolved.missingPaths, userId: access.user?.uuid ?? null });
+  return resolveLabelPaths({ db, spaceId: access.spaceId, paths });
+}
+
+async function resolveExistingRefs(spaceId: string, labelRefs: unknown) {
+  const paths = parseLabelRefs(labelRefs);
+  return resolveLabelPaths({ db, spaceId, paths });
 }
 
 function isUniqueLabelNameViolation(error: unknown) {
@@ -139,6 +146,23 @@ async function validateResource(spaceId: string, resourceType: string, resourceR
   }
   const [row] = await db.select({ id: checkpoints.id }).from(checkpoints).where(and(eq(checkpoints.spaceId, spaceId), eq(checkpoints.id, resourceRef))).limit(1);
   return Boolean(row);
+}
+
+async function getUserLabelIds(c: Context, spaceId: string, labelIds: string[]) {
+  const uniqueLabelIds = [...new Set(labelIds)].filter(Boolean);
+  if (uniqueLabelIds.length === 0) return { labelIds: [] };
+  const rows = await db.select().from(labels).where(and(eq(labels.scopeType, SCOPE_TYPE), eq(labels.scopeId, spaceId), inArray(labels.id, uniqueLabelIds)));
+  if (rows.length !== uniqueLabelIds.length || rows.some((label) => label.source !== "user")) return { error: authzDenied(c) };
+  const userIds = new Set(rows.map((label) => label.id));
+  return { labelIds: uniqueLabelIds.filter((labelId) => userIds.has(labelId)) };
+}
+
+async function getResourceLabelResponse(spaceId: string, resourceType: string, resourceRef: string) {
+  const [allLabels, assignments] = await Promise.all([
+    getScopeLabels(spaceId),
+    db.select().from(labelAssignments).where(and(eq(labelAssignments.scopeType, SCOPE_TYPE), eq(labelAssignments.scopeId, spaceId), eq(labelAssignments.resourceType, resourceType), eq(labelAssignments.resourceRef, resourceRef))),
+  ]);
+  return { labels: buildLabelTree(allLabels), assignments };
 }
 
 async function hydrateAssignments(spaceId: string, rows: Array<typeof labelAssignments.$inferSelect>) {
@@ -441,11 +465,84 @@ export async function getResourceLabels(c: Context) {
   const resourceRef = c.req.query("resourceRef")?.trim() ?? "";
   if (!resourceRef || !RESOURCE_TYPES.has(resourceType)) return c.json({ message: "resource not found" }, 404);
   if (resourceType === "file" && !isSafeFilePath(resourceRef)) return c.json({ message: "resource not found" }, 404);
-  const [allLabels, assignments] = await Promise.all([
-    getScopeLabels(access.spaceId),
-    db.select().from(labelAssignments).where(and(eq(labelAssignments.scopeType, SCOPE_TYPE), eq(labelAssignments.scopeId, access.spaceId), eq(labelAssignments.resourceType, resourceType), eq(labelAssignments.resourceRef, resourceRef))),
-  ]);
-  return c.json({ labels: buildLabelTree(allLabels), assignments });
+  return c.json(await getResourceLabelResponse(access.spaceId, resourceType, resourceRef));
+}
+
+export async function patchResourceLabels(c: Context) {
+  const access = await requireSpacePermission(c, "space.label.assign");
+  if (access.error) return access.error;
+  const resourceType = c.req.param("resourceType") ?? "";
+  const resourceRef = c.req.query("resourceRef")?.trim() ?? "";
+  if (!resourceRef || !(await validateResource(access.spaceId, resourceType, resourceRef))) return c.json({ message: "resource not found" }, 404);
+  const body = await c.req.json<{ addLabelRefs?: unknown; removeLabelRefs?: unknown }>().catch(() => undefined);
+  if (!body) return c.json({ message: "invalid json body" }, 400);
+
+  let addLabelIds: string[];
+  let removeLabelIds: string[];
+  try {
+    const addResolved = await resolveRefsWithCreatePermission(c, access, body?.addLabelRefs ?? []);
+    if ("error" in addResolved) return addResolved.error;
+    const removeResolved = await resolveExistingRefs(access.spaceId, body?.removeLabelRefs ?? []);
+    const addUserLabels = await getUserLabelIds(c, access.spaceId, addResolved.labelIds);
+    if ("error" in addUserLabels) return addUserLabels.error;
+    const removeUserLabels = await getUserLabelIds(c, access.spaceId, removeResolved.labelIds);
+    if ("error" in removeUserLabels) return removeUserLabels.error;
+    addLabelIds = addUserLabels.labelIds;
+    removeLabelIds = removeUserLabels.labelIds;
+  } catch (error) {
+    return c.json({ message: error instanceof Error ? error.message : String(error) }, 400);
+  }
+
+  const existing = await db.select().from(labelAssignments).where(and(eq(labelAssignments.scopeType, SCOPE_TYPE), eq(labelAssignments.scopeId, access.spaceId), eq(labelAssignments.resourceType, resourceType), eq(labelAssignments.resourceRef, resourceRef))).orderBy(asc(labelAssignments.rank), asc(labelAssignments.createdAt), asc(labelAssignments.id));
+  const removeSet = new Set(removeLabelIds);
+  const nextUserLabelIds = existing
+    .filter((assignment) => assignment.source === "user" && !removeSet.has(assignment.labelId))
+    .map((assignment) => assignment.labelId);
+  for (const labelId of addLabelIds) {
+    if (!nextUserLabelIds.includes(labelId)) nextUserLabelIds.push(labelId);
+  }
+  const nextSet = new Set(nextUserLabelIds);
+  const removeAssignmentIds = existing
+    .filter((assignment) => assignment.source === "user" && removeSet.has(assignment.labelId) && !nextSet.has(assignment.labelId))
+    .map((assignment) => assignment.id);
+  const existingByLabelId = new Map(existing.map((assignment) => [assignment.labelId, assignment]));
+  const changed = removeAssignmentIds.length > 0 || nextUserLabelIds.some((labelId, index) => {
+    const existingAssignment = existingByLabelId.get(labelId);
+    return !existingAssignment || existingAssignment.rank !== (index + 1) * 10;
+  });
+
+  await db.transaction(async (tx) => {
+    if (removeAssignmentIds.length > 0) await tx.delete(labelAssignments).where(inArray(labelAssignments.id, removeAssignmentIds));
+    for (const [index, labelId] of nextUserLabelIds.entries()) {
+      const rank = (index + 1) * 10;
+      const existingAssignment = existingByLabelId.get(labelId);
+      if (existingAssignment) {
+        if (existingAssignment.rank !== rank) await tx.update(labelAssignments).set({ rank, updatedAt: new Date() }).where(eq(labelAssignments.id, existingAssignment.id));
+        continue;
+      }
+      await tx.insert(labelAssignments).values({
+        labelId,
+        scopeType: SCOPE_TYPE,
+        scopeId: access.spaceId,
+        resourceType,
+        resourceRef,
+        rank,
+        source: "user",
+        createdBy: access.user?.uuid ?? null,
+      }).onConflictDoNothing();
+    }
+  });
+
+  const affectedLabelIds = Array.from(new Set([...addLabelIds, ...removeLabelIds]));
+  const result = await getResourceLabelResponse(access.spaceId, resourceType, resourceRef);
+  await dispatchLabelAssignmentsUpdated({
+    spaceId: access.spaceId,
+    resourceType: resourceType as "session" | "checkpoint" | "file",
+    resourceRef,
+    sessionId: resourceType === "session" ? resourceRef : null,
+    affectedLabelIds,
+  }).catch(() => undefined);
+  return c.json({ ...result, changed });
 }
 
 export async function setResourceLabels(c: Context) {
@@ -454,7 +551,8 @@ export async function setResourceLabels(c: Context) {
   const resourceType = c.req.param("resourceType") ?? "";
   const resourceRef = c.req.query("resourceRef")?.trim() ?? "";
   if (!resourceRef || !(await validateResource(access.spaceId, resourceType, resourceRef))) return c.json({ message: "resource not found" }, 404);
-  const body = await c.req.json<{ labelRefs?: unknown }>().catch(() => null);
+  const body = await c.req.json<{ labelRefs?: unknown }>().catch(() => undefined);
+  if (!body) return c.json({ message: "invalid json body" }, 400);
   let labelIds: string[];
   try {
     const resolved = await resolveRefsWithCreatePermission(c, access, body?.labelRefs ?? []);
@@ -499,10 +597,7 @@ export async function setResourceLabels(c: Context) {
       }).onConflictDoNothing();
     }
   });
-  const [allLabels, assignments] = await Promise.all([
-    getScopeLabels(access.spaceId),
-    db.select().from(labelAssignments).where(and(eq(labelAssignments.scopeType, SCOPE_TYPE), eq(labelAssignments.scopeId, access.spaceId), eq(labelAssignments.resourceType, resourceType), eq(labelAssignments.resourceRef, resourceRef))),
-  ]);
+  const result = await getResourceLabelResponse(access.spaceId, resourceType, resourceRef);
   await dispatchLabelAssignmentsUpdated({
     spaceId: access.spaceId,
     resourceType: resourceType as "session" | "checkpoint" | "file",
@@ -510,7 +605,7 @@ export async function setResourceLabels(c: Context) {
     sessionId: resourceType === "session" ? resourceRef : null,
     affectedLabelIds,
   }).catch(() => undefined);
-  return c.json({ labels: buildLabelTree(allLabels), assignments });
+  return c.json(result);
 }
 
 export default router;

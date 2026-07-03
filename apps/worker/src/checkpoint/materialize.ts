@@ -1,5 +1,5 @@
 import { constants } from "node:fs";
-import { copyFile, lstat, mkdir, readdir, readlink, rm, symlink, unlink, writeFile } from "node:fs/promises";
+import { copyFile, lstat, mkdir, readdir, readlink, rename, rm, symlink, unlink, writeFile } from "node:fs/promises";
 import { dirname, join, relative } from "node:path";
 import type { ScannedFile } from "./scan.js";
 import { CHECKPOINT_ASSET_MANIFEST_PATH, CHECKPOINT_META_PATH } from "./paths.js";
@@ -58,9 +58,7 @@ export async function materializeLatest(input: {
   const metaTarget = join(input.latestDir, CHECKPOINT_META_PATH);
   const tmpMeta = `${metaTarget}.tmp-${crypto.randomUUID()}`;
   await writeFile(tmpMeta, `${JSON.stringify(input.checkpointMeta, null, 2)}\n`);
-  await rm(metaTarget, { force: true });
-  await copyFile(tmpMeta, metaTarget);
-  await unlink(tmpMeta).catch(() => undefined);
+  await rename(tmpMeta, metaTarget).finally(() => unlink(tmpMeta).catch(() => undefined));
 
   const existing = (await collectExisting(input.latestDir)).sort((a, b) => b.length - a.length);
   for (const rel of existing) {

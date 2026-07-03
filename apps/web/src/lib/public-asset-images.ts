@@ -10,7 +10,7 @@ export type PreparedChatImageAttachment = {
 	size: number;
 };
 
-const CHAT_IMAGE_MAX_EDGE = 2160;
+const CHAT_IMAGE_MAX_EDGE = 1984;
 const CHAT_IMAGE_OUTPUT_FORMATS: Array<{
 	mimeType: PublicAssetMimeType;
 	extension: "webp" | "jpg";
@@ -19,10 +19,6 @@ const CHAT_IMAGE_OUTPUT_FORMATS: Array<{
 	{ mimeType: "image/webp", extension: "webp", quality: 0.86 },
 	{ mimeType: "image/jpeg", extension: "jpg", quality: 0.88 },
 ];
-
-function isDirectUploadImageType(type: string): type is PublicAssetMimeType {
-	return type === "image/webp" || type === "image/jpeg";
-}
 
 function getCompressedImageName(name: string, extension: string) {
 	const baseName = name.replace(/\.[^.]+$/, "") || name;
@@ -91,19 +87,6 @@ export async function prepareChatImageAttachment(
 		if (!context) throw new Error("Canvas is not supported");
 		context.drawImage(image, 0, 0, width, height);
 		const encoded = await encodeChatImageCanvas(canvas);
-		if (
-			scale === 1 &&
-			isDirectUploadImageType(file.type) &&
-			file.size <= encoded.blob.size
-		) {
-			return {
-				file,
-				mediaType: file.type,
-				name: file.name,
-				previewUrl: URL.createObjectURL(file),
-				size: file.size,
-			};
-		}
 		const name = getCompressedImageName(file.name, encoded.extension);
 		const compressedFile = new File([encoded.blob], name, {
 			type: encoded.mimeType,
