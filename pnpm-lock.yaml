@@ -154,6 +154,9 @@ importers:
       '@cohub/sandbox-controller':
         specifier: workspace:*
         version: link:../../packages/sandbox-controller
+      '@cohub/space-fs':
+        specifier: workspace:*
+        version: link:../../packages/space-fs
       '@hono/node-server':
         specifier: 2.0.4
         version: 2.0.4(hono@4.12.23)
@@ -245,6 +248,61 @@ importers:
       tsx:
         specifier: 4.22.3
         version: 4.22.3
+      typescript:
+        specifier: ^6.0.3
+        version: 6.0.3
+
+  apps/fs-api:
+    dependencies:
+      '@cohub/core':
+        specifier: workspace:*
+        version: link:../../packages/core
+      '@cohub/db':
+        specifier: workspace:*
+        version: link:../../packages/db
+      '@cohub/identity':
+        specifier: workspace:*
+        version: link:../../packages/identity
+      '@cohub/infra':
+        specifier: workspace:*
+        version: link:../../packages/infra
+      '@cohub/protocol':
+        specifier: workspace:*
+        version: link:../../packages/protocol
+      '@cohub/space-fs':
+        specifier: workspace:*
+        version: link:../../packages/space-fs
+      '@hono/node-server':
+        specifier: 2.0.4
+        version: 2.0.4(hono@4.12.23)
+      '@hono/otel':
+        specifier: ^1.1.2
+        version: 1.1.2(hono@4.12.23)
+      '@opentelemetry/api':
+        specifier: ^1.9.1
+        version: 1.9.1
+      dotenv:
+        specifier: ^17.4.2
+        version: 17.4.2
+      drizzle-orm:
+        specifier: ^0.45.2
+        version: 0.45.2(@cloudflare/workers-types@4.20260529.1)(@opentelemetry/api@1.9.1)(postgres@3.4.9)
+      hono:
+        specifier: 4.12.23
+        version: 4.12.23
+      ioredis:
+        specifier: 5.10.1
+        version: 5.10.1
+      postgres:
+        specifier: ^3.4.9
+        version: 3.4.9
+    devDependencies:
+      '@biomejs/biome':
+        specifier: 2.4.16
+        version: 2.4.16
+      '@types/node':
+        specifier: 25.9.1
+        version: 25.9.1
       typescript:
         specifier: ^6.0.3
         version: 6.0.3
@@ -625,6 +683,12 @@ importers:
       '@cohub/db':
         specifier: workspace:*
         version: link:../db
+      '@cohub/identity':
+        specifier: workspace:*
+        version: link:../identity
+      '@cohub/infra':
+        specifier: workspace:*
+        version: link:../infra
       '@cohub/protocol':
         specifier: workspace:*
         version: link:../protocol
@@ -634,6 +698,9 @@ importers:
       drizzle-orm:
         specifier: ^0.45.2
         version: 0.45.2(@cloudflare/workers-types@4.20260529.1)(@opentelemetry/api@1.9.1)(postgres@3.4.9)
+      hono:
+        specifier: 4.12.23
+        version: 4.12.23
     devDependencies:
       '@types/node':
         specifier: 25.9.1
@@ -772,6 +839,49 @@ importers:
       tsdown:
         specifier: ^0.22.1
         version: 0.22.1(@typescript/native-preview@7.0.0-dev.20260527.2)(tsx@4.22.3)(typescript@6.0.3)
+      typescript:
+        specifier: ^6.0.3
+        version: 6.0.3
+
+  packages/space-fs:
+    dependencies:
+      '@cohub/core':
+        specifier: workspace:*
+        version: link:../core
+      '@cohub/db':
+        specifier: workspace:*
+        version: link:../db
+      '@cohub/identity':
+        specifier: workspace:*
+        version: link:../identity
+      '@cohub/infra':
+        specifier: workspace:*
+        version: link:../infra
+      '@cohub/protocol':
+        specifier: workspace:*
+        version: link:../protocol
+      '@opentelemetry/api':
+        specifier: ^1.9.1
+        version: 1.9.1
+      bullmq:
+        specifier: ^5.77.6
+        version: 5.77.6
+      drizzle-orm:
+        specifier: ^0.45.2
+        version: 0.45.2(@cloudflare/workers-types@4.20260529.1)(@opentelemetry/api@1.9.1)(postgres@3.4.9)
+      hono:
+        specifier: 4.12.23
+        version: 4.12.23
+      ignore:
+        specifier: ^7.0.5
+        version: 7.0.5
+      ioredis:
+        specifier: 5.10.1
+        version: 5.10.1
+    devDependencies:
+      '@types/node':
+        specifier: 25.9.1
+        version: 25.9.1
       typescript:
         specifier: ^6.0.3
         version: 6.0.3

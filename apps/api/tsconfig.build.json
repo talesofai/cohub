@@ -87,6 +87,12 @@
       ],
       "@cohub/core/fs-cdn": [
         "../../packages/core/dist/fs-cdn/index.d.ts"
+      ],
+      "@cohub/core/auth": [
+        "../../packages/core/dist/auth/index.d.ts"
+      ],
+      "@cohub/space-fs": [
+        "../../packages/space-fs/dist/index.d.ts"
       ]
     }
   },

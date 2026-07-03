@@ -1,0 +1,14 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: __APP_NAME__
+  namespace: __NAMESPACE__
+  labels:
+    app.kubernetes.io/name: __APP_NAME__
+spec:
+  selector:
+    app.kubernetes.io/name: __APP_NAME__
+  ports:
+    - port: __SERVICE_PORT__
+      targetPort: http
+      name: http

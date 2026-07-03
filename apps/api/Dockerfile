@@ -28,6 +28,9 @@ COPY packages/infra/tsconfig.build.json ./packages/infra/tsconfig.build.json
 COPY packages/db/package.json ./packages/db/package.json
 COPY packages/db/tsconfig.json ./packages/db/tsconfig.json
 COPY packages/db/tsconfig.build.json ./packages/db/tsconfig.build.json
+COPY packages/space-fs/package.json ./packages/space-fs/package.json
+COPY packages/space-fs/tsconfig.json ./packages/space-fs/tsconfig.json
+COPY packages/space-fs/tsconfig.build.json ./packages/space-fs/tsconfig.build.json
 COPY apps/api/package.json ./apps/api/package.json
 
 RUN --mount=type=cache,id=pnpm-store,target=/pnpm/store \
@@ -54,6 +57,7 @@ COPY packages/sandbox-controller ./packages/sandbox-controller
 COPY packages/protocol ./packages/protocol
 COPY packages/infra ./packages/infra
 COPY packages/db ./packages/db
+COPY packages/space-fs ./packages/space-fs
 COPY apps/api/src ./apps/api/src
 COPY apps/api/tsconfig.json apps/api/tsconfig.build.json ./apps/api/
 COPY apps/api/drizzle ./apps/api/drizzle

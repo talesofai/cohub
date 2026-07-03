@@ -1,0 +1,35 @@
+{
+  "name": "@cohub/space-fs",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    }
+  },
+  "types": "./dist/index.d.ts",
+  "files": ["dist"],
+  "scripts": {
+    "build": "tsgo -p tsconfig.build.json",
+    "typecheck": "tsgo -p tsconfig.json --noEmit"
+  },
+  "dependencies": {
+    "@cohub/core": "workspace:*",
+    "@cohub/db": "workspace:*",
+    "@cohub/identity": "workspace:*",
+    "@cohub/infra": "workspace:*",
+    "@cohub/protocol": "workspace:*",
+    "@opentelemetry/api": "^1.9.1",
+    "bullmq": "^5.77.6",
+    "drizzle-orm": "^0.45.2",
+    "hono": "4.12.23",
+    "ignore": "^7.0.5",
+    "ioredis": "5.10.1"
+  },
+  "devDependencies": {
+    "@types/node": "25.9.1",
+    "typescript": "^6.0.3"
+  }
+}

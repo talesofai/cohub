@@ -1,0 +1,23 @@
+{
+  "extends": "../../tsconfig.base.json",
+  "compilerOptions": {
+    "noEmit": true,
+    "rootDir": "../..",
+    "paths": {
+      "@cohub/core/permissions": ["../../packages/core/src/permissions/index.ts"],
+      "@cohub/core/fs-cdn": ["../../packages/core/src/fs-cdn/index.ts"],
+      "@cohub/core/security": ["../../packages/core/src/security/index.ts"],
+      "@cohub/core/security/execution-grants": ["../../packages/core/src/security/execution-grants.ts"],
+      "@cohub/db": ["../../packages/db/src/index.ts"],
+      "@cohub/protocol": ["../../packages/protocol/src/index.ts"],
+      "@cohub/protocol/fs": ["../../packages/protocol/src/fs/index.ts"],
+      "@cohub/protocol/realtime": ["../../packages/protocol/src/realtime/index.ts"],
+      "@cohub/identity": ["../../packages/identity/src/index.ts"],
+      "@cohub/infra/logging": ["../../packages/infra/src/logging/index.ts"],
+      "@cohub/infra/tracing": ["../../packages/infra/src/tracing/index.ts"],
+      "@cohub/infra/bullmq": ["../../packages/infra/src/bullmq/index.ts"],
+      "@cohub/infra/tracing/propagator": ["../../packages/infra/src/tracing/propagator.ts"]
+    }
+  },
+  "include": ["src"]
+}

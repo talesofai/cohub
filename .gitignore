@@ -22,6 +22,8 @@ deploy/worker/prod/secrets.yaml
 deploy/worker/dev/secrets.yaml
 deploy/agent/prod/secrets.yaml
 deploy/agent/dev/secrets.yaml
+deploy/fs-api/prod/secrets.yaml
+deploy/fs-api/dev/secrets.yaml
 
 # Whale Shrine runtime data
 docs/work-capability-lab/whale-shrine/data/
@@ -35,3 +37,8 @@ deploy/worker/prod/rendered/
 deploy/worker/dev/rendered/
 deploy/agent/prod/rendered/
 deploy/agent/dev/rendered/
+deploy/fs-api/prod/rendered/
+deploy/fs-api/dev/rendered/
+
+# Subagent review artifacts
+.pi-subagents/

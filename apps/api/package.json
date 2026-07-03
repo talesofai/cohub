@@ -28,6 +28,7 @@
     "@cohub/infra": "workspace:*",
     "@cohub/protocol": "workspace:*",
     "@cohub/sandbox-controller": "workspace:*",
+    "@cohub/space-fs": "workspace:*",
     "@hono/node-server": "2.0.4",
     "@hono/otel": "^1.1.2",
     "@kubernetes/client-node": "^1.4.0",

@@ -1,0 +1,76 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: __APP_NAME__
+  namespace: __NAMESPACE__
+  labels:
+    app.kubernetes.io/name: __APP_NAME__
+spec:
+  replicas: __REPLICAS__
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxUnavailable: __MAX_UNAVAILABLE__
+      maxSurge: __MAX_SURGE__
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: __APP_NAME__
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: __APP_NAME__
+    spec:
+      terminationGracePeriodSeconds: __TERMINATION_GRACE_PERIOD_SECONDS__
+__IMAGE_PULL_SECRETS_BLOCK__
+      securityContext:
+        runAsUser: 1000
+        runAsGroup: 1000
+      containers:
+        - name: __APP_NAME__
+          image: __IMAGE_REPOSITORY__:__IMAGE_TAG__
+          imagePullPolicy: __IMAGE_PULL_POLICY__
+          ports:
+            - containerPort: __CONTAINER_PORT__
+              name: http
+          envFrom:
+            - configMapRef:
+                name: __APP_NAME__-config
+            - secretRef:
+                name: __APP_NAME__-secrets
+          volumeMounts:
+            - name: space-storage
+              mountPath: /space-storage
+              subPath: __SPACE_STORAGE_SUBPATH__
+            - name: system-storage
+              mountPath: /system-storage
+              subPath: __SPACE_SYSTEM_SUBPATH__
+          resources:
+            requests:
+              cpu: "__REQUEST_CPU__"
+              memory: "__REQUEST_MEMORY__"
+            limits:
+              cpu: "__LIMIT_CPU__"
+              memory: "__LIMIT_MEMORY__"
+          livenessProbe:
+            httpGet:
+              path: __LIVENESS_PATH__
+              port: http
+            initialDelaySeconds: __LIVENESS_INITIAL_DELAY__
+            periodSeconds: __LIVENESS_PERIOD__
+            timeoutSeconds: __LIVENESS_TIMEOUT__
+            failureThreshold: __LIVENESS_FAILURE_THRESHOLD__
+          readinessProbe:
+            httpGet:
+              path: __READINESS_PATH__
+              port: http
+            initialDelaySeconds: __READINESS_INITIAL_DELAY__
+            periodSeconds: __READINESS_PERIOD__
+            timeoutSeconds: __READINESS_TIMEOUT__
+            failureThreshold: __READINESS_FAILURE_THRESHOLD__
+      volumes:
+        - name: space-storage
+          persistentVolumeClaim:
+            claimName: __SPACE_STORAGE_PVC__
+        - name: system-storage
+          persistentVolumeClaim:
+            claimName: __SPACE_SYSTEM_PVC__

@@ -123,6 +123,12 @@
       ],
       "@cohub/core/fs-cdn": [
         "../../packages/core/src/fs-cdn/index.ts"
+      ],
+      "@cohub/core/auth": [
+        "../../packages/core/src/auth/index.ts"
+      ],
+      "@cohub/space-fs": [
+        "../../packages/space-fs/src/index.ts"
       ]
     }
   },

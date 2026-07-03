@@ -80,6 +80,10 @@
       "types": "./dist/fs-cdn/index.d.ts",
       "default": "./dist/fs-cdn/index.js"
     },
+    "./auth": {
+      "types": "./dist/auth/index.d.ts",
+      "default": "./dist/auth/index.js"
+    },
     "./sandbox-lifecycle": {
       "types": "./dist/sandbox-lifecycle/index.d.ts",
       "default": "./dist/sandbox-lifecycle/index.js"
@@ -96,9 +100,12 @@
   "dependencies": {
     "@cohub/billing": "workspace:*",
     "@cohub/db": "workspace:*",
+    "@cohub/identity": "workspace:*",
+    "@cohub/infra": "workspace:*",
     "@cohub/protocol": "workspace:*",
     "@cohub/sandbox-controller": "workspace:*",
-    "drizzle-orm": "^0.45.2"
+    "drizzle-orm": "^0.45.2",
+    "hono": "4.12.23"
   },
   "devDependencies": {
     "@types/node": "25.9.1",
