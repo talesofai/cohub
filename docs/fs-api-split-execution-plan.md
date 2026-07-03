@@ -320,8 +320,10 @@ cp secrets.template.yaml secrets.yaml
 ### 步骤 2：dev 创建 fs-api 资源（ROUTE_ENABLED=false，不切流量）
 
 ```bash
+# merge PR 后从 main 拿 short sha
+SHA=$(git rev-parse --short origin/main)
 cd deploy/fs-api/dev
-./deploy.sh
+OVERRIDE_IMAGE_TAG=main-$SHA ./deploy.sh
 ```
 
 这会创建：ConfigMap + Service + Deployment（ROUTE_ENABLED=false 不创建 HTTPRoute）。
@@ -375,6 +377,9 @@ cp secrets.template.yaml secrets.yaml
 ### 步骤 6：prod 创建 fs-api 资源（ROUTE_ENABLED=false）
 
 ```bash
+# prod 用 git tag 镜像，先打 tag 触发 CI 构建
+# git tag v1.0.0 && git push origin v1.0.0
+# 等 CI 构建完成后：
 cd deploy/fs-api/prod
 ./deploy.sh
 ```

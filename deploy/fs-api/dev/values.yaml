@@ -2,7 +2,9 @@ NAMESPACE: "cohub-dev"
 APP_NAME: "cohub-fs-api-dev"
 
 IMAGE_REPOSITORY: "git.talesofai.com/talesofai/cohub-fs-api"
-IMAGE_TAG: "latest"
+# 首次部署用 OVERRIDE_IMAGE_TAG=main-<sha> ./deploy.sh（merge 后从 CI 构建产物拿 sha）
+# 后续 CI 自动用 kubectl set image 更新，不读本值
+IMAGE_TAG: "sha-PLACEHOLDER"
 IMAGE_PULL_POLICY: "Always"
 IMAGE_PULL_SECRET: "gitea-registry"
 
