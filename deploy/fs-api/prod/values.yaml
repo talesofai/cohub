@@ -6,6 +6,9 @@ IMAGE_TAG: "v1.0.0"
 IMAGE_PULL_POLICY: "IfNotPresent"
 IMAGE_PULL_SECRET: "gitea-registry"
 
+# 复用 api 的 Secret（fs-api 需要的 key 全是 api secret 的子集，保证 APP_ENCRYPTION_KEY 等始终同步）
+SECRET_REF_NAME: "cohub-api-secrets"
+
 SERVICE_PORT: "8789"
 CONTAINER_PORT: "8789"
 

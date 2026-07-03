@@ -298,26 +298,9 @@ PUBLIC_ASSET_CDN_BASE_URL / TURN_OBJECT_CDN_BASE_URL
 - [ ] api CI 已自动部署 thin re-export 版（push main 即触发，无需手动操作）
 - [ ] api 健康检查通过，fs 功能正常（因为 thin re-export 行为零差异）
 
-### 步骤 1：创建 fs-api dev secrets
+### 步骤 1：dev 创建 fs-api 资源（ROUTE_ENABLED=false，不切流量）
 
-```bash
-cd deploy/fs-api/dev
-cp secrets.template.yaml secrets.yaml
-```
-
-编辑 `secrets.yaml`，从 api dev secrets **复制相同值**（必须一致，否则鉴权/队列会失败）：
-
-| key | 来源 |
-|-----|------|
-| `DATABASE_URL` | 与 `cohub-api-dev-secrets` 相同 |
-| `REDIS_URL` | 与 api dev 相同 |
-| `BULLMQ_REDIS_URL` | 与 api dev 相同 |
-| `APP_ENCRYPTION_KEY` | 与 api dev 相同（work-session token 验签依赖） |
-| `WORKER_SECRET` | 与 api dev 相同（内部请求校验） |
-| `TURN_OBJECT_S3_ACCESS_KEY_ID` | 与 api dev 相同（upload presign） |
-| `TURN_OBJECT_S3_SECRET_ACCESS_KEY` | 与 api dev 相同 |
-
-### 步骤 2：dev 创建 fs-api 资源（ROUTE_ENABLED=false，不切流量）
+> fs-api 复用 api 的 Secret（`cohub-api-dev-secrets`），无需单独创建。fs-api 需要的 key（DATABASE_URL / REDIS_URL / BULLMQ_REDIS_URL / APP_ENCRYPTION_KEY / WORKER_SECRET / TURN_OBJECT_S3_*）全是 api secret 的子集，复用还能保证 APP_ENCRYPTION_KEY 始终同步（work-session token 验签依赖）。
 
 ```bash
 # merge PR 后从 main 拿 short sha
@@ -336,7 +319,7 @@ kubectl logs -n cohub-dev -l app.kubernetes.io/name=cohub-fs-api-dev -f
 # 应看到 "@cohub/fs-api listening on :8789"
 ```
 
-### 步骤 3：dev 影子验证（直连 fs-api service）
+### 步骤 2：dev 影子验证（直连 fs-api service）
 
 ```bash
 # port-forward 到 fs-api
@@ -352,7 +335,7 @@ curl -H "Authorization: Bearer <token>" \
 
 对比同一请求打 api dev（:8787）和 fs-api dev（:8789）的响应，应完全一致。
 
-### 步骤 4：dev 切流量验证
+### 步骤 3：dev 切流量验证
 
 ```bash
 # 改 ROUTE_ENABLED=true
@@ -365,16 +348,9 @@ sed -i 's/ROUTE_ENABLED: "false"/ROUTE_ENABLED: "true"/' values.yaml
 
 验证 dev 环境全端 fs 功能正常（web dev + CLI dev）。
 
-### 步骤 5：创建 fs-api prod secrets
+### 步骤 4：prod 创建 fs-api 资源（ROUTE_ENABLED=false）
 
-```bash
-cd deploy/fs-api/prod
-cp secrets.template.yaml secrets.yaml
-```
-
-编辑 `secrets.yaml`，从 api prod secrets **复制相同值**（同步骤 1 的表）。
-
-### 步骤 6：prod 创建 fs-api 资源（ROUTE_ENABLED=false）
+> 同样复用 api 的 Secret（`cohub-api-secrets`）。
 
 ```bash
 # prod 用 git tag 镜像，先打 tag 触发 CI 构建
@@ -390,7 +366,7 @@ kubectl get pods -n cohub -l app.kubernetes.io/name=cohub-fs-api
 kubectl logs -n cohub -l app.kubernetes.io/name=cohub-fs-api -f
 ```
 
-### 步骤 7：prod 影子验证
+### 步骤 5：prod 影子验证
 
 ```bash
 kubectl port-forward -n cohub svc/cohub-fs-api 8789:8789
@@ -400,7 +376,7 @@ curl -H "Authorization: Bearer <prod-token>" \
 
 对比 prod api（:8787）和 prod fs-api（:8789）响应一致。
 
-### 步骤 8：prod 切流量（关键步骤）
+### 步骤 6：prod 切流量（关键步骤）
 
 ```bash
 cd deploy/fs-api/prod
@@ -415,7 +391,7 @@ Traefik 立即把 prod fs 流量切到 fs-api。此时：
 
 验证 prod 全端 fs 功能正常。观察 30 分钟。
 
-### 步骤 9：api 卸 PVC（最后一步，确认稳定后）
+### 步骤 7：api 卸 PVC（最后一步，确认稳定后）
 
 这一步要改 api 的 deployment.tmpl.yaml，移除 space-storage + system-storage volumeMount。**确认 fs-api 稳定运行至少 30 分钟后再做**。
 
@@ -436,6 +412,6 @@ kubectl describe pod -n cohub -l app.kubernetes.io/name=cohub-api | grep -A5 Vol
 
 | 阶段 | 出问题 | 回滚方式 |
 |------|--------|----------|
-| 步骤 2-3（影子） | fs-api 起不来 | 缩容 fs-api 到 0，不影响线上 |
-| 步骤 4/8（切流量） | fs 功能异常 | `ROUTE_ENABLED=false && ./deploy.sh`，流量秒回 api |
+| 步骤 1-2（影子） | fs-api 起不来 | 缩容 fs-api 到 0，不影响线上 |
+| 步骤 3/6（切流量） | fs 功能异常 | `ROUTE_ENABLED=false && ./deploy.sh`，流量秒回 api |
 | 步骤 9（卸 PVC） | api 异常 | 用未改的 deployment.tmpl.yaml 重跑 api `deploy.sh` |

@@ -15,6 +15,7 @@ IMAGE_REPOSITORY=$(get_value "IMAGE_REPOSITORY")
 IMAGE_TAG=${OVERRIDE_IMAGE_TAG:-$(get_value "IMAGE_TAG")}
 IMAGE_PULL_POLICY=$(get_value "IMAGE_PULL_POLICY")
 IMAGE_PULL_SECRET=$(get_value "IMAGE_PULL_SECRET")
+SECRET_REF_NAME=$(get_value "SECRET_REF_NAME")
 SERVICE_PORT=$(get_value "SERVICE_PORT")
 CONTAINER_PORT=$(get_value "CONTAINER_PORT")
 REPLICAS=$(get_value "REPLICAS")
@@ -51,8 +52,7 @@ API_HOSTNAME=$(get_value "API_HOSTNAME")
 ENV=$(get_value "ENV")
 LOG_LEVEL=$(get_value "LOG_LEVEL")
 
-if [ ! -f "secrets.yaml" ]; then echo "✗ Missing secrets.yaml"; exit 1; fi
-kubectl apply -f secrets.yaml
+# 复用 api 的 Secret，无需本地 secrets.yaml
 
 mkdir -p rendered
 
@@ -71,6 +71,7 @@ PY
     -e "s|__NAMESPACE__|${NAMESPACE}|g" -e "s|__APP_NAME__|${APP_NAME}|g" \
     -e "s|__IMAGE_REPOSITORY__|${IMAGE_REPOSITORY}|g" -e "s|__IMAGE_TAG__|${IMAGE_TAG}|g" \
     -e "s|__IMAGE_PULL_POLICY__|${IMAGE_PULL_POLICY}|g" -e "s|__SERVICE_PORT__|${SERVICE_PORT}|g" \
+    -e "s|__SECRET_REF_NAME__|${SECRET_REF_NAME}|g" \
     -e "s|__CONTAINER_PORT__|${CONTAINER_PORT}|g" -e "s|__REPLICAS__|${REPLICAS}|g" \
     -e "s|__MAX_UNAVAILABLE__|${MAX_UNAVAILABLE}|g" -e "s|__MAX_SURGE__|${MAX_SURGE}|g" \
     -e "s|__TERMINATION_GRACE_PERIOD_SECONDS__|${TERMINATION_GRACE_PERIOD_SECONDS}|g" \

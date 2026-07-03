@@ -36,7 +36,7 @@ __IMAGE_PULL_SECRETS_BLOCK__
             - configMapRef:
                 name: __APP_NAME__-config
             - secretRef:
-                name: __APP_NAME__-secrets
+                name: __SECRET_REF_NAME__
           volumeMounts:
             - name: space-storage
               mountPath: /space-storage
