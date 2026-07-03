@@ -84,7 +84,7 @@ jobs:
 
   deploy-dev:
     needs: build-and-push
-    if: ${{ github.ref == 'refs/heads/main' }}
+    if: ${{ github.ref == 'refs/heads/main' || github.event_name == 'workflow_dispatch' }}
     runs-on: ubuntu-latest
     env:
       IMAGE_TAG: ${{ needs.build-and-push.outputs.image_version }}
@@ -98,9 +98,13 @@ jobs:
           mkdir -p ~/.kube
           echo "${{ secrets.KUBECONFIG_DEV }}" | base64 -d > ~/.kube/config
       - name: Deploy to Dev
+        env:
+          OVERRIDE_IMAGE_TAG: ${{ env.IMAGE_TAG }}
         run: |
           cd deploy/fs-api/dev
-          kubectl set image deployment/cohub-fs-api-dev cohub-fs-api-dev=${{ env.REGISTRY }}/${{ env.NAMESPACE }}/${{ env.IMAGE_NAME }}:${{ env.IMAGE_TAG }} -n cohub-dev
+          # 首次部署（deployment 不存在）：deploy.sh apply 全部资源
+          # 后续部署：deploy.sh 幂等 apply（已存在资源会被覆盖更新）
+          ./deploy.sh
       - name: Verify
         run: kubectl rollout status deployment/cohub-fs-api-dev -n cohub-dev --timeout=300s
 
