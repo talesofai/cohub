@@ -1,0 +1,176 @@
+name: Sandbox Binaries Build and Release
+
+# Builds standalone `cohub-sandboxd` binaries for common platforms. These are the
+# same binary as the containerized sandbox, run with `--local` to expose a user's
+# machine as a space sandbox via the gateway relay. On version tags the archives
+# are attached to a GitHub Release; on other runs they are uploaded as artifacts.
+
+on:
+  push:
+    tags:
+      - 'v*.*.*'
+    paths:
+      - 'apps/sandbox/**'
+      - '.github/workflows/sandbox-binaries-build.yml'
+  pull_request:
+    paths:
+      - 'apps/sandbox/**'
+      - '.github/workflows/sandbox-binaries-build.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  BINARY_NAME: cohub-sandboxd
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - goos: linux
+            goarch: amd64
+          - goos: linux
+            goarch: arm64
+          - goos: darwin
+            goarch: amd64
+          - goos: darwin
+            goarch: arm64
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: '1.24'
+          cache-dependency-path: apps/sandbox/go.sum
+
+      - name: Resolve version
+        id: version
+        run: |
+          if [[ "${{ github.ref }}" == refs/tags/* ]]; then
+            VERSION="${{ github.ref_name }}"
+          else
+            VERSION="dev-$(git rev-parse --short HEAD)"
+          fi
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+
+      - name: Build
+        working-directory: apps/sandbox
+        env:
+          GOOS: ${{ matrix.goos }}
+          GOARCH: ${{ matrix.goarch }}
+          CGO_ENABLED: '0'
+          VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          set -euo pipefail
+          OUT_DIR="dist/${BINARY_NAME}_${GOOS}_${GOARCH}"
+          mkdir -p "$OUT_DIR"
+          go build -trimpath \
+            -ldflags "-s -w -X main.buildVersion=${VERSION}" \
+            -o "${OUT_DIR}/${BINARY_NAME}" .
+          "${OUT_DIR}/${BINARY_NAME}" --version || true
+
+      - name: Package
+        working-directory: apps/sandbox
+        env:
+          GOOS: ${{ matrix.goos }}
+          GOARCH: ${{ matrix.goarch }}
+          VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          set -euo pipefail
+          BASE="${BINARY_NAME}_${VERSION}_${GOOS}_${GOARCH}"
+          cd dist
+          tar -czf "${BASE}.tar.gz" -C "${BINARY_NAME}_${GOOS}_${GOARCH}" "${BINARY_NAME}"
+          sha256sum "${BASE}.tar.gz" > "${BASE}.tar.gz.sha256"
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ env.BINARY_NAME }}-${{ matrix.goos }}-${{ matrix.goarch }}
+          path: |
+            apps/sandbox/dist/*.tar.gz
+            apps/sandbox/dist/*.sha256
+          if-no-files-found: error
+          retention-days: 14
+
+  release:
+    needs: build
+    if: ${{ startsWith(github.ref, 'refs/tags/v') }}
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Download artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+
+      - name: Collect release assets
+        run: |
+          set -euo pipefail
+          mkdir -p release
+          find artifacts -type f \( -name '*.tar.gz' -o -name '*.sha256' \) -exec cp {} release/ \;
+          # Aggregate a single checksums file for convenience.
+          ( cd release && cat *.sha256 | sort > SHA256SUMS.txt )
+          ls -la release
+
+      - name: Publish to GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            release/*.tar.gz
+            release/SHA256SUMS.txt
+          fail_on_unmatched_files: true
+
+  publish-cdn:
+    needs: build
+    # The repo is private, so GitHub Release assets are not publicly
+    # downloadable. The CLI fetches the runner from the public CDN, so mirror
+    # the archives to the cohub-public OSS bucket under sandboxd/<version>/.
+    if: ${{ startsWith(github.ref, 'refs/tags/v') }}
+    runs-on: ubuntu-latest
+    env:
+      OSS_BUCKET: cohub-public
+      OSS_ENDPOINT: https://oss-us-west-1.aliyuncs.com
+      OSS_REGION: us-west-1
+    steps:
+      - name: Download artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+
+      - name: Resolve version
+        id: version
+        run: echo "version=${{ github.ref_name }}" >> "$GITHUB_OUTPUT"
+
+      - name: Collect archives
+        run: |
+          set -euo pipefail
+          mkdir -p upload
+          find artifacts -type f \( -name '*.tar.gz' -o -name '*.sha256' \) -exec cp {} upload/ \;
+          ls -la upload
+
+      - name: Upload to public CDN (OSS, S3-compatible)
+        env:
+          AWS_ACCESS_KEY_ID: ${{ secrets.PUBLIC_ASSET_OSS_ACCESS_KEY_ID }}
+          AWS_SECRET_ACCESS_KEY: ${{ secrets.PUBLIC_ASSET_OSS_SECRET_ACCESS_KEY }}
+          AWS_DEFAULT_REGION: ${{ env.OSS_REGION }}
+          VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          set -euo pipefail
+          if [[ -z "${AWS_ACCESS_KEY_ID:-}" || -z "${AWS_SECRET_ACCESS_KEY:-}" ]]; then
+            echo "Missing PUBLIC_ASSET_OSS_ACCESS_KEY_ID / PUBLIC_ASSET_OSS_SECRET_ACCESS_KEY secrets"
+            exit 1
+          fi
+          # Immutable, versioned objects — safe to cache forever.
+          aws s3 cp upload "s3://${OSS_BUCKET}/sandboxd/${VERSION}/" \
+            --endpoint-url "${OSS_ENDPOINT}" \
+            --recursive \
+            --cache-control "public, max-age=31536000, immutable"
+          echo "Published sandboxd ${VERSION} to https://public.cohub.run/sandboxd/${VERSION}/"
+

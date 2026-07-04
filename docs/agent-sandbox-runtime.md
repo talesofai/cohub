@@ -34,6 +34,25 @@
 - `space_sandboxes.provider = "local"` 时，controller 短路 provision / idle-destroy / recover
 - CLI：`cohub sandbox up <dir>` 建/绑 space、拉起 runner、输出 web 链接
 
+### 二进制分发
+
+`cohub-sandboxd` 与云端 sandbox 是同一份代码，仅以 `--local` 拨出运行。CI（`.github/workflows/sandbox-binaries-build.yml`）在打 `v*` tag 时交叉编译常见平台：
+
+- `linux/amd64`、`linux/arm64`、`darwin/amd64`、`darwin/arm64`
+- 每平台产出 `cohub-sandboxd_<version>_<os>_<arch>.tar.gz` + `.sha256`，附带聚合 `SHA256SUMS.txt`
+- 版本经 `-ldflags -X main.buildVersion=<tag>` 注入；容器内仍以 `IMAGE_VERSION` 环境变量优先
+- Windows 暂不支持（进程组管理依赖 Unix syscall，待后续补平台适配）
+- 产物同时：附加到 GitHub Release（私有 repo，仅内部可下）、上传公共 CDN `https://public.cohub.run/sandboxd/<version>/`（CLI 下载源）
+
+### 托管下载（CLI）
+
+CLI 首次 `cohub sandbox up` 时按当前 `os/arch` 从公共 CDN 拉取对应单个平台二进制，校验 `.sha256` 后缓存到 `~/.cache/cohub/sandboxd/<version>/`，后续命中缓存：
+
+- 版本由 CLI 内 `SANDBOXD_VERSION` 常量锁定（独立于 CLI 包版本；协议版本 `"1"` 保证向后兼容），随 runner 演进手动 bump
+- `COHUB_SANDBOXD_BIN` 覆盖二进制路径（本地 `go build` / 离线 / 自建）
+- `COHUB_SANDBOXD_CDN_BASE_URL` 覆盖下载源（staging / 自托管）
+- 并发 `up` 用 mkdir 原子锁避免重复下载；checksum 不匹配直接拒绝
+
 ## 当前 transport 模式
 
 当前系统只保留一种模式：

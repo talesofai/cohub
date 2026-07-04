@@ -95,6 +95,11 @@ func toProtocolPortChanges(changes []portwatch.Change) []protocol.PortChange {
 	return out
 }
 
+// buildVersion is stamped at build time via -ldflags "-X main.buildVersion=...".
+// For the containerized sandbox the IMAGE_VERSION env var takes precedence; for
+// standalone local binaries this ldflags value is the source of truth.
+var buildVersion = "dev"
+
 func main() {
 	showVersion := flag.Bool("version", false, "print sandbox version and exit")
 	localMode := flag.Bool("local", false, "run in local dial-out mode (connect to the gateway relay)")
@@ -105,7 +110,7 @@ func main() {
 	if *showVersion {
 		version := os.Getenv("IMAGE_VERSION")
 		if version == "" {
-			version = "unknown"
+			version = buildVersion
 		}
 		fmt.Println(version)
 		return

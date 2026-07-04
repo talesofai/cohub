@@ -6,8 +6,9 @@ import { resolveCohubEnvironment, resolveWebsocketUrl } from "@neta-art/cohub";
 import type { Command } from "commander";
 import { requireAccessToken } from "../auth.js";
 import { createClient } from "../client.js";
-import { error, json as outJson, jsonRequested, ok } from "../output.js";
+import { error, json as outJson, jsonRequested, ok, spinner } from "../output.js";
 import { resolveSpace } from "../space.js";
+import { ensureSandboxdBinary, SandboxdDownloadError } from "./sandboxd-binary.js";
 
 type UpOptions = {
   space?: string;
@@ -23,24 +24,6 @@ const resolveRelayUrl = (): string => {
   if (explicit) return explicit;
   const wsUrl = resolveWebsocketUrl({ url: process.env.COHUB_WS_URL });
   return wsUrl.replace(/\/ws$/, "/sandbox/relay");
-};
-
-// Resolve the sandboxd binary path. For MVP the binary is provided via
-// COHUB_SANDBOXD_BIN (built locally with `go build`); the managed release
-// download lands in a follow-up once goreleaser publishing is wired up.
-const resolveSandboxdBinary = async (): Promise<string> => {
-  const override = process.env.COHUB_SANDBOXD_BIN?.trim();
-  if (override) {
-    const info = await stat(override).catch(() => null);
-    if (!info?.isFile()) {
-      return error("sandboxd binary not found", `COHUB_SANDBOXD_BIN=${override} is not a file`);
-    }
-    return override;
-  }
-  return error(
-    "sandboxd binary not available",
-    "Set COHUB_SANDBOXD_BIN to a locally built sandboxd binary (cd apps/sandbox && go build -o cohub-sandboxd .). Managed downloads arrive in a later release.",
-  );
 };
 
 const confirm = async (question: string): Promise<boolean> => {
@@ -90,7 +73,28 @@ export function registerSandbox(program: Command): void {
         return error("Invalid directory", `${rootDir} is not a directory`);
       }
 
-      const binary = await resolveSandboxdBinary();
+      // A single spinner: first status starts it, later statuses only update the
+      // label (calling start twice would leak the previous interval).
+      const spin = spinner();
+      let spinnerStarted = false;
+      let binary: string;
+      try {
+        binary = await ensureSandboxdBinary({
+          onStatus: (msg) => {
+            if (spinnerStarted) {
+              spin.update(msg);
+            } else {
+              spin.start(msg);
+              spinnerStarted = true;
+            }
+          },
+        });
+        if (spinnerStarted) spin.stop("");
+      } catch (err) {
+        if (spinnerStarted) spin.stop("");
+        if (err instanceof SandboxdDownloadError) return error("Sandbox runtime unavailable", err.message);
+        throw err;
+      }
       const relayUrl = resolveRelayUrl();
       const token = await requireAccessToken();
       const client = createClient();
