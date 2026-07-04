@@ -174,7 +174,11 @@ const CHECKPOINT_PAGE_SIZE = 20;
 const TASK_PAGE_SIZE = 10;
 
 let showUserMenu = $state(false);
-let spaces = $state<SpaceRecord[]>([]);
+// Hydrate synchronously from the local cache so a freshly mounted sidebar
+// (e.g. the mobile drawer, which unmounts on close) can resolve the current
+// space on first paint instead of flashing the empty "Select a space" state
+// while loadSpaces() awaits auth + IndexedDB + network.
+let spaces = $state<SpaceRecord[]>(getCachedSpaceList() ?? []);
 let sessions = $state<SessionRecord[]>([]);
 type SessionForkSidebarRecord = Partial<SessionForkRecord> & {
 	childSessionId: string;
