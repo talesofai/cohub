@@ -1,5 +1,12 @@
 # @neta-art/cohub-cli
 
+## 2.2.3
+
+### Patch Changes
+
+- e854b0e: Bump the pinned `sandboxd` binary version to v1.82.4, which includes the local
+  sandbox `/workspace` path mapping fix.
+
 ## 2.2.2
 
 ### Patch Changes
