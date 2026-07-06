@@ -1,5 +1,17 @@
 # @neta-art/cohub-cli
 
+## 2.2.2
+
+### Patch Changes
+
+- ce4fc3c: Bump the pinned `sandboxd` binary version to v1.82.2. This is the first
+  release whose archives were actually published to the public CDN — the
+  `publish-cdn` job had been failing on every tag since the managed-download
+  workflow landed, so the previous pin (v1.80.2) 404'd on download. With this
+  bump, `sandbox up` resolves a version that exists on the CDN.
+- Updated dependencies [ace4b41]
+  - @neta-art/cohub@2.3.0
+
 ## 2.2.1
 
 ### Patch Changes
