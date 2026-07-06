@@ -51,6 +51,43 @@ func TestResolveSandboxPathFence(t *testing.T) {
 	}
 }
 
+func TestResolveSandboxPathVirtualWorkspaceAlias(t *testing.T) {
+	root, err := filepath.EvalSymlinks(t.TempDir())
+	if err != nil {
+		t.Fatalf("evalsymlinks root: %v", err)
+	}
+	if err := os.MkdirAll(filepath.Join(root, "sub"), 0o755); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+
+	cfg := env.Config{WorkspaceDir: root, Fence: true}
+	tests := []struct {
+		name string
+		raw  string
+		cwd  string
+		want string
+	}{
+		{name: "virtual root", raw: ".", cwd: "/workspace", want: root},
+		{name: "virtual child", raw: "/workspace/sub", cwd: root, want: filepath.Join(root, "sub")},
+		{name: "relative from virtual cwd", raw: "sub", cwd: "/workspace", want: filepath.Join(root, "sub")},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got, err := resolveSandboxPath(cfg, tt.raw, tt.cwd)
+			if err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+			if got.path != tt.want {
+				t.Fatalf("path mismatch: got %q want %q", got.path, tt.want)
+			}
+		})
+	}
+
+	if _, err := resolveSandboxPath(cfg, "/workspace/../outside", root); err == nil {
+		t.Fatalf("expected cleaned virtual escape to be denied")
+	}
+}
+
 func TestResolveSandboxPathSymlinkEscape(t *testing.T) {
 	root, err := filepath.EvalSymlinks(t.TempDir())
 	if err != nil {

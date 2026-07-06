@@ -94,6 +94,27 @@ type resolvedSandboxPath struct {
 	path string
 }
 
+const virtualWorkspaceRoot = "/workspace"
+
+func mapVirtualWorkspacePath(cfg env.Config, cleaned string) string {
+	if !cfg.Fence {
+		return cleaned
+	}
+	workspaceRoot := filepath.Clean(cfg.WorkspaceDir)
+	virtualRoot := filepath.Clean(virtualWorkspaceRoot)
+	if workspaceRoot == virtualRoot {
+		return cleaned
+	}
+	if cleaned == virtualRoot {
+		return workspaceRoot
+	}
+	if strings.HasPrefix(cleaned, virtualRoot+string(filepath.Separator)) {
+		relativePath := strings.TrimPrefix(cleaned, virtualRoot+string(filepath.Separator))
+		return filepath.Join(workspaceRoot, relativePath)
+	}
+	return cleaned
+}
+
 func resolveSandboxPath(cfg env.Config, rawPath string, cwd string) (resolvedSandboxPath, error) {
 	base := strings.TrimSpace(cwd)
 	if base == "" {
@@ -111,6 +132,7 @@ func resolveSandboxPath(cfg env.Config, rawPath string, cwd string) (resolvedSan
 	} else {
 		cleaned = filepath.Clean(filepath.Join(base, candidate))
 	}
+	cleaned = mapVirtualWorkspacePath(cfg, cleaned)
 
 	if cfg.Fence {
 		if err := ensureWithinRoot(cfg.WorkspaceDir, cleaned); err != nil {
