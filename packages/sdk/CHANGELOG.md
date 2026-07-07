@@ -1,5 +1,11 @@
 # @neta-art/cohub
 
+## 2.6.0
+
+### Minor Changes
+
+- 805d300: Add preview session creation for private HTML previews and preserve viewer-scoped authorization when work runtime tokens refresh.
+
 ## 2.5.0
 
 ### Minor Changes
