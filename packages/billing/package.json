@@ -30,7 +30,7 @@
     "typecheck": "tsgo -p tsconfig.json --noEmit"
   },
   "dependencies": {
-    "@talesofai-billing/sdk": "^1.6.0",
+    "@talesofai-billing/sdk": "^1.10.0",
     "ioredis": "5.10.1"
   },
   "devDependencies": {

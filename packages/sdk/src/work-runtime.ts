@@ -18,7 +18,7 @@ type RuntimeResponse =
   | { type: "cohub.work.context.result"; requestId: string; context: WorkRuntimeContext }
   | { type: "cohub.work.token.result"; requestId: string; token: string | null }
   | { type: "cohub.work.authorize.result"; requestId: string; token: string | null }
-  | { type: "cohub.work.purchase.result"; requestId: string; checkout: { providerKey: string | null; checkoutUrl: string | null; checkoutUsable: boolean; status: string | null; message: string | null; orderId: string; productKey: string } | null }
+  | { type: "cohub.work.purchase.result"; requestId: string; checkout: { providerKey: string | null; checkoutUrl: string | null; checkoutClientSecret: string | null; checkoutUiMode: string | null; checkoutUsable: boolean; status: string | null; message: string | null; orderId: string; productKey: string } | null }
   | { type: "cohub.work.checkout-state.result"; requestId: string; status: WorkRuntimeCheckoutStatus; orderId: string | null }
   | { type: "cohub.work.error"; requestId: string; message: string };
 
@@ -99,9 +99,9 @@ export class WorkRuntimeApi {
   }
 
   async purchase(input: { productKey: string }) {
-    const response = await request<{ checkout: { providerKey: string | null; checkoutUrl: string | null; checkoutUsable: boolean; status: string | null; message: string | null; orderId: string; productKey: string } | null }>(
+    const response = await request<{ checkout: { providerKey: string | null; checkoutUrl: string | null; checkoutClientSecret: string | null; checkoutUiMode: string | null; checkoutUsable: boolean; status: string | null; message: string | null; orderId: string; productKey: string } | null }>(
       { type: "cohub.work.purchase", productKey: input.productKey },
-      120_000,
+      900_000,
     );
     return response?.checkout ?? null;
   }

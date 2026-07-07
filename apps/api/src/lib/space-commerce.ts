@@ -8,6 +8,7 @@ import { businessesFeature } from "@talesofai-billing/sdk/admin/businesses";
 import { customersFeature } from "@talesofai-billing/sdk/admin/customers";
 import { ordersFeature } from "@talesofai-billing/sdk/admin/orders";
 import { productsFeature, type Product } from "@talesofai-billing/sdk/admin/products";
+import { providersFeature } from "@talesofai-billing/sdk/admin/providers";
 import {
   billingOperations,
   createBusinessBillingOperations,
@@ -68,7 +69,8 @@ export function createSpaceCommerceSdk() {
     .useAdmin(productsFeature())
     .useAdmin(benefitsFeature())
     .useAdmin(customersFeature())
-    .useAdmin(ordersFeature());
+    .useAdmin(ordersFeature())
+    .useAdmin(providersFeature());
 }
 
 export type SpaceCommerceSdk = ReturnType<typeof createSpaceCommerceSdk>;
@@ -142,6 +144,14 @@ function appendCheckoutQuery(urlString: string, input: { status: "success" | "fa
   url.searchParams.set("cohub_checkout", input.status);
   if (input.orderId) url.searchParams.set("cohub_order", input.orderId);
   return url.toString();
+}
+
+function appendCheckoutSessionPlaceholder(urlString: string) {
+  const url = new URL(urlString);
+  url.searchParams.set("checkout_session_id", "{CHECKOUT_SESSION_ID}");
+  return url
+    .toString()
+    .replace("%7BCHECKOUT_SESSION_ID%7D", "{CHECKOUT_SESSION_ID}");
 }
 
 function buildBillingBusinessName(input: { spaceName: string; spaceId: string }) {
@@ -258,5 +268,32 @@ export function buildWorkCheckoutReturnUrls(input: { workUrl: string; orderId?: 
     successRedirectUrl: appendCheckoutQuery(input.workUrl, { status: "success", orderId: input.orderId }),
     failedRedirectUrl: appendCheckoutQuery(input.workUrl, { status: "failed", orderId: input.orderId }),
     cancelRedirectUrl: appendCheckoutQuery(input.workUrl, { status: "cancel", orderId: input.orderId }),
+  };
+}
+
+export function buildEmbeddedWorkCheckoutReturnUrl(input: { workUrl: string }) {
+  return appendCheckoutSessionPlaceholder(input.workUrl);
+}
+
+export function buildProviderAwareWorkCheckoutRedirects(input: {
+  workUrl: string;
+  activeProviderKey: "not_configured" | "waffo" | "stripe";
+  checkoutMode?: "hosted_page" | "embedded_page" | null;
+}) {
+  const useEmbedded =
+    input.activeProviderKey === "stripe" &&
+    (input.checkoutMode === "embedded_page" || !input.checkoutMode);
+  if (useEmbedded) {
+    return {
+      checkout_ui_mode: "embedded_page" as const,
+      checkout_return_url: buildEmbeddedWorkCheckoutReturnUrl(input),
+      checkout_redirect_on_completion: "if_required" as const,
+    };
+  }
+  const urls = buildWorkCheckoutReturnUrls({ workUrl: input.workUrl });
+  return {
+    success_redirect_url: urls.successRedirectUrl,
+    failed_redirect_url: urls.failedRedirectUrl,
+    cancel_redirect_url: urls.cancelRedirectUrl,
   };
 }

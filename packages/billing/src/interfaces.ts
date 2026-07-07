@@ -187,9 +187,14 @@ export type BillingSubscriptionSummary = {
   cancelAtPeriodEnd: boolean;
 };
 
+export type BillingPaymentProviderKey = "waffo" | "stripe";
+export type BillingActivePaymentProviderKey = "not_configured" | BillingPaymentProviderKey;
+
 export type BillingPaymentStatus = {
   available: boolean;
   reason: string | null;
+  activeProviderKey: BillingActivePaymentProviderKey;
+  availableProviderKeys: BillingPaymentProviderKey[];
 };
 
 export type BillingCatalog = BillingUserRef & {
@@ -211,6 +216,8 @@ export type BillingHistoryPagination = {
 export type BillingCheckoutActionState = {
   canPay: boolean;
   checkoutUrl: string | null;
+  checkoutClientSecret: string | null;
+  checkoutUiMode: string | null;
   checkoutUsable: boolean;
   canCancelCheckout: boolean;
   canCancelAutoRenew: boolean;
@@ -270,6 +277,8 @@ export type BillingCheckoutResult = BillingUserRef & {
   payment: BillingPaymentStatus;
   productKey: string;
   checkoutUrl: string | null;
+  checkoutClientSecret: string | null;
+  checkoutUiMode: string | null;
   checkoutUsable: boolean;
   message: string | null;
   orderId: string | null;
@@ -445,6 +454,7 @@ export interface BillingOperations {
   listSubscriptions(input: BillingHistoryListInput): Promise<BillingSubscriptionHistoryList>;
   purchaseAddon(input: BillingCheckoutInput): Promise<BillingCheckoutResult>;
   createSubscription(input: BillingCheckoutInput): Promise<BillingCheckoutResult>;
+  recoverSubscriptionCheckout(input: BillingUserRef & { subscriptionId: string }): Promise<BillingCheckoutResult>;
   cancelSubscriptionCheckout(input: BillingUserRef & { subscriptionId: string }): Promise<BillingSubscriptionHistoryStatus>;
   cancelSubscriptionAutoRenew(input: BillingUserRef & { subscriptionId: string }): Promise<BillingSubscriptionHistoryStatus>;
   redeemCode(input: BillingRedemptionInput): Promise<BillingRedemptionResult>;

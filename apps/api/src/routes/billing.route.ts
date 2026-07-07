@@ -183,6 +183,20 @@ router.post("/subscriptions", async (c) => {
   }
 });
 
+router.post("/subscriptions/:subscriptionId/checkout", async (c) => {
+  const user = useAuth(c);
+  try {
+    const checkout = await billingOperations.recoverSubscriptionCheckout({
+      userId: user.uuid,
+      subscriptionId: c.req.param("subscriptionId"),
+    });
+    return c.json({ checkout });
+  } catch (error) {
+    if (error instanceof ApiError) return billingApiErrorResponse(c, error);
+    throw error;
+  }
+});
+
 router.delete("/subscriptions/:subscriptionId/checkout", async (c) => {
   const user = useAuth(c);
   try {

@@ -209,7 +209,10 @@ Examples:
       const productKey = requireText(opts.productKey, "product key", "--product-key <key>");
       const client = createClient();
       try {
-        const result = await client.workCommerce.purchase(workId, { productKey });
+        const result = await client.workCommerce.purchase(workId, {
+          productKey,
+          checkoutMode: "hosted_page",
+        });
         if (jsonRequested(opts)) return outJson(result);
         ok(`Checkout created: ${result.checkout.orderId}`);
         table([{
@@ -217,14 +220,18 @@ Examples:
           productKey: result.checkout.productKey,
           usable: result.checkout.checkoutUsable ? "yes" : "no",
           status: result.checkout.status ?? "",
+          checkoutUiMode: result.checkout.checkoutUiMode ?? "",
           checkoutUrl: result.checkout.checkoutUrl ?? "",
+          checkoutClientSecret: result.checkout.checkoutClientSecret ?? "",
           message: result.checkout.message ?? "",
         }], [
           { key: "orderId", label: "Order" },
           { key: "productKey", label: "Product" },
           { key: "usable", label: "Usable" },
           { key: "status", label: "Status" },
+          { key: "checkoutUiMode", label: "Mode" },
           { key: "checkoutUrl", label: "Checkout URL" },
+          { key: "checkoutClientSecret", label: "Client Secret" },
           { key: "message", label: "Message" },
         ]);
       } catch (e: unknown) {

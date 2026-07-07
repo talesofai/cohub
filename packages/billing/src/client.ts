@@ -13,6 +13,7 @@ import {
 import { customersFeature } from "@talesofai-billing/sdk/admin/customers";
 import {
   type CreateOrderResponse,
+  type OrderCheckout,
   ordersFeature,
 } from "@talesofai-billing/sdk/admin/orders";
 import {
@@ -35,6 +36,7 @@ import {
   COHUB_BILLING_TOKEN_TYPES,
   COHUB_BILLING_USAGE_TYPES,
   type BillingAccountState,
+  type BillingActivePaymentProviderKey,
   type BillingBalanceActivity,
   type BillingBalanceActivityList,
   type BillingBalanceActivityListInput,
@@ -56,6 +58,7 @@ import {
   type BillingHistoryListInput,
   type BillingOperations,
   type BillingPaymentStatus,
+  type BillingPaymentProviderKey,
   type BillingPluginStatus,
   type BillingRedemptionInput,
   type BillingRedemptionResult,
@@ -764,14 +767,48 @@ function billingApiError(
 function getCheckoutUnavailableReason(
   checkout: SubscriptionCheckout | undefined,
 ): string | null {
-  if (checkout?.checkout_usable === true && checkout.checkout_url) return null;
+  if (isCheckoutUsable(checkout)) return null;
   return checkout?.message ?? null;
+}
+
+function isCheckoutUsable(
+  checkout: SubscriptionCheckout | OrderCheckout | undefined,
+): boolean {
+  return (
+    checkout?.checkout_usable === true &&
+    Boolean(checkout.checkout_url || checkout.checkout_client_secret)
+  );
+}
+
+function isCheckoutPayable(
+  checkout: SubscriptionCheckout | OrderCheckout | undefined,
+): boolean {
+  return (
+    isCheckoutUsable(checkout) ||
+    (checkout?.checkout_usable === true &&
+      checkout.checkout_ui_mode === "embedded_page")
+  );
 }
 
 function isProviderBackedSubscriptionCheckout(
   checkout: SubscriptionCheckout | undefined,
 ): boolean {
   return optionalString(checkout?.provider_key) !== null;
+}
+
+function activeProviderKeyFromCheckout(
+  checkout: SubscriptionCheckout | OrderCheckout | undefined,
+): BillingActivePaymentProviderKey {
+  return checkout?.provider_key === "stripe" || checkout?.provider_key === "waffo"
+    ? checkout.provider_key
+    : "not_configured";
+}
+
+function availableProviderKeysFromCheckout(
+  checkout: SubscriptionCheckout | OrderCheckout | undefined,
+): BillingPaymentProviderKey[] {
+  const providerKey = activeProviderKeyFromCheckout(checkout);
+  return providerKey === "not_configured" ? [] : [providerKey];
 }
 
 function mapSubscriptionHistoryStatus(
@@ -782,8 +819,7 @@ function mapSubscriptionHistoryStatus(
     checkout?.subscription_status ?? checkout?.provider_request_status ?? null;
   const canPay =
     subscription.status === "pending_checkout" &&
-    checkout?.checkout_usable === true &&
-    !!checkout.checkout_url;
+    isCheckoutPayable(checkout);
   const canCancelAutoRenew =
     BILLING_AUTO_RENEW_CANCELABLE_SUBSCRIPTION_STATUSES.includes(
       subscription.status as (typeof BILLING_AUTO_RENEW_CANCELABLE_SUBSCRIPTION_STATUSES)[number],
@@ -821,6 +857,10 @@ function mapSubscriptionHistoryStatus(
     actions: {
       canPay,
       checkoutUrl: canPay ? (checkout?.checkout_url ?? null) : null,
+      checkoutClientSecret: canPay
+        ? (checkout?.checkout_client_secret ?? null)
+        : null,
+      checkoutUiMode: checkout?.checkout_ui_mode ?? null,
       checkoutUsable: canPay,
       canCancelCheckout: subscription.status === "pending_checkout",
       canCancelAutoRenew,
@@ -1140,6 +1180,9 @@ function isSubscriptionExpiredAfterCancel(
 async function resolvePaymentStatus(sdk: ConfiguredBillingSdk): Promise<BillingPaymentStatus> {
   try {
     const response = await sdk.admin.providers.status();
+    const availableProviderKeys = response.providers
+      .filter((provider) => provider.checkout_available)
+      .map((provider) => provider.provider_key);
     if (response.status !== "available" || !response.checkout_available) {
       return {
         available: false,
@@ -1147,9 +1190,16 @@ async function resolvePaymentStatus(sdk: ConfiguredBillingSdk): Promise<BillingP
           response.active_provider_key === "not_configured"
             ? "No active payment provider"
             : "Checkout is currently unavailable",
+        activeProviderKey: response.active_provider_key,
+        availableProviderKeys,
       };
     }
-    return { available: true, reason: null };
+    return {
+      available: true,
+      reason: null,
+      activeProviderKey: response.active_provider_key,
+      availableProviderKeys,
+    };
   } catch (error) {
     return {
       available: false,
@@ -1157,6 +1207,8 @@ async function resolvePaymentStatus(sdk: ConfiguredBillingSdk): Promise<BillingP
         error instanceof Error
           ? error.message
           : "Provider status query failed",
+      activeProviderKey: "not_configured",
+      availableProviderKeys: [],
     };
   }
 }
@@ -1209,8 +1261,7 @@ function checkoutResultFromOrder(input: {
   reused?: boolean;
 }): BillingCheckoutResult {
   const checkout = input.response.checkout;
-  const checkoutUsable =
-    checkout?.checkout_usable === true && !!checkout.checkout_url;
+  const checkoutUsable = isCheckoutUsable(checkout);
   return {
     userId: input.userId,
     billing: input.status,
@@ -1219,9 +1270,13 @@ function checkoutResultFromOrder(input: {
       reason: checkoutUsable
         ? null
         : (checkout?.message ?? "Checkout is not currently usable"),
+      activeProviderKey: activeProviderKeyFromCheckout(checkout),
+      availableProviderKeys: availableProviderKeysFromCheckout(checkout),
     },
     productKey: input.productKey,
     checkoutUrl: checkout?.checkout_url ?? null,
+    checkoutClientSecret: checkout?.checkout_client_secret ?? null,
+    checkoutUiMode: checkout?.checkout_ui_mode ?? null,
     checkoutUsable,
     message: checkout?.message ?? null,
     orderId: input.response.order.id,
@@ -1237,8 +1292,7 @@ function checkoutResultFromSubscription(input: {
   status: BillingPluginStatus;
 }): BillingCheckoutResult {
   const checkout = input.response.checkout;
-  const checkoutUsable =
-    checkout?.checkout_usable === true && !!checkout.checkout_url;
+  const checkoutUsable = isCheckoutUsable(checkout);
   return {
     userId: input.userId,
     billing: input.status,
@@ -1247,9 +1301,13 @@ function checkoutResultFromSubscription(input: {
       reason: checkoutUsable
         ? null
         : (checkout?.message ?? "Checkout is not currently usable"),
+      activeProviderKey: activeProviderKeyFromCheckout(checkout),
+      availableProviderKeys: availableProviderKeysFromCheckout(checkout),
     },
     productKey: input.productKey,
     checkoutUrl: checkout?.checkout_url ?? null,
+    checkoutClientSecret: checkout?.checkout_client_secret ?? null,
+    checkoutUiMode: checkout?.checkout_ui_mode ?? null,
     checkoutUsable,
     message: checkout?.message ?? null,
     orderId: null,
@@ -1258,7 +1316,7 @@ function checkoutResultFromSubscription(input: {
   };
 }
 
-function checkoutRedirects(returnUrl: string | undefined) {
+function hostedCheckoutRedirects(returnUrl: string | undefined) {
   const resolved =
     returnUrl && /^https?:\/\//i.test(returnUrl) ? returnUrl : undefined;
   return {
@@ -1266,6 +1324,43 @@ function checkoutRedirects(returnUrl: string | undefined) {
     failed_redirect_url: resolved,
     cancel_redirect_url: resolved,
   };
+}
+
+function embeddedCheckoutRedirects(returnUrl: string | undefined) {
+  const resolved =
+    returnUrl && /^https?:\/\//i.test(returnUrl) ? returnUrl : undefined;
+  return {
+    checkout_ui_mode: "embedded_page" as const,
+    checkout_return_url: resolved
+      ? appendCheckoutSessionPlaceholder(resolved)
+      : undefined,
+    checkout_redirect_on_completion: "if_required" as const,
+  };
+}
+
+function checkoutRedirectsForPaymentProvider(input: {
+  payment: BillingPaymentStatus;
+  returnUrl: string | undefined;
+}) {
+  return input.payment.activeProviderKey === "stripe"
+    ? embeddedCheckoutRedirects(input.returnUrl)
+    : hostedCheckoutRedirects(input.returnUrl);
+}
+
+function isCheckoutForAvailableProvider(
+  checkout: SubscriptionCheckout | OrderCheckout | undefined,
+  payment: BillingPaymentStatus,
+) {
+  const providerKey = activeProviderKeyFromCheckout(checkout);
+  return providerKey !== "not_configured" && payment.availableProviderKeys.includes(providerKey);
+}
+
+function appendCheckoutSessionPlaceholder(urlString: string) {
+  const url = new URL(urlString);
+  url.searchParams.set("checkout_session_id", "{CHECKOUT_SESSION_ID}");
+  return url
+    .toString()
+    .replace("%7BCHECKOUT_SESSION_ID%7D", "{CHECKOUT_SESSION_ID}");
 }
 
 async function withRedisCheckoutLock<T>(
@@ -1339,6 +1434,8 @@ function emptyCatalog(input: {
     payment: {
       available: false,
       reason: input.paymentReason,
+      activeProviderKey: "not_configured",
+      availableProviderKeys: [],
     },
     products: [],
     plans: [],
@@ -1380,9 +1477,13 @@ function disabledCheckoutResult(input: {
     payment: {
       available: false,
       reason: input.reason,
+      activeProviderKey: "not_configured",
+      availableProviderKeys: [],
     },
     productKey: input.productKey,
     checkoutUrl: null,
+    checkoutClientSecret: null,
+    checkoutUiMode: null,
     checkoutUsable: false,
     message: input.reason,
     orderId: null,
@@ -1495,6 +1596,14 @@ export function createDisabledBillingOperations(
         status,
         reason: status.reason ?? "Billing integration is not configured",
       });
+    },
+
+    async recoverSubscriptionCheckout(): Promise<BillingCheckoutResult> {
+      throw billingApiError(
+        503,
+        status.reason ?? "Billing integration is not configured",
+        "billing_unavailable",
+      );
     },
 
     async cancelSubscriptionCheckout(): Promise<BillingSubscriptionHistoryStatus> {
@@ -2059,6 +2168,7 @@ export function createTalesofaiBillingOperations(
   const findReusableAddonCheckout = async (input: {
     userId: string;
     productKey: string;
+    payment: BillingPaymentStatus;
   }): Promise<BillingCheckoutResult | null> => {
     const response = await sdk.admin.orders.list({
       business_key: businessKey,
@@ -2077,10 +2187,27 @@ export function createTalesofaiBillingOperations(
           order_id: order.id,
           business_key: businessKey,
         });
+        if (!isCheckoutForAvailableProvider(inspected.checkout, input.payment)) {
+          continue;
+        }
         if (
-          inspected.checkout?.checkout_usable === true &&
-          inspected.checkout.checkout_url
+          inspected.checkout?.checkout_ui_mode === "embedded_page" &&
+          inspected.checkout.checkout_usable === true &&
+          !inspected.checkout.checkout_client_secret
         ) {
+          const recovered = await sdk.admin.orders.recoverCheckoutClientSecret(
+            { order_id: order.id },
+            { business_key: businessKey },
+          );
+          return checkoutResultFromOrder({
+            userId: input.userId,
+            productKey: input.productKey,
+            response: recovered,
+            status,
+            reused: true,
+          });
+        }
+        if (isCheckoutUsable(inspected.checkout)) {
           return checkoutResultFromOrder({
             userId: input.userId,
             productKey: input.productKey,
@@ -2099,6 +2226,7 @@ export function createTalesofaiBillingOperations(
   const findReusableSubscriptionCheckout = async (input: {
     userId: string;
     productKey: string;
+    payment: BillingPaymentStatus;
   }): Promise<BillingCheckoutResult | null> => {
     const response = await sdk.admin.subscriptions.list({
       business_key: businessKey,
@@ -2116,10 +2244,27 @@ export function createTalesofaiBillingOperations(
           subscription_id: subscription.id,
           business_key: businessKey,
         });
+        if (!isCheckoutForAvailableProvider(inspected.checkout, input.payment)) {
+          continue;
+        }
         if (
-          inspected.checkout?.checkout_usable === true &&
-          inspected.checkout.checkout_url
+          inspected.checkout?.checkout_ui_mode === "embedded_page" &&
+          inspected.checkout.checkout_usable === true &&
+          !inspected.checkout.checkout_client_secret
         ) {
+          const recovered =
+            await sdk.admin.subscriptions.recoverCheckoutClientSecret(
+              { subscription_id: subscription.id },
+              { business_key: businessKey },
+            );
+          return checkoutResultFromSubscription({
+            userId: input.userId,
+            productKey: input.productKey,
+            response: { ...recovered, reused: true },
+            status,
+          });
+        }
+        if (isCheckoutUsable(inspected.checkout)) {
           return checkoutResultFromSubscription({
             userId: input.userId,
             productKey: input.productKey,
@@ -2159,13 +2304,14 @@ export function createTalesofaiBillingOperations(
     }
 
     await ensureCustomer({ userId: input.userId });
+    const payment = await resolvePaymentStatus(sdk);
     const reusableCheckout = await findReusableAddonCheckout({
       userId: input.userId,
       productKey: product.key,
+      payment,
     });
     if (reusableCheckout) return reusableCheckout;
 
-    const payment = await resolvePaymentStatus(sdk);
     if (!payment.available) {
       return createUnavailableCheckout({
         userId: input.userId,
@@ -2179,7 +2325,10 @@ export function createTalesofaiBillingOperations(
       external_user_id: input.userId,
       product_key: product.key,
       billing_reason: "purchase",
-      ...checkoutRedirects(input.returnUrl),
+      ...checkoutRedirectsForPaymentProvider({
+        payment,
+        returnUrl: input.returnUrl,
+      }),
     });
     return checkoutResultFromOrder({
       userId: input.userId,
@@ -2214,6 +2363,7 @@ export function createTalesofaiBillingOperations(
     }
 
     await ensureCustomer({ userId: input.userId });
+    const payment = await resolvePaymentStatus(sdk);
     const currentSubscriptions = await listBlockingSubscriptions(input.userId);
     if (currentSubscriptions.length > 0) {
       return createUnavailableCheckout({
@@ -2226,10 +2376,10 @@ export function createTalesofaiBillingOperations(
     const reusableCheckout = await findReusableSubscriptionCheckout({
       userId: input.userId,
       productKey: product.key,
+      payment,
     });
     if (reusableCheckout) return reusableCheckout;
 
-    const payment = await resolvePaymentStatus(sdk);
     if (!payment.available) {
       return createUnavailableCheckout({
         userId: input.userId,
@@ -2242,7 +2392,10 @@ export function createTalesofaiBillingOperations(
       business_key: businessKey,
       external_user_id: input.userId,
       product_key: product.key,
-      ...checkoutRedirects(input.returnUrl),
+      ...checkoutRedirectsForPaymentProvider({
+        payment,
+        returnUrl: input.returnUrl,
+      }),
     });
     return checkoutResultFromSubscription({
       userId: input.userId,
@@ -2360,6 +2513,63 @@ export function createTalesofaiBillingOperations(
       },
     );
     return mapSubscriptionHistoryStatus(canceled);
+  };
+
+  const recoverSubscriptionCheckout = async (
+    input: BillingUserRef & { subscriptionId: string },
+  ): Promise<BillingCheckoutResult> => {
+    const subscription = await getOwnedSubscription(input);
+    if (subscription.status !== "pending_checkout") {
+      throw billingApiError(
+        409,
+        "Only pending checkout subscriptions can be recovered",
+        "subscription_checkout_not_recoverable",
+      );
+    }
+
+    const inspected = await sdk.admin.subscriptions.inspect({
+      subscription_id: input.subscriptionId,
+      business_key: businessKey,
+    });
+    const payment = await resolvePaymentStatus(sdk);
+    if (!isCheckoutForAvailableProvider(inspected.checkout, payment)) {
+      throw billingApiError(
+        409,
+        "Subscription checkout is not recoverable for the active payment provider",
+        "subscription_checkout_provider_mismatch",
+      );
+    }
+    const productKey = inspected.subscription.product_key_snapshot;
+    if (
+      inspected.checkout?.checkout_ui_mode === "embedded_page" &&
+      inspected.checkout.checkout_usable === true &&
+      !inspected.checkout.checkout_client_secret
+    ) {
+      const recovered = await sdk.admin.subscriptions.recoverCheckoutClientSecret(
+        { subscription_id: input.subscriptionId },
+        { business_key: businessKey },
+      );
+      return checkoutResultFromSubscription({
+        userId: input.userId,
+        productKey,
+        response: { ...recovered, reused: true },
+        status,
+      });
+    }
+    if (isCheckoutUsable(inspected.checkout)) {
+      return checkoutResultFromSubscription({
+        userId: input.userId,
+        productKey,
+        response: { ...inspected, reused: true },
+        status,
+      });
+    }
+
+    throw billingApiError(
+      409,
+      "Subscription checkout is not recoverable",
+      "subscription_checkout_not_recoverable",
+    );
   };
 
   const cancelSubscriptionAutoRenew = async (
@@ -2497,6 +2707,8 @@ export function createTalesofaiBillingOperations(
     purchaseAddon,
 
     createSubscription,
+
+    recoverSubscriptionCheckout,
 
     cancelSubscriptionCheckout,
 
