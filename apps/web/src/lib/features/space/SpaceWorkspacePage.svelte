@@ -105,6 +105,7 @@ import {
 	subscribeSpaceConfig,
 	subscribeSpaceConfigBackgroundAction,
 } from "$lib/space-config";
+import { isTextFileResponse } from "$lib/space-file-text";
 import type { SpaceFsNode } from "$lib/space-fs";
 import {
 	buildSpaceNewSessionRoute,
@@ -731,9 +732,17 @@ function enforcePreviewTabBudget() {
 		...inlineFileTabs.map((tab) => ({
 			kind: "file" as const,
 			key: tab.path,
-			weight: tab.response?.kind === "binary" ? 2 : 1,
-			protected:
-				tab.response?.kind === "text" && tab.draft !== tab.response.content,
+			weight:
+				tab.response &&
+				!isTextFileResponse(tab.response) &&
+				tab.response.kind === "binary"
+					? 2
+					: 1,
+			protected: Boolean(
+				tab.response &&
+					isTextFileResponse(tab.response) &&
+					tab.draft !== tab.response.content,
+			),
 		})),
 		...inlineCanvasTabs.map((tab) => ({
 			kind: "canvas" as const,

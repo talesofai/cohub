@@ -14,6 +14,7 @@ import { db } from "./db/index.js";
 import { createPresignedGetObjectUrl } from "./object-presign.js";
 import { redisCommandClient } from "./redis.js";
 import { getMimeType } from "./space-fs.js";
+import { isTextMime } from "./space-fs-mime.js";
 
 const logger = createLogger({ serviceName: "cohub-api" });
 const tracer = getTracer("cohub-api");
@@ -543,11 +544,6 @@ async function getCachedBlob(repoDir: string, checkpoint: CheckpointRecord, path
   return result.stdout;
 }
 
-function isTextMime(mimeType: string | null) {
-  if (!mimeType) return true;
-  return mimeType.startsWith("text/") || ["application/json", "application/xml", "application/yaml", "application/toml", "application/sql", "application/x-ndjson"].includes(mimeType);
-}
-
 function presignCheckpointAsset(objectKey: string) {
   const signed = createPresignedGetObjectUrl({
     endpoint: config.checkpointAssetOssEndpoint,
@@ -788,15 +784,17 @@ export async function readCheckpointFile(input: { spaceId: string; checkpointId:
         () => presignCheckpointAsset(asset.objectKey),
         () => ({ delivery: "url", assetBytes: asset.size }),
       );
-      observation.result = { delivery: "url", size: asset.size, kind: "binary", mimeType: asset.mimeType ?? mimeType, cacheHit: null };
+      const assetMime = asset.mimeType ?? mimeType;
+      const kind: SpaceFsFileResponse["kind"] = isTextMime(assetMime) ? "text" : "binary";
+      observation.result = { delivery: "url", size: asset.size, kind, mimeType: assetMime, cacheHit: null };
       return {
         path,
         name: basename(path),
         size: asset.size,
-        mimeType: asset.mimeType ?? mimeType,
+        mimeType: assetMime,
         mtimeMs: checkpoint.createdAt?.getTime() ?? 0,
-        kind: "binary",
-        encoding: "base64",
+        kind,
+        encoding: kind === "text" ? "utf-8" as const : "base64" as const,
         content: "",
         delivery: "url",
         url: signed.downloadUrl,

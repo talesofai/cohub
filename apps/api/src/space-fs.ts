@@ -30,6 +30,7 @@ import type {
   SpaceFsUploadResponse,
   SpaceFsWriteFileInput,
 } from "@cohub/protocol/fs";
+import { isTextMime } from "./space-fs-mime.js";
 
 const MAX_FILE_BYTES = 10 * 1024 * 1024;
 const MAX_BATCH_READ_FILES = 50;
@@ -127,17 +128,18 @@ export function getMimeType(path: string) {
   return null;
 }
 
-export function isTextMime(mimeType: string | null) {
-  if (!mimeType) return false;
-  return (
-    mimeType.startsWith("text/") ||
-    mimeType === "application/json" ||
-    mimeType === "application/xml" ||
-    mimeType === "application/yaml" ||
-    mimeType === "application/toml" ||
-    mimeType === "application/sql" ||
-    mimeType === "application/x-ndjson"
-  );
+export { isTextMime } from "./space-fs-mime.js";
+
+/**
+ * Prefer inline UTF-8 for text-like files even when CDN policy would otherwise
+ * force URL delivery (e.g. `.cohub/theme.css`). The browser editor needs content;
+ * CDN can still serve styles/downloads in parallel after background warm.
+ */
+export function prefersInlineTextPreview(
+  meta: { mimeType: string | null; size: number },
+  maxInlineBytes = MAX_FILE_BYTES,
+) {
+  return isTextMime(meta.mimeType) && meta.size <= maxInlineBytes;
 }
 
 function ensureStorageConfigured() {
@@ -789,7 +791,7 @@ export async function readSpaceFile(
       observation,
       "cdn_decision",
       "Decide between inline response and CDN-backed delivery; large or browser-heavy assets may avoid inline transfer.",
-      () => shouldUseFsCdnForMeta(cdnMeta),
+      () => shouldUseFsCdnForMeta(cdnMeta) && !prefersInlineTextPreview(cdnMeta),
       (result) => ({
         useCdn: result,
         fileSizeBytes: stats.size,
@@ -847,6 +849,11 @@ export async function readSpaceFile(
         prepared: false,
       };
       return preparing;
+    }
+
+    // Keep CDN warm for forced text paths (theme.css) so style/download can still use URLs.
+    if (shouldUseFsCdnForMeta(cdnMeta)) {
+      void enqueueFsCdnWarmForMeta(cdnMeta, "read_miss").catch(() => undefined);
     }
 
     await observeSpaceFsStage(
@@ -1087,9 +1094,13 @@ export async function readSpaceFiles(
           const { target, relativePath, stats } = result.metadata;
           const mimeType = getMimeType(target);
           const meta = toFsCdnMeta(spaceId, target, relativePath, stats, mimeType);
-          if (shouldUseFsCdnForMeta(meta)) {
+          // Text-like files stay inline for editor preview even when CDN policy forces them.
+          if (shouldUseFsCdnForMeta(meta) && !prefersInlineTextPreview(meta)) {
             cdnItems.push({ target, relativePath, stats, meta });
           } else {
+            if (shouldUseFsCdnForMeta(meta)) {
+              void enqueueFsCdnWarmForMeta(meta, "read_many_miss").catch(() => undefined);
+            }
             inlineItems.push({ target, relativePath, stats, mimeType });
           }
         }

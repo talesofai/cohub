@@ -11,6 +11,10 @@ import {
 	buildSpaceFileDownloadUrl,
 	downloadSpaceFile,
 } from "$lib/space-file-download";
+import {
+	isTextFileResponse,
+	resolveTextFileResponse,
+} from "$lib/space-file-text";
 import type { SpaceFsNode } from "$lib/space-fs";
 import { buildSpaceFileRoute } from "$lib/space-routes";
 import {
@@ -454,17 +458,19 @@ export function createFileWorkspaceController(
 		openFileError = null;
 		openFileTooLarge = false;
 		try {
-			const file = await readActiveFsFile(path);
+			const rawFile = await readActiveFsFile(path);
 			if (!isCurrentRequest()) return;
-			if (!("content" in file)) {
+			if (!("content" in rawFile)) {
 				openFile = null;
 				openFileDraft = "";
 				openFileError = "File is being prepared. Please retry shortly.";
 				return;
 			}
+			const file = await resolveTextFileResponse(rawFile);
+			if (!isCurrentRequest()) return;
 			fileEdit = !hasRenderedFilePreview(file);
 			openFile = file;
-			openFileDraft = file.kind === "text" ? file.content : "";
+			openFileDraft = isTextFileResponse(file) ? file.content : "";
 		} catch (error) {
 			if (!isCurrentRequest()) return;
 			if (error instanceof HttpError && error.status === 413) {
@@ -482,8 +488,10 @@ export function createFileWorkspaceController(
 	}
 
 	async function saveOpenFile() {
-		if (!options.getCanEditFiles() || openFile?.kind !== "text") return;
-		const savingPath = openFile.path;
+		const current = openFile;
+		if (!current || !options.getCanEditFiles() || !isTextFileResponse(current))
+			return;
+		const savingPath = current.path;
 		markFileSavePending(savingPath);
 		openFileSaving = true;
 		openFileError = null;
@@ -493,11 +501,14 @@ export function createFileWorkspaceController(
 				content: openFileDraft,
 				encoding: "utf-8",
 			});
-			openFile = {
-				...openFile,
+			const nextFile: SpaceFsFileResponse = {
+				...current,
+				kind: "text",
+				encoding: "utf-8",
 				content: openFileDraft,
 				size: new Blob([openFileDraft]).size,
 			};
+			openFile = nextFile;
 			await patchFsDirectory(getParentDirPath(savingPath), (entries) =>
 				entries.map((entry) =>
 					entry.path === savingPath
@@ -604,7 +615,7 @@ export function createFileWorkspaceController(
 			];
 		}
 		try {
-			const file = await readActiveFsFile(path);
+			const rawFile = await readActiveFsFile(path);
 			const targetTab = inlineFileTabs.find((tab) => tab.path === path);
 			if (
 				!targetTab ||
@@ -612,7 +623,7 @@ export function createFileWorkspaceController(
 				sourceKey !== options.getActiveFsSourceKey()
 			)
 				return;
-			if (!("content" in file)) {
+			if (!("content" in rawFile)) {
 				setInlineFileTab(path, (tab) => ({
 					...tab,
 					response: null,
@@ -623,10 +634,18 @@ export function createFileWorkspaceController(
 				}));
 				return;
 			}
+			const file = await resolveTextFileResponse(rawFile);
+			const hydratedTab = inlineFileTabs.find((tab) => tab.path === path);
+			if (
+				!hydratedTab ||
+				hydratedTab.requestToken !== requestToken ||
+				sourceKey !== options.getActiveFsSourceKey()
+			)
+				return;
 			setInlineFileTab(path, (tab) => ({
 				...tab,
 				response: file,
-				draft: file.kind === "text" ? file.content : "",
+				draft: isTextFileResponse(file) ? file.content : "",
 				loading: false,
 				error: null,
 				tooLarge: false,
@@ -666,7 +685,8 @@ export function createFileWorkspaceController(
 		if (!path) return;
 		const tab = inlineFileTabs.find((item) => item.path === path);
 		if (
-			tab?.response?.kind === "text" &&
+			tab?.response &&
+			isTextFileResponse(tab.response) &&
 			tab.draft !== tab.response.content &&
 			!skipConfirm &&
 			!confirm(`Close ${path} with unsaved changes?`)
@@ -703,7 +723,8 @@ export function createFileWorkspaceController(
 		if (
 			options.getActiveFsReadonly() ||
 			!options.getCanEditFiles() ||
-			inlineFile?.response?.kind !== "text"
+			!inlineFile ||
+			!isTextFileResponse(inlineFile.response)
 		)
 			return;
 		const savingPath = inlineFile.path;
@@ -754,7 +775,7 @@ export function createFileWorkspaceController(
 	}
 
 	async function copyFileContent() {
-		if (openFile?.kind !== "text") return;
+		if (!isTextFileResponse(openFile)) return;
 		await navigator.clipboard.writeText(openFileDraft);
 		openFileCopied = true;
 		if (openFileCopiedTimer) clearTimeout(openFileCopiedTimer);
@@ -765,7 +786,7 @@ export function createFileWorkspaceController(
 
 	async function copyInlineFileContent() {
 		const inlineFile = getActiveInlineFile();
-		if (inlineFile?.response?.kind !== "text") return;
+		if (!inlineFile || !isTextFileResponse(inlineFile.response)) return;
 		await navigator.clipboard.writeText(inlineFile.draft);
 		setInlineFileTab(inlineFile.path, (tab) => ({ ...tab, copied: true }));
 		if (inlineFileCopiedTimer) clearTimeout(inlineFileCopiedTimer);
@@ -1001,7 +1022,9 @@ export function createFileWorkspaceController(
 	function isInlineFileDirty(path: string) {
 		const tab = inlineFileTabs.find((item) => item.path === path);
 		return Boolean(
-			tab?.response?.kind === "text" && tab.draft !== tab.response.content,
+			tab?.response &&
+				isTextFileResponse(tab.response) &&
+				tab.draft !== tab.response.content,
 		);
 	}
 
@@ -1067,23 +1090,27 @@ export function createFileWorkspaceController(
 			return routeDownloadName(options.getRouteFilePath());
 		},
 		get openFileIsText() {
-			return Boolean(openFile?.kind === "text");
+			return isTextFileResponse(openFile);
 		},
 		get openFileHasRenderedPreview() {
 			return Boolean(openFile && hasRenderedFilePreview(openFile));
 		},
 		get openFileExt() {
-			return openFile?.kind === "text"
-				? (openFile.name.split(".").pop()?.toLowerCase() ?? "plaintext")
+			return isTextFileResponse(openFile)
+				? (openFile?.name.split(".").pop()?.toLowerCase() ?? "plaintext")
 				: "plaintext";
 		},
 		get openFileIsMarkdown() {
 			return Boolean(
-				openFile?.kind === "text" && isMarkdownPath(openFile.path),
+				openFile &&
+					isTextFileResponse(openFile) &&
+					isMarkdownPath(openFile.path),
 			);
 		},
 		get openFileIsHtml() {
-			return Boolean(openFile?.kind === "text" && isHtmlPath(openFile.path));
+			return Boolean(
+				openFile && isTextFileResponse(openFile) && isHtmlPath(openFile.path),
+			);
 		},
 		get openFileIsImage() {
 			return Boolean(openFile?.mimeType?.startsWith("image/"));
@@ -1092,16 +1119,16 @@ export function createFileWorkspaceController(
 			return Boolean(openFile?.mimeType?.startsWith("video/"));
 		},
 		get openFileDataUrl() {
-			return openFile?.kind === "binary"
-				? openFile.delivery === "url"
-					? (openFile.url ?? null)
-					: `data:${openFile.mimeType ?? "application/octet-stream"};base64,${openFile.content}`
-				: null;
+			const file = openFile;
+			if (!file || isTextFileResponse(file)) return null;
+			return file.delivery === "url"
+				? (file.url ?? null)
+				: `data:${file.mimeType ?? "application/octet-stream"};base64,${file.content}`;
 		},
 		get fileDirty() {
 			return Boolean(
 				openFile &&
-					openFile.kind === "text" &&
+					isTextFileResponse(openFile) &&
 					openFileDraft !== openFile.content,
 			);
 		},
@@ -1159,32 +1186,36 @@ export function createFileWorkspaceController(
 		get inlineFileDirty() {
 			const tab = getActiveInlineFile();
 			return Boolean(
-				tab?.response?.kind === "text" && tab.draft !== tab.response.content,
+				tab?.response &&
+					isTextFileResponse(tab.response) &&
+					tab.draft !== tab.response.content,
 			);
 		},
 		get inlineFileIsMarkdown() {
 			const response = getActiveInlineFile()?.response;
 			return Boolean(
-				response?.kind === "text" && isMarkdownPath(response.path),
+				response &&
+					isTextFileResponse(response) &&
+					isMarkdownPath(response.path),
 			);
 		},
 		get inlineFileIsHtml() {
 			const response = getActiveInlineFile()?.response;
-			return Boolean(response?.kind === "text" && isHtmlPath(response.path));
+			return Boolean(
+				response && isTextFileResponse(response) && isHtmlPath(response.path),
+			);
 		},
 		get inlineFileHasRenderedPreview() {
 			const response = getActiveInlineFile()?.response;
-			return Boolean(
-				response?.kind === "text" && hasRenderedFilePreview(response),
-			);
+			return Boolean(response && hasRenderedFilePreview(response));
 		},
 		get inlineFileIsText() {
-			return Boolean(getActiveInlineFile()?.response?.kind === "text");
+			return isTextFileResponse(getActiveInlineFile()?.response);
 		},
 		get inlineFileExt() {
 			const response = getActiveInlineFile()?.response;
-			return response?.kind === "text"
-				? (response.name.split(".").pop()?.toLowerCase() ?? "plaintext")
+			return isTextFileResponse(response)
+				? (response?.name.split(".").pop()?.toLowerCase() ?? "plaintext")
 				: "plaintext";
 		},
 		get inlineFileIsImage() {
@@ -1198,8 +1229,8 @@ export function createFileWorkspaceController(
 			);
 		},
 		get inlineFileDataUrl() {
-			const response = getActiveInlineFile()?.response;
-			if (response?.kind !== "binary") return null;
+			const response = getActiveInlineFile()?.response ?? null;
+			if (!response || isTextFileResponse(response)) return null;
 			return response.delivery === "url"
 				? (response.url ?? null)
 				: `data:${response.mimeType ?? "application/octet-stream"};base64,${response.content}`;

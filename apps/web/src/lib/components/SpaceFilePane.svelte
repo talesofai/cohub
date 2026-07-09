@@ -3,6 +3,7 @@ import type { SpaceFsFileResponse } from "@neta-art/cohub";
 import { Download, Eye, FileWarning, Pencil, Save, X } from "lucide-svelte";
 import CodeEditor from "$lib/components/CodeEditor.svelte";
 import MarkdownView from "$lib/components/MarkdownView.svelte";
+import { isTextFileResponse } from "$lib/space-file-text";
 
 const {
 	file,
@@ -39,20 +40,20 @@ $effect(() => {
 });
 
 const dataUrl = $derived.by(() => {
-	if (file?.kind !== "binary") return null;
+	if (!file || isTextFileResponse(file) || file.delivery === "url") return null;
 	const mime = file.mimeType ?? "application/octet-stream";
 	return `data:${mime};base64,${file.content}`;
 });
 
 const isImage = $derived(Boolean(file?.mimeType?.startsWith("image/")));
 const isVideo = $derived(Boolean(file?.mimeType?.startsWith("video/")));
-const isText = $derived(Boolean(file?.kind === "text"));
+const isText = $derived(isTextFileResponse(file));
 const isMarkdown = $derived(
-	Boolean(file?.kind === "text" && /\.md$/i.test(file.path)),
+	Boolean(file && isTextFileResponse(file) && /\.md$/i.test(file.path)),
 );
 
 const editorLanguage = $derived.by(() => {
-	if (file?.kind !== "text") return "plaintext";
+	if (!file || !isTextFileResponse(file)) return "plaintext";
 	return file.name.split(".").pop()?.toLowerCase() ?? "";
 });
 </script>

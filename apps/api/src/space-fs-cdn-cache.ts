@@ -14,6 +14,7 @@ import {
   buildFsCdnManifestKey,
   shouldUseFsCdnCache,
 } from "./space-fs-cdn-policy.js";
+import { isTextMime } from "./space-fs-mime.js";
 import type { SpaceFsFileResponse, SpaceFsPreparingFile } from "@cohub/protocol/fs";
 
 export type FsCdnFileMeta = {
@@ -115,14 +116,15 @@ export async function ensureFsCdnManifest(meta: FsCdnFileMeta, reason: FsCdnWarm
 }
 
 export function buildUrlFileResponse(meta: FsCdnFileMeta, manifest: FsCdnManifest): SpaceFsFileResponse {
+  const kind = isTextMime(meta.mimeType) ? "text" : "binary";
   return {
     path: meta.path,
     name: meta.name || basename(meta.path),
     size: meta.size,
     mimeType: meta.mimeType,
     mtimeMs: meta.mtimeMs,
-    kind: "binary",
-    encoding: "base64",
+    kind,
+    encoding: kind === "text" ? "utf-8" : "base64",
     content: "",
     delivery: "url",
     url: manifest.url,

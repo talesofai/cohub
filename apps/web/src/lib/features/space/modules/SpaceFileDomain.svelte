@@ -11,6 +11,7 @@ import type {
 import { isCovasFile } from "$lib/canvas/canvas-file";
 import type { CovasDocument } from "$lib/canvas/canvas-schema";
 import WorkPublishDialog from "$lib/components/WorkPublishDialog.svelte";
+import { isTextFileResponse } from "$lib/space-file-text";
 import type { SpaceFsNode } from "$lib/space-fs";
 import { patchCachedSpaceList } from "$lib/stores/space-list-cache";
 import { cacheSpaceRecordSoon } from "$lib/stores/space-record-cache";
@@ -265,7 +266,11 @@ const previewTabs = $derived([
 		key: tab.path,
 		label: tab.response?.name ?? tab.path.split("/").pop() ?? tab.path,
 		title: tab.path,
-		dirty: tab.response?.kind === "text" && tab.draft !== tab.response.content,
+		dirty: Boolean(
+			tab.response &&
+				isTextFileResponse(tab.response) &&
+				tab.draft !== tab.response.content,
+		),
 		active: activePreviewKind === "file" && tab.path === activeInlineFilePath,
 	})),
 	...inlineCanvasTabs.map((tab) => ({

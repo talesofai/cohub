@@ -1,4 +1,5 @@
 import type { SpaceFsEntry, SpaceFsFileResponse } from "@neta-art/cohub";
+import { isTextFileResponse } from "$lib/space-file-text";
 import type { SpaceFsNode } from "$lib/space-fs";
 
 export const isMarkdownPath = (path: string) => /\.md$/i.test(path);
@@ -6,7 +7,8 @@ export const isMarkdownPath = (path: string) => /\.md$/i.test(path);
 export const isHtmlPath = (path: string) => /\.html?$/i.test(path);
 
 export const hasRenderedFilePreview = (file: SpaceFsFileResponse) =>
-	file.kind === "text" && (isMarkdownPath(file.path) || isHtmlPath(file.path));
+	isTextFileResponse(file) &&
+	(isMarkdownPath(file.path) || isHtmlPath(file.path));
 
 export function makeFsNode(entry: SpaceFsEntry): SpaceFsNode {
 	return {
