@@ -5590,7 +5590,7 @@ const sessionWorkspaceProps = $derived.by<
 {/if}
 <div
 	bind:this={workspaceBodyEl}
-	class="workspace-body relative flex-1 min-h-0 flex overflow-hidden bg-bg-content"
+	class="workspace-body relative flex-1 min-h-0 flex overflow-hidden bg-[var(--chat-bg)]"
 	class:workspace-body--preview-immersive={previewImmersiveMode}
 	style={`--immersive-chat-width: ${uiState.immersiveChatWidth}px`}
 >

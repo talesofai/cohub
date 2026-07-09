@@ -28,6 +28,16 @@ body {
 		color 0.2s ease;
 }
 
+/* App shell background — themes can layer an image / texture / overlay
+   via the --app-bg-* tokens without any JS involvement. */
+.app-shell {
+	background-color: var(--bg-primary);
+	background-image: var(--app-bg-overlay), var(--app-bg-image);
+	background-size: cover, var(--app-bg-size);
+	background-position: center, var(--app-bg-position);
+	background-repeat: no-repeat, var(--app-bg-repeat);
+}
+
 body.sidebar-resizing {
 	cursor: col-resize;
 	user-select: none;

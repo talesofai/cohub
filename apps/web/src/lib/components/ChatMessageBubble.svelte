@@ -149,7 +149,9 @@ const backgroundTaskDetail = $derived(
 );
 
 const messageContainerClass = $derived(
-	message.role === "user" ? "ml-auto max-w-full sm:max-w-[52rem]" : "",
+	message.role === "user"
+		? "ml-auto max-w-[var(--chat-user-message-max-width)]"
+		: "",
 );
 
 const messageBubbleClass = $derived.by(() => {
@@ -159,7 +161,7 @@ const messageBubbleClass = $derived.by(() => {
 			return `${base} rounded-xl rounded-br-md bg-bg-hover/60 text-text-tertiary`;
 		if (isBackgroundTaskUserMessage)
 			return `${base} rounded-xl rounded-br-md border border-border-subtle/70 bg-bg-hover/45 text-text-secondary`;
-		return `${base} rounded-xl rounded-br-md bg-brand/5 text-text-primary`;
+		return `${base} rounded-[var(--chat-user-message-radius)] rounded-br-[var(--chat-user-message-tail-radius)] bg-[var(--chat-user-message-bg)] text-[var(--chat-user-message-fg)]`;
 	}
 	if (message.role === "assistant") {
 		return assistantErrorMessage

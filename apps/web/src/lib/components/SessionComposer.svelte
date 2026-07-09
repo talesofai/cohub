@@ -828,7 +828,7 @@ $effect(() => {
 </script>
 
 <div class="px-4 pb-[calc(0.75rem+env(safe-area-inset-bottom))] pt-2 sm:px-6 sm:pb-4">
-	<div class={`relative mx-auto transition-[max-width] duration-200 ${isComposerExpanded ? 'max-w-5xl' : 'max-w-4xl'}`}>
+	<div class={`relative mx-auto transition-[max-width] duration-200 ${isComposerExpanded ? 'max-w-[var(--chat-composer-expanded-max-width)]' : 'max-w-[var(--chat-composer-max-width)]'}`}>
 		{#if streamError}
 			{#if showBillingAction}
 				<button type="button" class="mb-3 flex w-full cursor-pointer items-center justify-between gap-3 rounded-2xl border border-error-soft/25 bg-error-bg px-3 py-2 text-left text-[11px] text-error-soft transition-colors hover:border-error-soft/40 hover:bg-error-bg/80 focus:outline-none focus:ring-1 focus:ring-error-soft/40" onclick={() => billingConversion.openFallbackHard()}>
@@ -842,7 +842,7 @@ $effect(() => {
 		{/if}
 
 		<form
-			class={`relative rounded-[28px] border p-2 shadow-[0_12px_36px_rgba(15,23,42,0.08)] backdrop-blur-md transition-colors ${(isDragOver || isPathDragOver) ? 'border-brand/50 bg-brand/5' : 'border-border-subtle/70 bg-bg-content/92 focus-within:border-brand/25 focus-within:bg-bg-content/96'}`}
+			class={`relative rounded-[var(--chat-composer-radius)] border p-2 shadow-[0_12px_36px_rgba(15,23,42,0.08)] backdrop-blur-md transition-colors ${(isDragOver || isPathDragOver) ? 'border-brand/50 bg-brand/5' : 'border-[color:var(--chat-composer-border)] bg-[var(--chat-composer-bg)] focus-within:border-[color:var(--chat-composer-border-focus)] focus-within:bg-[var(--chat-composer-bg-focus)]'}`}
 			onsubmit={(event) => {
 				event.preventDefault();
 				submitDraft();

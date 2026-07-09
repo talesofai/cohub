@@ -104,20 +104,68 @@
 
 	/* Provider colors */
 	--provider-discord: oklch(58% 0.18 275);
-	--provider-discord-bg: color-mix(in srgb, var(--provider-discord) 10%, transparent);
-	--provider-discord-bg-hover: color-mix(in srgb, var(--provider-discord) 14%, transparent);
-	--provider-discord-border: color-mix(in srgb, var(--provider-discord) 22%, transparent);
-	--provider-discord-border-hover: color-mix(in srgb, var(--provider-discord) 42%, transparent);
+	--provider-discord-bg: color-mix(
+		in srgb,
+		var(--provider-discord) 10%,
+		transparent
+	);
+	--provider-discord-bg-hover: color-mix(
+		in srgb,
+		var(--provider-discord) 14%,
+		transparent
+	);
+	--provider-discord-border: color-mix(
+		in srgb,
+		var(--provider-discord) 22%,
+		transparent
+	);
+	--provider-discord-border-hover: color-mix(
+		in srgb,
+		var(--provider-discord) 42%,
+		transparent
+	);
 	--provider-feishu: oklch(70% 0.12 220);
-	--provider-feishu-bg: color-mix(in srgb, var(--provider-feishu) 10%, transparent);
-	--provider-feishu-bg-hover: color-mix(in srgb, var(--provider-feishu) 14%, transparent);
-	--provider-feishu-border: color-mix(in srgb, var(--provider-feishu) 22%, transparent);
-	--provider-feishu-border-hover: color-mix(in srgb, var(--provider-feishu) 42%, transparent);
+	--provider-feishu-bg: color-mix(
+		in srgb,
+		var(--provider-feishu) 10%,
+		transparent
+	);
+	--provider-feishu-bg-hover: color-mix(
+		in srgb,
+		var(--provider-feishu) 14%,
+		transparent
+	);
+	--provider-feishu-border: color-mix(
+		in srgb,
+		var(--provider-feishu) 22%,
+		transparent
+	);
+	--provider-feishu-border-hover: color-mix(
+		in srgb,
+		var(--provider-feishu) 42%,
+		transparent
+	);
 	--provider-wechat: oklch(52% 0.14 160);
-	--provider-wechat-bg: color-mix(in srgb, var(--provider-wechat) 10%, transparent);
-	--provider-wechat-bg-hover: color-mix(in srgb, var(--provider-wechat) 14%, transparent);
-	--provider-wechat-border: color-mix(in srgb, var(--provider-wechat) 22%, transparent);
-	--provider-wechat-border-hover: color-mix(in srgb, var(--provider-wechat) 42%, transparent);
+	--provider-wechat-bg: color-mix(
+		in srgb,
+		var(--provider-wechat) 10%,
+		transparent
+	);
+	--provider-wechat-bg-hover: color-mix(
+		in srgb,
+		var(--provider-wechat) 14%,
+		transparent
+	);
+	--provider-wechat-border: color-mix(
+		in srgb,
+		var(--provider-wechat) 22%,
+		transparent
+	);
+	--provider-wechat-border-hover: color-mix(
+		in srgb,
+		var(--provider-wechat) 42%,
+		transparent
+	);
 
 	/* Effects */
 	--shadow-subtle: oklch(0% 0 0 / 0.08);
@@ -128,11 +176,63 @@
 	--avatar-placeholder-bg: var(--bg-hover-strong);
 	--avatar-placeholder-fg: var(--text-placeholder);
 
+	/* App background */
+	--app-bg-image: none;
+	--app-bg-overlay: none;
+	--app-bg-size: auto;
+	--app-bg-position: center;
+	--app-bg-repeat: repeat;
+
+	/* Sidebar */
+	--sidebar-bg: var(--bg-primary);
+	--sidebar-border: var(--border-subtle);
+	--sidebar-item-bg: transparent;
+	--sidebar-item-hover-bg: var(--bg-hover);
+	--sidebar-item-active-bg: var(--bg-active);
+	--sidebar-item-active-fg: var(--text-primary);
+	--sidebar-item-radius: 6px;
+	--sidebar-primary-action-bg: var(--brand-muted);
+	--sidebar-primary-action-bg-hover: var(--brand-muted-hover);
+	--sidebar-primary-action-fg: var(--brand-muted-fg);
+	--sidebar-primary-action-border: var(--brand-border);
+	--sidebar-primary-action-radius: 7px;
+
+	/* Chat */
+	--chat-bg: var(--bg-content);
+	--chat-panel-bg: var(--bg-content);
+	--chat-panel-border: var(--border-subtle);
+	--chat-user-message-bg: color-mix(in srgb, var(--brand) 5%, transparent);
+	--chat-user-message-fg: var(--text-primary);
+	--chat-user-message-max-width: min(52rem, 100%);
+	--chat-user-message-radius: 0.75rem;
+	--chat-user-message-tail-radius: 0.375rem;
+	--chat-assistant-message-bg: transparent;
+	--chat-assistant-message-fg: var(--text-primary);
+	--chat-composer-bg: color-mix(in srgb, var(--bg-content) 92%, transparent);
+	--chat-composer-bg-focus: color-mix(
+		in srgb,
+		var(--bg-content) 96%,
+		transparent
+	);
+	--chat-composer-border: color-mix(
+		in srgb,
+		var(--border-subtle) 70%,
+		transparent
+	);
+	--chat-composer-border-focus: color-mix(
+		in srgb,
+		var(--brand) 25%,
+		transparent
+	);
+	--chat-composer-radius: 28px;
+	--chat-composer-max-width: 56rem;
+	--chat-composer-expanded-max-width: 64rem;
+	--chat-composer-placeholder: var(--text-placeholder);
+
 	/* Data visualizations */
 	--heatmap-0: var(--bg-elevated);
 	--heatmap-1: color-mix(in srgb, var(--brand) 35%, transparent);
 	--heatmap-2: color-mix(in srgb, var(--brand) 55%, transparent);
 	--heatmap-3: color-mix(in srgb, var(--brand) 75%, transparent);
 	--heatmap-4: color-mix(in srgb, var(--brand) 95%, transparent);
-
 }

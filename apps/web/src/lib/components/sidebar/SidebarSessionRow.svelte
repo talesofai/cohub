@@ -138,7 +138,7 @@ const hoverPaddingClass = $derived.by(() => {
 {:else}
 <a
 	{href}
-	class="sidebar-flyout-item group/session relative flex items-center gap-1.5 overflow-hidden rounded-[6px] px-2 py-1.5 pr-4 text-[13px] transition-colors duration-100 {hoverPaddingClass} {rowState?.isFork ? 'session-fork-row' : ''} {rowState?.isLastVisibleChild ? 'session-fork-row--last' : ''} {active ? 'bg-bg-active font-medium text-text-primary' : 'text-text-tertiary hover:bg-bg-hover hover:text-text-secondary'}"
+	class="sidebar-flyout-item group/session relative flex items-center gap-1.5 overflow-hidden rounded-[var(--sidebar-item-radius)] px-2 py-1.5 pr-4 text-[13px] transition-colors duration-100 {hoverPaddingClass} {rowState?.isFork ? 'session-fork-row' : ''} {rowState?.isLastVisibleChild ? 'session-fork-row--last' : ''} {active ? 'bg-[var(--sidebar-item-active-bg)] font-medium text-[var(--sidebar-item-active-fg)]' : 'text-text-tertiary hover:bg-[var(--sidebar-item-hover-bg)] hover:text-text-secondary'}"
 	style={rowState?.style}
 	onclick={(event) => {
 		event.preventDefault();

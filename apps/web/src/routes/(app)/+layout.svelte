@@ -491,14 +491,14 @@ onMount(() => {
 </script>
 
 {#if !authReady}
-  <main class="min-h-screen bg-bg-primary text-text-primary">
+  <main class="app-shell min-h-screen text-text-primary">
     <CenteredLoading label="Loading…" size="page" />
   </main>
 {:else}
-  <div class="h-[100dvh] min-h-0 overflow-hidden flex flex-col lg:flex-row bg-bg-primary text-text-primary font-sans text-[13px] leading-[1.6]">
+  <div class="app-shell h-[100dvh] min-h-0 overflow-hidden flex flex-col lg:flex-row text-text-primary font-sans text-[13px] leading-[1.6]">
     <!-- Desktop sidebar — hidden on mobile -->
     <div class="hidden lg:flex shrink-0 min-h-0 relative" style={`width: ${uiState.leftSidebarCollapsed ? 52 : uiState.leftSidebarWidth}px`}>
-      <div class="min-w-0 flex-1 {uiState.leftSidebarCollapsed ? '' : 'border-r border-border-subtle'}">
+      <div class="min-w-0 flex-1 {uiState.leftSidebarCollapsed ? '' : 'border-r border-[color:var(--sidebar-border)]'}">
         <Sidebar mode={sidebarMode} collapsed={uiState.leftSidebarCollapsed} />
       </div>
       {#if !uiState.leftSidebarCollapsed}

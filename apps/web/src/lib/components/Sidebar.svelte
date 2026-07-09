@@ -3247,7 +3247,7 @@ $effect(() => {
 {/snippet}
 
 {#if collapsed && !isMobile}
-  <aside class="h-screen w-[52px] shrink-0 bg-bg-primary">
+  <aside class="h-screen w-[52px] shrink-0 bg-[var(--sidebar-bg)]">
     <div class="flex h-full flex-col items-center border-r border-border-subtle/70 px-2 py-2">
       <a
         href="/"
@@ -3458,7 +3458,7 @@ $effect(() => {
     </div>
   </aside>
 {:else}
-<aside class="{isMobile ? 'h-full' : 'shrink-0 h-screen'} flex flex-col bg-bg-primary">
+<aside class="{isMobile ? 'h-full' : 'shrink-0 h-screen'} flex flex-col bg-[var(--sidebar-bg)]">
   <!-- Brand Header -->
   <div class="flex h-[48px] shrink-0 items-center justify-between gap-2 border-b border-border-subtle px-3">
     <a href="/" class="flex min-w-0 items-center gap-2 group" aria-label="Cohub">
@@ -3516,7 +3516,7 @@ $effect(() => {
       <div class="px-1.5 py-1.5 shrink-0 space-y-[2px]">
         <button
           type="button"
-          class="flex w-full items-center gap-2 rounded-[7px] border border-brand-border bg-brand-muted px-1.5 py-1.5 text-brand transition-colors duration-100 hover:bg-brand-muted-hover disabled:cursor-not-allowed disabled:opacity-50"
+          class="flex w-full items-center gap-2 rounded-[var(--sidebar-primary-action-radius)] border border-[color:var(--sidebar-primary-action-border)] bg-[var(--sidebar-primary-action-bg)] px-1.5 py-1.5 text-[var(--sidebar-primary-action-fg)] transition-colors duration-100 hover:bg-[var(--sidebar-primary-action-bg-hover)] disabled:cursor-not-allowed disabled:opacity-50"
           onclick={() => { void handleCreateNewSession(); }}
           disabled={creatingSession}
           title="New chat (⌘O / Ctrl O)"

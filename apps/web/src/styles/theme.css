@@ -27,6 +27,18 @@
 	--color-bg-hover: var(--bg-hover);
 	--color-bg-hover-strong: var(--bg-hover-strong);
 	--color-bg-active: var(--bg-active);
+	--color-app-bg: var(--bg-primary);
+	--color-sidebar-bg: var(--sidebar-bg);
+	--color-sidebar-border: var(--sidebar-border);
+	--color-sidebar-item-hover: var(--sidebar-item-hover-bg);
+	--color-sidebar-item-active: var(--sidebar-item-active-bg);
+	--color-sidebar-primary-action: var(--sidebar-primary-action-bg);
+	--color-sidebar-primary-action-hover: var(--sidebar-primary-action-bg-hover);
+	--color-chat-bg: var(--chat-bg);
+	--color-chat-panel: var(--chat-panel-bg);
+	--color-chat-user-message: var(--chat-user-message-bg);
+	--color-chat-composer: var(--chat-composer-bg);
+	--color-chat-composer-focus: var(--chat-composer-bg-focus);
 
 	/* Text */
 	--color-text-primary: var(--text-primary);
@@ -39,6 +51,10 @@
 	/* Borders */
 	--color-border-primary: var(--border-primary);
 	--color-border-subtle: var(--border-subtle);
+	--color-chat-panel-border: var(--chat-panel-border);
+	--color-chat-composer-border: var(--chat-composer-border);
+	--color-chat-composer-border-focus: var(--chat-composer-border-focus);
+	--color-sidebar-primary-action-border: var(--sidebar-primary-action-border);
 
 	/* Brand */
 	--color-brand: var(--brand);
