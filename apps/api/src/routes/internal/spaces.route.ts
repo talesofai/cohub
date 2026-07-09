@@ -1,5 +1,6 @@
 import { createLogger } from "@cohub/infra/logging";
 import { Hono } from "hono";
+import { BillingAccessBlockedError, serializeBillingBlocked } from "@cohub/billing";
 import { attachSandboxPublicEndpoints } from "../../sandbox-public-network.js";
 import type {
   PersistMessageInput,
@@ -453,6 +454,7 @@ router.post("/:spaceId/sessions/:sessionId/prompt", async (c) => {
     return c.json({ ok: true, ...result });
   } catch (error) {
     if (error instanceof SandboxNotReadyError) return c.json({ message: "sandbox is not ready" }, 503);
+    if (error instanceof BillingAccessBlockedError) return c.json(serializeBillingBlocked(error), 402);
     throw error as Error;
   }
 });

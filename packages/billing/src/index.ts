@@ -72,6 +72,8 @@ export type {
   BillingPreferredOfferKind,
 } from "./conversion.js";
 export { BillingAccessBlockedError, isBillingAccessBlockedError } from "./errors.js";
+export { serializeBillingBlocked, serializeBillingWarning } from "./response.js";
+export type { BillingErrorBody, BillingResponsePayload } from "./response.js";
 export { createBillingUsageGate } from "./usage-gate.js";
 export type {
   BillingAccessDecision,

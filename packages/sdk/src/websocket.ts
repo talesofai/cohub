@@ -12,6 +12,8 @@ import {
 } from "@cohub/protocol/realtime/types";
 import type { ContentBlock } from "@cohub/protocol/core";
 import type { CohubEnvironment } from "./environment.js";
+import { extractBillingPayload } from "./http-error.js";
+import type { BillingResponsePayload } from "./types.js";
 import { resolveWebsocketUrl } from "./environment.js";
 
 export type WebsocketEventPayload = ChannelEnvelope;
@@ -68,6 +70,7 @@ export type WebsocketClientEvents = {
     sessionId?: string | null;
     spaceId?: string | null;
     clientMessageId?: string | null;
+    billing?: BillingResponsePayload | null;
   };
   subscribed: { rooms: RealtimeRoom[]; requestId?: string | null };
   subscribeError: { rejected: Array<{ room: string; code: string; message: string }>; requestId?: string | null };
@@ -669,6 +672,7 @@ export class WebsocketClient {
           spaceId: envelope.spaceId ?? null,
           clientMessageId:
             typeof payload.clientMessageId === "string" ? payload.clientMessageId : null,
+          billing: extractBillingPayload(payload.billing),
         });
         this.emit("event", envelope);
         return;

@@ -19,7 +19,15 @@ export {
   createSessionGenerationStreamClient,
   parseAssistantMessageCommit,
 } from "./session-generation-stream.js";
-export { FEATURE_NOT_ENTITLED_ERROR_CODE, isFeatureNotEntitledError, isHttpErrorCode } from "./http-error.js";
+export {
+  BILLING_ACCESS_BLOCKED_ERROR_CODE,
+  FEATURE_NOT_ENTITLED_ERROR_CODE,
+  extractBillingPayload,
+  isBillingAccessBlockedCode,
+  isBillingAccessBlockedError,
+  isFeatureNotEntitledError,
+  isHttpErrorCode,
+} from "./http-error.js";
 export { HttpError } from "./transport.js";
 export {
   GenerationPolicyError,

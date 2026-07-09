@@ -1,4 +1,5 @@
 import type { GenerationContentBlock, GenerationModelDeclaration } from "@neta-art/generation";
+import type { BillingPayload } from "../billing.js";
 export * from "./policy.js";
 
 export type {
@@ -27,6 +28,7 @@ export type CreateGenerationTaskResponse = {
   taskRunId: string;
   taskType: typeof GENERATION_TASK_TYPE;
   status: "pending";
+  billing?: BillingPayload | null;
 };
 
 export type GenerationTaskData = {

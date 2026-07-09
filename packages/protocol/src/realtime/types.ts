@@ -1,4 +1,5 @@
 import type { ContentBlock } from "../core/content.js";
+import type { BillingPayload } from "../billing.js";
 import type { MessageRecord, SessionRecord, SessionTurnRecord } from "../model/session.js";
 import type { SessionTurnSummary } from "../model/turn.js";
 import type { TaskRunStatus } from "../task/index.js";
@@ -200,7 +201,7 @@ export type SessionRequestErrorEvent = {
   requestId?: string | null;
   spaceId?: string | null;
   sessionId?: string | null;
-  payload: { code?: string; message: string; clientMessageId?: string | null };
+  payload: { code?: string; message: string; clientMessageId?: string | null; billing?: BillingPayload | null };
 };
 
 export type RealtimePatchOperation =

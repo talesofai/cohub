@@ -18,9 +18,8 @@ const responseBodyForError = async (response: Response) => {
 const messageFromErrorBody = (body: unknown, fallback: string) => {
   if (typeof body === "string") return body.trim() || fallback;
   if (body && typeof body === "object") {
-    const errorBody = body as { message?: unknown; error?: { message?: unknown } };
+    const errorBody = body as { message?: unknown };
     if (typeof errorBody.message === "string" && errorBody.message.trim()) return errorBody.message;
-    if (typeof errorBody.error?.message === "string" && errorBody.error.message.trim()) return errorBody.error.message;
   }
   return fallback;
 };
@@ -49,9 +48,8 @@ export type CohubClientOptions = {
 
 function errorCodeFromBody(body: unknown): string | null {
   if (!body || typeof body !== "object") return null;
-  const errorBody = body as { code?: unknown; error?: { code?: unknown } };
+  const errorBody = body as { code?: unknown };
   if (typeof errorBody.code === "string" && errorBody.code.trim()) return errorBody.code;
-  if (typeof errorBody.error?.code === "string" && errorBody.error.code.trim()) return errorBody.error.code;
   return null;
 }
 

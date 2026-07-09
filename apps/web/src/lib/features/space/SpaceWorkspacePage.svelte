@@ -12,6 +12,7 @@ import type {
 import type { ChannelEnvelope } from "@cohub/protocol/realtime";
 import type { CanvasSemanticOp } from "@neta-art/cohub";
 import {
+	extractBillingPayload,
 	HttpError,
 	type Permission,
 	type SessionRecord,
@@ -3271,24 +3272,17 @@ async function handleWsEvent(payload: ChannelEnvelope) {
 				code?: string;
 				message?: string;
 				clientMessageId?: string | null;
+				billing?: { conversion?: unknown } | null;
 			};
 			const message = requestError.message?.trim() || "Message request failed";
 			const code =
 				typeof requestError.code === "string" ? requestError.code : null;
-			if (isBillingAccessBlockedCode(code)) {
-				billingConversion.openFromIntent({
-					level: "hard",
-					reason: "negative_balance_limit_exceeded",
-					audience: "unknown",
-					preferredOfferKind: "mixed",
-					title: "Add credits to continue",
-					message: "Add credits or choose a plan to resume AI requests.",
-					primaryAction: {
-						label: "Add credits now",
-						action: "open_billing_conversion",
-					},
-					source: "session_request_error",
-				});
+			const conversion =
+				extractBillingPayload(requestError)?.conversion ?? null;
+			if (conversion) {
+				billingConversion.openFromIntent(conversion);
+			} else if (isBillingAccessBlockedCode(code)) {
+				billingConversion.openFallbackHard();
 			}
 			failGeneration(targetSessionId, message, { errorCode: code });
 			if (isActiveSession) setComposerError(message, code);

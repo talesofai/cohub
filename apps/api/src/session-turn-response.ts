@@ -1,4 +1,5 @@
 import type { SessionRecord } from "@cohub/protocol/model";
+import type { BillingResponsePayload } from "@cohub/billing";
 import { getSessionTurnById, hydrateTurnAuthorProfiles } from "./session-turns.js";
 
 type SessionRow = Omit<SessionRecord, "meta" | "lastMessageAt" | "createdAt" | "updatedAt"> & {
@@ -29,11 +30,17 @@ function toSessionRecord(session: SessionRow): SessionRecord {
   };
 }
 
-function extractBillingWarning(meta: unknown) {
+function extractBillingWarning(meta: unknown): BillingResponsePayload | null {
   const record = normalizeRecord(meta);
   const billing = normalizeRecord(record?.billing);
   if (billing?.status !== "allowed_with_debt") return null;
-  return billing;
+  if (!normalizeRecord(billing.conversion)) return null;
+  return {
+    status: "allowed_with_debt",
+    netUsd: typeof billing.netUsd === "number" ? billing.netUsd : 0,
+    hardNegativeLimitUsd: typeof billing.hardNegativeLimitUsd === "number" ? billing.hardNegativeLimitUsd : 0,
+    conversion: billing.conversion as BillingResponsePayload["conversion"],
+  };
 }
 
 export async function buildSessionTurnResponse(session: SessionRow, turnId: string) {

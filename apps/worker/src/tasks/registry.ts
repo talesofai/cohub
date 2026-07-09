@@ -1,4 +1,4 @@
-import { BillingAccessBlockedError } from "@cohub/billing";
+import { serializeBillingBlocked, isBillingAccessBlockedError } from "@cohub/billing";
 import type { Job } from "bullmq";
 import { recordJobFailure } from "@cohub/infra/bullmq";
 import type { TaskPayload } from "@cohub/protocol/task";
@@ -31,21 +31,8 @@ const registry = new Map<string, TaskHandler>();
  *   - On failure: update to failed (then rethrow for BullMQ retry)
  */
 function billingFailureResult(error: unknown) {
-  if (!(error instanceof BillingAccessBlockedError)) return null;
-  return {
-    error: {
-      code: error.code,
-      message: error.message,
-      details: {
-        decision: {
-          status: error.decision.status,
-          netUsd: error.decision.netUsd,
-          hardNegativeLimitUsd: error.decision.hardNegativeLimitUsd,
-        },
-        conversion: error.decision.conversion,
-      },
-    },
-  };
+  if (!isBillingAccessBlockedError(error)) return null;
+  return { error: serializeBillingBlocked(error) };
 }
 
 export const markTaskRunFailed = async (job: Job, error: unknown) => {

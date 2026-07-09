@@ -1,4 +1,5 @@
 import process from "node:process";
+import { extractBillingPayload } from "@neta-art/cohub";
 
 // -- Table rendering ---------------------------------------------------------
 
@@ -67,9 +68,8 @@ export function error(msg: string, detail?: string): never {
 
 function errorMessageFromBody(body: unknown): string | null {
   if (!body || typeof body !== "object") return null;
-  const errorBody = body as { message?: unknown; error?: { message?: unknown } };
+  const errorBody = body as { message?: unknown };
   if (typeof errorBody.message === "string" && errorBody.message.trim()) return errorBody.message;
-  if (typeof errorBody.error?.message === "string" && errorBody.error.message.trim()) return errorBody.error.message;
   return null;
 }
 
@@ -79,10 +79,9 @@ function debugErrorMetaFromBody(body: unknown): string[] {
     code?: unknown;
     requestId?: unknown;
     traceId?: unknown;
-    error?: { code?: unknown };
   };
   const items: string[] = [];
-  const code = typeof errorBody.code === "string" ? errorBody.code : typeof errorBody.error?.code === "string" ? errorBody.error.code : null;
+  const code = typeof errorBody.code === "string" ? errorBody.code : null;
   if (code) items.push(code);
   if (typeof errorBody.requestId === "string") items.push(`requestId: ${errorBody.requestId}`);
   if (typeof errorBody.traceId === "string") items.push(`traceId: ${errorBody.traceId}`);
@@ -119,6 +118,21 @@ export function handleHttp(e: unknown): never {
 
   const status = (e as { status?: number }).status;
   const body = (e as { body?: unknown }).body;
+
+  if (status === 402) {
+    const conversion = extractBillingPayload(body)?.conversion as
+      | { title?: string; message?: string }
+      | undefined;
+    if (conversion) {
+      return error(
+        conversion.title || "Upgrade required",
+        [conversion.message, "Manage billing at your Cohub account settings."]
+          .filter(Boolean)
+          .join(" · "),
+      );
+    }
+  }
+
   const presentation = errorPresentationFromHttpError(e);
   const message = presentation?.message ?? errorMessageFromBody(body) ?? (e instanceof Error ? e.message : String(e));
   const fetchDetail = fetchFailureDetail(e);

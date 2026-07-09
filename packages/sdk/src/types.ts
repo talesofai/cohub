@@ -388,12 +388,15 @@ export type BillingConversionIntent = {
   source: string;
 };
 
-export type BillingAccessWarning = {
-  status: "allowed_with_debt";
-  balanceState: "negative";
-  netUsd: number;
-  hardNegativeLimitUsd: number;
+/**
+ * Standard `billing` payload on 402 error bodies and soft-warning success
+ * responses. `conversion` drives the shared upgrade UI.
+ */
+export type BillingResponsePayload = {
   conversion: BillingConversionIntent;
+  status?: "blocked" | "allowed_with_debt";
+  netUsd?: number;
+  hardNegativeLimitUsd?: number;
 };
 
 export type BillingBalanceActivityKind =
@@ -812,7 +815,7 @@ export type SessionTurnWindowResponse = {
 export type SessionTurnResponse = {
   session: SessionRecord;
   turn: SessionTurnRecord;
-  billing?: BillingAccessWarning | null;
+  billing?: BillingResponsePayload | null;
 };
 
 export type SessionTurnSignedUrlsResponse = {

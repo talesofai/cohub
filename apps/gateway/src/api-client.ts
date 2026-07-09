@@ -3,6 +3,7 @@ import { AuthorizationError, verifyUserAccessToken } from "@cohub/identity";
 import { buildTraceHeaders, getTraceResponseHeaders, type TraceIdentifiers } from "@cohub/infra/tracing";
 import type { ContentBlock } from "@cohub/protocol/core";
 import type { RealtimeRoom } from "@cohub/protocol/realtime";
+import type { BillingPayload } from "@cohub/protocol";
 import type { GatewayAuthUser } from "./config.js";
 import { gatewayConfig } from "./config.js";
 
@@ -196,6 +197,27 @@ export const submitCanvasTransaction = async (input: {
   return { document: { version: data.document.version }, nodes: data.nodes };
 };
 
+/** Carries a standard billing error body from the internal prompt API. */
+export class InternalPromptError extends Error {
+  constructor(
+    message: string,
+    readonly code: string,
+    readonly billing: BillingPayload | null,
+  ) {
+    super(message);
+    this.name = "InternalPromptError";
+  }
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return !!value && typeof value === "object" && !Array.isArray(value);
+}
+
+function isBillingErrorBody(value: unknown): value is { code: string; message?: string; billing: BillingPayload } {
+  if (!isRecord(value)) return false;
+  return typeof value.code === "string" && isRecord(value.billing);
+}
+
 export const submitInternalSessionPrompt = async (input: {
   spaceId: string;
   sessionId: string;
@@ -229,8 +251,12 @@ export const submitInternalSessionPrompt = async (input: {
   });
 
   if (!response.ok) {
-    const text = await response.text().catch(() => "");
-    throw new Error(`Internal prompt submit failed ${response.status}: ${text}`);
+    const body = await parseJson<unknown>(response);
+    if (isBillingErrorBody(body)) {
+      throw new InternalPromptError(body.message ?? "prompt blocked", body.code, body.billing);
+    }
+    const message = isRecord(body) && typeof body.message === "string" ? body.message : null;
+    throw new Error(message ?? `Internal prompt submit failed ${response.status}`);
   }
   const data = await parseJson<{ ok?: boolean; turnId?: string; userMessageId?: string }>(response);
   if (!data?.ok || !data.turnId || !data.userMessageId) {

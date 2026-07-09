@@ -1,4 +1,5 @@
 export * from "./attachments.js";
+export * from "./billing.js";
 export * from "./core/content.js";
 export * from "./core/usage.js";
 export * from "./model/session.js";

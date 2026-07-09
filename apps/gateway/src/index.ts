@@ -31,7 +31,7 @@ import {
   wsClientEventSchema,
 } from "@cohub/protocol/realtime";
 import { getOrCreateRequestId } from "@cohub/infra/tracing";
-import { authenticateRealtimeToken, authorizeRealtimeRooms, notifySpacePresenceUpdated, requestGatewayChannelReconcile, submitCanvasTransaction, submitInternalSessionPrompt, type RealtimeAuthResult } from "./api-client.js";
+import { authenticateRealtimeToken, authorizeRealtimeRooms, notifySpacePresenceUpdated, requestGatewayChannelReconcile, submitCanvasTransaction, submitInternalSessionPrompt, InternalPromptError, type RealtimeAuthResult } from "./api-client.js";
 import { listenOutboundCommands, initOutboundConsumerGroup } from "./bus.js";
 import { summarizeRedisUrl } from "./logging.js";
 import { gatewayConfig } from "./config.js";
@@ -972,6 +972,7 @@ async function main() {
           } catch (error) {
             if (error instanceof WsClientInputError) throw error;
             const payload = message.payload ?? {};
+            const isBillingError = error instanceof InternalPromptError;
             sendWsEnvelope(socket, buildRealtimeEnvelope({
               domain: "session",
               type: "session.request.error",
@@ -979,9 +980,10 @@ async function main() {
               spaceId: typeof payload.spaceId === "string" ? payload.spaceId : null,
               sessionId: typeof payload.sessionId === "string" ? payload.sessionId : null,
               payload: {
-                code: "SUBMIT_FAILED",
+                code: isBillingError ? error.code : "SUBMIT_FAILED",
                 message: error instanceof Error ? error.message : String(error),
                 clientMessageId: typeof payload.clientMessageId === "string" ? payload.clientMessageId : null,
+                billing: isBillingError ? error.billing : null,
               },
             }));
           }

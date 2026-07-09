@@ -1,8 +1,9 @@
-import { BillingAccessBlockedError, billingOperations, createBillingUsageGate } from "@cohub/billing";
+import { BillingAccessBlockedError, billingOperations, createBillingUsageGate, serializeBillingWarning } from "@cohub/billing";
 import { Hono, type Context } from "hono";
 import { createGenerationClient, GenerationValidationError } from "@neta-art/generation";
 import { GENERATION_TASK_TYPE, type CreateGenerationTaskResponse } from "@cohub/protocol/generation";
 import { useAuth, authzDenied } from "../lib/middleware.js";
+import { billingBlockedResponse } from "../lib/billing-blocked.js";
 import { hasPermission } from "../permissions.js";
 import { loadGenerationDeclaration } from "../generations/declarations.js";
 import { createGenerationTaskRequestSchema } from "../generations/schema.js";
@@ -25,7 +26,7 @@ const billingUsageGate = createBillingUsageGate({
 type ErrorStatus = 400 | 401 | 402 | 403 | 404 | 409 | 413 | 422 | 500 | 502 | 503;
 
 function generationError(c: Context, status: ErrorStatus, code: string, message: string, details?: unknown) {
-  return c.json({ error: { code, message, ...(details === undefined ? {} : { details }) } }, status);
+  return c.json({ code, message, ...(details === undefined ? {} : { details }) }, status);
 }
 
 function zodDetails(error: { issues: Array<{ path: PropertyKey[]; message: string }> }) {
@@ -33,17 +34,6 @@ function zodDetails(error: { issues: Array<{ path: PropertyKey[]; message: strin
     path: issue.path.map(String).join("."),
     message: issue.message,
   }));
-}
-
-function generationBillingBlocked(c: Context, error: BillingAccessBlockedError) {
-  return generationError(c, 402, error.code, error.message, {
-    decision: {
-      status: error.decision.status,
-      netUsd: error.decision.netUsd,
-      hardNegativeLimitUsd: error.decision.hardNegativeLimitUsd,
-    },
-    conversion: error.decision.conversion,
-  });
 }
 
 router.post("/", async (c) => {
@@ -110,7 +100,7 @@ router.post("/", async (c) => {
     turnId,
   });
   if (billingDecision.status === "blocked") {
-    return generationBillingBlocked(c, new BillingAccessBlockedError(billingDecision));
+    return billingBlockedResponse(c, new BillingAccessBlockedError(billingDecision));
   }
 
   let taskRunId: string;
@@ -146,8 +136,8 @@ router.post("/", async (c) => {
     taskRunId,
     taskType: GENERATION_TASK_TYPE,
     status: "pending",
-    billing: billingDecision.status === "allowed_with_debt" ? billingDecision : null,
-  } satisfies CreateGenerationTaskResponse & { billing?: typeof billingDecision | null }, 202);
+    billing: serializeBillingWarning(billingDecision),
+  } satisfies CreateGenerationTaskResponse, 202);
 });
 
 export default router;

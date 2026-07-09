@@ -1,8 +1,13 @@
 import type {
-	BillingAccessWarning,
 	BillingConversionIntent,
+	BillingResponsePayload,
 } from "@neta-art/cohub";
-import { HttpError } from "@neta-art/cohub";
+import {
+	BILLING_ACCESS_BLOCKED_ERROR_CODE,
+	extractBillingPayload,
+	HttpError,
+	isBillingAccessBlockedCode,
+} from "@neta-art/cohub";
 
 type BillingConversionLevel = "soft" | "hard";
 
@@ -10,52 +15,22 @@ type BillingConversionState = {
 	open: boolean;
 	level: BillingConversionLevel | null;
 	intent: BillingConversionIntent | null;
-	warning: BillingAccessWarning | null;
+	warning: BillingResponsePayload | null;
 	dismissedSoftAt: number | null;
 };
 
-function isRecord(value: unknown): value is Record<string, unknown> {
-	return !!value && typeof value === "object" && !Array.isArray(value);
-}
-
-function isBillingConversionIntent(
-	value: unknown,
-): value is BillingConversionIntent {
-	return (
-		isRecord(value) &&
-		(value.level === "soft" || value.level === "hard") &&
-		typeof value.title === "string" &&
-		typeof value.message === "string" &&
-		isRecord(value.primaryAction) &&
-		value.primaryAction.action === "open_billing_conversion"
-	);
-}
-
 function extractIntentFromBody(body: unknown): BillingConversionIntent | null {
-	if (!isRecord(body)) return null;
-	const directBilling = isRecord(body.billing) ? body.billing : null;
-	if (isBillingConversionIntent(directBilling?.conversion)) {
-		return directBilling.conversion;
-	}
-	const error = isRecord(body.error) ? body.error : null;
-	const details = isRecord(error?.details) ? error.details : null;
-	if (isBillingConversionIntent(details?.conversion)) return details.conversion;
-	return null;
+	return extractBillingPayload(body)?.conversion ?? null;
 }
 
-function extractWarningFromBody(body: unknown): BillingAccessWarning | null {
-	if (!isRecord(body)) return null;
-	const billing = isRecord(body.billing) ? body.billing : null;
-	if (billing?.status !== "allowed_with_debt") return null;
-	if (!isBillingConversionIntent(billing.conversion)) return null;
-	return billing as BillingAccessWarning;
+function extractWarningFromBody(body: unknown): BillingResponsePayload | null {
+	const billing = extractBillingPayload(body);
+	return billing?.status === "allowed_with_debt" ? billing : null;
 }
 
-export const BILLING_ACCESS_BLOCKED_CODE = "billing_credit_limit_exceeded";
+export const BILLING_ACCESS_BLOCKED_CODE = BILLING_ACCESS_BLOCKED_ERROR_CODE;
 
-export function isBillingAccessBlockedCode(value: string | null | undefined) {
-	return value === BILLING_ACCESS_BLOCKED_CODE;
-}
+export { isBillingAccessBlockedCode };
 
 function defaultHardIntent(): BillingConversionIntent {
 	return {
@@ -115,7 +90,7 @@ class BillingConversionStore {
 		this.state.open = true;
 	}
 
-	showSoft(warning: BillingAccessWarning) {
+	showSoft(warning: BillingResponsePayload) {
 		this.state.warning = warning;
 		this.state.intent = warning.conversion;
 		this.state.level = "soft";
