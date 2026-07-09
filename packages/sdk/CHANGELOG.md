@@ -1,5 +1,12 @@
 # @neta-art/cohub
 
+## 2.8.0
+
+### Minor Changes
+
+- 4c28633: Broker mode can now resolve the workId at runtime from the public slug triple. Standalone Works no longer need to hardcode a workId that only exists after publishing — pass `work: { brokerOrigin, ownerUsername, spaceSlug, workSlug }` and the SDK reverse-looks-up the workId via the anonymous `works.getBySlug` API, caches it, and starts broker mode. Explicit `workId` still takes precedence, and bridge mode (inside the Cohub iframe) is unaffected.
+- 9188401: Unify billing gate responses. Every billing-gated 402 (negative balance limit and plan entitlement) now returns a flat `{ code, message, billing: { conversion, status?, netUsd?, hardNegativeLimitUsd? } }` body, and soft debt warnings ride the same `billing` payload on success responses. The SDK adds `BILLING_ACCESS_BLOCKED_ERROR_CODE`, `isBillingAccessBlockedError`, `isBillingAccessBlockedCode`, `extractBillingPayload`, and a `BillingResponsePayload` type so clients extract the conversion intent with one call. Websocket `session.request.error` events now carry the same `billing` payload. The CLI surfaces the conversion title/message on 402.
+
 ## 2.7.1
 
 ### Patch Changes
