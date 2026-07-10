@@ -1,5 +1,17 @@
 # @neta-art/cohub-cli
 
+## 2.2.10
+
+### Patch Changes
+
+- 74a3b9d: Add raw space LLM completions that skip the agent turn queue. Callers fully control message history and an optional space-relative system prompt file.
+
+  SDK: `space.completion()` (JSON) and `space.streamCompletion()` (SSE deltas with abort-safe streaming).
+  CLI: `cohub completion` / `cohub spaces completion` with `--stream`, `--system-prompt`, model/provider, temperature, max tokens, and thinking level.
+
+- Updated dependencies [74a3b9d]
+  - @neta-art/cohub@2.9.0
+
 ## 2.2.9
 
 ### Patch Changes
