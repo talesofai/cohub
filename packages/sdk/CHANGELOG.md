@@ -1,5 +1,11 @@
 # @neta-art/cohub
 
+## 2.10.0
+
+### Minor Changes
+
+- a45d3e8: Add referral links, account referral management, and CLI referral commands.
+
 ## 2.9.0
 
 ### Minor Changes

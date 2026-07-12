@@ -1,5 +1,16 @@
 # @neta-art/cohub-cli
 
+## 2.3.0
+
+### Minor Changes
+
+- a45d3e8: Add referral links, account referral management, and CLI referral commands.
+
+### Patch Changes
+
+- Updated dependencies [a45d3e8]
+  - @neta-art/cohub@2.10.0
+
 ## 2.2.10
 
 ### Patch Changes
