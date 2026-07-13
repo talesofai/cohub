@@ -171,6 +171,13 @@ export class WorksApi {
     });
   }
 
+  purgeHistoricalAssets(workId: string) {
+    return this.transport.request<{ ok: true; purgedVersions: number; deletedAssets: number }>(
+      `/api/works/${workId}/purge-historical-assets`,
+      { method: "POST" },
+    );
+  }
+
   createSession(workId: string) {
     return this.transport.request<WorkSessionResponse>(`/api/works/${workId}/session`, {
       method: "POST",

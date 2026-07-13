@@ -39,6 +39,8 @@ export type AppConfig = {
   publicAssetOssSecretAccessKey?: string;
   publicAssetCdnBaseUrl?: string;
   workAssetCdnBaseUrl?: string;
+  workAssetCdnCloudflareZoneId?: string;
+  workAssetCdnCloudflareApiToken?: string;
   checkpointAssetOssEndpoint?: string;
   checkpointAssetOssPublicEndpoint?: string;
   checkpointAssetOssRegion: string;
@@ -158,6 +160,8 @@ export const config: AppConfig = {
   publicAssetOssSecretAccessKey: process.env.PUBLIC_ASSET_OSS_SECRET_ACCESS_KEY,
   publicAssetCdnBaseUrl: process.env.PUBLIC_ASSET_CDN_BASE_URL?.replace(/\/+$/, ""),
   workAssetCdnBaseUrl: process.env.WORK_ASSET_CDN_BASE_URL?.replace(/\/+$/, ""),
+  workAssetCdnCloudflareZoneId: process.env.WORK_ASSET_CDN_CLOUDFLARE_ZONE_ID,
+  workAssetCdnCloudflareApiToken: process.env.WORK_ASSET_CDN_CLOUDFLARE_API_TOKEN,
   checkpointAssetOssEndpoint: process.env.CHECKPOINT_ASSET_OSS_ENDPOINT ?? process.env.TURN_OBJECT_S3_ENDPOINT ?? "https://oss-us-west-1-internal.aliyuncs.com",
   checkpointAssetOssPublicEndpoint: process.env.CHECKPOINT_ASSET_OSS_PUBLIC_ENDPOINT ?? process.env.TURN_OBJECT_S3_PUBLIC_ENDPOINT,
   checkpointAssetOssRegion: process.env.CHECKPOINT_ASSET_OSS_REGION ?? process.env.TURN_OBJECT_S3_REGION ?? "us-west-1",

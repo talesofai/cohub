@@ -4,3 +4,4 @@ import "./sandbox-idle-check/index.js";
 import "./sandbox-idle-reaper/index.js";
 import "./session-message-postprocess/index.js";
 import "./work-publish-asset/index.js";
+import "./work-asset-cleanup/index.js";

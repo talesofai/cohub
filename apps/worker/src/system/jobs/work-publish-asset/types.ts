@@ -3,6 +3,7 @@ export const WORK_PUBLISH_ASSET_JOB = "work.publish_asset";
 export type WorkPublishAssetJobData = {
   spaceId: string;
   slug: string;
+  assetKey?: string;
   targetType: "file" | "directory";
   targetRef: string;
   requestId?: string | null;
@@ -19,4 +20,5 @@ export type WorkPublishAssetJobResult = {
   status: number;
   message: string;
   code?: string;
+  cleanupAssetKey?: string;
 };

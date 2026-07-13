@@ -1,6 +1,12 @@
 import { DeleteObjectsCommand, ListObjectsV2Command, S3Client } from "@aws-sdk/client-s3";
 import { buildPublicObjectUrl, type PresignStorageConfig } from "./object-presign.js";
 import { config } from "./config.js";
+import {
+  assertDeleteObjectsSucceeded,
+  createCloudflareWorkAssetPrefix,
+  purgeCloudflareWorkAssetPrefixes,
+  workAssetPrefixFromObjectKey,
+} from "./work-asset-delete.js";
 
 let s3Client: S3Client | null = null;
 
@@ -64,17 +70,8 @@ export const isConfiguredWorkAssetPublicUrl = (url: string) => {
   }
 };
 
-const workAssetPrefixFromObjectKey = (objectKey: string) => {
-  const normalized = objectKey.replace(/^\/+/, "");
-  const slash = normalized.lastIndexOf("/");
-  if (slash <= 0) return null;
-  return normalized.slice(0, slash + 1);
-};
-
-export const deleteWorkAssetsByObjectKey = async (objectKey: string | null | undefined) => {
-  if (!objectKey) return { deleted: 0 };
+const deleteWorkAssetObjectsByObjectKey = async (objectKey: string) => {
   const prefix = workAssetPrefixFromObjectKey(objectKey);
-  if (!prefix) return { deleted: 0 };
   const storage = requireStorage();
   const client = getS3Client();
   let continuationToken: string | undefined;
@@ -91,13 +88,40 @@ export const deleteWorkAssetsByObjectKey = async (objectKey: string | null | und
     for (let i = 0; i < objects.length; i += 1000) {
       const batch = objects.slice(i, i + 1000);
       if (batch.length === 0) continue;
-      await client.send(new DeleteObjectsCommand({
+      const result = await client.send(new DeleteObjectsCommand({
         Bucket: storage.bucket,
         Delete: { Objects: batch.map((Key) => ({ Key })), Quiet: true },
       }));
-      deleted += batch.length;
+      deleted += assertDeleteObjectsSucceeded(batch, result);
     }
     continuationToken = listed.IsTruncated ? listed.NextContinuationToken : undefined;
   } while (continuationToken);
+
+  return { deleted };
+};
+
+export const deleteWorkAssetsByObjectKeys = async (objectKeys: string[]) => {
+  const uniqueObjectKeys = Array.from(new Set(objectKeys));
+  if (uniqueObjectKeys.length === 0) return { deleted: 0 };
+
+  const failures: Error[] = [];
+  let deleted = 0;
+  for (const objectKey of uniqueObjectKeys) {
+    try {
+      deleted += (await deleteWorkAssetObjectsByObjectKey(objectKey)).deleted;
+    } catch (error) {
+      failures.push(error instanceof Error ? error : new Error(String(error)));
+    }
+  }
+  if (failures.length > 0) throw new AggregateError(failures, "work asset storage cleanup failed");
+
+  const cdnBaseUrl = config.workAssetCdnBaseUrl || config.publicAssetCdnBaseUrl;
+  if (cdnBaseUrl) {
+    await purgeCloudflareWorkAssetPrefixes({
+      zoneId: config.workAssetCdnCloudflareZoneId ?? "",
+      apiToken: config.workAssetCdnCloudflareApiToken ?? "",
+      prefixes: uniqueObjectKeys.map((objectKey) => createCloudflareWorkAssetPrefix(cdnBaseUrl, objectKey)),
+    });
+  }
   return { deleted };
 };

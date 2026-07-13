@@ -1,7 +1,7 @@
 import { Hono, type Context } from "hono";
-import { and, desc, eq, ne, sql } from "drizzle-orm";
-import { spaces, works, workVersions, workViewerGrants, userProfiles } from "@cohub/db";
-import { createWorkAssetPublicUrl, deleteWorkAssetsByObjectKey, isConfiguredWorkAssetPublicUrl } from "../work-asset-storage.js";
+import { and, desc, eq, inArray, ne, sql } from "drizzle-orm";
+import { spaces, works, workAssetReservations, workVersions, workViewerGrants, userProfiles } from "@cohub/db";
+import { createWorkAssetPublicUrl, deleteWorkAssetsByObjectKeys, isConfiguredWorkAssetPublicUrl } from "../work-asset-storage.js";
 import { publishWorkAssetInWorker, type WorkPublishAssetJobResult } from "../work-publish-asset-queue.js";
 import type { Permission } from "@cohub/core/permissions";
 import { db } from "../db/index.js";
@@ -12,8 +12,26 @@ import { getSandboxPublicEndpoints } from "../sandbox-public-network.js";
 import { SANDBOX_PUBLIC_PORTS } from "@cohub/protocol/ports";
 import { createLogger } from "@cohub/infra/logging";
 import { billingOperations, COHUB_BILLING_FEATURES } from "@cohub/billing";
+import { config } from "../config.js";
+import { enqueueWorkAssetCleanup } from "../work-asset-cleanup-queue.js";
+import { markWorkAssetReservationCleaned, startWorkAssetReservation } from "../work-asset-reservation.js";
+import { hasSameWorkPublishTarget } from "../work-publish-target.js";
+import { getWorkUpdateVersionState } from "../work-update-state.js";
+import {
+  createWorkAssetCleanupScope,
+  createWorkAssetObjectKey,
+  createWorkAssetPublishJobId,
+  selectWorkAssetCleanupKey,
+} from "../work-asset-publish-cleanup.js";
 import { featureGateResponse } from "../lib/feature-gate.js";
 import { createWorkPublicUrl } from "../lib/work-public-url.js";
+import {
+  WorkAssetCleanupError,
+  collectHistoricalWorkAssetKeys,
+  collectWorkAssetKeys,
+  deleteWorkAssetKeys,
+  detachWorkWithAssetCleanupScheduled,
+} from "./work-delete.js";
 
 const logger = createLogger({ serviceName: "cohub-api" });
 const router = new Hono();
@@ -32,6 +50,7 @@ const ALLOWED_VIEWER_SCOPES = new Set<Permission>([
   "user.session.list",
   "user.usage.read",
 ]);
+const WORK_ASSET_CLEANUP_WATCHDOG_DELAY_MS = 5 * 60_000;
 
 
 const normalizeScopes = (value: unknown, allowed: Set<Permission>): Permission[] => {
@@ -179,12 +198,51 @@ class WorkAssetPublishError extends Error {
   }
 }
 
-async function writeWorkAsset(input: { spaceId: string; slug: string; targetType: string; targetRef: string; status: string }) {
-  const { spaceId, slug, targetType, targetRef, status } = input;
+async function writeWorkAsset(input: {
+  spaceId: string;
+  slug: string;
+  assetKey: string | null;
+  publishJobId: string | null;
+  targetType: string;
+  targetRef: string;
+  status: string;
+}) {
+  const { spaceId, slug, assetKey, publishJobId, targetType, targetRef, status } = input;
   if (status !== "published" || (targetType !== "file" && targetType !== "directory")) return null;
-  const result = await publishWorkAssetInWorker({ spaceId, slug, targetType, targetRef });
+  if (!assetKey) throw new Error("published work asset key was not reserved");
+  if (!publishJobId) throw new Error("published work asset job id was not reserved");
+  const result = await publishWorkAssetInWorker(
+    { spaceId, slug, assetKey, targetType, targetRef },
+    { jobId: publishJobId },
+  );
   if (!result.ok) throw new WorkAssetPublishError(result);
+  if (result.assetKey !== assetKey) {
+    throw new WorkAssetPublishError({
+      ok: false,
+      status: 502,
+      message: "work asset worker returned an unexpected key",
+      code: "work_asset_key_mismatch",
+      cleanupAssetKey: result.assetKey,
+    });
+  }
   return result.assetKey;
+}
+
+async function scheduleWorkAssetCleanupWatchdog(input: {
+  assetKey: string;
+  scope: ReturnType<typeof createWorkAssetCleanupScope>;
+  publishJobId: string;
+  reason: string;
+}) {
+  return enqueueWorkAssetCleanup(
+    {
+      assetKeys: [input.assetKey],
+      scope: input.scope,
+      publishJobId: input.publishJobId,
+      reason: input.reason,
+    },
+    { delayMs: WORK_ASSET_CLEANUP_WATCHDOG_DELAY_MS },
+  );
 }
 
 function workAssetErrorResponse(c: Context, error: unknown, context: { spaceId: string; targetType: string; targetRef: string }) {
@@ -195,12 +253,64 @@ function workAssetErrorResponse(c: Context, error: unknown, context: { spaceId: 
   return c.json({ message: "work asset storage failed" }, 502);
 }
 
-async function cleanupWorkAssets(assetKey: string | null | undefined, context: { workId: string; spaceId: string; reason: string }) {
+async function cleanupWorkAssets(
+  assetKey: string | null | undefined,
+  context: {
+    workId: string;
+    spaceId: string;
+    slug: string;
+    reason: string;
+    publishJobId?: string;
+    deferUntilPublishTerminal?: boolean;
+  },
+) {
   if (!assetKey) return;
+  if (context.deferUntilPublishTerminal) {
+    const retryJob = await enqueueWorkAssetCleanup({
+      assetKeys: [assetKey],
+      scope: { env: config.env, spaceId: context.spaceId, slug: context.slug },
+      publishJobId: context.publishJobId,
+      reason: context.reason,
+    });
+    logger.error("[works] work asset cleanup deferred until publish job is terminal", {
+      ...context,
+      assetKey,
+      retryJobId: retryJob.id,
+    });
+    return;
+  }
   try {
-    await deleteWorkAssetsByObjectKey(assetKey);
+    await deleteWorkAssetKeys(
+      [assetKey],
+      { env: config.env, spaceId: context.spaceId, slug: context.slug },
+      deleteWorkAssetsByObjectKeys,
+    );
+    if (context.publishJobId) await markWorkAssetReservationCleaned(context.publishJobId);
   } catch (error) {
-    logger.warn("[works] failed to delete stale work asset", { ...context, assetKey, error });
+    let retryJob;
+    try {
+      retryJob = await enqueueWorkAssetCleanup({
+        assetKeys: [assetKey],
+        scope: { env: config.env, spaceId: context.spaceId, slug: context.slug },
+        publishJobId: context.publishJobId,
+        reason: context.reason,
+      });
+    } catch (queueError) {
+      logger.error("[works] failed to schedule durable work asset cleanup", {
+        ...context,
+        assetKey,
+        cleanupError: error,
+        queueError,
+      });
+      throw new AggregateError([error, queueError], "work asset cleanup and retry scheduling failed");
+    }
+    logger.error("[works] failed to delete stale work asset; durable retry scheduled", {
+      ...context,
+      assetKey,
+      retryJobId: retryJob.id,
+      error,
+    });
+    throw error;
   }
 }
 
@@ -369,15 +479,66 @@ router.post("/", async (c) => {
   const [existingWork] = await db.select().from(works).where(and(eq(works.spaceId, spaceId), eq(works.slug, slug))).limit(1);
   if (existingWork) return c.json({ message: "slug already exists" }, 409);
 
-  let assetKey: string | null = null;
+  let assetKey = status === "published" && (targetType === "file" || targetType === "directory")
+    ? createWorkAssetObjectKey(config.env, { spaceId, slug })
+    : null;
+  let publishJobId: string | null = null;
+  let reservation: Awaited<ReturnType<typeof startWorkAssetReservation>> | null = null;
+  let uploadMayHaveStarted = false;
+  let uploadJobTerminal = false;
+  if (assetKey) {
+    publishJobId = createWorkAssetPublishJobId(assetKey);
+    try {
+      reservation = await startWorkAssetReservation({ publishJobId, assetKey, spaceId, slug });
+      await scheduleWorkAssetCleanupWatchdog({
+        assetKey,
+        scope: createWorkAssetCleanupScope(config.env, { spaceId, slug }),
+        publishJobId,
+        reason: "create_upload_watchdog",
+      });
+      uploadMayHaveStarted = true;
+    } catch (error) {
+      if (reservation) await reservation.abandon();
+      logger.error("[works] failed to schedule work creation upload watchdog", { spaceId, slug, error });
+      return c.json({ message: "work asset cleanup queue unavailable" }, 502);
+    }
+  }
   try {
-    assetKey = await writeWorkAsset({ spaceId, slug, targetType, targetRef, status });
+    assetKey = await writeWorkAsset({ spaceId, slug, assetKey, publishJobId, targetType, targetRef, status });
+    uploadJobTerminal = true;
   } catch (error) {
+    const publishJobIsTerminal = uploadJobTerminal || error instanceof WorkAssetPublishError;
+    const cleanupAssetKey = selectWorkAssetCleanupKey(
+      uploadMayHaveStarted ? assetKey : null,
+      error instanceof WorkAssetPublishError ? error.result : null,
+    );
+    if (cleanupAssetKey) {
+      try {
+        if (reservation) await reservation.abandon();
+        await cleanupWorkAssets(cleanupAssetKey, {
+          workId: "new",
+          spaceId,
+          slug,
+          publishJobId: publishJobId ?? undefined,
+          deferUntilPublishTerminal: !publishJobIsTerminal,
+          reason: "create_upload_failed",
+        });
+      } catch (cleanupError) {
+        logger.error("[works] failed to clean up unsuccessful work creation upload", {
+          spaceId,
+          slug,
+          cleanupError,
+        });
+        return c.json({ message: "work asset cleanup failed", code: "work_asset_cleanup_failed" }, 502);
+      }
+    }
     return workAssetErrorResponse(c, error, { spaceId, targetType, targetRef });
   }
 
+  let work: typeof works.$inferSelect | null = null;
   try {
-    const work = await db.transaction(async (tx) => {
+    if (reservation) await reservation.assertHealthy();
+    work = await db.transaction(async (tx) => {
       const [createdWork] = await tx.insert(works).values({
         spaceId,
         userUuid: user.uuid,
@@ -405,20 +566,46 @@ router.post("/", async (c) => {
       }).returning();
       if (!version) throw new Error("failed to create work version");
       const [updatedWork] = await tx.update(works).set({ currentVersionId: version.id }).where(eq(works.id, createdWork.id)).returning();
+      if (publishJobId) {
+        const [committedReservation] = await tx
+          .update(workAssetReservations)
+          .set({ state: "committed", updatedAt: new Date() })
+          .where(and(
+            eq(workAssetReservations.publishJobId, publishJobId),
+            eq(workAssetReservations.state, "pending"),
+          ))
+          .returning({ publishJobId: workAssetReservations.publishJobId });
+        if (!committedReservation) throw new Error("failed to commit work asset reservation");
+      }
       return updatedWork ?? createdWork;
     }).catch((error: unknown) => {
       if (isWorkSlugConflict(error)) return null;
       throw error;
     });
-    if (!work) {
-      await cleanupWorkAssets(assetKey, { workId: "new", spaceId, reason: "create_slug_conflict" });
-      return c.json({ message: "slug already exists" }, 409);
-    }
-    return c.json({ work: serializeWork(work) }, 201);
   } catch (error) {
-    await cleanupWorkAssets(assetKey, { workId: "new", spaceId, reason: "create_failed" });
+    if (reservation) await reservation.abandon();
+    await cleanupWorkAssets(assetKey, {
+      workId: "new",
+      spaceId,
+      slug,
+      publishJobId: publishJobId ?? undefined,
+      reason: "create_failed",
+    });
     throw error;
   }
+  if (!work) {
+    if (reservation) await reservation.abandon();
+    await cleanupWorkAssets(assetKey, {
+      workId: "new",
+      spaceId,
+      slug,
+      publishJobId: publishJobId ?? undefined,
+      reason: "create_slug_conflict",
+    });
+    return c.json({ message: "slug already exists" }, 409);
+  }
+  if (reservation) await reservation.stop();
+  return c.json({ work: serializeWork(work) }, 201);
 });
 
 async function updateWork(
@@ -454,38 +641,67 @@ async function updateWork(
   if (nextStatus === "published" && current.status !== "published") {
     return c.json({ message: "publish a version to publish this work" }, 409);
   }
-  const nextVisibility = typeof body?.visibility === "string" ? body.visibility : (current.visibility ?? "public");
   const identityError = await ensureWorkPublicIdentity(c, current.spaceId);
   if (identityError) return identityError;
   const nextMeta = "meta" in (body ?? {}) ? getWorkMeta(body?.meta) : getWorkMeta(current.meta);
   const presentationError = await ensureWorkPresentationAllowed(c, { userId: actorUserId, meta: nextMeta });
   if (presentationError) return presentationError;
 
-  const assetKey = nextStatus === "published" ? current.assetKey : null;
-
   const now = new Date();
   const work = await db.transaction(async (tx) => {
+    const [lockedWork] = await tx
+      .select()
+      .from(works)
+      .where(eq(works.id, current.id))
+      .limit(1)
+      .for("update");
+    if (!lockedWork) return null;
+
+    const lockedNextSlug = typeof body?.slug === "string" ? body.slug.trim().toLowerCase() : lockedWork.slug;
+    if (!SLUG_RE.test(lockedNextSlug)) {
+      return c.json({ message: "slug must use lowercase letters, numbers, hyphens, or underscores" }, 400);
+    }
+    const lockedNextTargetType = typeof body?.targetType === "string" ? body.targetType : lockedWork.targetType;
+    let lockedNextTargetRef = typeof body?.targetRef === "string" ? body.targetRef.trim() : lockedWork.targetRef;
+    if (!TARGET_TYPES.has(lockedNextTargetType) || !lockedNextTargetRef) {
+      return c.json({ message: "target is invalid" }, 400);
+    }
+    if (lockedNextTargetType === "file" && !/\.html?$/i.test(lockedNextTargetRef)) {
+      return c.json({ message: "only HTML files can be published as work" }, 400);
+    }
+    if (lockedNextTargetType === "port") {
+      const portRef = normalizePortRef(lockedNextTargetRef);
+      if (!portRef) return c.json({ message: "port is invalid" }, 400);
+      lockedNextTargetRef = portRef;
+    }
+    const lockedNextStatus = typeof body?.status === "string" ? body.status : lockedWork.status;
+    if (lockedNextStatus === "published" && lockedWork.status !== "published") {
+      return c.json({ message: "publish a version to publish this work" }, 409);
+    }
+    const lockedNextVisibility = typeof body?.visibility === "string"
+      ? body.visibility
+      : (lockedWork.visibility ?? "public");
+    const versionState = getWorkUpdateVersionState(lockedWork, lockedNextStatus, now);
+
     const [updatedWork] = await tx.update(works).set({
-      slug: nextSlug,
-      status: nextStatus,
-      visibility: nextVisibility,
-      targetType: nextTargetType,
-      targetRef: nextTargetRef,
-      assetKey,
-      currentVersionId: current.currentVersionId,
-      latestVersion: current.latestVersion,
-      publishedAt: nextStatus === "published" ? (current.publishedAt ?? now) : null,
-      workScopes: "workScopes" in (body ?? {}) ? normalizeScopes(body?.workScopes, ALLOWED_WORK_SCOPES) : current.workScopes,
-      allowedViewerScopes: "allowedViewerScopes" in (body ?? {}) ? normalizeScopes(body?.allowedViewerScopes, ALLOWED_VIEWER_SCOPES) : current.allowedViewerScopes,
-      meta: nextMeta,
+      slug: lockedNextSlug,
+      status: lockedNextStatus,
+      visibility: lockedNextVisibility,
+      targetType: lockedNextTargetType,
+      targetRef: lockedNextTargetRef,
+      ...versionState,
+      workScopes: "workScopes" in (body ?? {}) ? normalizeScopes(body?.workScopes, ALLOWED_WORK_SCOPES) : lockedWork.workScopes,
+      allowedViewerScopes: "allowedViewerScopes" in (body ?? {}) ? normalizeScopes(body?.allowedViewerScopes, ALLOWED_VIEWER_SCOPES) : lockedWork.allowedViewerScopes,
+      meta: "meta" in (body ?? {}) ? nextMeta : lockedWork.meta,
       updatedAt: now,
-    }).where(eq(works.id, current.id)).returning();
+    }).where(eq(works.id, lockedWork.id)).returning();
     return updatedWork ?? null;
   }).catch((error: unknown) => {
     if (isWorkSlugConflict(error)) return null;
     throw error;
   });
-  if (!work) return c.json({ message: "slug already exists" }, 409);
+  if (work instanceof Response) return work;
+  if (!work) return c.json({ message: "work not found" }, 404);
   return c.json({ work: serializeWork(work) });
 }
 
@@ -493,31 +709,87 @@ async function publishWorkVersion(c: Context, current: typeof works.$inferSelect
   const identityError = await ensureWorkPublicIdentity(c, current.spaceId);
   if (identityError) return identityError;
   let assetKey: string | null = null;
+  let publishJobId: string | null = null;
+  let reservation: Awaited<ReturnType<typeof startWorkAssetReservation>> | null = null;
+  let cleanupScope = createWorkAssetCleanupScope(config.env, current);
+  let publishTarget = {
+    spaceId: current.spaceId,
+    slug: current.slug,
+    targetType: current.targetType,
+    targetRef: current.targetRef,
+  };
+  let uploadMayHaveStarted = false;
+  let uploadJobTerminal = false;
   try {
+    const preparedWork = await db.transaction(async (tx) => {
+      const [lockedWork] = await tx
+        .select()
+        .from(works)
+        .where(eq(works.id, current.id))
+        .limit(1)
+        .for("update");
+      if (!lockedWork) return null;
+      return lockedWork;
+    });
+    if (!preparedWork) return c.json({ message: "work not found" }, 404);
+
+    publishTarget = {
+      spaceId: preparedWork.spaceId,
+      slug: preparedWork.slug,
+      targetType: preparedWork.targetType,
+      targetRef: preparedWork.targetRef,
+    };
+    cleanupScope = createWorkAssetCleanupScope(config.env, preparedWork);
+    assetKey = preparedWork.targetType === "file" || preparedWork.targetType === "directory"
+      ? createWorkAssetObjectKey(config.env, preparedWork)
+      : null;
+    if (assetKey) {
+      publishJobId = createWorkAssetPublishJobId(assetKey);
+      reservation = await startWorkAssetReservation({
+        publishJobId,
+        assetKey,
+        spaceId: cleanupScope.spaceId,
+        slug: cleanupScope.slug,
+      });
+      await scheduleWorkAssetCleanupWatchdog({
+        assetKey,
+        scope: cleanupScope,
+        publishJobId,
+        reason: "publish_upload_watchdog",
+      });
+      uploadMayHaveStarted = true;
+    }
     assetKey = await writeWorkAsset({
-      spaceId: current.spaceId,
-      slug: current.slug,
-      targetType: current.targetType,
-      targetRef: current.targetRef,
+      ...publishTarget,
+      assetKey,
+      publishJobId,
       status: "published",
     });
-  } catch (error) {
-    return workAssetErrorResponse(c, error, { spaceId: current.spaceId, targetType: current.targetType, targetRef: current.targetRef });
-  }
+    uploadJobTerminal = true;
+    if (reservation) await reservation.assertHealthy();
 
-  try {
     const result = await db.transaction(async (tx) => {
+      const [lockedWork] = await tx
+        .select()
+        .from(works)
+        .where(eq(works.id, current.id))
+        .limit(1)
+        .for("update");
+      if (!lockedWork) throw new Error("work was deleted while its asset was publishing");
+      if (!hasSameWorkPublishTarget(publishTarget, lockedWork)) {
+        throw new Error("work target changed while its asset was publishing");
+      }
       const now = new Date();
       const [versionedWork] = await tx.update(works).set({
         latestVersion: sql`${works.latestVersion} + 1`,
         updatedAt: now,
-      }).where(eq(works.id, current.id)).returning({ latestVersion: works.latestVersion });
+      }).where(eq(works.id, lockedWork.id)).returning({ latestVersion: works.latestVersion });
       if (!versionedWork) throw new Error("failed to reserve work version");
       const [version] = await tx.insert(workVersions).values({
-        workId: current.id,
+        workId: lockedWork.id,
         version: versionedWork.latestVersion,
-        targetType: current.targetType,
-        targetRef: current.targetRef,
+        targetType: lockedWork.targetType,
+        targetRef: lockedWork.targetRef,
         assetKey,
         createdAt: now,
       }).returning();
@@ -527,18 +799,77 @@ async function publishWorkVersion(c: Context, current: typeof works.$inferSelect
         assetKey,
         currentVersionId: version.id,
         latestVersion: versionedWork.latestVersion,
-        publishedAt: current.publishedAt ?? now,
+        publishedAt: lockedWork.publishedAt ?? now,
         updatedAt: now,
-      }).where(eq(works.id, current.id)).returning();
+      }).where(eq(works.id, lockedWork.id)).returning();
       if (!work) throw new Error("failed to publish work version");
+      if (publishJobId) {
+        const [committedReservation] = await tx
+          .update(workAssetReservations)
+          .set({ state: "committed", updatedAt: new Date() })
+          .where(and(
+            eq(workAssetReservations.publishJobId, publishJobId),
+            eq(workAssetReservations.state, "pending"),
+          ))
+          .returning({ publishJobId: workAssetReservations.publishJobId });
+        if (!committedReservation) throw new Error("failed to commit work asset reservation");
+      }
       return { work, version };
     });
+    if (reservation) await reservation.stop();
     return c.json({ work: serializeWork(result.work), version: serializeWorkVersion(result.version) });
   } catch (error) {
-    try {
-      await cleanupWorkAssets(assetKey, { workId: current.id, spaceId: current.spaceId, reason: "publish_failed" });
-    } catch (cleanupError) {
-      logger.warn("[works] failed to run publish cleanup", { workId: current.id, spaceId: current.spaceId, cleanupError });
+    if (reservation) {
+      try {
+        await reservation.abandon();
+      } catch (reservationError) {
+        logger.error("[works] failed to abandon work version asset reservation", {
+          workId: current.id,
+          spaceId: cleanupScope.spaceId,
+          slug: cleanupScope.slug,
+          publishJobId,
+          error: reservationError,
+        });
+        return c.json({ message: "work asset cleanup failed", code: "work_asset_cleanup_failed" }, 502);
+      }
+    }
+    if (assetKey && !uploadMayHaveStarted) {
+      logger.error("[works] failed to schedule work publish upload watchdog", {
+        workId: current.id,
+        spaceId: cleanupScope.spaceId,
+        slug: cleanupScope.slug,
+        error,
+      });
+      return c.json({ message: "work asset cleanup queue unavailable" }, 502);
+    }
+    const publishJobIsTerminal = uploadJobTerminal || error instanceof WorkAssetPublishError;
+    const cleanupAssetKey = selectWorkAssetCleanupKey(
+      uploadMayHaveStarted ? assetKey : null,
+      error instanceof WorkAssetPublishError ? error.result : null,
+    );
+    if (cleanupAssetKey) {
+      try {
+        await cleanupWorkAssets(cleanupAssetKey, {
+          workId: current.id,
+          spaceId: cleanupScope.spaceId,
+          slug: cleanupScope.slug,
+          publishJobId: publishJobId ?? undefined,
+          deferUntilPublishTerminal: !publishJobIsTerminal,
+          reason: "publish_failed",
+        });
+      } catch (cleanupError) {
+        if (cleanupError instanceof WorkAssetCleanupError) {
+          return c.json({ message: "work asset cleanup failed", code: "work_asset_cleanup_failed" }, 502);
+        }
+        throw cleanupError;
+      }
+    }
+    if (error instanceof WorkAssetPublishError) {
+      return workAssetErrorResponse(c, error, {
+        spaceId: cleanupScope.spaceId,
+        targetType: publishTarget.targetType,
+        targetRef: publishTarget.targetRef,
+      });
     }
     throw error;
   }
@@ -580,6 +911,88 @@ router.post("/:id/versions", async (c) => {
   return publishWorkVersion(c, work);
 });
 
+router.post("/:id/purge-historical-assets", async (c) => {
+  const user = useAuth(c);
+  if (user instanceof Response) return user;
+  const id = c.req.param("id");
+  if (!requireValidId(id)) return c.json({ message: "work not found" }, 404);
+  const current = await getWorkById(id);
+  if (!current) return c.json({ message: "work not found" }, 404);
+  if (!(await hasPermission(user, "space.edit", { spaceId: current.spaceId }))) return authzDenied(c);
+
+  try {
+    const result = await db.transaction(async (tx) => {
+      const [lockedWork] = await tx
+        .select()
+        .from(works)
+        .where(eq(works.id, current.id))
+        .limit(1)
+        .for("update");
+      if (!lockedWork) return null;
+
+      const versions = await tx
+        .select({ id: workVersions.id, assetKey: workVersions.assetKey })
+        .from(workVersions)
+        .where(eq(workVersions.workId, lockedWork.id));
+      const scope = { env: config.env, spaceId: lockedWork.spaceId, slug: lockedWork.slug };
+      const historical = collectHistoricalWorkAssetKeys(versions, lockedWork.currentVersionId, scope);
+      if (historical.assetKeys.length > 0) {
+        const [versionConflict] = await tx
+          .select({ assetKey: workVersions.assetKey })
+          .from(workVersions)
+          .where(and(ne(workVersions.workId, lockedWork.id), inArray(workVersions.assetKey, historical.assetKeys)))
+          .limit(1);
+        const [workConflict] = await tx
+          .select({ assetKey: works.assetKey })
+          .from(works)
+          .where(and(ne(works.id, lockedWork.id), inArray(works.assetKey, historical.assetKeys)))
+          .limit(1);
+        const conflictingAssetKey = versionConflict?.assetKey ?? workConflict?.assetKey;
+        if (conflictingAssetKey) {
+          throw new WorkAssetCleanupError([
+            { assetKey: conflictingAssetKey, message: "work asset key is referenced by another work" },
+          ]);
+        }
+      }
+
+      if (historical.assetKeys.length > 0) {
+        await enqueueWorkAssetCleanup({
+          assetKeys: historical.assetKeys,
+          scope,
+          reason: "purge_historical_assets",
+          deferWhileReferenced: true,
+        });
+      }
+      if (historical.versionIds.length > 0) {
+        await tx
+          .update(workVersions)
+          .set({ assetKey: null })
+          .where(inArray(workVersions.id, historical.versionIds));
+      }
+      return { assetKeys: historical.assetKeys, scope, purgedVersions: historical.versionIds.length };
+    });
+    if (!result) return c.json({ message: "work not found" }, 404);
+    const cleanup = await deleteWorkAssetKeys(
+      result.assetKeys,
+      result.scope,
+      deleteWorkAssetsByObjectKeys,
+    );
+    return c.json({
+      ok: true,
+      purgedVersions: result.purgedVersions,
+      deletedAssets: cleanup.objects,
+    });
+  } catch (error) {
+    if (!(error instanceof WorkAssetCleanupError)) throw error;
+    logger.error("[works] failed to purge historical work assets", {
+      workId: current.id,
+      spaceId: current.spaceId,
+      failures: error.failures,
+    });
+    return c.json({ message: "work asset cleanup failed", code: "work_asset_cleanup_failed" }, 502);
+  }
+});
+
 router.delete("/:id", async (c) => {
   const user = useAuth(c);
   if (user instanceof Response) return user;
@@ -588,12 +1001,74 @@ router.delete("/:id", async (c) => {
   const work = await getWorkById(id);
   if (!work) return c.json({ message: "work not found" }, 404);
   if (!(await hasPermission(user, "space.edit", { spaceId: work.spaceId }))) return authzDenied(c);
-  await db.transaction(async (tx) => {
-    await tx.delete(workViewerGrants).where(eq(workViewerGrants.workId, work.id));
-    await tx.delete(workVersions).where(eq(workVersions.workId, work.id));
-    await tx.delete(works).where(eq(works.id, work.id));
-  });
-  return c.json({ ok: true });
+  try {
+    const result = await db.transaction(async (tx) => {
+      const [lockedWork] = await tx
+        .select()
+        .from(works)
+        .where(eq(works.id, work.id))
+        .limit(1)
+        .for("update");
+      if (!lockedWork) return null;
+
+      const versions = await tx
+        .select({ assetKey: workVersions.assetKey })
+        .from(workVersions)
+        .where(eq(workVersions.workId, lockedWork.id));
+      const scope = { env: config.env, spaceId: lockedWork.spaceId, slug: lockedWork.slug };
+      const assetKeys = collectWorkAssetKeys(
+        [lockedWork.assetKey, ...versions.map((version) => version.assetKey)],
+        scope,
+      );
+      if (assetKeys.length > 0) {
+        const [versionConflict] = await tx
+          .select({ assetKey: workVersions.assetKey })
+          .from(workVersions)
+          .where(and(ne(workVersions.workId, lockedWork.id), inArray(workVersions.assetKey, assetKeys)))
+          .limit(1);
+        const [workConflict] = await tx
+          .select({ assetKey: works.assetKey })
+          .from(works)
+          .where(and(ne(works.id, lockedWork.id), inArray(works.assetKey, assetKeys)))
+          .limit(1);
+        const conflictingAssetKey = versionConflict?.assetKey ?? workConflict?.assetKey;
+        if (conflictingAssetKey) {
+          throw new WorkAssetCleanupError([
+            { assetKey: conflictingAssetKey, message: "work asset key is referenced by another work" },
+          ]);
+        }
+      }
+      const detached = await detachWorkWithAssetCleanupScheduled({
+        assetKeys,
+        scope,
+        scheduleCleanup: async (cleanupAssetKeys) => {
+          await enqueueWorkAssetCleanup({
+            assetKeys: cleanupAssetKeys,
+            scope,
+            reason: "delete_work",
+            deferWhileReferenced: true,
+          });
+        },
+        deleteRecords: async () => {
+          await tx.delete(workViewerGrants).where(eq(workViewerGrants.workId, lockedWork.id));
+          await tx.delete(workVersions).where(eq(workVersions.workId, lockedWork.id));
+          await tx.delete(works).where(eq(works.id, lockedWork.id));
+        },
+      });
+      return { ...detached, scope };
+    });
+    if (!result) return c.json({ message: "work not found" }, 404);
+    await deleteWorkAssetKeys(result.assetKeys, result.scope, deleteWorkAssetsByObjectKeys);
+    return c.json({ ok: true });
+  } catch (error) {
+    if (!(error instanceof WorkAssetCleanupError)) throw error;
+    logger.error("[works] failed to delete work assets", {
+      workId: work.id,
+      spaceId: work.spaceId,
+      failures: error.failures,
+    });
+    return c.json({ message: "work asset cleanup failed", code: "work_asset_cleanup_failed" }, 502);
+  }
 });
 
 router.post("/:id/session", async (c) => {

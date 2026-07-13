@@ -2,6 +2,7 @@ export interface WorkerConfig {
   redisUrl: string;
   bullmqRedisUrl: string;
   databaseUrl: string;
+  internalApiBaseUrl: string;
   giteaBaseUrl: string;
   giteaToken?: string;
   giteaOrg: string;
@@ -56,6 +57,7 @@ export const config: WorkerConfig = {
   redisUrl: process.env.REDIS_URL ?? "",
   bullmqRedisUrl: process.env.BULLMQ_REDIS_URL ?? "",
   databaseUrl: process.env.DATABASE_URL ?? "",
+  internalApiBaseUrl: (process.env.INTERNAL_API_BASE_URL ?? "").replace(/\/+$/, ""),
   giteaBaseUrl: process.env.GITEA_BASE_URL ?? "",
   giteaToken: process.env.GITEA_TOKEN,
   giteaOrg: process.env.GITEA_ORG ?? "cohub-spaces",
@@ -96,6 +98,7 @@ export const assertRequiredConfig = () => {
   assertRedisUrl(config.redisUrl, "REDIS_URL");
   assertRedisUrl(config.bullmqRedisUrl, "BULLMQ_REDIS_URL");
   if (!config.databaseUrl) throw new Error("Missing required env: DATABASE_URL");
+  if (!config.internalApiBaseUrl) throw new Error("Missing required env: INTERNAL_API_BASE_URL");
   if (!config.giteaBaseUrl) throw new Error("Missing required env: GITEA_BASE_URL");
   if (!config.workerSecret) throw new Error("Missing required env: WORKER_SECRET");
   if (!config.appEncryptionKey) throw new Error("Missing required env: APP_ENCRYPTION_KEY");

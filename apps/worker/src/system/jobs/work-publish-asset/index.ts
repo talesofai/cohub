@@ -3,10 +3,15 @@ import { constants } from "node:fs";
 import { lstat, open, readdir, realpath } from "node:fs/promises";
 import { basename, extname, isAbsolute, relative, resolve } from "node:path";
 import { PutObjectCommand, S3Client } from "@aws-sdk/client-s3";
+import { NodeHttpHandler } from "@smithy/node-http-handler";
 import type { Job } from "bullmq";
 import { config } from "../../../config.js";
 import { registerSystemJob } from "../../registry.js";
 import { WORK_PUBLISH_ASSET_JOB, type WorkPublishAssetJobData, type WorkPublishAssetJobResult } from "./types.js";
+import { resolveWorkAssetObjectKey, usesReservedWorkAssetProtocol } from "./asset-key.js";
+import { WorkAssetUploadError, withWorkAssetUploadCleanupKey } from "./upload-failure.js";
+import { WORK_ASSET_S3_REQUEST_HANDLER_OPTIONS } from "./request-timeout.js";
+import { startWorkAssetWriterLease } from "./writer-lease.js";
 
 const MAX_WORK_ASSET_BYTES = 5 * 1024 * 1024;
 const MAX_WORK_SITE_BYTES = 100 * 1024 * 1024;
@@ -92,6 +97,11 @@ type WorkSiteFile = {
   mimeType: string | null;
 };
 
+type WorkAssetWriterLease = {
+  assertHealthy: () => void;
+  release?: () => Promise<void>;
+};
+
 let s3Client: S3Client | null = null;
 
 function getStorage() {
@@ -124,6 +134,8 @@ function getS3Client() {
     endpoint: storage.endpoint,
     region: storage.region,
     forcePathStyle: false,
+    maxAttempts: 1,
+    requestHandler: new NodeHttpHandler(WORK_ASSET_S3_REQUEST_HANDLER_OPTIONS),
     credentials: {
       accessKeyId: storage.accessKeyId,
       secretAccessKey: storage.secretAccessKey,
@@ -132,10 +144,22 @@ function getS3Client() {
   return s3Client;
 }
 
-const cacheBuster = () => randomUUID().replaceAll("-", "").slice(0, 12);
 const envPrefix = () => (config.env === "prod" ? "" : `${config.env}/`);
-const buildWorkAssetPrefix = (input: { spaceId: string; workSlug: string }) => `${envPrefix()}w/${input.spaceId}/${input.workSlug}/${cacheBuster()}`;
-const buildWorkAssetObjectKey = (input: { spaceId: string; workSlug: string }) => `${buildWorkAssetPrefix(input)}/index.html`;
+const WORK_ASSET_VERSION_RE = /^[a-f0-9]{12}$/;
+const buildLegacyWorkAssetObjectKey = (input: { spaceId: string; workSlug: string }) =>
+  `${envPrefix()}w/${input.spaceId}/${input.workSlug}/${randomUUID().replaceAll("-", "").slice(0, 12)}/index.html`;
+
+function requireWorkAssetObjectKey(input: { spaceId: string; workSlug: string; assetKey: string }) {
+  const expectedPrefix = `${envPrefix()}w/${input.spaceId}/${input.workSlug}/`;
+  if (!input.assetKey.startsWith(expectedPrefix) || !input.assetKey.endsWith("/index.html")) {
+    throw new WorkPublishAssetError(400, "invalid work asset key", "asset_key_invalid");
+  }
+  const versionSegment = input.assetKey.slice(expectedPrefix.length, -"/index.html".length);
+  if (!WORK_ASSET_VERSION_RE.test(versionSegment)) {
+    throw new WorkPublishAssetError(400, "invalid work asset key", "asset_key_invalid");
+  }
+  return input.assetKey;
+}
 
 function getMimeType(path: string) {
   const lower = basename(path).toLowerCase();
@@ -268,10 +292,21 @@ async function mapWithConcurrency<T>(items: T[], concurrency: number, mapper: (i
       await mapper(items[index] as T);
     }
   });
-  await Promise.all(workers);
+  const results = await Promise.allSettled(workers);
+  const failures = results
+    .filter((result): result is PromiseRejectedResult => result.status === "rejected")
+    .map((result) => result.reason);
+  if (failures.length > 0) throw new AggregateError(failures, "work asset upload failed");
 }
 
-async function putWorkAssetObject(input: { objectKey: string; body: Buffer | string; contentType: string; sha256: string }) {
+async function putWorkAssetObject(input: {
+  objectKey: string;
+  body: Buffer | string;
+  contentType: string;
+  sha256: string;
+  writerLease: WorkAssetWriterLease;
+}) {
+  input.writerLease.assertHealthy();
   await getS3Client().send(new PutObjectCommand({
     Bucket: requireStorage().bucket,
     Key: input.objectKey,
@@ -282,20 +317,35 @@ async function putWorkAssetObject(input: { objectKey: string; body: Buffer | str
   }));
 }
 
-async function writeWorkHtmlAsset(input: { spaceId: string; workSlug: string; html: string }) {
+async function writeWorkHtmlAsset(input: {
+  spaceId: string;
+  workSlug: string;
+  assetKey: string;
+  html: string;
+  writerLease: WorkAssetWriterLease;
+}) {
   const sizeBytes = Buffer.byteLength(input.html, "utf8");
   if (sizeBytes <= 0 || sizeBytes > MAX_WORK_ASSET_BYTES) throw new WorkPublishAssetError(400, "work asset must be 1 byte to 5MB");
-  const objectKey = buildWorkAssetObjectKey({ spaceId: input.spaceId, workSlug: input.workSlug });
-  await putWorkAssetObject({
-    objectKey,
-    body: input.html,
-    contentType: "text/html; charset=utf-8",
-    sha256: createHash("sha256").update(input.html).digest("hex"),
-  });
+  const objectKey = requireWorkAssetObjectKey(input);
+  await withWorkAssetUploadCleanupKey(objectKey, () =>
+    putWorkAssetObject({
+      objectKey,
+      body: input.html,
+      contentType: "text/html; charset=utf-8",
+      sha256: createHash("sha256").update(input.html).digest("hex"),
+      writerLease: input.writerLease,
+    }),
+  );
   return { assetKey: objectKey, sizeBytes };
 }
 
-async function writeWorkSiteAssets(input: { spaceId: string; workSlug: string; files: WorkSiteFile[] }) {
+async function writeWorkSiteAssets(input: {
+  spaceId: string;
+  workSlug: string;
+  assetKey: string;
+  files: WorkSiteFile[];
+  writerLease: WorkAssetWriterLease;
+}) {
   if (input.files.length <= 0 || input.files.length > MAX_WORK_SITE_FILES) {
     throw new WorkPublishAssetError(400, `work site must contain 1 to ${MAX_WORK_SITE_FILES} files`);
   }
@@ -305,46 +355,73 @@ async function writeWorkSiteAssets(input: { spaceId: string; workSlug: string; f
   const totalBytes = input.files.reduce((sum, file) => sum + file.content.byteLength, 0);
   if (totalBytes <= 0 || totalBytes > MAX_WORK_SITE_BYTES) throw new WorkPublishAssetError(400, "work site must be 1 byte to 100MB");
 
-  const prefix = buildWorkAssetPrefix({ spaceId: input.spaceId, workSlug: input.workSlug });
-  await mapWithConcurrency(input.files, WORK_SITE_UPLOAD_CONCURRENCY, async (file) => {
-    const objectKey = `${prefix}/${file.relativePath}`;
-    await putWorkAssetObject({
-      objectKey,
-      body: file.content,
-      contentType: file.mimeType ?? "application/octet-stream",
-      sha256: createHash("sha256").update(file.content).digest("hex"),
-    });
-  });
+  const assetKey = requireWorkAssetObjectKey(input);
+  const prefix = assetKey.slice(0, -"/index.html".length);
+  await withWorkAssetUploadCleanupKey(assetKey, () =>
+    mapWithConcurrency(input.files, WORK_SITE_UPLOAD_CONCURRENCY, async (file) => {
+      const objectKey = `${prefix}/${file.relativePath}`;
+      await putWorkAssetObject({
+        objectKey,
+        body: file.content,
+        contentType: file.mimeType ?? "application/octet-stream",
+        sha256: createHash("sha256").update(file.content).digest("hex"),
+        writerLease: input.writerLease,
+      });
+    }),
+  );
 
   return {
-    assetKey: `${prefix}/index.html`,
+    assetKey,
     sizeBytes: totalBytes,
     fileCount: input.files.length,
   };
 }
 
-async function processWorkPublishAsset(job: Job<WorkPublishAssetJobData>): Promise<WorkPublishAssetJobResult> {
-  const { spaceId, slug, targetType, targetRef } = job.data;
+async function processWorkPublishAsset(
+  job: Job<WorkPublishAssetJobData>,
+  writerLease: WorkAssetWriterLease,
+): Promise<WorkPublishAssetJobResult> {
+  const { spaceId, slug, assetKey, targetType, targetRef } = job.data;
+  const resolvedAssetKey = resolveWorkAssetObjectKey(assetKey, () =>
+    buildLegacyWorkAssetObjectKey({ spaceId, workSlug: slug }));
   if (targetType === "file") {
     const html = await readWorkHtmlFile(spaceId, targetRef);
-    const written = await writeWorkHtmlAsset({ spaceId, workSlug: slug, html });
+    const written = await writeWorkHtmlAsset({ spaceId, workSlug: slug, assetKey: resolvedAssetKey, html, writerLease });
     return { ok: true, ...written };
   }
   if (targetType === "directory") {
     const result = await readWorkDirectoryFiles(spaceId, targetRef);
-    const written = await writeWorkSiteAssets({ spaceId, workSlug: slug, files: result.files });
+    const written = await writeWorkSiteAssets({ spaceId, workSlug: slug, assetKey: resolvedAssetKey, files: result.files, writerLease });
     return { ok: true, ...written };
   }
   throw new WorkPublishAssetError(400, "target is invalid");
 }
 
 registerSystemJob(WORK_PUBLISH_ASSET_JOB, async (job: Job<WorkPublishAssetJobData>) => {
+  const reservedProtocol = usesReservedWorkAssetProtocol(job.data.assetKey);
+  if (reservedProtocol && !job.id) throw new Error("work asset publish job id is missing");
+  const writerLease: WorkAssetWriterLease = reservedProtocol
+    ? await startWorkAssetWriterLease(job.id as string)
+    : { assertHealthy() {} };
   try {
-    return await processWorkPublishAsset(job);
-  } catch (error) {
-    if (error instanceof WorkPublishAssetError) {
-      return { ok: false, status: error.status, message: error.message, code: error.code };
+    try {
+      return await processWorkPublishAsset(job, writerLease);
+    } catch (error) {
+      if (error instanceof WorkAssetUploadError) {
+        return {
+          ok: false,
+          status: 502,
+          message: error.message,
+          code: "work_asset_storage_failed",
+          cleanupAssetKey: error.cleanupAssetKey,
+        };
+      }
+      if (error instanceof WorkPublishAssetError) {
+        return { ok: false, status: error.status, message: error.message, code: error.code };
+      }
+      throw error;
     }
-    throw error;
+  } finally {
+    await writerLease.release?.();
   }
 });

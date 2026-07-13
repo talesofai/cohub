@@ -9,6 +9,7 @@ export const WORK_PUBLISH_ASSET_JOB = "work.publish_asset";
 export type WorkPublishAssetJobData = {
   spaceId: string;
   slug: string;
+  assetKey: string;
   targetType: "file" | "directory";
   targetRef: string;
   requestId?: string | null;
@@ -25,6 +26,7 @@ export type WorkPublishAssetJobResult = {
   status: number;
   message: string;
   code?: string;
+  cleanupAssetKey?: string;
 };
 
 const workPublishAssetQueue = createBullmqQueue<WorkPublishAssetJobData, WorkPublishAssetJobResult>(COHUB_SYSTEM_QUEUE, {
@@ -36,13 +38,16 @@ const workPublishAssetQueueEvents = new QueueEvents(COHUB_SYSTEM_QUEUE, {
   connection: createBullmqConnectionOptions(config.bullmqRedisUrl),
 });
 
-export async function publishWorkAssetInWorker(input: Omit<WorkPublishAssetJobData, "requestId" | "trace">) {
+export async function publishWorkAssetInWorker(
+  input: Omit<WorkPublishAssetJobData, "requestId" | "trace">,
+  options: { jobId: string },
+) {
   const job = await workPublishAssetQueue.add(WORK_PUBLISH_ASSET_JOB, {
     ...input,
     requestId: getCurrentRequestId() ?? null,
     trace: injectTrace(),
   }, {
-    jobId: `work-publish-asset-${input.spaceId}-${input.slug}-${Date.now()}`,
+    jobId: options.jobId,
     attempts: 1,
     ...defaultJobRetention,
   });

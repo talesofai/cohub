@@ -142,6 +142,37 @@ jobs:
           mkdir -p ~/.kube
           echo "${{ secrets.KUBECONFIG_DEV }}" | base64 -d > ~/.kube/config
 
+      - name: Wait for compatible system Worker when required
+        run: |
+          BASE_SHA="${{ github.event.before }}"
+          HEAD_SHA="${{ github.sha }}"
+          if [ -z "$BASE_SHA" ] || [ "$BASE_SHA" = "0000000000000000000000000000000000000000" ]; then
+            BASE_SHA="HEAD~1"
+          fi
+          CHANGED=$(git diff --name-only "$BASE_SHA" "$HEAD_SHA" -- \
+            'apps/worker/src/system/jobs/work-publish-asset/**' \
+            'apps/worker/src/system/jobs/work-asset-cleanup/**' \
+            'apps/worker/src/config.ts' \
+            'packages/infra/src/bullmq/index.ts' 2>/dev/null || true)
+          if [ -z "$CHANGED" ]; then
+            echo "No Worker protocol change in this push"
+            exit 0
+          fi
+
+          EXPECTED=${{ env.REGISTRY }}/${{ env.NAMESPACE }}/cohub-worker:${{ env.IMAGE_TAG }}
+          for attempt in $(seq 1 180); do
+            ACTUAL=$(kubectl get deployment/cohub-system-worker-dev -n cohub-dev \
+              -o jsonpath='{.spec.template.spec.containers[?(@.name=="system-worker")].image}')
+            if [ "$ACTUAL" = "$EXPECTED" ]; then
+              kubectl rollout status deployment/cohub-system-worker-dev -n cohub-dev --timeout=300s
+              exit 0
+            fi
+            echo "Waiting for compatible system Worker image: expected=$EXPECTED actual=$ACTUAL"
+            sleep 10
+          done
+          echo "Compatible system Worker did not deploy before API timeout"
+          exit 1
+
       - name: Run migration if needed
         run: |
           BASE_SHA="${{ github.event.before }}"
@@ -232,6 +263,8 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
 
       - name: Setup kubectl
         uses: azure/setup-kubectl@v3
@@ -242,6 +275,22 @@ jobs:
         run: |
           mkdir -p ~/.kube
           echo "${{ secrets.KUBECONFIG_PROD }}" | base64 -d > ~/.kube/config
+
+      - name: Wait for compatible system Worker
+        run: |
+          EXPECTED=${{ env.REGISTRY }}/${{ env.NAMESPACE }}/cohub-worker:${{ github.ref_name }}
+          for attempt in $(seq 1 180); do
+            ACTUAL=$(kubectl get deployment/cohub-system-worker -n cohub \
+              -o jsonpath='{.spec.template.spec.containers[?(@.name=="system-worker")].image}')
+            if [ "$ACTUAL" = "$EXPECTED" ]; then
+              kubectl rollout status deployment/cohub-system-worker -n cohub --timeout=300s
+              exit 0
+            fi
+            echo "Waiting for compatible system Worker image: expected=$EXPECTED actual=$ACTUAL"
+            sleep 10
+          done
+          echo "Compatible system Worker did not deploy before API timeout"
+          exit 1
 
       - name: Get tag
         id: get-tag

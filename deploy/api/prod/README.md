@@ -34,7 +34,10 @@ vim secrets.yaml
 - `WORKER_SECRET` - Worker 通信密钥
 - `TURN_OBJECT_S3_ACCESS_KEY_ID` / `TURN_OBJECT_S3_SECRET_ACCESS_KEY` - Turn 中间消息 OSS 写入凭证
 - `PUBLIC_ASSET_OSS_ACCESS_KEY_ID` / `PUBLIC_ASSET_OSS_SECRET_ACCESS_KEY` - 公开资产 OSS 写入凭证（用于用户 / Space 头像上传）
+- `WORK_ASSET_CDN_CLOUDFLARE_ZONE_ID` / `WORK_ASSET_CDN_CLOUDFLARE_API_TOKEN` - Work 资产删除后的 Cloudflare Prefix Purge 凭证
 - `LOGTO_M2M_APP_ID` / `LOGTO_M2M_APP_SECRET` - Logto M2M 应用凭证
+
+涉及 Work 资产预留协议的版本必须先完成 Worker 全量发布，再发布 API。新版 Worker 兼容旧版 API 的发布任务，反向顺序不兼容。
 
 可选字段：
 - `TALESOFAI_BILLING_BASE_URL` / `TALESOFAI_BILLING_BUSINESS_KEY` / `TALESOFAI_BILLING_ADMIN_API_KEY` - Talesofai Billing 插件配置，三项全部非空时启用；任意一项留空时禁用。Prod billing 地址通常是 `https://billing.neta.art/v1`。

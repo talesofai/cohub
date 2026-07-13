@@ -302,6 +302,32 @@ export const workVersions = v2.table(
   }),
 );
 
+export const workAssetReservations = v2.table(
+  "work_asset_reservations",
+  {
+    publishJobId: varchar("publish_job_id", { length: 160 }).primaryKey(),
+    assetKey: text("asset_key").notNull(),
+    spaceId: uuid("space_id").notNull(),
+    slug: varchar("slug", { length: 80 }).notNull(),
+    state: varchar("state", { length: 20 }).notNull().default("pending"),
+    leaseExpiresAt: timestamp("lease_expires_at", { withTimezone: true }).notNull(),
+    claimant: varchar("claimant", { length: 160 }),
+    writerId: varchar("writer_id", { length: 160 }),
+    writerLeaseExpiresAt: timestamp("writer_lease_expires_at", { withTimezone: true }),
+    createdAt: timestamp("created_at", { withTimezone: true }).defaultNow(),
+    updatedAt: timestamp("updated_at", { withTimezone: true }).defaultNow(),
+  },
+  (table) => ({
+    assetKeyUniqueIdx: uniqueIndex("v2_uq_work_asset_reservations_asset_key").on(table.assetKey),
+    stateLeaseIdx: index("v2_idx_work_asset_reservations_state_lease").on(table.state, table.leaseExpiresAt),
+    writerLeaseIdx: index("v2_idx_work_asset_reservations_writer_lease").on(table.writerLeaseExpiresAt),
+    stateCheck: check(
+      "v2_chk_work_asset_reservations_state",
+      sql`${table.state} in ('pending', 'committed', 'abandoned', 'claimed', 'cleaned')`,
+    ),
+  }),
+);
+
 export const workViewerGrants = v2.table(
   "work_viewer_grants",
   {
