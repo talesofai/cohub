@@ -44,9 +44,9 @@ const billingUsageGate = createBillingUsageGate({
   },
 });
 
-const MAX_MESSAGES = 200;
 const MAX_SYSTEM_PROMPT_CHARS = 500_000;
-const ALLOWED_SYSTEM_PROMPT_EXTENSIONS = new Set([".md", ".markdown", ".txt", ".prompt"]);
+const ALLOWED_SYSTEM_PROMPT_EXTENSIONS = [".md", ".markdown", ".txt", ".prompt"] as const;
+const ALLOWED_SYSTEM_PROMPT_EXTENSION_SET = new Set<string>(ALLOWED_SYSTEM_PROMPT_EXTENSIONS);
 
 const contentBlockSchema = z.object({
   type: z.string().min(1),
@@ -61,7 +61,9 @@ const createCompletionSchema = z.object({
   provider: z.string().trim().min(1).nullish(),
   model: z.string().trim().min(1).nullish(),
   systemPromptPath: z.string().trim().nullish(),
-  messages: z.array(completionMessageSchema).min(1).max(MAX_MESSAGES),
+  // No hard cap on message count: long adventure / chat histories are expected.
+  // Callers and the upstream model context window remain the real limits.
+  messages: z.array(completionMessageSchema).min(1),
   temperature: z.number().finite().nullish(),
   maxTokens: z.number().finite().positive().nullish(),
   thinkingLevel: z.enum(["off", "minimal", "low", "medium", "high", "xhigh"]).nullish(),
@@ -70,15 +72,91 @@ const createCompletionSchema = z.object({
 
 type ErrorStatus = 400 | 401 | 402 | 403 | 404 | 413 | 500 | 502 | 503;
 
-function completionError(c: Parameters<typeof useAuth>[0], status: ErrorStatus, code: string, message: string, details?: unknown) {
+type ZodIssueDetail = {
+  path: string;
+  message: string;
+  code: string;
+};
+
+class CompletionRequestError extends Error {
+  readonly status: ErrorStatus;
+  readonly code: string;
+  readonly details?: unknown;
+
+  constructor(status: ErrorStatus, code: string, message: string, details?: unknown) {
+    super(message);
+    this.name = "CompletionRequestError";
+    this.status = status;
+    this.code = code;
+    this.details = details;
+  }
+}
+
+function completionError(
+  c: Parameters<typeof useAuth>[0],
+  status: ErrorStatus,
+  code: string,
+  message: string,
+  details?: unknown,
+) {
   return c.json({ error: { code, message, ...(details === undefined ? {} : { details }) }, message }, status);
 }
 
-function zodDetails(error: z.ZodError) {
+function formatIssueList(items: string[], limit = 3): string {
+  if (items.length === 0) return "";
+  const shown = items.slice(0, limit);
+  const more = items.length > limit ? ` (+${items.length - limit} more)` : "";
+  return `${shown.join("; ")}${more}`;
+}
+
+function zodDetails(error: z.ZodError): ZodIssueDetail[] {
   return error.issues.map((issue) => ({
     path: issue.path.map(String).join("."),
     message: issue.message,
+    code: issue.code,
   }));
+}
+
+function formatZodMessage(details: ZodIssueDetail[]): string {
+  if (details.length === 0) return "Invalid request.";
+  return formatIssueList(
+    details.map((detail) => (detail.path ? `${detail.path}: ${detail.message}` : detail.message)),
+  );
+}
+
+function summarizeMessagesShape(raw: unknown): {
+  messageCount: number | null;
+  emptyContentCount: number | null;
+  invalidRoleCount: number | null;
+} {
+  if (!raw || typeof raw !== "object" || Array.isArray(raw)) {
+    return { messageCount: null, emptyContentCount: null, invalidRoleCount: null };
+  }
+  const messages = (raw as { messages?: unknown }).messages;
+  if (!Array.isArray(messages)) {
+    return { messageCount: null, emptyContentCount: null, invalidRoleCount: null };
+  }
+  let emptyContentCount = 0;
+  let invalidRoleCount = 0;
+  for (const message of messages) {
+    if (!message || typeof message !== "object" || Array.isArray(message)) {
+      invalidRoleCount += 1;
+      continue;
+    }
+    const role = (message as { role?: unknown }).role;
+    if (role !== "user" && role !== "assistant" && role !== "system") {
+      invalidRoleCount += 1;
+    }
+    const content = (message as { content?: unknown }).content;
+    if (!Array.isArray(content) || content.length === 0) {
+      emptyContentCount += 1;
+    }
+  }
+  return {
+    messageCount: messages.length,
+    emptyContentCount,
+    invalidRoleCount,
+  };
 }
 
 function isContentBlock(value: unknown): value is ContentBlock {
@@ -96,22 +174,81 @@ async function loadSystemPrompt(spaceId: string, systemPromptPath: string | null
   const path = systemPromptPath?.trim() || null;
   if (!path) return { path: null, text: "" };
 
-  const ext = extname(path).toLowerCase();
-  if (ext && !ALLOWED_SYSTEM_PROMPT_EXTENSIONS.has(ext)) {
-    throw new SpaceFsError(400, "system_prompt_invalid", "System prompt path must be a markdown or text file.");
+  const extension = extname(path).toLowerCase();
+  if (extension && !ALLOWED_SYSTEM_PROMPT_EXTENSION_SET.has(extension)) {
+    throw new CompletionRequestError(
+      400,
+      "system_prompt_invalid",
+      `System prompt must be ${ALLOWED_SYSTEM_PROMPT_EXTENSIONS.join("/")} (got ${extension}).`,
+      {
+        path,
+        extension,
+        allowedExtensions: [...ALLOWED_SYSTEM_PROMPT_EXTENSIONS],
+      },
+    );
   }
 
-  const file = await readSpaceFile(spaceId, path, { visibility: "full" });
-  if (!("content" in file) || typeof file.content !== "string") {
-    throw new SpaceFsError(503, "system_prompt_preparing", "System prompt file is not ready yet.");
+  try {
+    const file = await readSpaceFile(spaceId, path, { visibility: "full" });
+    if (!("content" in file) || typeof file.content !== "string") {
+      throw new CompletionRequestError(
+        503,
+        "system_prompt_preparing",
+        `System prompt not ready: ${path}`,
+        { path },
+      );
+    }
+    if (file.delivery === "url" || file.kind === "binary") {
+      throw new CompletionRequestError(
+        400,
+        "system_prompt_unsupported",
+        `System prompt is binary or too large for inline load: ${path}`,
+        {
+          path,
+          kind: file.kind,
+          delivery: file.delivery,
+        },
+      );
+    }
+    if (file.content.length > MAX_SYSTEM_PROMPT_CHARS) {
+      throw new CompletionRequestError(
+        413,
+        "system_prompt_too_large",
+        `System prompt exceeds ${MAX_SYSTEM_PROMPT_CHARS} characters (${file.content.length}).`,
+        {
+          path,
+          charCount: file.content.length,
+          maxChars: MAX_SYSTEM_PROMPT_CHARS,
+        },
+      );
+    }
+    return { path, text: file.content };
+  } catch (error) {
+    if (error instanceof CompletionRequestError) throw error;
+    if (error instanceof SpaceFsError) {
+      if (error.code === "path_not_found" || error.status === 404) {
+        throw new CompletionRequestError(
+          404,
+          "system_prompt_not_found",
+          `System prompt not found: ${path}`,
+          { path, causeCode: error.code },
+        );
+      }
+      throw new CompletionRequestError(
+        error.status as ErrorStatus,
+        error.code.startsWith("system_prompt_") ? error.code : `system_prompt_${error.code}`,
+        `System prompt load failed (${path}): ${error.message}`,
+        { path, causeCode: error.code },
+      );
+    }
+    const { status, body: errBody } = spaceFsJsonError(error);
+    throw new CompletionRequestError(
+      status as ErrorStatus,
+      errBody.code.startsWith("system_prompt_") ? errBody.code : `system_prompt_${errBody.code}`,
+      `System prompt load failed (${path}): ${errBody.message}`,
+      { path, causeCode: errBody.code },
+    );
   }
-  if (file.delivery === "url" || file.kind === "binary") {
-    throw new SpaceFsError(400, "system_prompt_unsupported", "System prompt file is too large or binary.");
-  }
-  if (file.content.length > MAX_SYSTEM_PROMPT_CHARS) {
-    throw new SpaceFsError(413, "system_prompt_too_large", `System prompt exceeds ${MAX_SYSTEM_PROMPT_CHARS} characters.`);
-  }
-  return { path, text: file.content };
 }
 
 async function recordCompletionBilling(input: {
@@ -179,16 +316,52 @@ router.post("/", async (c) => {
   const space = await getSpaceById(spaceId);
   if (!space) return completionError(c, 404, "space_not_found", "Space not found.");
 
-  const rawBody = await c.req.json().catch(() => null);
+  let rawBody: unknown;
+  try {
+    rawBody = await c.req.json();
+  } catch {
+    return completionError(
+      c,
+      400,
+      "invalid_completion_request",
+      "Body must be valid JSON.",
+      { reason: "invalid_json" },
+    );
+  }
+
   const parsed = createCompletionSchema.safeParse(rawBody);
   if (!parsed.success) {
-    return completionError(c, 400, "invalid_completion_request", "Invalid completion request.", zodDetails(parsed.error));
+    const details = zodDetails(parsed.error);
+    const shape = summarizeMessagesShape(rawBody);
+    return completionError(
+      c,
+      400,
+      "invalid_completion_request",
+      formatZodMessage(details),
+      {
+        issues: details,
+        messageCount: shape.messageCount,
+        emptyContentCount: shape.emptyContentCount,
+        invalidRoleCount: shape.invalidRoleCount,
+      },
+    );
   }
 
   const body = parsed.data as CreateSpaceCompletionInput;
+  const rawMessageCount = parsed.data.messages.length;
   const messages = normalizeMessages(parsed.data.messages);
   if (messages.length === 0) {
-    return completionError(c, 400, "messages_required", "messages must contain at least one valid content block.");
+    return completionError(
+      c,
+      400,
+      "messages_required",
+      `No valid message content blocks (received ${rawMessageCount}).`,
+      {
+        messageCount: rawMessageCount,
+        normalizedMessageCount: 0,
+        reason: "no_valid_content_blocks",
+      },
+    );
   }
 
   const stream = Boolean(body.stream);
@@ -202,17 +375,10 @@ router.post("/", async (c) => {
     systemPromptPath = loaded.path;
     systemPrompt = loaded.text;
   } catch (error) {
-    if (error instanceof SpaceFsError) {
-      const mappedCode = error.code === "path_not_found" || error.status === 404
-        ? "system_prompt_not_found"
-        : error.code;
-      const mappedMessage = mappedCode === "system_prompt_not_found"
-        ? "System prompt file not found."
-        : error.message;
-      return completionError(c, error.status as ErrorStatus, mappedCode, mappedMessage);
+    if (error instanceof CompletionRequestError) {
+      return completionError(c, error.status, error.code, error.message, error.details);
     }
-    const { status, body: errBody } = spaceFsJsonError(error);
-    return completionError(c, status as ErrorStatus, errBody.code, errBody.message);
+    throw error;
   }
 
   const resolved = await resolveCompletionModel({
@@ -224,15 +390,26 @@ router.post("/", async (c) => {
     return null;
   });
   if (!resolved) {
-    return completionError(c, 502, "models_unavailable", "Failed to load models catalog.");
+    return completionError(c, 502, "models_unavailable", "Models catalog unavailable.");
   }
   if (!resolved.model) {
-    return completionError(c, 404, "model_not_found", resolved.error ?? "Model not found.");
+    const requested = [body.provider, body.model].filter(Boolean).join("/") || "default";
+    return completionError(
+      c,
+      404,
+      "model_not_found",
+      resolved.error ?? `Model not found: ${requested}`,
+      {
+        provider: body.provider ?? null,
+        model: body.model ?? null,
+      },
+    );
   }
 
   const model = resolved.model;
   const registry = resolved.registry;
 
+  // Pre-check balance before spending tokens. Fail-open if credit lookup errors.
   const decision = await billingUsageGate.evaluate({
     userId: user.uuid,
     usageKind: "llm.raw_completion",
