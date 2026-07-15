@@ -42,6 +42,10 @@
       "types": "./dist/generation/index.d.ts",
       "default": "./dist/generation/index.js"
     },
+    "./billing": {
+      "types": "./dist/billing.d.ts",
+      "default": "./dist/billing.js"
+    },
     "./platform/default-space-mods": {
       "types": "./dist/platform/default-space-mods.d.ts",
       "default": "./dist/platform/default-space-mods.js"

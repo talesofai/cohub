@@ -17,6 +17,7 @@
     "db:migrate": "tsx src/db/migrate.ts",
     "db:migrate:channel-credentials": "tsx src/db/migrate-channel-credentials.ts",
     "db:migrate:data:v2": "tsx src/db/migrate-v2-data.ts",
+    "db:backfill:billing-ledger": "tsx src/db/backfill-billing-usage-ledger.ts",
     "db:push": "drizzle-kit push",
     "db:studio": "drizzle-kit studio"
   },

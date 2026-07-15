@@ -78,7 +78,7 @@ export type GenerationBillingRetryTaskData =
  * - `output` is the generated content blocks (SDK `GenerationResult.content`)
  * - `requestId` maps to the provider response body's top-level `request_id`
  * - `cost` maps to the official request price in `usage.cost`
- * - `billing` records post-success credit consumption (when attempted)
+ * - `billing` records post-success durable billing state (`queued` until delivered)
  * - `meta` is the request meta (including Cohub context such as taskRunId/spaceId)
  */
 export type GenerationUsageBilling = {
@@ -89,7 +89,7 @@ export type GenerationUsageBilling = {
   /** Server-resolved multiplier applied to officialCostUsd. */
   discountMultiplier?: number;
   usageType: string;
-  status: "recorded" | "overage" | "skipped";
+  status: "queued" | "recorded" | "overage" | "skipped";
   reason?: string | null;
 };
 

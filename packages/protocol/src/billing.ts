@@ -14,3 +14,10 @@ export type BillingPayload = {
   netUsd?: number;
   hardNegativeLimitUsd?: number;
 };
+
+/** Internal durable-delivery pointer. Billing request details stay in PostgreSQL. */
+export type BillingUsageDeliveryPayload = {
+  schemaVersion: 1;
+  operationId: string;
+  requestHash: string;
+};

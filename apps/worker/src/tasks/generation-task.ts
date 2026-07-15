@@ -10,6 +10,7 @@ import {
   reconcileGenerationModelDiscountSnapshot,
   resolveGenerationUsageType,
 } from "@cohub/billing";
+import { enqueueBillingUsage } from "@cohub/core/billing";
 import type { Job } from "bullmq";
 import {
   createGenerationClient,
@@ -35,6 +36,7 @@ import { recordGenerationUsageStatsHourly } from "../generation-usage-stats.js";
 import { redisCommandClient } from "../redis.js";
 import { enqueueTask } from "./enqueue.js";
 import { registerTask } from "./registry.js";
+import { db } from "../db.js";
 
 const loader = createGenerationDeclarationLoader({
   platformConfigRoot: config.platformConfigRoot,
@@ -226,7 +228,7 @@ async function enqueueGenerationBillingRetry(input: {
     model: input.model,
     adapterType: input.adapterType ?? null,
   };
-  // Credit consumption remains idempotent via operationId `generation:${taskRunId}`.
+  // The ledger operation remains idempotent via `generation:${taskRunId}`.
   await enqueueTask({
     type: GENERATION_BILLING_RETRY_TASK_TYPE,
     spaceId: input.spaceId,
@@ -266,22 +268,31 @@ async function recordGenerationUsageBilling(input: {
       reason: pricing.skipReason,
     };
   }
-  if (!billingOperations.status.configured) {
-    return { ...billingPricing, status: "skipped", reason: "billing_not_configured" };
-  }
   if (!input.taskRunId) {
     return { ...billingPricing, status: "skipped", reason: "missing_task_run_id" };
   }
 
   try {
-    const result = await billingOperations.recordUsage({
-      userId: input.userId,
-      amountUsd,
-      tokenType: COHUB_BILLING_TOKEN_TYPES.usdMicroCent,
-      usageType: input.usageType,
-      sourceId: input.taskRunId,
-      operationId: `generation:${input.taskRunId}`,
-      reason: `Generation ${input.model}`,
+    const result = await enqueueBillingUsage({
+      db,
+      intent: {
+        userId: input.userId,
+        amountUsd,
+        tokenType: COHUB_BILLING_TOKEN_TYPES.usdMicroCent,
+        usageType: input.usageType,
+        sourceId: input.taskRunId,
+        operationId: `generation:${input.taskRunId}`,
+        reason: `Generation ${input.model}`,
+        spaceId: input.spaceId,
+        sessionId: input.sessionId,
+        metadata: {
+          taskRunId: input.taskRunId,
+          officialCostUsd,
+          discountMultiplier: input.modelDiscount.multiplier,
+          model: input.model,
+          adapterType: input.adapterType ?? null,
+        },
+      },
     });
     if (result.status === "overage") {
       console.warn("[Billing] generation usage recorded as overage", {
@@ -302,12 +313,15 @@ async function recordGenerationUsageBilling(input: {
         reason: result.status === "disabled" ? "billing_disabled" : "zero_amount",
       };
     }
+    if (result.status === "queued") {
+      return { ...billingPricing, status: "queued" };
+    }
     return {
       ...billingPricing,
       status: result.status === "overage" ? "overage" : "recorded",
     };
   } catch (error) {
-    console.warn("[Billing] failed to record generation usage; enqueueing retry", {
+    console.warn("[Billing] failed to enqueue generation usage; enqueueing legacy retry", {
       userId: input.userId,
       taskRunId: input.taskRunId,
       officialCostUsd,

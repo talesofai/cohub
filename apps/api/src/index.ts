@@ -19,7 +19,7 @@ import { verifyPreviewSessionToken, type PreviewSessionPrincipal } from "./previ
 import { verifyWorkSessionToken, type WorkSessionPrincipal } from "./work-sessions.js";
 import { assertRequiredConfig, config } from "./config.js";
 import { startOutboxDispatcher } from "./db/outbox-dispatcher.js";
-import { dispatchRealtimeEvent } from "./channels.js";
+import { deliverOutboxEvent } from "./db/outbox-delivery.js";
 
 import router from "./routes/index.js";
 
@@ -177,10 +177,7 @@ configureBillingRuntime({
   redis: (await import("./redis.js")).redisCommandClient,
 });
 startOutboxDispatcher({
-  publish: async (event) => {
-    const subscriberCount = await dispatchRealtimeEvent(event);
-    if (subscriberCount === 0) throw new Error("no realtime gateway subscribers");
-  },
+  deliver: deliverOutboxEvent,
 });
 const server = serve({
   fetch: app.fetch,

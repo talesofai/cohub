@@ -7,6 +7,7 @@ import postgres from "postgres";
 import * as schema from "@cohub/db";
 import { canvasDocuments, canvasUpdates, outboxEvents, spaces } from "@cohub/db";
 import type { CanvasTransactionAppliedEvent } from "@cohub/protocol/realtime";
+import { realtimeEnvelopeSchema } from "@cohub/protocol/realtime";
 import { applyCanvasTransaction } from "../canvas-service.js";
 import { dispatchNextOutboxEvent } from "./outbox-dispatcher.js";
 import { enqueueRealtimeOutboxEvent } from "./outbox.js";
@@ -110,9 +111,10 @@ test("canvas commit creates one durable event and txId replay creates none", {
         .from(outboxEvents)
         .where(eq(outboxEvents.deduplicationKey, deduplicationKey));
       assert.equal(events.length, 1);
-      assert.equal(events[0]?.id, events[0]?.payload.id);
+      const payload = realtimeEnvelopeSchema.parse(events[0]?.payload);
+      assert.equal(events[0]?.id, payload.id);
       assert.equal(events[0]?.eventType, "canvas.tx.applied");
-      assert.deepEqual(events[0]?.payload.payload, {
+      assert.deepEqual(payload.payload, {
         documentId,
         actorId,
         txId,
@@ -151,7 +153,7 @@ test("outbox retries preserve the event id and mark delivery after recovery", {
       const attempts: string[] = [];
       const retry = await dispatchNextOutboxEvent({
         database,
-        publish: async (payload) => {
+        deliver: async (payload) => {
           attempts.push(payload.id);
           throw new Error("redis unavailable");
         },
@@ -163,7 +165,7 @@ test("outbox retries preserve the event id and mark delivery after recovery", {
         .where(eq(outboxEvents.id, event.id));
       const published = await dispatchNextOutboxEvent({
         database,
-        publish: async (payload) => {
+        deliver: async (payload) => {
           attempts.push(payload.id);
         },
       });
@@ -199,7 +201,7 @@ test("outbox marks invalid metadata for operator intervention", {
 
       const result = await dispatchNextOutboxEvent({
         database,
-        publish: async () => assert.fail("invalid event must not be published"),
+        deliver: async () => assert.fail("invalid event must not be published"),
       });
       assert.equal(result.status, "failed");
       const [row] = await database.select().from(outboxEvents).where(eq(outboxEvents.id, event.id));
@@ -226,7 +228,7 @@ test("outbox publish timeout releases the claim for a retry", {
 
       const result = await dispatchNextOutboxEvent({
         database,
-        publish: () => new Promise<void>(() => undefined),
+        deliver: () => new Promise<void>(() => undefined),
         publishTimeoutMs: 10,
       });
       assert.equal(result.status, "retry");
@@ -271,14 +273,14 @@ test("ordered aggregates do not publish a later sequence during retry backoff", 
 
       const retry = await dispatchNextOutboxEvent({
         database,
-        publish: async () => {
+        deliver: async () => {
           throw new Error("redis unavailable");
         },
       });
       assert.equal(retry.status, "retry");
       const blocked = await dispatchNextOutboxEvent({
         database,
-        publish: async () => assert.fail("later sequence must remain blocked"),
+        deliver: async () => assert.fail("later sequence must remain blocked"),
       });
       assert.equal(blocked.status, "empty");
 
@@ -286,11 +288,11 @@ test("ordered aggregates do not publish a later sequence during retry backoff", 
         .set({ availableAt: new Date(0) })
         .where(eq(outboxEvents.id, first.id));
       const publishedIds: string[] = [];
-      const publish = async (event: { id: string }) => {
+      const deliver = async (event: { id: string }) => {
         publishedIds.push(event.id);
       };
-      assert.equal((await dispatchNextOutboxEvent({ database, publish })).status, "published");
-      assert.equal((await dispatchNextOutboxEvent({ database, publish })).status, "published");
+      assert.equal((await dispatchNextOutboxEvent({ database, deliver })).status, "published");
+      assert.equal((await dispatchNextOutboxEvent({ database, deliver })).status, "published");
       assert.deepEqual(publishedIds, [first.id, second.id]);
     } finally {
       await database.delete(outboxEvents).where(eq(outboxEvents.aggregateId, aggregateId));
@@ -318,7 +320,7 @@ test("concurrent dispatchers claim each outbox row once", {
       const published = new Map<string, number>();
       const results = await Promise.all(events.map(() => dispatchNextOutboxEvent({
         database,
-        publish: async (event) => {
+        deliver: async (event) => {
           published.set(event.id, (published.get(event.id) ?? 0) + 1);
         },
       })));

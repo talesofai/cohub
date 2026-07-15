@@ -344,6 +344,13 @@
       "when": 1784155084417,
       "tag": "0048_volatile_the_call",
       "breakpoints": true
+    },
+    {
+      "idx": 49,
+      "version": "7",
+      "when": 1784156866029,
+      "tag": "0049_wonderful_invaders",
+      "breakpoints": true
     }
   ]
 }

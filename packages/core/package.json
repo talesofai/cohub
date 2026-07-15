@@ -99,6 +99,10 @@
     "./referrals": {
       "types": "./dist/referrals/index.d.ts",
       "default": "./dist/referrals/index.js"
+    },
+    "./billing": {
+      "types": "./dist/billing/index.d.ts",
+      "default": "./dist/billing/index.js"
     }
   },
   "types": "./dist/index.d.ts",
@@ -118,6 +122,7 @@
   },
   "devDependencies": {
     "@types/node": "26.1.1",
+    "postgres": "^3.4.9",
     "typescript": "^7.0.2"
   }
 }

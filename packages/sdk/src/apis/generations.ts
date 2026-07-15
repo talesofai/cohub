@@ -70,7 +70,7 @@ function isGenerationTaskResult(value: unknown): value is GenerationTaskResult {
       )
     ) return false;
     if (typeof billing.usageType !== "string") return false;
-    if (billing.status !== "recorded" && billing.status !== "overage" && billing.status !== "skipped") return false;
+    if (billing.status !== "queued" && billing.status !== "recorded" && billing.status !== "overage" && billing.status !== "skipped") return false;
     if (billing.reason !== undefined && billing.reason !== null && typeof billing.reason !== "string") return false;
   }
   return true;

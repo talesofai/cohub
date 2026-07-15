@@ -1,4 +1,5 @@
 import { billingOperations, COHUB_BILLING_TOKEN_TYPES, COHUB_BILLING_USAGE_TYPES } from "@cohub/billing";
+import { enqueueBillingUsage } from "@cohub/core/billing";
 import { qualifyAndRewardReferral } from "@cohub/core/referrals";
 import { sessionMessages, sessionTurns, spaceSessions, tokenUsageStatsHourly } from "@cohub/db";
 import {
@@ -34,21 +35,36 @@ const resolveActorUserId = async (message: typeof sessionMessages.$inferSelect) 
   return typeof userId === "string" && userId.trim() ? userId.trim() : null;
 };
 
-const recordBilling = async (message: typeof sessionMessages.$inferSelect, userId: string | null, usage: Usage | null) => {
+const recordBilling = async (
+  message: typeof sessionMessages.$inferSelect,
+  spaceId: string,
+  userId: string | null,
+  usage: Usage | null,
+) => {
   if (!userId || message.errorMessage || message.stopReason === "error" || message.stopReason === "aborted") return;
   const amount = usage?.cost?.total;
   const amountUsd = typeof amount === "number" && Number.isFinite(amount) && amount > 0
     ? Number(amount.toFixed(8))
     : 0;
-  if (amountUsd <= 0 || !billingOperations.status.configured) return;
-  await billingOperations.recordUsage({
-    userId,
-    amountUsd,
-    tokenType: COHUB_BILLING_TOKEN_TYPES.usdMicroCent,
-    usageType: COHUB_BILLING_USAGE_TYPES.generationLlm,
-    sourceId: message.id,
-    operationId: `llm:${message.id}`,
-    reason: `LLM usage ${message.provider ?? "unknown"}/${message.model ?? "unknown"}`,
+  if (amountUsd <= 0) return;
+  await enqueueBillingUsage({
+    db,
+    intent: {
+      userId,
+      amountUsd,
+      tokenType: COHUB_BILLING_TOKEN_TYPES.usdMicroCent,
+      usageType: COHUB_BILLING_USAGE_TYPES.generationLlm,
+      sourceId: message.id,
+      operationId: `llm:${message.id}`,
+      reason: `LLM usage ${message.provider ?? "unknown"}/${message.model ?? "unknown"}`,
+      spaceId,
+      sessionId: message.sessionId,
+      metadata: {
+        messageId: message.id,
+        provider: message.provider,
+        model: message.model,
+      },
+    },
   });
 };
 
@@ -173,8 +189,8 @@ registerSystemJob(SESSION_MESSAGE_POSTPROCESS_JOB, async (job: Job) => {
   const usage = normalizeUsage(message.usage);
   const userId = await resolveActorUserId(message);
 
-  // Idempotent external effects first; non-idempotent hourly aggregation must remain last.
-  await recordBilling(message, userId, usage);
+  // Durable/idempotent effects first; non-idempotent hourly aggregation must remain last.
+  await recordBilling(message, spaceId, userId, usage);
   await maybeQualifyReferral(message);
   await aggregateUsage(message, spaceId, userId, usage);
 

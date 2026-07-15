@@ -1,17 +1,15 @@
-import {
-  billingOperations,
-  COHUB_BILLING_TOKEN_TYPES,
-  type CohubBillingUsageType,
-} from "@cohub/billing";
+import { COHUB_BILLING_TOKEN_TYPES, type CohubBillingUsageType } from "@cohub/billing";
+import { enqueueBillingUsage } from "@cohub/core/billing";
 import type { Job } from "bullmq";
 import { GENERATION_BILLING_RETRY_TASK_TYPE } from "@cohub/protocol/generation";
 import type { TaskPayload } from "@cohub/protocol/task";
 import { parseGenerationBillingRetryData } from "./generation-billing-retry-data.js";
 import { registerTask } from "./registry.js";
+import { db } from "../db.js";
 
 /**
- * Retry post-success generation charging. Safe to re-run: recordUsage is
- * idempotent via operationId `generation:${taskRunId}`.
+ * Migrate an already-queued legacy retry into the durable billing ledger.
+ * Safe to re-run via operationId `generation:${taskRunId}`.
  */
 registerTask(GENERATION_BILLING_RETRY_TASK_TYPE, async (job: Job) => {
   const payload = job.data as TaskPayload;
@@ -20,18 +18,27 @@ registerTask(GENERATION_BILLING_RETRY_TASK_TYPE, async (job: Job) => {
   if (amountUsd <= 0) {
     return { status: "skipped", reason: "zero_amount", taskRunId: data.taskRunId };
   }
-  if (!billingOperations.status.configured) {
-    return { status: "skipped", reason: "billing_not_configured", taskRunId: data.taskRunId };
-  }
-
-  const result = await billingOperations.recordUsage({
-    userId: data.userId,
-    amountUsd,
-    tokenType: COHUB_BILLING_TOKEN_TYPES.usdMicroCent,
-    usageType: data.usageType as CohubBillingUsageType,
-    sourceId: data.taskRunId,
-    operationId: `generation:${data.taskRunId}`,
-    reason: `Generation ${data.model}`,
+  const result = await enqueueBillingUsage({
+    db,
+    intent: {
+      userId: data.userId,
+      amountUsd,
+      tokenType: COHUB_BILLING_TOKEN_TYPES.usdMicroCent,
+      usageType: data.usageType as CohubBillingUsageType,
+      sourceId: data.taskRunId,
+      operationId: `generation:${data.taskRunId}`,
+      reason: `Generation ${data.model}`,
+      spaceId: payload.spaceId ?? null,
+      sessionId: payload.sessionId ?? null,
+      metadata: {
+        taskRunId: data.taskRunId,
+        officialCostUsd: data.officialCostUsd,
+        discountMultiplier: data.modelDiscount.multiplier,
+        model: data.model,
+        adapterType: data.adapterType ?? null,
+        source: "legacy_generation_billing_retry",
+      },
+    },
   });
 
   if (result.status === "overage") {

@@ -1,6 +1,6 @@
 import { and, asc, eq, isNotNull, isNull, lt, lte, notExists, or } from "drizzle-orm";
 import { alias } from "drizzle-orm/pg-core";
-import { outboxEvents, type RealtimeOutboxEnvelope } from "@cohub/db";
+import { outboxEvents } from "@cohub/db";
 import { createLogger } from "@cohub/infra/logging";
 import { realtimeEnvelopeSchema } from "@cohub/protocol/realtime";
 import { db } from "./index.js";
@@ -13,13 +13,14 @@ const MAX_RETRY_DELAY_MS = 5 * 60 * 1000;
 const MAX_ERROR_LENGTH = 4000;
 
 type OutboxDatabase = Pick<typeof db, "transaction">;
-export type OutboxPublisher = (event: RealtimeOutboxEnvelope) => Promise<void>;
+export type OutboxDelivery = typeof outboxEvents.$inferSelect;
+export type OutboxDeliverer = (event: OutboxDelivery) => Promise<void>;
 
 export type OutboxDispatchResult =
   | { status: "empty" }
   | { status: "published" | "retry" | "failed"; eventId: string; attemptCount: number };
 
-class PermanentOutboxError extends Error {}
+export class PermanentOutboxDeliveryError extends Error {}
 
 const retryDelayMs = (attemptCount: number) =>
   Math.min(1000 * (2 ** Math.min(Math.max(attemptCount - 1, 0), 18)), MAX_RETRY_DELAY_MS);
@@ -29,15 +30,15 @@ const errorMessage = (error: unknown) => {
   return value.slice(0, MAX_ERROR_LENGTH);
 };
 
-const publishWithTimeout = async (
-  publish: OutboxPublisher,
-  event: RealtimeOutboxEnvelope,
+const deliverWithTimeout = async (
+  deliver: OutboxDeliverer,
+  event: OutboxDelivery,
   timeoutMs: number,
 ) => {
   let timeout: ReturnType<typeof setTimeout> | undefined;
   try {
     await Promise.race([
-      publish(event),
+      deliver(event),
       new Promise<never>((_, reject) => {
         timeout = setTimeout(
           () => reject(new Error(`outbox publish timed out after ${timeoutMs}ms`)),
@@ -51,7 +52,7 @@ const publishWithTimeout = async (
 };
 
 export async function dispatchNextOutboxEvent(input: {
-  publish: OutboxPublisher;
+  deliver: OutboxDeliverer;
   database?: OutboxDatabase;
   now?: () => Date;
   publishTimeoutMs?: number;
@@ -95,17 +96,17 @@ export async function dispatchNextOutboxEvent(input: {
     const attemptCount = event.attemptCount + 1;
     try {
       if (event.destination !== "realtime") {
-        throw new PermanentOutboxError(`unsupported destination: ${event.destination}`);
+        await deliverWithTimeout(input.deliver, event, publishTimeoutMs);
+      } else {
+        const parsed = realtimeEnvelopeSchema.safeParse(event.payload);
+        if (!parsed.success) {
+          throw new PermanentOutboxDeliveryError(`invalid realtime envelope: ${parsed.error.message}`);
+        }
+        if (parsed.data.id !== event.id || parsed.data.type !== event.eventType) {
+          throw new PermanentOutboxDeliveryError("outbox metadata does not match its payload");
+        }
+        await deliverWithTimeout(input.deliver, event, publishTimeoutMs);
       }
-      const parsed = realtimeEnvelopeSchema.safeParse(event.payload);
-      if (!parsed.success) {
-        throw new PermanentOutboxError(`invalid realtime envelope: ${parsed.error.message}`);
-      }
-      if (parsed.data.id !== event.id || parsed.data.type !== event.eventType) {
-        throw new PermanentOutboxError("outbox metadata does not match its payload");
-      }
-
-      await publishWithTimeout(input.publish, event.payload, publishTimeoutMs);
       const publishedAt = now();
       await tx
         .update(outboxEvents)
@@ -118,7 +119,7 @@ export async function dispatchNextOutboxEvent(input: {
         .where(eq(outboxEvents.id, event.id));
       return { status: "published", eventId: event.id, attemptCount };
     } catch (error) {
-      const failedAt = error instanceof PermanentOutboxError ? now() : null;
+      const failedAt = error instanceof PermanentOutboxDeliveryError ? now() : null;
       const availableAt = failedAt
         ? event.availableAt
         : new Date(claimedAt.getTime() + retryDelayMs(attemptCount));
@@ -147,7 +148,7 @@ const positiveInteger = (value: string | undefined, fallback: number) => {
 };
 
 export function startOutboxDispatcher(input: {
-  publish: OutboxPublisher;
+  deliver: OutboxDeliverer;
   pollIntervalMs?: number;
   batchSize?: number;
   publishTimeoutMs?: number;
@@ -167,12 +168,12 @@ export function startOutboxDispatcher(input: {
     inFlight = (async () => {
       for (let index = 0; index < batchSize && !stopped; index += 1) {
         const result = await dispatchNextOutboxEvent({
-          publish: input.publish,
+          deliver: input.deliver,
           publishTimeoutMs,
         });
         if (result.status === "empty") break;
         if (result.status === "retry") {
-          logger.warn("[Outbox] realtime delivery deferred", result);
+          logger.warn("[Outbox] delivery deferred", result);
         } else if (result.status === "failed") {
           logger.error("[Outbox] event requires operator intervention", result);
         }

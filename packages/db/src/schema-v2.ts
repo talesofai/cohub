@@ -14,10 +14,12 @@ import {
   unique,
   check,
   doublePrecision,
+  foreignKey,
 } from "drizzle-orm/pg-core";
 import type { ContentBlock } from "@cohub/protocol/core";
 import type { TaskPayload } from "@cohub/protocol/task";
 import type { RealtimeRoom, RealtimeServerEvent } from "@cohub/protocol/realtime";
+import type { BillingUsageDeliveryPayload } from "@cohub/protocol/billing";
 import type {
   SessionTurnIntent,
   SessionTurnIntermediateIndex,
@@ -32,6 +34,8 @@ export type AccessPolicyResourceType = "space" | "session";
 export type ReferralCodeStatus = "active" | "revoked";
 export type ReferralStatus = "pending" | "qualified" | "rewarded";
 export type RealtimeOutboxEnvelope = RealtimeServerEvent & { rooms?: RealtimeRoom[] };
+export type OutboxPayload = RealtimeOutboxEnvelope | BillingUsageDeliveryPayload;
+export type BillingUsageAttemptStatus = "recorded" | "overage" | "disabled" | "skipped" | "error";
 
 export type UserChannelCredentialEnvelope = {
   version: 1;
@@ -73,7 +77,7 @@ export const outboxEvents = v2.table(
     aggregateId: varchar("aggregate_id", { length: 255 }).notNull(),
     aggregateSequence: integer("aggregate_sequence"),
     eventType: varchar("event_type", { length: 255 }).notNull(),
-    payload: jsonb("payload").$type<RealtimeOutboxEnvelope>().notNull(),
+    payload: jsonb("payload").$type<OutboxPayload>().notNull(),
     occurredAt: timestamp("occurred_at", { withTimezone: true }).notNull().defaultNow(),
     availableAt: timestamp("available_at", { withTimezone: true }).notNull().defaultNow(),
     attemptCount: integer("attempt_count").notNull().default(0),
@@ -104,6 +108,77 @@ export const outboxEvents = v2.table(
     deliveryStateCheck: check(
       "v2_chk_outbox_events_delivery_state",
       sql`${table.publishedAt} IS NULL OR ${table.failedAt} IS NULL`,
+    ),
+  }),
+);
+
+export const billingUsageIntents = v2.table(
+  "billing_usage_intents",
+  {
+    operationId: varchar("operation_id", { length: 255 }).primaryKey(),
+    requestHash: varchar("request_hash", { length: 64 }).notNull(),
+    userId: varchar("user_id", { length: 255 }).notNull(),
+    tokenType: varchar("token_type", { length: 100 }).notNull(),
+    amountUsd: numeric("amount_usd", { precision: 18, scale: 8 }).notNull(),
+    usageType: varchar("usage_type", { length: 100 }).notNull(),
+    sourceId: varchar("source_id", { length: 255 }).notNull(),
+    reason: text("reason"),
+    spaceId: uuid("space_id"),
+    sessionId: uuid("session_id"),
+    metadata: jsonb("metadata").$type<Record<string, unknown>>().notNull().default({}),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (table) => ({
+    userCreatedIdx: index("v2_idx_billing_usage_intents_user_created")
+      .on(table.userId, table.createdAt.desc(), table.operationId),
+    sourceIdx: index("v2_idx_billing_usage_intents_source").on(table.sourceId),
+    spaceCreatedIdx: index("v2_idx_billing_usage_intents_space_created")
+      .on(table.spaceId, table.createdAt.desc(), table.operationId),
+    amountCheck: check("v2_chk_billing_usage_intents_amount", sql`${table.amountUsd} > 0`),
+    identityCheck: check(
+      "v2_chk_billing_usage_intents_identity",
+      sql`length(btrim(${table.operationId})) > 0 AND length(btrim(${table.userId})) > 0 AND length(btrim(${table.tokenType})) > 0 AND length(btrim(${table.usageType})) > 0 AND length(btrim(${table.sourceId})) > 0`,
+    ),
+    requestHashCheck: check(
+      "v2_chk_billing_usage_intents_request_hash",
+      sql`${table.requestHash} ~ '^[0-9a-f]{64}$'`,
+    ),
+  }),
+);
+
+export const billingUsageAttempts = v2.table(
+  "billing_usage_attempts",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    operationId: varchar("operation_id", { length: 255 }).notNull(),
+    provider: varchar("provider", { length: 50 }).notNull(),
+    status: varchar("status", { length: 20 }).$type<BillingUsageAttemptStatus>().notNull(),
+    response: jsonb("response").$type<Record<string, unknown>>(),
+    errorName: varchar("error_name", { length: 255 }),
+    errorMessage: text("error_message"),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (table) => ({
+    operationFk: foreignKey({
+      name: "v2_fk_billing_usage_attempts_operation",
+      columns: [table.operationId],
+      foreignColumns: [billingUsageIntents.operationId],
+    }).onDelete("restrict"),
+    operationCreatedIdx: index("v2_idx_billing_usage_attempts_operation_created")
+      .on(table.operationId, table.createdAt, table.id),
+    statusCreatedIdx: index("v2_idx_billing_usage_attempts_status_created")
+      .on(table.status, table.createdAt, table.id),
+    statusCheck: check(
+      "v2_chk_billing_usage_attempts_status",
+      sql`${table.status} IN ('recorded', 'overage', 'disabled', 'skipped', 'error')`,
+    ),
+    resultCheck: check(
+      "v2_chk_billing_usage_attempts_result",
+      sql`(${table.status} = 'error' AND ${table.errorMessage} IS NOT NULL AND ${table.response} IS NULL) OR (${table.status} <> 'error' AND ${table.errorName} IS NULL AND ${table.errorMessage} IS NULL)`,
+    ),
+    providerCheck: check(
+      "v2_chk_billing_usage_attempts_provider",
+      sql`length(btrim(${table.provider})) > 0`,
     ),
   }),
 );

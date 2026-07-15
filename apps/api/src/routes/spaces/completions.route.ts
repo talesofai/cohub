@@ -18,6 +18,8 @@ import type {
 } from "@cohub/protocol";
 import type { ContentBlock } from "@cohub/protocol/core";
 import { createLogger } from "@cohub/infra/logging";
+import { enqueueBillingUsage } from "@cohub/core/billing";
+import { db } from "../../db/index.js";
 import { authzDenied, requireValidId, useAuth } from "../../lib/middleware.js";
 import { hasPermission } from "../../permissions.js";
 import { getSpaceById } from "../../space-sessions.js";
@@ -253,6 +255,7 @@ async function loadSystemPrompt(spaceId: string, systemPromptPath: string | null
 
 async function recordCompletionBilling(input: {
   completionId: string;
+  spaceId: string;
   userId: string;
   provider: string;
   model: string;
@@ -260,20 +263,28 @@ async function recordCompletionBilling(input: {
   aborted: boolean;
   error: RunCompletionOutcome["error"];
 }) {
-  if (!billingOperations.status.configured) return;
   if (input.aborted || input.error) return;
   const amountUsd = normalizePositiveUsd(input.usage?.cost?.total);
   if (amountUsd <= 0) return;
 
   try {
-    const result = await billingOperations.recordUsage({
-      userId: input.userId,
-      amountUsd,
-      tokenType: COHUB_BILLING_TOKEN_TYPES.usdMicroCent,
-      usageType: COHUB_BILLING_USAGE_TYPES.generationLlmRaw,
-      sourceId: input.completionId,
-      operationId: `raw_completion:${input.completionId}`,
-      reason: `Raw LLM completion ${input.provider}/${input.model}`,
+    const result = await enqueueBillingUsage({
+      db,
+      intent: {
+        userId: input.userId,
+        amountUsd,
+        tokenType: COHUB_BILLING_TOKEN_TYPES.usdMicroCent,
+        usageType: COHUB_BILLING_USAGE_TYPES.generationLlmRaw,
+        sourceId: input.completionId,
+        operationId: `raw_completion:${input.completionId}`,
+        reason: `Raw LLM completion ${input.provider}/${input.model}`,
+        spaceId: input.spaceId,
+        metadata: {
+          completionId: input.completionId,
+          provider: input.provider,
+          model: input.model,
+        },
+      },
     });
     if (result.status === "overage") {
       logger.warn("[Billing] raw completion usage recorded as overage", {
@@ -285,7 +296,7 @@ async function recordCompletionBilling(input: {
       });
     }
   } catch (error) {
-    logger.warn("[Billing] failed to record raw completion usage", {
+    logger.warn("[Billing] failed to enqueue raw completion usage", {
       userId: input.userId,
       completionId: input.completionId,
       amountUsd,
@@ -441,6 +452,7 @@ router.post("/", async (c) => {
     const completedAt = new Date();
     await recordCompletionBilling({
       completionId,
+      spaceId,
       userId: user.uuid,
       provider: model.provider,
       model: model.id,

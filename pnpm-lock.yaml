@@ -643,6 +643,9 @@ importers:
       '@types/node':
         specifier: 26.1.1
         version: 26.1.1
+      postgres:
+        specifier: ^3.4.9
+        version: 3.4.9
       typescript:
         specifier: ^7.0.2
         version: 7.0.2
