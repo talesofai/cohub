@@ -177,4 +177,14 @@ for (const text of ["content-a", "content-b"]) {
 }
 assert.notEqual(policyResults[0], policyResults[1], "policy hash must bind prompt content");
 
+const defaultRandomResult = await createIsolatedWorkerDispatch({
+  authoritySpaceId: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+  userId: "user-1",
+  input: { clientMessageId: "default-random", content: [{ type: "text", text: "exercise production UUID generation" }], inputBundle },
+  store,
+});
+assert.match(defaultRandomResult.taskRunId, /^[0-9a-f-]{36}$/);
+assert.match(defaultRandomResult.disposableSpaceId, /^[0-9a-f-]{36}$/);
+assert.match(defaultRandomResult.sessionId, /^[0-9a-f-]{36}$/);
+
 console.log("isolated worker public dispatch allocation checks passed");

@@ -215,7 +215,7 @@ export async function createIsolatedWorkerDispatch(input: {
   const parsedInput = parseIsolatedWorkerDispatchInput(input.input);
   const authoritySpaceId = requireText(input.authoritySpaceId, "authoritySpaceId");
   const userId = requireText(input.userId, "userId");
-  const randomUUID = input.randomUUID ?? crypto.randomUUID;
+  const randomUUID = input.randomUUID ?? (() => crypto.randomUUID());
   const disposableSpaceId = randomUUID();
   const sessionId = randomUUID();
   const taskRunId = randomUUID();
@@ -303,7 +303,7 @@ export async function createIsolatedWorkerReuseProbe(input: {
   if (target.authoritySpaceId !== input.authoritySpaceId || target.status !== "terminated") {
     throw new Error("reuse probe requires a terminated disposable space owned by the authority");
   }
-  const taskRunId = (input.randomUUID ?? crypto.randomUUID)();
+  const taskRunId = (input.randomUUID ?? (() => crypto.randomUUID()))();
   const data: IsolatedWorkerReuseRejectedTaskData = {
     authoritySpaceId: input.authoritySpaceId,
     disposableSpaceId: input.disposableSpaceId,
