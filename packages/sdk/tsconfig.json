@@ -14,6 +14,7 @@
       "@cohub/protocol/task": ["../protocol/src/task/index.ts"],
       "@cohub/protocol/fs": ["../protocol/src/fs/index.ts"],
       "@cohub/protocol/generation": ["../protocol/src/generation/index.ts"],
+      "@cohub/protocol/isolated-worker": ["../protocol/src/isolated-worker/index.ts"],
       "@cohub/protocol/ports": ["../protocol/src/ports/index.ts"]
     }
   },
