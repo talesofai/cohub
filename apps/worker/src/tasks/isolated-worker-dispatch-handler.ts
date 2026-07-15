@@ -322,7 +322,12 @@ export function createIsolatedWorkerDispatchHandler(deps: IsolatedWorkerDispatch
             cause: error,
           });
         } catch (rollbackError) {
-          throw new AggregateError([error, rollbackError], "isolated worker publish and reservation rollback both failed");
+          const publishMessage = error instanceof Error ? error.message : String(error);
+          const rollbackMessage = rollbackError instanceof Error ? rollbackError.message : String(rollbackError);
+          throw new AggregateError(
+            [error, rollbackError],
+            `isolated worker publish failed: ${publishMessage}; reservation rollback failed: ${rollbackMessage}`,
+          );
         }
         throw error;
       }
