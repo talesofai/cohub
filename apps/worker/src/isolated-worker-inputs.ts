@@ -1,6 +1,6 @@
 import { constants } from "node:fs";
 import { createHash } from "node:crypto";
-import { chmod, lstat, mkdir, open, readdir, realpath, writeFile } from "node:fs/promises";
+import { chmod, lstat, mkdir, open, readdir, realpath, rm, writeFile } from "node:fs/promises";
 import { dirname, isAbsolute, relative, resolve } from "node:path";
 import type { IsolatedWorkerInputBundle } from "@cohub/protocol/isolated-worker";
 
@@ -95,6 +95,43 @@ export async function materializeFrozenInputManifest(input: {
   for (const dir of [...createdDirs].sort((a, b) => b.length - a.length)) await chmod(dir, 0o555);
   await chmod(input.targetRoot, 0o555);
   return { files: copied, workRoot: "work/" as const };
+}
+
+async function assertWorkspaceDirectory(root: string) {
+  const entry = await lstat(root);
+  if (entry.isSymbolicLink() || !entry.isDirectory()) {
+    throw new Error(`frozen input workspace is not a directory: ${root}`);
+  }
+}
+
+export async function prepareFrozenInputWorkspaceForPublish(root: string) {
+  await assertWorkspaceDirectory(root);
+  await chmod(root, 0o755);
+}
+
+export async function sealFrozenInputWorkspace(root: string) {
+  await assertWorkspaceDirectory(root);
+  await chmod(root, 0o555);
+}
+
+async function makeFrozenDirectoryTreeRemovable(root: string): Promise<void> {
+  await assertWorkspaceDirectory(root);
+  for (const entry of await readdir(root, { withFileTypes: true })) {
+    if (entry.isDirectory() && !entry.isSymbolicLink()) {
+      await makeFrozenDirectoryTreeRemovable(resolve(root, entry.name));
+    }
+  }
+  await chmod(root, 0o700);
+}
+
+export async function removeFrozenInputWorkspace(root: string) {
+  try {
+    await makeFrozenDirectoryTreeRemovable(root);
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") return;
+    throw error;
+  }
+  await rm(root, { recursive: true, force: true });
 }
 
 async function listInputFiles(root: string, relativeDir: string): Promise<string[]> {
