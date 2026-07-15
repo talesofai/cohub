@@ -14,12 +14,12 @@ router.post("/:spaceId/:documentId/tx", async (c) => {
   const body = await c.req.json<{
     actorId?: string;
     txId?: string;
-    baseVersion?: number | null;
+    baseVersion?: number;
     clientId?: string | null;
     undoGroupId?: string | null;
     ops?: CanvasSemanticOp[];
   }>().catch(() => null);
-  if (!body?.actorId || !body.txId || !Array.isArray(body.ops)) return c.json({ message: "invalid canvas transaction" }, 400);
+  if (!body?.actorId || !body.txId || typeof body.baseVersion !== "number" || !Number.isInteger(body.baseVersion) || !Array.isArray(body.ops)) return c.json({ message: "invalid canvas transaction" }, 400);
   try {
     const actor = { uuid: body.actorId } as AuthUser;
     if (!(await hasPermission(actor, "file.edit", { spaceId }))) return c.json({ message: "forbidden" }, 403);
@@ -28,7 +28,7 @@ router.post("/:spaceId/:documentId/tx", async (c) => {
       documentId,
       actorId: body.actorId,
       txId: body.txId,
-      baseVersion: body.baseVersion ?? null,
+      baseVersion: body.baseVersion,
       clientId: body.clientId ?? null,
       undoGroupId: body.undoGroupId ?? null,
       ops: body.ops,
@@ -37,7 +37,11 @@ router.post("/:spaceId/:documentId/tx", async (c) => {
   } catch (error) {
     const status = typeof (error as { status?: unknown })?.status === "number" ? (error as { status: number }).status : 500;
     const message = error instanceof Error ? error.message : "Canvas operation failed";
-    return c.json({ message }, status as never);
+    const code = typeof (error as { code?: unknown })?.code === "string" ? (error as { code: string }).code : "canvas_error";
+    const currentVersion = typeof (error as { currentVersion?: unknown })?.currentVersion === "number"
+      ? (error as { currentVersion: number }).currentVersion
+      : undefined;
+    return c.json({ message, code, currentVersion }, status as never);
   }
 });
 

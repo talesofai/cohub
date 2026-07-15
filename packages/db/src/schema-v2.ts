@@ -343,11 +343,11 @@ export const canvasDocuments = v2.table(
   "canvas_documents",
   {
     id: uuid("id").primaryKey().defaultRandom(),
-    spaceId: uuid("space_id").notNull(),
+    spaceId: uuid("space_id").notNull().references(() => spaces.id, { onDelete: "cascade" }),
     filePath: text("file_path").notNull(),
     title: text("title").notNull(),
     version: integer("version").notNull().default(0),
-    meta: jsonb("meta").$type<Record<string, unknown>>(),
+    meta: jsonb("meta").$type<Record<string, unknown>>().notNull().default({}),
     createdAt: timestamp("created_at", { withTimezone: true }).defaultNow(),
     updatedAt: timestamp("updated_at", { withTimezone: true }).defaultNow(),
     deletedAt: timestamp("deleted_at", { withTimezone: true }),
@@ -355,13 +355,14 @@ export const canvasDocuments = v2.table(
   (table) => ({
     spaceIdx: index("v2_idx_canvas_documents_space_id").on(table.spaceId),
     spacePathUniqueIdx: uniqueIndex("v2_uq_canvas_documents_space_path").on(table.spaceId, table.filePath),
+    versionCheck: check("v2_chk_canvas_documents_version", sql`${table.version} >= 0`),
   }),
 );
 
 export const canvasNodes = v2.table(
   "canvas_nodes",
   {
-    documentId: uuid("document_id").notNull(),
+    documentId: uuid("document_id").notNull().references(() => canvasDocuments.id, { onDelete: "cascade" }),
     nodeId: text("node_id").notNull(),
     type: varchar("type", { length: 40 }).notNull(),
     parentId: text("parent_id"),
@@ -385,9 +386,10 @@ export const canvasNodes = v2.table(
   },
   (table) => ({
     primary: uniqueIndex("v2_uq_canvas_nodes_document_node").on(table.documentId, table.nodeId),
-    documentIdx: index("v2_idx_canvas_nodes_document_id").on(table.documentId),
     viewportIdx: index("v2_idx_canvas_nodes_viewport").on(table.documentId, table.x, table.y, table.width, table.height),
     refPathIdx: index("v2_idx_canvas_nodes_ref_path").on(table.documentId, table.refPath),
+    dimensionsCheck: check("v2_chk_canvas_nodes_dimensions", sql`${table.width} > 0 AND ${table.height} > 0`),
+    versionCheck: check("v2_chk_canvas_nodes_version", sql`${table.version} >= 0`),
   }),
 );
 
@@ -395,18 +397,24 @@ export const canvasUpdates = v2.table(
   "canvas_updates",
   {
     id: uuid("id").primaryKey().defaultRandom(),
-    documentId: uuid("document_id").notNull(),
+    documentId: uuid("document_id").notNull().references(() => canvasDocuments.id, { onDelete: "cascade" }),
+    txId: text("tx_id").notNull(),
+    baseVersion: integer("base_version").notNull(),
+    requestHash: varchar("request_hash", { length: 64 }),
     version: integer("version").notNull(),
     actorId: varchar("actor_id", { length: 255 }).notNull(),
     clientId: text("client_id"),
     type: varchar("type", { length: 80 }).notNull(),
     payload: jsonb("payload").$type<Record<string, unknown>>().notNull(),
+    result: jsonb("result").$type<Record<string, unknown>>().notNull().default({}),
     undoGroupId: text("undo_group_id"),
     createdAt: timestamp("created_at", { withTimezone: true }).defaultNow(),
   },
   (table) => ({
     documentVersionUniqueIdx: uniqueIndex("v2_uq_canvas_updates_document_version").on(table.documentId, table.version),
-    documentIdx: index("v2_idx_canvas_updates_document_id").on(table.documentId),
+    documentTxUniqueIdx: uniqueIndex("v2_uq_canvas_updates_document_tx").on(table.documentId, table.txId),
+    baseVersionCheck: check("v2_chk_canvas_updates_base_version", sql`${table.baseVersion} >= 0`),
+    versionCheck: check("v2_chk_canvas_updates_version", sql`${table.version} > ${table.baseVersion}`),
   }),
 );
 

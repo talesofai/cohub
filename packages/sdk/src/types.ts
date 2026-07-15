@@ -748,7 +748,7 @@ export type CanvasDocumentRecord = {
   filePath: string;
   title: string;
   version: number;
-  meta?: Record<string, unknown> | null;
+  meta: Record<string, unknown>;
   createdAt: string | null;
   updatedAt: string | null;
   deletedAt?: string | null;
@@ -782,17 +782,52 @@ export type CanvasNodeInput = Omit<CanvasNodeRecord, "documentId" | "version" | 
 
 export type CanvasSemanticOp = {
   opId?: string;
-  type: "node.create" | "node.patch" | "node.delete";
+  version?: 1 | 2;
+  type: "node.create" | "node.patch" | "node.data.merge" | "node.delete" | "document.meta.patch";
   payload: Record<string, unknown>;
   inverse?: Record<string, unknown>;
 };
 
 export type CanvasTransactionInput = {
   txId: string;
-  baseVersion?: number | null;
+  baseVersion: number;
   clientId?: string | null;
   undoGroupId?: string | null;
   ops: CanvasSemanticOp[];
+};
+
+export type CanvasTransactionResponse = {
+  transaction: {
+    txId: string;
+    baseVersion: number;
+    version: number;
+    replayed: boolean;
+  };
+  document: {
+    version: number;
+    meta: Record<string, unknown>;
+  };
+  changes: {
+    nodes: CanvasNodeRecord[];
+    deletedNodeIds: string[];
+  };
+};
+
+export type CanvasUpdateRecord = {
+  txId: string;
+  baseVersion: number;
+  version: number;
+  actorId: string;
+  clientId: string | null;
+  payload: { ops?: CanvasSemanticOp[] } & Record<string, unknown>;
+  createdAt: string | null;
+};
+
+export type CanvasUpdatesResponse = {
+  documentVersion: number;
+  updates: CanvasUpdateRecord[];
+  hasMore: boolean;
+  requiresBootstrap: boolean;
 };
 
 export type CanvasCreateInput = {

@@ -383,7 +383,7 @@ export class WebsocketClient {
     documentId: string;
     txId: string;
     ops: Array<Record<string, unknown>>;
-    baseVersion?: number | null;
+    baseVersion: number;
     clientId?: string | null;
     undoGroupId?: string | null;
     requestId?: string;
@@ -396,7 +396,7 @@ export class WebsocketClient {
         spaceId: input.spaceId,
         documentId: input.documentId,
         txId: input.txId,
-        baseVersion: input.baseVersion ?? null,
+        baseVersion: input.baseVersion,
         clientId: input.clientId ?? null,
         undoGroupId: input.undoGroupId ?? null,
         ops: input.ops,

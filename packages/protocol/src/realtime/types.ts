@@ -42,7 +42,7 @@ export type WsClientEvent =
   | { type: "subscribe"; requestId?: string; payload: { rooms: string[] } }
   | { type: "unsubscribe"; requestId?: string; payload: { rooms: string[] } }
   | { type: "session.message.create"; requestId?: string; payload: { spaceId: string; sessionId: string; clientMessageId?: string; content: ContentBlock[]; model?: string; provider?: string } }
-  | { type: "canvas.tx"; requestId?: string; payload: { spaceId: string; documentId: string; txId: string; baseVersion?: number | null; clientId?: string | null; undoGroupId?: string | null; ops: Array<Record<string, unknown>> } }
+  | { type: "canvas.tx"; requestId?: string; payload: { spaceId: string; documentId: string; txId: string; baseVersion: number; clientId?: string | null; undoGroupId?: string | null; ops: Array<Record<string, unknown>> } }
   | { type: "presence.update"; requestId?: string; payload: { spaceId: string; meta?: Record<string, unknown> | null } }
   | { type: "ping"; requestId?: string; payload?: Record<string, unknown> }
   | { type: "ack"; requestId?: string; payload?: { eventId?: string } };
@@ -495,6 +495,7 @@ export type CanvasTransactionAckEvent = {
     documentId: string;
     txId: string;
     version: number;
+    replayed?: boolean;
   };
 };
 
@@ -510,6 +511,9 @@ export type CanvasTransactionErrorEvent = {
     documentId?: string | null;
     txId?: string | null;
     message: string;
+    code?: string;
+    status?: number;
+    currentVersion?: number;
   };
 };
 

@@ -76,6 +76,8 @@ import type {
   ChannelHealth,
   CanvasDocumentRecord,
   CanvasTransactionInput,
+  CanvasTransactionResponse,
+  CanvasUpdatesResponse,
 } from "../types.js";
 import { SpaceInvitationsApi } from "./invitations.js";
 
@@ -1412,8 +1414,17 @@ export class SpaceCanvasApi {
     );
   }
 
+  updates(documentId: string, input: { afterVersion: number; limit?: number }, customFetch?: Fetch) {
+    const params = new URLSearchParams({ afterVersion: String(input.afterVersion) });
+    if (input.limit !== undefined) params.set("limit", String(input.limit));
+    return this.transport.request<CanvasUpdatesResponse>(
+      `/api/spaces/${this.spaceId}/canvas/${documentId}/updates?${params.toString()}`,
+      { fetch: customFetch },
+    );
+  }
+
   sendTransaction(documentId: string, input: CanvasTransactionInput) {
-    return this.transport.request<CanvasBootstrapResponse>(
+    return this.transport.request<CanvasTransactionResponse>(
       `/api/spaces/${this.spaceId}/canvas/${documentId}/ops`,
       {
         method: "POST",
@@ -1817,7 +1828,7 @@ export class SpaceClient {
   async sendCanvasTransactionRealtime(documentId: string, input: CanvasTransactionInput) {
     if (!this.websocketClient) return this.canvas.sendTransaction(documentId, input);
     const requestId = `canvas-${input.txId}`;
-    const result = new Promise<{ document: { version: number } }>((resolve, reject) => {
+    const result = new Promise<{ document: { version: number }; transaction: { txId: string; version: number; replayed: boolean } }>((resolve, reject) => {
       let settled = false;
       let timeout: ReturnType<typeof setTimeout> | null = null;
       const settle = (fn: () => void) => {
@@ -1831,8 +1842,16 @@ export class SpaceClient {
       const cleanupAck = this.websocketClient?.on("event", (event) => {
         if (event.type !== "canvas.tx.ack" || event.requestId !== requestId) return;
         const version = event.payload.version;
+        const txId = event.payload.txId;
         settle(() => {
-          if (typeof version === "number") resolve({ document: { version } });
+          if (typeof version === "number" && typeof txId === "string") resolve({
+            document: { version },
+            transaction: {
+              txId,
+              version,
+              replayed: event.payload.replayed === true,
+            },
+          });
           else reject(new Error("Invalid canvas ack"));
         });
       });
@@ -1846,7 +1865,7 @@ export class SpaceClient {
       spaceId: this.id,
       documentId,
       txId: input.txId,
-      baseVersion: input.baseVersion ?? null,
+      baseVersion: input.baseVersion,
       clientId: input.clientId ?? null,
       undoGroupId: input.undoGroupId ?? null,
       ops: input.ops,

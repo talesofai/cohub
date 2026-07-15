@@ -31,7 +31,7 @@ import {
   wsClientEventSchema,
 } from "@cohub/protocol/realtime";
 import { getOrCreateRequestId } from "@cohub/infra/tracing";
-import { authenticateRealtimeToken, authorizeRealtimeRooms, notifySpacePresenceUpdated, requestGatewayChannelReconcile, submitCanvasTransaction, submitInternalSessionPrompt, InternalPromptError, type RealtimeAuthResult } from "./api-client.js";
+import { authenticateRealtimeToken, authorizeRealtimeRooms, notifySpacePresenceUpdated, requestGatewayChannelReconcile, submitCanvasTransaction, submitInternalSessionPrompt, InternalCanvasTransactionError, InternalPromptError, type RealtimeAuthResult } from "./api-client.js";
 import { listenOutboundCommands, initOutboundConsumerGroup } from "./bus.js";
 import { summarizeRedisUrl } from "./logging.js";
 import { gatewayConfig } from "./config.js";
@@ -932,13 +932,13 @@ async function main() {
             const documentId = typeof payload.documentId === "string" ? payload.documentId : "";
             const txId = typeof payload.txId === "string" ? payload.txId : "";
             const ops = Array.isArray(payload.ops) ? payload.ops.filter((op): op is Record<string, unknown> => Boolean(op && typeof op === "object" && !Array.isArray(op))) : [];
-            if (!spaceId || !documentId || !txId || ops.length === 0) throw new WsClientInputError("invalid canvas transaction");
+            if (!spaceId || !documentId || !txId || !Number.isInteger(payload.baseVersion) || payload.baseVersion < 0 || ops.length === 0) throw new WsClientInputError("invalid canvas transaction");
             const result = await submitCanvasTransaction({
               userId: ctx.userId,
               spaceId,
               documentId,
               txId,
-              baseVersion: typeof payload.baseVersion === "number" ? payload.baseVersion : null,
+              baseVersion: payload.baseVersion,
               clientId: typeof payload.clientId === "string" ? payload.clientId : null,
               undoGroupId: typeof payload.undoGroupId === "string" ? payload.undoGroupId : null,
               ops,
@@ -949,7 +949,12 @@ async function main() {
               requestId: requestId ?? null,
               spaceId,
               sessionId: null,
-              payload: { documentId, txId, version: result.document.version },
+              payload: {
+                documentId,
+                txId,
+                version: result.document.version,
+                replayed: result.transaction.replayed,
+              },
             }));
           } catch (error) {
             if (error instanceof WsClientInputError) throw error;
@@ -964,6 +969,9 @@ async function main() {
                 documentId: typeof payload.documentId === "string" ? payload.documentId : null,
                 txId: typeof payload.txId === "string" ? payload.txId : null,
                 message: error instanceof Error ? error.message : String(error),
+                code: error instanceof InternalCanvasTransactionError ? error.code : undefined,
+                status: error instanceof InternalCanvasTransactionError ? error.status : undefined,
+                currentVersion: error instanceof InternalCanvasTransactionError ? error.currentVersion : undefined,
               },
             }));
           }

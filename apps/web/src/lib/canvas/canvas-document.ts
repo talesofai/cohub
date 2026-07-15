@@ -257,6 +257,22 @@ export function invertCanvasOps(ops: CanvasSemanticOp[]): CanvasSemanticOp[] {
 				inverse: op.payload,
 			};
 		}
+		if (op.type === "node.data.merge") {
+			return {
+				version: 2,
+				type: "node.data.merge",
+				payload: { nodeId: op.payload.nodeId, data: op.inverse ?? {} },
+				inverse: op.payload.data as Record<string, unknown>,
+			};
+		}
+		if (op.type === "document.meta.patch") {
+			return {
+				version: 2,
+				type: "document.meta.patch",
+				payload: { patch: op.inverse ?? {} },
+				inverse: op.payload.patch as Record<string, unknown>,
+			};
+		}
 		return {
 			type: "node.patch",
 			payload: { nodeId: op.payload.nodeId, patch: op.inverse ?? {} },
@@ -283,14 +299,23 @@ export function applyCanvasOps(
 				items = items.filter((item) => item.id !== nodeId);
 			continue;
 		}
+		if (op.type === "document.meta.patch") continue;
 		const nodeId = op.payload.nodeId;
-		const patch = op.payload.patch as Partial<CanvasNodeInput> | undefined;
+		const patch =
+			op.type === "node.data.merge"
+				? { data: op.payload.data as Record<string, unknown> }
+				: (op.payload.patch as Partial<CanvasNodeInput> | undefined);
 		if (typeof nodeId !== "string" || !patch) continue;
 		items = items.map((item, index) => {
 			if (item.id !== nodeId) return item;
+			const current = canvasItemToNode(item, index);
 			return nodeInputToItem({
-				...canvasItemToNode(item, index),
+				...current,
 				...patch,
+				data:
+					op.type === "node.data.merge"
+						? { ...current.data, ...(patch.data ?? {}) }
+						: (patch.data ?? current.data),
 				nodeId,
 			});
 		});

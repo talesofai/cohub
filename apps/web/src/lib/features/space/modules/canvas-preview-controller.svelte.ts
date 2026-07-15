@@ -3,9 +3,11 @@ import {
 	deleteCanvasPendingTransaction,
 	listCanvasPendingTransactions,
 	markCanvasPendingTransactionAttempt,
+	rebaseCanvasPendingTransaction,
 	writeCanvasPendingTransaction,
 } from "$lib/cache/repositories/canvas-pending-tx-repo";
 import {
+	applyCanvasOps,
 	canvasBootstrapToDocument,
 	parseCovasManifest,
 } from "$lib/canvas/canvas-document";
@@ -13,6 +15,24 @@ import type { CovasDocument } from "$lib/canvas/canvas-schema";
 import { sdk } from "$lib/sdk";
 
 type CanvasFileResponse = unknown;
+
+function isCanvasSemanticOp(value: unknown): value is CanvasSemanticOp {
+	if (!value || typeof value !== "object" || Array.isArray(value)) return false;
+	const operation = value as Record<string, unknown>;
+	return (
+		typeof operation.type === "string" &&
+		[
+			"node.create",
+			"node.patch",
+			"node.data.merge",
+			"node.delete",
+			"document.meta.patch",
+		].includes(operation.type) &&
+		Boolean(operation.payload) &&
+		typeof operation.payload === "object" &&
+		!Array.isArray(operation.payload)
+	);
+}
 
 export type InlineCanvasPanelState = {
 	path: string;
@@ -97,12 +117,22 @@ export function createCanvasPreviewController(
 				...syncVersionByDocumentId,
 				[bootstrap.document.id]: bootstrap.document.version,
 			};
+			const pending = options.getReadonly?.()
+				? []
+				: await listCanvasPendingTransactions(
+						options.getSpaceId(),
+						bootstrap.document.id,
+					);
+			const restoredDocument = pending.reduce(
+				(document, transaction) => applyCanvasOps(document, transaction.ops),
+				canvasBootstrapToDocument(bootstrap),
+			);
 			canvases = canvases.map((item) =>
 				item.path === path
 					? {
 							path,
 							documentId: bootstrap.document.id,
-							document: canvasBootstrapToDocument(bootstrap),
+							document: restoredDocument,
 							loading: false,
 							saving: false,
 							error: null,
@@ -169,6 +199,7 @@ export function createCanvasPreviewController(
 		}
 		pendingFlush = true;
 		try {
+			let rebaseAttempted = false;
 			do {
 				pendingFlushRequested = false;
 				while (true) {
@@ -177,16 +208,30 @@ export function createCanvasPreviewController(
 						documentId,
 					);
 					if (pending.length === 0) break;
-					const tx = pending[0];
+					let tx = pending[0];
 					if (!tx) break;
+					let baseVersion = syncVersionByDocumentId[documentId];
+					if (typeof baseVersion !== "number") {
+						baseVersion = await reloadCanvasWithPendingTransactions(documentId);
+					}
+					if (tx.baseVersion !== baseVersion) {
+						tx = await rebaseCanvasPendingTransaction(tx, baseVersion);
+					}
 					await markCanvasPendingTransactionAttempt(tx);
 					const result = await sdk
 						.space(options.getSpaceId())
 						.sendCanvasTransactionRealtime(documentId, {
 							txId: tx.txId,
-							baseVersion: tx.baseVersion,
+							baseVersion,
 							ops: tx.ops,
+						})
+						.catch(async (error) => {
+							if (rebaseAttempted) throw error;
+							await reloadCanvasWithPendingTransactions(documentId);
+							rebaseAttempted = true;
+							return null;
 						});
+					if (!result) continue;
 					syncVersionByDocumentId = {
 						...syncVersionByDocumentId,
 						[documentId]: result.document.version,
@@ -196,11 +241,36 @@ export function createCanvasPreviewController(
 						documentId,
 						txId: tx.txId,
 					});
+					rebaseAttempted = false;
 				}
 			} while (pendingFlushRequested);
 		} finally {
 			pendingFlush = false;
 		}
+	}
+
+	async function reloadCanvasWithPendingTransactions(documentId: string) {
+		const bootstrap = await sdk
+			.space(options.getSpaceId())
+			.canvas.bootstrap(documentId);
+		const pending = await listCanvasPendingTransactions(
+			options.getSpaceId(),
+			documentId,
+		);
+		const document = pending.reduce(
+			(current, transaction) => applyCanvasOps(current, transaction.ops),
+			canvasBootstrapToDocument(bootstrap),
+		);
+		syncVersionByDocumentId = {
+			...syncVersionByDocumentId,
+			[documentId]: bootstrap.document.version,
+		};
+		canvases = canvases.map((canvas) =>
+			canvas.documentId === documentId
+				? { ...canvas, document, error: null }
+				: canvas,
+		);
+		return bootstrap.document.version;
 	}
 
 	async function commitCanvas(
@@ -221,7 +291,7 @@ export function createCanvasPreviewController(
 			spaceId: options.getSpaceId(),
 			documentId,
 			txId,
-			baseVersion: syncVersionByDocumentId[documentId] ?? null,
+			baseVersion: syncVersionByDocumentId[documentId] ?? 0,
 			ops,
 		});
 		canvases = canvases.map((item) =>
@@ -279,21 +349,36 @@ export function createCanvasPreviewController(
 		setCanvasError(documentId, error);
 	}
 
-	function applyBootstrap(
+	async function applyRemoteTransaction(
 		documentId: string,
-		bootstrap: Parameters<typeof canvasBootstrapToDocument>[0],
+		version: number,
+		ops: unknown[],
 	) {
 		const canvas = canvases.find((item) => item.documentId === documentId);
-		if (!canvas || canvas.saving) return;
+		if (!canvas?.document || canvas.saving) return;
+		const currentDocument = canvas.document;
+		const currentVersion = syncVersionByDocumentId[documentId];
+		if (typeof currentVersion !== "number" || version !== currentVersion + 1) {
+			await reloadCanvasWithPendingTransactions(documentId);
+			return;
+		}
+		const parsedOps = ops.filter(isCanvasSemanticOp);
+		if (parsedOps.length !== ops.length) {
+			await reloadCanvasWithPendingTransactions(documentId);
+			return;
+		}
 		syncVersionByDocumentId = {
 			...syncVersionByDocumentId,
-			[documentId]: bootstrap.document.version,
+			[documentId]: version,
 		};
 		canvases = canvases.map((item) =>
 			item.documentId === documentId
 				? {
 						...item,
-						document: canvasBootstrapToDocument(bootstrap),
+						document: applyCanvasOps(
+							item.document ?? currentDocument,
+							parsedOps,
+						),
 						error: null,
 					}
 				: item,
@@ -317,6 +402,6 @@ export function createCanvasPreviewController(
 		flushPendingTransactions,
 		renamePath,
 		setError,
-		applyBootstrap,
+		applyRemoteTransaction,
 	};
 }

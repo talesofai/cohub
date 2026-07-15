@@ -1,6 +1,6 @@
-import { and, eq, isNull } from "drizzle-orm";
+import { and, eq, gt, isNull } from "drizzle-orm";
 import { Hono } from "hono";
-import { canvasDocuments, canvasNodes } from "@cohub/db";
+import { canvasDocuments, canvasNodes, canvasUpdates } from "@cohub/db";
 import { applyCanvasTransaction, CanvasServiceError, normalizeNodes, type CanvasNodeInput, type CanvasSemanticOp } from "../../canvas-service.js";
 import { db } from "../../db/index.js";
 import { authzDenied, getOptionalAuth, requireValidId, useAuth } from "../../lib/middleware.js";
@@ -21,9 +21,11 @@ const serializeManifest = (input: { documentId: string; title: string }) => `${J
 }, null, 2)}\n`;
 
 function canvasErrorResponse(error: unknown) {
-  if (error instanceof CanvasServiceError) return { status: error.status, message: error.message };
-  if (error instanceof SpaceFsError) return { status: error.status, message: error.message };
-  return { status: 500, message: "Canvas operation failed" };
+  if (error instanceof CanvasServiceError) {
+    return { status: error.status, message: error.message, code: error.code, currentVersion: error.currentVersion };
+  }
+  if (error instanceof SpaceFsError) return { status: error.status, message: error.message, code: "space_fs_error" };
+  return { status: 500, message: "Canvas operation failed", code: "canvas_error" };
 }
 
 async function loadDocumentForSpace(spaceId: string, documentId: string) {
@@ -140,6 +142,39 @@ router.get("/:documentId/bootstrap", async (c) => {
   return c.json({ document, nodes });
 });
 
+router.get("/:documentId/updates", async (c) => {
+  const user = getOptionalAuth(c);
+  const spaceId = c.req.param("id");
+  const documentId = c.req.param("documentId");
+  if (!spaceId || !documentId || !requireValidId(spaceId) || !requireValidId(documentId)) return c.json({ message: "canvas not found" }, 404);
+  if (!(await hasPermission(user, "file.view", { spaceId }))) return authzDenied(c);
+  const afterVersion = Number(c.req.query("afterVersion") ?? "0");
+  const requestedLimit = Number(c.req.query("limit") ?? "100");
+  if (!Number.isInteger(afterVersion) || afterVersion < 0) return c.json({ message: "afterVersion must be a non-negative integer" }, 400);
+  const limit = Number.isInteger(requestedLimit) ? Math.min(Math.max(requestedLimit, 1), 500) : 100;
+  const document = await loadDocumentForSpace(spaceId, documentId);
+  if (!document) return c.json({ message: "canvas not found" }, 404);
+  const updates = await db.select({
+    txId: canvasUpdates.txId,
+    baseVersion: canvasUpdates.baseVersion,
+    version: canvasUpdates.version,
+    actorId: canvasUpdates.actorId,
+    clientId: canvasUpdates.clientId,
+    payload: canvasUpdates.payload,
+    createdAt: canvasUpdates.createdAt,
+  }).from(canvasUpdates)
+    .where(and(eq(canvasUpdates.documentId, documentId), gt(canvasUpdates.version, afterVersion)))
+    .orderBy(canvasUpdates.version)
+    .limit(limit);
+  const lastVersion = updates.at(-1)?.version;
+  return c.json({
+    documentVersion: document.version,
+    updates,
+    hasMore: updates.length === limit && lastVersion !== document.version,
+    requiresBootstrap: afterVersion < document.version && updates[0]?.version !== afterVersion + 1,
+  });
+});
+
 router.post("/:documentId/ops", async (c) => {
   const user = useAuth(c);
   if (user instanceof Response) return user;
@@ -149,14 +184,14 @@ router.post("/:documentId/ops", async (c) => {
   if (!(await hasPermission(user, "file.edit", { spaceId }))) return authzDenied(c);
 
   const body = await c.req.json<{ txId?: string; baseVersion?: number; clientId?: string; undoGroupId?: string; ops?: CanvasSemanticOp[] }>().catch(() => null);
-  if (!Array.isArray(body?.ops)) return c.json({ message: "ops are required" }, 400);
+  if (!body?.txId || typeof body.baseVersion !== "number" || !Number.isInteger(body.baseVersion) || !Array.isArray(body.ops)) return c.json({ message: "txId, baseVersion and ops are required" }, 400);
   try {
     const result = await applyCanvasTransaction({
       spaceId,
       documentId,
       actorId: user.uuid,
-      txId: body.txId || crypto.randomUUID(),
-      baseVersion: body.baseVersion ?? null,
+      txId: body.txId,
+      baseVersion: body.baseVersion,
       clientId: body.clientId ?? null,
       undoGroupId: body.undoGroupId ?? null,
       ops: body.ops,
@@ -164,7 +199,7 @@ router.post("/:documentId/ops", async (c) => {
     return c.json(result);
   } catch (error) {
     const response = canvasErrorResponse(error);
-    return c.json({ message: response.message }, response.status as never);
+    return c.json({ message: response.message, code: response.code, currentVersion: response.currentVersion }, response.status as never);
   }
 });
 

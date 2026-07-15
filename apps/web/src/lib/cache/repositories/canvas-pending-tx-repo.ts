@@ -81,3 +81,16 @@ export async function markCanvasPendingTransactionAttempt(
 		updatedAt: Date.now(),
 	});
 }
+
+export async function rebaseCanvasPendingTransaction(
+	record: CanvasPendingTransactionCacheRecord,
+	baseVersion: number,
+) {
+	const rebased = {
+		...record,
+		baseVersion,
+		updatedAt: Date.now(),
+	};
+	await idbPut("canvas_pending_txs", rebased);
+	return rebased;
+}

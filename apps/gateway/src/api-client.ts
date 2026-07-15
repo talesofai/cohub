@@ -165,11 +165,11 @@ export const submitCanvasTransaction = async (input: {
   spaceId: string;
   documentId: string;
   txId: string;
-  baseVersion?: number | null;
+  baseVersion: number;
   clientId?: string | null;
   undoGroupId?: string | null;
   ops: Array<Record<string, unknown>>;
-}): Promise<{ document: { version: number }; nodes: unknown[] }> => {
+}): Promise<{ document: { version: number }; transaction: { txId: string; version: number; replayed: boolean } }> => {
   const response = await fetch(`${gatewayConfig.apiBaseUrl}/internal/canvas/${input.spaceId}/${input.documentId}/tx`, {
     method: "POST",
     headers: {
@@ -180,22 +180,49 @@ export const submitCanvasTransaction = async (input: {
     body: JSON.stringify({
       actorId: input.userId,
       txId: input.txId,
-      baseVersion: input.baseVersion ?? null,
+      baseVersion: input.baseVersion,
       clientId: input.clientId ?? null,
       undoGroupId: input.undoGroupId ?? null,
       ops: input.ops,
     }),
   });
   if (!response.ok) {
-    const text = await response.text().catch(() => "");
-    throw new Error(`Internal canvas transaction failed ${response.status}: ${text}`);
+    const data = await parseJson<{ message?: string; code?: string; currentVersion?: number }>(response);
+    throw new InternalCanvasTransactionError(
+      data?.message || `Internal canvas transaction failed ${response.status}`,
+      response.status,
+      data?.code,
+      data?.currentVersion,
+    );
   }
-  const data = await parseJson<{ document?: { version?: number }; nodes?: unknown[] }>(response);
-  if (!data?.document || typeof data.document.version !== "number" || !Array.isArray(data.nodes)) {
+  const data = await parseJson<{
+    document?: { version?: number };
+    transaction?: { txId?: string; version?: number; replayed?: boolean };
+  }>(response);
+  if (!data?.document || typeof data.document.version !== "number" || !data.transaction || typeof data.transaction.version !== "number" || typeof data.transaction.txId !== "string") {
     throw new Error("Internal canvas transaction returned an invalid response");
   }
-  return { document: { version: data.document.version }, nodes: data.nodes };
+  return {
+    document: { version: data.document.version },
+    transaction: {
+      txId: data.transaction.txId,
+      version: data.transaction.version,
+      replayed: data.transaction.replayed === true,
+    },
+  };
 };
+
+export class InternalCanvasTransactionError extends Error {
+  constructor(
+    message: string,
+    readonly status: number,
+    readonly code?: string,
+    readonly currentVersion?: number,
+  ) {
+    super(message);
+    this.name = "InternalCanvasTransactionError";
+  }
+}
 
 /** Carries a standard billing error body from the internal prompt API. */
 export class InternalPromptError extends Error {

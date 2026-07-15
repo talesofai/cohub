@@ -1688,22 +1688,22 @@ onMount(() => {
 				documentId?: unknown;
 				version?: unknown;
 				actorId?: unknown;
+				ops?: unknown;
 			};
 			if (
 				typeof payload.documentId !== "string" ||
+				typeof payload.version !== "number" ||
+				!Array.isArray(payload.ops) ||
 				payload.documentId !== inlineCanvas?.documentId
 			)
 				return;
 			if (inlineCanvas?.saving) return;
-			void sdk
-				.space(spaceId)
-				.canvas.bootstrap(payload.documentId)
-				.then((bootstrap) => {
-					canvasPreview.applyBootstrap(payload.documentId as string, bootstrap);
-				})
+			const documentId = payload.documentId;
+			void canvasPreview
+				.applyRemoteTransaction(documentId, payload.version, payload.ops)
 				.catch((error) => {
 					canvasPreview.setError(
-						payload.documentId as string,
+						documentId,
 						error instanceof Error ? error.message : "Failed to sync canvas",
 					);
 				});
