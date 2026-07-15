@@ -1,5 +1,11 @@
 # @neta-art/cohub
 
+## 2.11.2
+
+### Patch Changes
+
+- 1d27866: Stop silent SSO login callback redirect loops by letting bootstrap `getMe` skip the unauthorized handler, and ship Apache-2.0 LICENSE/NOTICE with the published packages.
+
 ## 2.11.1
 
 ### Patch Changes
