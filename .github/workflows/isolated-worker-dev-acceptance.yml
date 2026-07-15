@@ -200,7 +200,8 @@ jobs:
           : > diagnostic.log
           for target in \
             "deployment/cohub-api-dev cohub-dev" \
-            "deployment/cohub-worker-dev cohub-dev"
+            "deployment/cohub-system-worker-dev cohub-dev" \
+            "deployment/cohub-user-worker-dev cohub-dev"
           do
             read -r workload namespace <<< "$target"
             printf '\n===== %s (%s) =====\n' "$workload" "$namespace" >> diagnostic.log
