@@ -1,0 +1,196 @@
+name: Isolated Worker Dev Acceptance
+
+on:
+  workflow_dispatch:
+    inputs:
+      mode:
+        description: Acceptance phase
+        required: true
+        type: choice
+        options:
+          - active
+          - terminated
+      authority_space_id:
+        description: Authority Space UUID
+        required: true
+        type: string
+      disposable_space_id:
+        description: Disposable Space UUID
+        required: true
+        type: string
+      expected_session_id:
+        description: Worker session UUID (active phase)
+        required: false
+        type: string
+      expected_pod_name:
+        description: Pod name captured by active phase (terminated phase)
+        required: false
+        type: string
+      expected_pod_uid:
+        description: Pod UID captured by active phase (terminated phase)
+        required: false
+        type: string
+
+permissions:
+  contents: read
+
+jobs:
+  acceptance:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Setup kubectl
+        uses: azure/setup-kubectl@v3
+        with:
+          version: v1.30.0
+
+      - name: Configure dev cluster
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p ~/.kube
+          echo "${{ secrets.KUBECONFIG_DEV }}" | base64 -d > ~/.kube/config
+          chmod 600 ~/.kube/config
+
+      - name: Validate active worker
+        if: ${{ inputs.mode == 'active' }}
+        env:
+          AUTHORITY_SPACE_ID: ${{ inputs.authority_space_id }}
+          DISPOSABLE_SPACE_ID: ${{ inputs.disposable_space_id }}
+          EXPECTED_SESSION_ID: ${{ inputs.expected_session_id }}
+          NAMESPACE: cohub-sessions-dev
+        shell: bash
+        run: |
+          set -euo pipefail
+          uuid='^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$'
+          [[ "$AUTHORITY_SPACE_ID" =~ $uuid ]]
+          [[ "$DISPOSABLE_SPACE_ID" =~ $uuid ]]
+          [[ "$EXPECTED_SESSION_ID" =~ $uuid ]]
+          [[ "$AUTHORITY_SPACE_ID" != "$DISPOSABLE_SPACE_ID" ]]
+
+          selector="cohub.run/disposable-space-id=$DISPOSABLE_SPACE_ID"
+          deadline=$((SECONDS + 300))
+          while true; do
+            mapfile -t pods < <(kubectl get pods -n "$NAMESPACE" -l "$selector" -o name)
+            if [[ ${#pods[@]} -eq 1 ]]; then break; fi
+            if [[ ${#pods[@]} -gt 1 ]]; then
+              echo "multiple isolated worker Pods matched $selector" >&2
+              exit 1
+            fi
+            (( SECONDS < deadline )) || { echo "isolated worker Pod did not appear" >&2; exit 1; }
+            sleep 2
+          done
+
+          pod_name=${pods[0]#pod/}
+          kubectl wait -n "$NAMESPACE" --for=condition=Ready "pod/$pod_name" --timeout=180s
+          kubectl get pod "$pod_name" -n "$NAMESPACE" -o json > pod.json
+
+          jq -e --arg authority "$AUTHORITY_SPACE_ID" --arg disposable "$DISPOSABLE_SPACE_ID" --arg session "$EXPECTED_SESSION_ID" '
+            .metadata.uid as $uid
+            | .metadata.creationTimestamp as $created
+            | ($uid | type == "string" and length > 0)
+            and ($created | type == "string" and length > 0)
+            and (.metadata.labels["app"] == "isolated-worker")
+            and (.metadata.labels["cohub.run/workload"] == "isolated-worker")
+            and (.metadata.labels["cohub.run/authority-space-id"] == $authority)
+            and (.metadata.labels["cohub.run/disposable-space-id"] == $disposable)
+            and (.metadata.labels["cohub.run/space-id"] == $disposable)
+            and (.metadata.labels["cohub.run/session-id"] == $session)
+            and (.spec.restartPolicy == "Never")
+            and (.spec.automountServiceAccountToken == false)
+            and (.spec.enableServiceLinks == false)
+            and (.spec.securityContext.runAsNonRoot == true)
+            and (.spec.securityContext.runAsUser == 1000)
+            and (.spec.containers | length == 1)
+            and (.spec.containers[0].securityContext.readOnlyRootFilesystem == true)
+            and (.spec.containers[0].securityContext.allowPrivilegeEscalation == false)
+            and (.spec.containers[0].securityContext.capabilities.drop == ["ALL"])
+            and (.spec.containers[0].volumeMounts | any(.mountPath == "/workspace" and .readOnly == true))
+            and (.spec.containers[0].volumeMounts | any(.mountPath == "/workspace/work" and (.readOnly // false) == false))
+            and (.spec.containers[0].volumeMounts | any(.mountPath == "/tmp"))
+            and (.spec.volumes | any(.name == "runtime-tmp" and (.emptyDir | type == "object")))
+            and (.spec.volumes | all(((has("secret") or has("projected") or has("hostPath")) | not)))
+            and (.spec.containers[0] | has("envFrom") | not)
+            and (.spec.containers[0].env | all(.name | test("TOKEN|SECRET|PASSWORD|KEY|AUTH"; "i") | not))
+            and (.status.conditions | any(.type == "Ready" and .status == "True"))
+            and (.status.podIP | type == "string" and length > 0)
+          ' pod.json >/dev/null
+
+          workspace_subpath=$(jq -r '.spec.containers[0].volumeMounts[] | select(.mountPath == "/workspace") | .subPath' pod.json)
+          work_subpath=$(jq -r '.spec.containers[0].volumeMounts[] | select(.mountPath == "/workspace/work") | .subPath' pod.json)
+          [[ "$workspace_subpath" == *"/$DISPOSABLE_SPACE_ID/workspace" ]]
+          [[ "$work_subpath" == "$workspace_subpath/work" ]]
+
+          kubectl exec -n "$NAMESPACE" "$pod_name" -- sh -lc '
+            set -eu
+            test "$(id -u)" = 1000
+            test -r /workspace/inputs/live-probe.txt
+            test "$(cat /workspace/inputs/live-probe.txt)" = "isolated-worker-live-probe"
+            if printf forbidden > /workspace/forbidden-write 2>/tmp/ro-error; then
+              echo "read-only workspace accepted a write" >&2
+              exit 1
+            fi
+            printf allowed > /workspace/work/platform-acceptance.txt
+            test "$(cat /workspace/work/platform-acceptance.txt)" = allowed
+            env | cut -d= -f1 | grep -E "COHUB_EXECUTION_TOKEN|WORKER_SECRET|DATABASE_URL|REDIS_URL|BULLMQ_REDIS_URL|LITELLM_API_KEY" && exit 1 || true
+          ' | tee exec-probe.log
+
+          set +e
+          kubectl exec -n "$NAMESPACE" "$pod_name" -- node -e '
+            fetch("https://api-dev.cohub.run/api/me", { signal: AbortSignal.timeout(4000) })
+              .then((response) => { console.error(`unexpected egress HTTP ${response.status}`); process.exit(42); })
+              .catch(() => process.exit(0));
+          '
+          egress_status=$?
+          set -e
+          [[ $egress_status -eq 0 ]] || { echo "isolated worker has undeclared network egress" >&2; exit 1; }
+
+          pod_uid=$(jq -r '.metadata.uid' pod.json)
+          turn_id=$(jq -r '.metadata.labels["cohub.run/turn-id"]' pod.json)
+          jq -n \
+            --arg authoritySpaceId "$AUTHORITY_SPACE_ID" \
+            --arg disposableSpaceId "$DISPOSABLE_SPACE_ID" \
+            --arg sessionId "$EXPECTED_SESSION_ID" \
+            --arg turnId "$turn_id" \
+            --arg podName "$pod_name" \
+            --arg podUid "$pod_uid" \
+            --arg creationTimestamp "$(jq -r '.metadata.creationTimestamp' pod.json)" \
+            '{authoritySpaceId:$authoritySpaceId,disposableSpaceId:$disposableSpaceId,sessionId:$sessionId,turnId:$turnId,podName:$podName,podUid:$podUid,creationTimestamp:$creationTimestamp,ready:true,workspaceReadOnly:true,workWritable:true,credentialsAbsent:true,undeclaredEgressDenied:true}' \
+            | tee acceptance.json
+          cat acceptance.json >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Validate terminated worker
+        if: ${{ inputs.mode == 'terminated' }}
+        env:
+          DISPOSABLE_SPACE_ID: ${{ inputs.disposable_space_id }}
+          EXPECTED_POD_NAME: ${{ inputs.expected_pod_name }}
+          EXPECTED_POD_UID: ${{ inputs.expected_pod_uid }}
+          NAMESPACE: cohub-sessions-dev
+        shell: bash
+        run: |
+          set -euo pipefail
+          [[ -n "$EXPECTED_POD_NAME" ]]
+          [[ -n "$EXPECTED_POD_UID" ]]
+          deadline=$((SECONDS + 180))
+          while kubectl get pod "$EXPECTED_POD_NAME" -n "$NAMESPACE" >/dev/null 2>&1; do
+            (( SECONDS < deadline )) || { echo "isolated worker Pod still exists after termination" >&2; exit 1; }
+            current_uid=$(kubectl get pod "$EXPECTED_POD_NAME" -n "$NAMESPACE" -o jsonpath='{.metadata.uid}')
+            [[ "$current_uid" == "$EXPECTED_POD_UID" ]] || { echo "Pod name was reused with a different UID" >&2; exit 1; }
+            sleep 2
+          done
+          count=$(kubectl get pods -n "$NAMESPACE" -l "cohub.run/disposable-space-id=$DISPOSABLE_SPACE_ID" -o name | wc -l | tr -d ' ')
+          [[ "$count" == 0 ]]
+          jq -n --arg disposableSpaceId "$DISPOSABLE_SPACE_ID" --arg podName "$EXPECTED_POD_NAME" --arg podUid "$EXPECTED_POD_UID" \
+            '{disposableSpaceId:$disposableSpaceId,podName:$podName,podUid:$podUid,podDeleted:true,podNameNotReused:true}' \
+            | tee acceptance.json
+          cat acceptance.json >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload acceptance evidence
+        uses: actions/upload-artifact@v4
+        with:
+          name: isolated-worker-${{ inputs.mode }}-${{ inputs.disposable_space_id }}
+          path: |
+            acceptance.json
+            pod.json
+            exec-probe.log
+          if-no-files-found: error
+          retention-days: 30
