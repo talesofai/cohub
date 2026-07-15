@@ -25,6 +25,7 @@ import { getSessionTurnById } from "../session-turns.js";
 import { enqueueTask } from "../tasks.js";
 import { defaultJobRetention } from "@cohub/infra/bullmq";
 import { createLogger } from "@cohub/infra/logging";
+import { rejectIsolatedWorkerDisposableRouteMutation } from "../isolated-worker-disposable-guard.js";
 
 
 const logger = createLogger({ serviceName: "cohub-api" });
@@ -59,6 +60,11 @@ router.post("/", async (c) => {
 
   const request = parsed.data;
   if (!(await hasPermission(user, "generation.create", { spaceId: request.spaceId }))) return authzDenied(c);
+  const rejected = await rejectIsolatedWorkerDisposableRouteMutation(c, {
+    spaceId: request.spaceId,
+    operation: "generic_task_dispatch",
+  });
+  if (rejected) return rejected;
 
   const sessionId = request.sessionId?.trim() || null;
   const turnId = request.turnId?.trim() || null;

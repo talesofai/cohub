@@ -5,6 +5,7 @@ import { accessPolicies, spaceSessions } from "@cohub/db";
 import { requireValidId, useAuth, authzDenied } from "../lib/middleware.js";
 import { hasPermission } from "../permissions.js";
 import type { AccessPolicyRole } from "@cohub/db";
+import { rejectIsolatedWorkerDisposableRouteMutation } from "../isolated-worker-disposable-guard.js";
 
 const router = new Hono();
 const SIGNED_IN_VALID_ROLES = new Set<AccessPolicyRole>(["builder", "guest", null]);
@@ -41,6 +42,11 @@ router.patch("/:id/access", async (c) => {
   const [session] = await db.select({ spaceId: spaceSessions.spaceId }).from(spaceSessions).where(eq(spaceSessions.id, sessionId)).limit(1);
   if (!session) return c.json({ message: "session not found" }, 404);
   if (!(await hasPermission(user, "member.manage", { spaceId: session.spaceId, sessionId }))) return authzDenied(c);
+  const rejected = await rejectIsolatedWorkerDisposableRouteMutation(c, {
+    spaceId: session.spaceId,
+    operation: "generic_mutation",
+  });
+  if (rejected) return rejected;
 
   const body = await c.req.json<{ signed_in_user?: AccessPolicyRole; anonymous_user?: AccessPolicyRole }>().catch(() => null);
   if (!body || (body.signed_in_user === undefined && body.anonymous_user === undefined)) {
@@ -91,6 +97,11 @@ router.delete("/:id/access", async (c) => {
   const [session] = await db.select({ spaceId: spaceSessions.spaceId }).from(spaceSessions).where(eq(spaceSessions.id, sessionId)).limit(1);
   if (!session) return c.json({ message: "session not found" }, 404);
   if (!(await hasPermission(user, "member.manage", { spaceId: session.spaceId, sessionId }))) return authzDenied(c);
+  const rejected = await rejectIsolatedWorkerDisposableRouteMutation(c, {
+    spaceId: session.spaceId,
+    operation: "generic_mutation",
+  });
+  if (rejected) return rejected;
 
   await db.delete(accessPolicies).where(and(eq(accessPolicies.resourceType, "session"), eq(accessPolicies.resourceId, sessionId)));
   return c.json({ ok: true });

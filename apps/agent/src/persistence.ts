@@ -17,6 +17,8 @@ import { logger } from "./logger.js";
 import { redis, publishRealtimeEnvelope, clearPersistedSessionStreamSnapshot, getGatewayNodeOutboundStreamKey, xaddWithMaxlen } from "./redis.js";
 import { buildTurnObjectPrefix, writeTurnObjectJson } from "./turn-object-storage.js";
 import { pickRealtimeMessageMeta } from "./realtime-message-meta.js";
+import { revokeIsolatedWorkerTurn } from "./api.js";
+import { createIsolatedWorkerTerminalFinalizer } from "./isolated-worker-termination.js";
 
 
 const INTERNAL_API_BASE_URL =
@@ -24,6 +26,9 @@ const INTERNAL_API_BASE_URL =
     ? "http://cohub-api.cohub.svc.cluster.local:8787"
     : "http://cohub-api-dev.cohub-dev.svc.cluster.local:8787";
 const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
+const finalizeIsolatedWorkerTerminalTurn = createIsolatedWorkerTerminalFinalizer({
+  revoke: revokeIsolatedWorkerTurn,
+});
 
 const stableSerialize = (value: unknown): string => {
   if (value === null || value === undefined) return JSON.stringify(value);
@@ -506,6 +511,15 @@ const buildIntermediateObjectsForTurn = async (input: { spaceId: string; session
 
 async function finalizeSessionTurnFromMessage(input: { spaceId: string; sessionId: string; turnId: string; status: Exclude<SessionTurnStatus, "running">; assistantContent: ContentBlock[]; assistantText: string | null; provider: string | null; model: string | null; stopReason: string | null; errorMessage: string | null; usage: Usage | null; metaPatch?: Record<string, unknown> | null }) {
   const intermediate = await buildIntermediateObjectsForTurn(input);
+  const [pendingTurn] = await db.select().from(sessionTurns).where(and(
+    eq(sessionTurns.id, input.turnId),
+    eq(sessionTurns.sessionId, input.sessionId),
+    inArray(sessionTurns.status, ["running", "abort_requested"]),
+  )).limit(1);
+  if (pendingTurn) {
+    const terminalStatus = input.status === "interrupted" ? "interrupted" : input.status === "failed" ? "failed" : "completed";
+    await finalizeIsolatedWorkerTerminalTurn(input.spaceId, toTurnRecord(pendingTurn), terminalStatus);
+  }
   const completedAt = new Date();
   const completedAtIso = completedAt.toISOString();
   const [row] = await db.update(sessionTurns).set({
@@ -526,7 +540,12 @@ async function finalizeSessionTurnFromMessage(input: { spaceId: string; sessionI
     durationMs: sql<number>`greatest(0, floor(extract(epoch from (${completedAtIso}::timestamptz - ${sessionTurns.startedAt})) * 1000)::int)`,
     updatedAt: completedAt,
   }).where(and(eq(sessionTurns.id, input.turnId), eq(sessionTurns.sessionId, input.sessionId), inArray(sessionTurns.status, ["running", "abort_requested"]))).returning();
-  return { turn: row ? toTurnRecord(row) : null, messages: intermediate.rows };
+  const [existingRow] = row ? [row] : await db.select().from(sessionTurns).where(and(
+    eq(sessionTurns.id, input.turnId),
+    eq(sessionTurns.sessionId, input.sessionId),
+  )).limit(1);
+  const turn = existingRow ? toTurnRecord(existingRow) : null;
+  return { turn, messages: intermediate.rows };
 }
 
 async function requestGatewayChannelReconcile(reason: string) {
@@ -653,6 +672,16 @@ export async function persistAssistantMessage(input: { spaceId: string; spaceSes
   const persisted = await persistMessageNode({ spaceId: input.spaceId, sessionId: input.spaceSessionId, previousMessageId: input.userMessageId, anchorUserMessageId: input.userMessageId, userId: input.userId ?? null, idempotencyKey: await buildAssistantIdempotencyKey({ previousMessageId: input.userMessageId, message }), message });
   const record = toMessageRecord(persisted.message);
   if (!persisted.created) {
+    const turnId = typeof record.meta?.turnId === "string" ? record.meta.turnId : input.turnId ?? null;
+    if (turnId) {
+      const [existingTurn] = await db.select().from(sessionTurns).where(and(
+        eq(sessionTurns.id, turnId),
+        eq(sessionTurns.sessionId, input.spaceSessionId),
+      )).limit(1);
+      if (existingTurn && ["completed", "failed", "interrupted", "cancelled"].includes(existingTurn.status)) {
+        await finalizeIsolatedWorkerTerminalTurn(input.spaceId, toTurnRecord(existingTurn), existingTurn.status as "completed" | "failed" | "interrupted" | "cancelled");
+      }
+    }
     await enqueueSessionMessagePostprocess({ sessionId: input.spaceSessionId, messageId: record.id });
     return { ok: true, message: record, created: false };
   }
@@ -677,13 +706,21 @@ export async function persistAssistantMessage(input: { spaceId: string; spaceSes
 async function finalizeInterruptedTurn(input: { spaceId: string; sessionId: string; turnId: string; stopReason: "interrupted" | "aborted"; summary: Record<string, unknown> }) {
   const [existing] = await db.select().from(sessionTurns).where(and(eq(sessionTurns.id, input.turnId), eq(sessionTurns.sessionId, input.sessionId))).limit(1);
   if (!existing) return { turn: null, messages: [] };
-  if (!["running", "abort_requested", "interrupted"].includes(existing.status)) return { turn: toTurnRecord(existing), messages: [] };
+  if (!["running", "abort_requested", "interrupted"].includes(existing.status)) {
+    const turn = toTurnRecord(existing);
+    if (["completed", "failed", "interrupted", "cancelled"].includes(turn.status)) {
+      await finalizeIsolatedWorkerTerminalTurn(input.spaceId, turn, turn.status as "completed" | "failed" | "interrupted" | "cancelled");
+    }
+    return { turn, messages: [] };
+  }
   const [last] = await db.select().from(sessionMessages).where(and(eq(sessionMessages.sessionId, input.sessionId), eq(sessionMessages.role, "assistant"), sql`${sessionMessages.meta}->>'turnId' = ${input.turnId}`)).orderBy(desc(sessionMessages.sequence)).limit(1);
   const intermediate = await buildIntermediateObjectsForTurn(input);
+  await finalizeIsolatedWorkerTerminalTurn(input.spaceId, toTurnRecord(existing), "interrupted");
   const completedAt = new Date();
   const completedAtIso = completedAt.toISOString();
   const [row] = await db.update(sessionTurns).set({ status: "interrupted", assistantContent: last?.content ?? null, assistantText: last?.text ?? null, provider: last?.provider ?? null, model: last?.model ?? null, stopReason: input.stopReason, errorMessage: null, finalUsage: last?.usage as Usage | null ?? null, totalUsage: intermediate?.summary.usage ?? null, summary: input.summary, intermediateIndex: intermediate?.index ?? null, intermediateSummary: intermediate?.summary ?? null, completedAt, durationMs: sql<number>`greatest(0, floor(extract(epoch from (${completedAtIso}::timestamptz - ${sessionTurns.startedAt})) * 1000)::int)`, updatedAt: completedAt }).where(and(eq(sessionTurns.id, input.turnId), eq(sessionTurns.sessionId, input.sessionId), inArray(sessionTurns.status, ["running", "abort_requested", "interrupted"]))).returning();
-  return { turn: row ? toTurnRecord(row) : null, messages: intermediate.rows };
+  const turn = row ? toTurnRecord(row) : null;
+  return { turn, messages: intermediate.rows };
 }
 
 export async function interruptSessionTurn(input: { spaceId: string; sessionId: string; turnId: string; continuedByTurnId: string }) {
@@ -704,12 +741,38 @@ export async function abortSessionTurn(input: { spaceId: string; sessionId: stri
   return turn;
 }
 
+export async function recoverStaleIsolatedWorkerTurn(input: { spaceId: string; sessionId: string; turnId: string }) {
+  const { turn, messages } = await finalizeInterruptedTurn({
+    ...input,
+    stopReason: "interrupted",
+    summary: { finishReason: "interrupted", reason: "stale_active_recovered" },
+  });
+  if (turn) {
+    indexTurnReferences({ spaceId: input.spaceId, sessionId: turn.sessionId, turnId: turn.id, userUuid: turn.userUuid, messages });
+    await publishTurnFinalized(input.spaceId, turn);
+  }
+  return turn;
+}
+
 export async function failSessionTurn(input: { spaceId: string; sessionId: string; turnId: string; errorMessage: string }) {
+  const [pendingTurn] = await db.select().from(sessionTurns).where(and(
+    eq(sessionTurns.id, input.turnId),
+    eq(sessionTurns.sessionId, input.sessionId),
+    inArray(sessionTurns.status, ["queued", "running", "abort_requested"]),
+  )).limit(1);
+  if (pendingTurn) await finalizeIsolatedWorkerTerminalTurn(input.spaceId, toTurnRecord(pendingTurn), "failed");
   const completedAt = new Date();
   const completedAtIso = completedAt.toISOString();
   const [row] = await db.update(sessionTurns).set({ status: "failed", errorMessage: input.errorMessage, summary: { finishReason: "failed", text: input.errorMessage }, completedAt, durationMs: sql<number>`greatest(0, floor(extract(epoch from (${completedAtIso}::timestamptz - ${sessionTurns.startedAt})) * 1000)::int)`, updatedAt: completedAt }).where(and(eq(sessionTurns.id, input.turnId), eq(sessionTurns.sessionId, input.sessionId), inArray(sessionTurns.status, ["queued", "running", "abort_requested"]))).returning();
-  const turn = row ? toTurnRecord(row) : null;
+  const [existingRow] = row ? [row] : await db.select().from(sessionTurns).where(and(
+    eq(sessionTurns.id, input.turnId),
+    eq(sessionTurns.sessionId, input.sessionId),
+  )).limit(1);
+  const turn = existingRow ? toTurnRecord(existingRow) : null;
   if (turn) {
+    if (["completed", "failed", "interrupted", "cancelled"].includes(turn.status)) {
+      await finalizeIsolatedWorkerTerminalTurn(input.spaceId, turn, turn.status as "completed" | "failed" | "interrupted" | "cancelled");
+    }
     // No message load on the failure path, so we skip live reference indexing
     // here (avoiding an extra query for a rare error case); the backfill script
     // reconciles any references from a failed turn's messages.

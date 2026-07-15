@@ -7,6 +7,7 @@ export interface WorkerConfig {
   giteaOrg: string;
   workerSecret: string;
   appEncryptionKey: string;
+  internalApiBaseUrl: string;
   spaceStorageRoot: string;
   spaceSystemRoot: string;
   checkpointCacheRoot: string;
@@ -61,6 +62,7 @@ export const config: WorkerConfig = {
   giteaOrg: process.env.GITEA_ORG ?? "cohub-spaces",
   workerSecret: process.env.WORKER_SECRET ?? "",
   appEncryptionKey: process.env.APP_ENCRYPTION_KEY ?? "",
+  internalApiBaseUrl: process.env.INTERNAL_API_BASE_URL ?? (env === "prod" ? "http://cohub-api:8787" : "http://cohub-api-dev:8787"),
   spaceStorageRoot: process.env.SPACE_STORAGE_ROOT ?? "",
   spaceSystemRoot: process.env.SPACE_SYSTEM_ROOT ?? process.env.SPACE_STORAGE_ROOT ?? "",
   checkpointCacheRoot: process.env.CHECKPOINT_CACHE_ROOT ?? process.env.SPACE_STORAGE_ROOT ?? "",

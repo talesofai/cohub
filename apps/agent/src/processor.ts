@@ -10,8 +10,9 @@ import { getActiveTraceIdentifiers, getOrCreateRequestId, setRequestContextAttri
 import { wrapAgentTurn } from "@cohub/infra/tracing/agent";
 import { runInActiveSpan, extractTrace } from "@cohub/infra/tracing/propagator";
 import { getAgentTracer } from "@cohub/infra/tracing/agent";
-import { getSpace } from "./api.js";
-import { abortSessionTurn, failSessionTurn, interruptSessionTurn, persistAssistantMessage, persistUserMessage } from "./persistence.js";
+import { getSpace, getSpaceSandbox } from "./api.js";
+import { assertSandboxAccessMode, resolvePromptAccessMode } from "./isolated-worker-access.js";
+import { abortSessionTurn, failSessionTurn, interruptSessionTurn, persistAssistantMessage, persistUserMessage, recoverStaleIsolatedWorkerTurn } from "./persistence.js";
 import { ensureSandboxConnection } from "./sandbox-pool.js";
 import { createSandboxCodingTools } from "./sandbox/tools.js";
 import { CohubModelRegistry } from "./runtime/model-registry.js";
@@ -31,7 +32,7 @@ import { setActiveAbortController, clearActiveAbortController, getActiveAbortEve
 import { sendOutput } from "./redis.js";
 import { env } from "./env.js";
 import { logger } from "./logger.js";
-import { getPromptAuthScopes, parsePromptEnv, type PromptAccessMode } from "@cohub/core/sessions";
+import { getPromptAuthScopes, parsePromptEnv, type AgentPromptAccessMode } from "@cohub/core/sessions";
 import { createAgentExecutionToken } from "./execution-grants.js";
 
 
@@ -644,10 +645,6 @@ function resolveActorUserId(ownerMeta: Record<string, unknown>) {
   return typeof ownerMeta.userId === "string" && ownerMeta.userId.trim() ? ownerMeta.userId.trim() : null;
 }
 
-function resolvePromptAccessMode(ownerMeta: Record<string, unknown>): PromptAccessMode {
-  return ownerMeta.accessMode === "read_only" ? "read_only" : "full_access";
-}
-
 function resolvePromptEnv(ownerMeta: Record<string, unknown>) {
   try {
     return parsePromptEnv(ownerMeta.env);
@@ -657,14 +654,15 @@ function resolvePromptEnv(ownerMeta: Record<string, unknown>) {
   }
 }
 
-function resolveBatchAccessMode(batch: { turns: Array<{ meta: unknown }> }): PromptAccessMode {
-  return batch.turns.some((turn) => resolvePromptAccessMode(turn.meta && typeof turn.meta === "object" && !Array.isArray(turn.meta) ? turn.meta as Record<string, unknown> : {}) === "read_only")
-    ? "read_only"
-    : "full_access";
+function resolveBatchAccessMode(batch: { turns: Array<{ meta: unknown }> }): AgentPromptAccessMode {
+	const modes = batch.turns.map((turn) => resolvePromptAccessMode(turn.meta && typeof turn.meta === "object" && !Array.isArray(turn.meta) ? turn.meta as Record<string, unknown> : {}));
+	if (modes.some((mode) => mode === "read_only")) return "read_only";
+	if (modes.some((mode) => mode === "isolated_worker")) return "isolated_worker";
+	return "full_access";
 }
 
 async function createTurnExecutionToken(input: {
-  accessMode: PromptAccessMode;
+  accessMode: AgentPromptAccessMode;
   actorUserId: string;
   spaceId: string;
   sessionId: string;
@@ -683,13 +681,13 @@ async function createTurnExecutionToken(input: {
   });
 }
 
-function filterToolsForAccessMode(allTools: AgentTool[], accessMode: PromptAccessMode) {
-  if (accessMode === "full_access") return allTools;
+function filterToolsForAccessMode(allTools: AgentTool[], accessMode: AgentPromptAccessMode) {
+	if (accessMode === "full_access" || accessMode === "isolated_worker") return allTools;
   const readOnlyTools = new Set(["read", "ls", "find", "grep"]);
   return allTools.filter((tool) => readOnlyTools.has(tool.name));
 }
 
-async function configureHandleAccessMode(handle: SessionHandle, accessMode: PromptAccessMode) {
+async function configureHandleAccessMode(handle: SessionHandle, accessMode: AgentPromptAccessMode) {
   if (handle.currentAccessMode === accessMode) return;
   await handle.session.configureTools(filterToolsForAccessMode(tools, accessMode));
   handle.currentAccessMode = accessMode;
@@ -793,6 +791,15 @@ export async function processAgentTurnJob(job: Job<AgentTurnJobData>) {
         }
         return result;
       }
+      if (claim.kind === "stale_isolated") {
+        await recoverStaleIsolatedWorkerTurn({
+          spaceId: data.spaceId,
+          sessionId: data.sessionId,
+          turnId: claim.turn.id,
+        });
+        drainAfterRelease = { spaceId: data.spaceId, sessionId: data.sessionId, reason: "stale_isolated_recovered" };
+        return { skipped: "stale_isolated_recovered", turnId: claim.turn.id };
+      }
 
       clearRetryState(data);
       const { batch } = claim;
@@ -811,6 +818,8 @@ export async function processAgentTurnJob(job: Job<AgentTurnJobData>) {
         promptAuth: promptContext?.auth,
       });
       const accessMode = resolveBatchAccessMode(batch);
+      const sandboxState = await getSpaceSandbox({ spaceId: data.spaceId });
+      assertSandboxAccessMode(sandboxState?.sandbox, accessMode);
       const generationPolicy = normalizeGenerationPolicy(ownerMeta.generationPolicy);
       const promptEnv = resolvePromptEnv(ownerMeta);
       const abortEvent = await getAbortEvent(batch.ownerTurn.id);
@@ -850,7 +859,7 @@ export async function processAgentTurnJob(job: Job<AgentTurnJobData>) {
         throw error;
       }
 
-      if (accessMode === "full_access") warmupSandboxConnection(data.spaceId);
+      if (accessMode === "full_access" || accessMode === "isolated_worker") warmupSandboxConnection(data.spaceId);
 
       const rawTurnUserMessages: TurnUserMessage[] = buildUserMessagesForBatch(batch)
         .filter((item) => Boolean(item.userMessageId))
@@ -913,7 +922,7 @@ export async function processAgentTurnJob(job: Job<AgentTurnJobData>) {
         .filter((item) => !hasSessionUserMessage(activeHandle, item.userMessageId))
         .map((item) => contentToAgentMessage(item.content, normalizeTurnUserMeta(item))));
 
-      const directShellItem = accessMode === "full_access" && turnUserMessages.length === 1 ? turnUserMessages[0] : null;
+      const directShellItem = (accessMode === "full_access" || accessMode === "isolated_worker") && turnUserMessages.length === 1 ? turnUserMessages[0] : null;
       const directShellCommand = directShellItem ? getShellCommandBlock(directShellItem.content) : null;
       if (directShellItem && directShellCommand) {
         await wrapAgentTurn(agentTracer, {
@@ -938,6 +947,7 @@ export async function processAgentTurnJob(job: Job<AgentTurnJobData>) {
             llmRound: 0,
             actorUserId,
             executionToken,
+            accessMode,
             executionScopes,
             fileVisibility,
             requestId,
@@ -1007,6 +1017,7 @@ export async function processAgentTurnJob(job: Job<AgentTurnJobData>) {
           llmRound: 0,
           actorUserId,
           executionToken,
+          accessMode,
           executionScopes,
           fileVisibility,
           requestId,

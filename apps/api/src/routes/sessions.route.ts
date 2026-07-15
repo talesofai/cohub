@@ -19,10 +19,31 @@ import { clearSessionStreamSnapshot, getSessionStreamSnapshot } from "../session
 import { createSessionFork, listSessionForksForSessions } from "../session-forks.js";
 import { dispatchLabelAssignmentsUpdated } from "../realtime-events.js";
 import { buildSessionTurnResponse } from "../session-turn-response.js";
+import { rejectIsolatedWorkerDisposableRouteMutation } from "../isolated-worker-disposable-guard.js";
 
 
 const logger = createLogger({ serviceName: "cohub-api" });
 const router = new Hono();
+
+router.use("*", async (c, next) => {
+  if (["GET", "HEAD", "OPTIONS"].includes(c.req.method)) return next();
+  const match = c.req.path.match(/\/api\/sessions\/([^/]+)(\/.*)?$/);
+  const sessionId = match?.[1] ?? "";
+  if (!requireValidId(sessionId)) return next();
+  const suffix = match?.[2] ?? "";
+  if (/^\/turns\/[^/]+\/signed-urls$/.test(suffix)) return next();
+
+  const user = getOptionalAuth(c);
+  if (!user) return next();
+  const session = await getSpaceSessionById(sessionId);
+  if (!session || !(await hasPermission(user, "session.view", { spaceId: session.spaceId, sessionId }))) {
+    return next();
+  }
+  const operation = suffix === "/abort" ? "isolated_worker_revoke" as const : "generic_mutation" as const;
+  const rejected = await rejectIsolatedWorkerDisposableRouteMutation(c, { spaceId: session.spaceId, operation });
+  if (rejected) return rejected;
+  return next();
+});
 
 router.post("/:id/turns/:turnId/fork", async (c) => {
   const user = useAuth(c);

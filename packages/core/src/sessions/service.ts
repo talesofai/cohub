@@ -190,6 +190,7 @@ export function createSessionServices(input: {
         provider,
         model,
         meta,
+        ...(meta.accessMode === "isolated_worker" ? { startedAt: null } : {}),
       }).returning();
       return { row, spaceId: sessionRow.spaceId };
     });
@@ -204,6 +205,23 @@ export function createSessionServices(input: {
       userUuids: [turnInput.userUuid],
     })).catch((error) => logger.warn("[Session] failed to publish session participant labels", error));
     return row;
+  }
+
+  async function mergeSessionTurnMeta(turnInput: {
+    sessionId: string;
+    turnId: string;
+    metaPatch: Record<string, unknown>;
+  }) {
+    const metaPatch = sanitizePostgresJsonValue(turnInput.metaPatch);
+    const [row] = await input.db.update(sessionTurns).set({
+      meta: sql`coalesce(${sessionTurns.meta}, '{}'::jsonb) || ${JSON.stringify(metaPatch)}::jsonb`,
+      updatedAt: new Date(),
+    }).where(and(
+      eq(sessionTurns.id, turnInput.turnId),
+      eq(sessionTurns.sessionId, turnInput.sessionId),
+      eq(sessionTurns.status, "queued"),
+    )).returning({ id: sessionTurns.id });
+    if (!row) throw new Error("queued session turn not found");
   }
 
   async function failSessionTurn(turnInput: { sessionId: string; turnId: string; errorMessage: string }) {
@@ -304,6 +322,7 @@ export function createSessionServices(input: {
         ? ({ text, userId, spaceId }) => input.skillService!.expand(text, { userId, spaceId })
         : undefined,
       createSessionTurn,
+      mergeSessionTurnMeta,
       enqueueSpacePrompt,
       failSessionTurn,
       billingUsageGate: input.billingUsageGate,

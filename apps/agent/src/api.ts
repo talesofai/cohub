@@ -1,5 +1,6 @@
 import { buildTraceHeaders, getCurrentRequestId } from "@cohub/infra/tracing";
 import { env } from "./env.js";
+import type { IsolatedWorkerRevokeRequest } from "./isolated-worker-termination.js";
 
 const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 
@@ -105,4 +106,28 @@ export async function getSpace(input: { spaceId: string }) {
       meta?: Record<string, unknown> | null;
     } | null;
   } | null>;
+}
+
+export async function revokeIsolatedWorkerTurn(input: IsolatedWorkerRevokeRequest) {
+  const scheduled = await postJsonWithRetry({
+    url: `${INTERNAL_API_BASE_URL}/internal/spaces/${input.spaceId}/sessions/${input.sessionId}/turns/${input.turnId}/isolated-worker/termination`,
+    body: { terminalStatus: input.terminalStatus },
+    errorPrefix: "Schedule isolated worker termination failed",
+    maxAttempts: 5,
+  }) as Record<string, unknown> | null;
+  if (scheduled?.receipt) return { ok: true, receipt: scheduled.receipt };
+  const revokeTaskRunId = typeof scheduled?.revokeTaskRunId === "string" ? scheduled.revokeTaskRunId : null;
+  if (!revokeTaskRunId) throw new Error("Schedule isolated worker termination returned no revoke TaskRun ID");
+  const deadline = Date.now() + 20 * 60_000;
+  const url = `${INTERNAL_API_BASE_URL}/internal/spaces/${input.spaceId}/sessions/${input.sessionId}/turns/${input.turnId}/isolated-worker/termination?revokeTaskRunId=${encodeURIComponent(revokeTaskRunId)}`;
+  while (Date.now() < deadline) {
+    const response = await fetch(url, { method: "GET", headers: internalHeaders() });
+    const body = await response.json().catch(() => null) as Record<string, unknown> | null;
+    if (response.ok && body?.state === "terminated" && body.receipt) return { ok: true, receipt: body.receipt };
+    if (response.status >= 400 && response.status !== 404) {
+      throw new Error(`Read isolated worker termination failed ${response.status}: ${JSON.stringify(body)}`);
+    }
+    await sleep(500);
+  }
+  throw new Error("Timed out waiting for isolated worker termination receipt scan");
 }

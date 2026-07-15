@@ -19,6 +19,11 @@ import { ensureSessionTurnSegments, findSegmentForTurn } from "./session-forks.j
 import { fallbackPublicUserProfile, getProfilesByUuids } from "./user-profiles.js";
 import { buildTurnObjectPrefix, assertTurnObjectKeyForTurn, createTurnObjectCdnUrl, writeTurnObjectJson } from "./turn-object-storage.js";
 import { deriveMessagePreviewText } from "./session-content.js";
+import {
+  scheduleIsolatedWorkerTermination,
+  waitForIsolatedWorkerTermination,
+} from "./isolated-worker-termination.js";
+import type { IsolatedWorkerTerminalStatus } from "@cohub/protocol/isolated-worker";
 
 
 const logger = createLogger({ serviceName: "cohub-api" });
@@ -29,6 +34,24 @@ const toIso = (value: Date | string | null | undefined) => {
 
 const normalizeRecord = (value: unknown): Record<string, unknown> | null =>
   value && typeof value === "object" && !Array.isArray(value) ? value as Record<string, unknown> : null;
+
+const terminateIsolatedWorkerBeforeFinalStatus = async (input: {
+  spaceId: string;
+  sessionId: string;
+  turnId: string;
+  terminalStatus: IsolatedWorkerTerminalStatus;
+  meta: unknown;
+}) => {
+  if (!normalizeRecord(input.meta)?.isolatedWorker) return;
+  const scheduled = await scheduleIsolatedWorkerTermination(input);
+  if (scheduled.alreadyTerminated) return;
+  await waitForIsolatedWorkerTermination({
+    spaceId: input.spaceId,
+    sessionId: input.sessionId,
+    turnId: input.turnId,
+    revokeTaskRunId: scheduled.revokeTaskRunId,
+  });
+};
 
 const addUsage = (a: Usage | null | undefined, b: Usage | null | undefined): Usage | null => {
   if (!a && !b) return null;
@@ -521,7 +544,13 @@ export const buildIntermediateObjectsForTurn = async (input: { spaceId: string; 
   };
 };
 
-export const failSessionTurn = async (input: { sessionId: string; turnId: string; errorMessage: string }) => {
+export const failSessionTurn = async (input: { spaceId: string; sessionId: string; turnId: string; errorMessage: string }) => {
+  const [pending] = await db.select().from(sessionTurns).where(and(
+    eq(sessionTurns.id, input.turnId),
+    eq(sessionTurns.sessionId, input.sessionId),
+    inArray(sessionTurns.status, ["queued", "running", "abort_requested"]),
+  )).limit(1);
+  if (pending) await terminateIsolatedWorkerBeforeFinalStatus({ ...input, terminalStatus: "failed", meta: pending.meta });
   const completedAt = new Date();
   const completedAtIso = completedAt.toISOString();
   const [row] = await db.update(sessionTurns).set({
@@ -553,6 +582,21 @@ export const finalizeSessionTurnFromMessage = async (input: {
     logger.warn("[SessionTurn] failed to build intermediate objects", error);
     return null;
   });
+  const [pending] = await db.select().from(sessionTurns).where(and(
+    eq(sessionTurns.id, input.turnId),
+    eq(sessionTurns.sessionId, input.sessionId),
+    inArray(sessionTurns.status, ["running", "abort_requested"]),
+  )).limit(1);
+  if (pending) {
+    const terminalStatus: IsolatedWorkerTerminalStatus = input.status === "failed"
+      ? "failed"
+      : input.status === "cancelled"
+        ? "cancelled"
+        : input.status === "interrupted"
+          ? "interrupted"
+          : "completed";
+    await terminateIsolatedWorkerBeforeFinalStatus({ ...input, terminalStatus, meta: pending.meta });
+  }
   const completedAt = new Date();
   const completedAtIso = completedAt.toISOString();
   const [row] = await db.update(sessionTurns).set({
@@ -608,6 +652,7 @@ const finalizeInterruptedTurn = async (input: {
     logger.warn("[SessionTurn] failed to build interrupted intermediate objects", error);
     return null;
   });
+  await terminateIsolatedWorkerBeforeFinalStatus({ ...input, terminalStatus: "interrupted", meta: existing.meta });
   const completedAt = new Date();
   const completedAtIso = completedAt.toISOString();
   const [row] = await db.update(sessionTurns).set({

@@ -1,4 +1,5 @@
 import { join } from "node:path";
+import { createHash } from "node:crypto";
 import { eq } from "drizzle-orm";
 import type { Job } from "bullmq";
 import type { TaskPayload } from "@cohub/protocol/task";
@@ -20,7 +21,7 @@ import {
   materializeFilePatches,
   type CheckpointDiffMeta,
 } from "../checkpoint/diff-precompute.js";
-import { ensureGitRepo, runGit, runGitWithOutput } from "../checkpoint/git.js";
+import { ensureGitRepo, runGit, runGitWithBuffer, runGitWithOutput } from "../checkpoint/git.js";
 import { collectUserGitRepos } from "../checkpoint/git-bundles.js";
 import { saveCanvasCheckpointSnapshots } from "../checkpoint/canvas.js";
 import { materializeLatest } from "../checkpoint/materialize.js";
@@ -162,6 +163,10 @@ export const saveCheckpointForSpace = async (input: SaveCheckpointInput): Promis
   await timeIt(timings, "gitCommit", () => runGit(["commit", "--allow-empty", "-m", commitMessage], dirs.repoDir));
   const head = await timeIt(timings, "gitRevParse", () => runGitWithOutput(["rev-parse", "HEAD"], dirs.repoDir));
   const commitHash = head.stdout.trim();
+  const tree = await timeIt(timings, "gitTreeRevParse", () => runGitWithOutput(["rev-parse", "HEAD^{tree}"], dirs.repoDir));
+  const treeHash = tree.stdout.trim();
+  const treeListing = await timeIt(timings, "gitTreeSha256", () => runGitWithBuffer(["ls-tree", "-r", "-z", "--full-tree", "HEAD"], dirs.repoDir));
+  const checkpointTreeSha256 = createHash("sha256").update(treeListing.stdout).digest("hex");
 
   // Persist precomputed parent diff: inline in meta when small, OSS when large.
   // Also precompute a capped set of text file patches (sequential, NFS-friendly).
@@ -238,6 +243,7 @@ export const saveCheckpointForSpace = async (input: SaveCheckpointInput): Promis
       version: SAVE_VERSION,
       branch,
       commitMessage,
+      gitTree: { hash: treeHash, sha256: checkpointTreeSha256 },
       paths: {
         assetManifest: CHECKPOINT_ASSET_MANIFEST_PATH,
         checkpointMeta: CHECKPOINT_META_PATH,
@@ -328,7 +334,7 @@ export const saveCheckpointForSpace = async (input: SaveCheckpointInput): Promis
   }
 
   await progress("completed", { checkpointId: checkpoint.id, commitHash, ...(publishWarnings.length > 0 ? { publishWarnings } : {}) });
-  return { checkpointId: checkpoint.id, commitHash, branch, commitMessage, changedFiles: diffStats.changedFileCount, stats, assetCount, detectedGitRepoCount, timings, spaceId, latestSubPath: getCheckpointLatestSubPath(spaceId), ...(publishedUserConfig ? { publishedUserConfig } : {}), ...(publishedPlatformConfig ? { publishedPlatformConfig } : {}), ...(publishWarnings.length > 0 ? { publishWarnings } : {}) };
+  return { checkpointId: checkpoint.id, commitHash, treeHash, checkpointTreeSha256, branch, commitMessage, changedFiles: diffStats.changedFileCount, stats, assetCount, detectedGitRepoCount, timings, spaceId, latestSubPath: getCheckpointLatestSubPath(spaceId), ...(publishedUserConfig ? { publishedUserConfig } : {}), ...(publishedPlatformConfig ? { publishedPlatformConfig } : {}), ...(publishWarnings.length > 0 ? { publishWarnings } : {}) };
 };
 
 const saveCheckpointHandler = async (job: Job, context?: { taskRunId: string }) => {

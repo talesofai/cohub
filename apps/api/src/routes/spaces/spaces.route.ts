@@ -70,6 +70,10 @@ import { parseChannelConfigPatch, mergeChannelConfig, validateChannelModelConfig
 import { redisCommandClient } from "../../redis.js";
 import { featureGateResponse } from "../../lib/feature-gate.js";
 import { billingBlockedResponse } from "../../lib/billing-blocked.js";
+import {
+  scheduleIsolatedWorkerTermination,
+  waitForIsolatedWorkerTermination,
+} from "../../isolated-worker-termination.js";
 
 
 const logger = createLogger({ serviceName: "cohub-api" });
@@ -225,6 +229,27 @@ async function cancelQueuedTurn(input: {
   turnId: string;
   actorUserId: string;
 }): Promise<NonNullable<Awaited<ReturnType<typeof getSessionTurnById>>>> {
+  const [candidate] = await db.select({ status: sessionTurns.status, meta: sessionTurns.meta })
+    .from(sessionTurns)
+    .where(and(eq(sessionTurns.id, input.turnId), eq(sessionTurns.sessionId, input.sessionId)))
+    .limit(1);
+  const candidateMeta = readMetaRecord(candidate?.meta as Record<string, unknown> | null);
+  if (candidate?.status === "queued" && candidateMeta.isolatedWorker) {
+    const scheduled = await scheduleIsolatedWorkerTermination({
+      spaceId: input.spaceId,
+      sessionId: input.sessionId,
+      turnId: input.turnId,
+      terminalStatus: "cancelled",
+    });
+    if (!scheduled.alreadyTerminated) {
+      await waitForIsolatedWorkerTermination({
+        spaceId: input.spaceId,
+        sessionId: input.sessionId,
+        turnId: input.turnId,
+        revokeTaskRunId: scheduled.revokeTaskRunId,
+      });
+    }
+  }
   const now = new Date();
   const [updated] = await db.transaction(async (tx) => {
     const [session] = await tx.select({ id: spaceSessions.id, spaceId: spaceSessions.spaceId }).from(spaceSessions).where(eq(spaceSessions.id, input.sessionId)).for("update").limit(1);
@@ -1380,7 +1405,16 @@ router.get("/:id/checkpoints/:checkpointId", async (c) => {
 
   if (!checkpoint) return c.json({ message: "checkpoint not found" }, 404);
 
-  return c.json({ checkpoint });
+  const checkpointMeta = checkpoint.meta && typeof checkpoint.meta === "object" && !Array.isArray(checkpoint.meta)
+    ? checkpoint.meta as Record<string, unknown>
+    : null;
+  const gitTree = checkpointMeta?.gitTree && typeof checkpointMeta.gitTree === "object" && !Array.isArray(checkpointMeta.gitTree)
+    ? checkpointMeta.gitTree as Record<string, unknown>
+    : null;
+  const treeSha256 = typeof gitTree?.sha256 === "string" && /^[a-f0-9]{64}$/.test(gitTree.sha256)
+    ? gitTree.sha256
+    : null;
+  return c.json({ checkpoint: { ...checkpoint, treeSha256 }, treeSha256 });
 });
 
 // In production, these checkpoints/fs routes are routed to fs-api by the gateway.

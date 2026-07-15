@@ -116,6 +116,13 @@ export type SkillUsageMeta = {
 };
 
 export type PromptAccessMode = "read_only" | "full_access";
+export type AgentPromptAccessMode = PromptAccessMode | "isolated_worker";
+
+export function parseAgentPromptAccessMode(value: unknown): AgentPromptAccessMode {
+  if (value === undefined || value === null) return "full_access";
+  if (value === "read_only" || value === "full_access" || value === "isolated_worker") return value;
+  throw new Error("invalid prompt access mode");
+}
 
 export type SubmitSessionPromptInput = {
   spaceId: string;
@@ -127,7 +134,7 @@ export type SubmitSessionPromptInput = {
   model?: string | null;
   provider?: string | null;
   generationPolicy?: GenerationPolicy | null;
-  accessMode?: PromptAccessMode | null;
+  accessMode?: AgentPromptAccessMode | null;
   env?: PromptEnv | null;
   intent?: SessionTurnIntent | null;
   context?: SubmitSessionPromptContext | null;
@@ -143,6 +150,18 @@ export type SubmitSessionPromptHooks = {
     turnId: string;
     userMessageId: string;
     content: ContentBlock[];
+    meta: Record<string, unknown>;
+  }) => Promise<Record<string, unknown> | void>;
+  afterMetaPersistedBeforeEnqueue?: (input: {
+    turnId: string;
+    userMessageId: string;
+    content: ContentBlock[];
+    meta: Record<string, unknown>;
+  }) => Promise<void>;
+  beforeFailureTerminalized?: (input: {
+    turnId: string;
+    userMessageId: string;
+    error: unknown;
     meta: Record<string, unknown>;
   }) => Promise<void>;
 };
@@ -201,6 +220,11 @@ export type SessionPromptDependencies = {
     intent: SessionTurnIntent;
     meta: Record<string, unknown>;
   }): Promise<{ id: string }>;
+  mergeSessionTurnMeta(input: {
+    sessionId: string;
+    turnId: string;
+    metaPatch: Record<string, unknown>;
+  }): Promise<void>;
   enqueueSpacePrompt(input: {
     spaceId: string;
     sessionId: string;
@@ -320,7 +344,7 @@ export const submitSessionPrompt = async (
   if (!clientMessageId) throw new Error("clientMessageId is required");
   if (!Array.isArray(input.content) || input.content.length === 0) throw new Error("content is required");
 
-  if (deps.sandboxRecovery) {
+  if (deps.sandboxRecovery && input.accessMode !== "isolated_worker") {
     void Promise.resolve(deps.sandboxRecovery.maybeRecoverForPrompt({
       spaceId: input.spaceId,
       sessionId: input.sessionId,
@@ -338,7 +362,7 @@ export const submitSessionPrompt = async (
     spaceId: input.spaceId,
   });
   const content = normalizeContentBlocks(expandedContent);
-  const accessMode = input.accessMode ?? "full_access";
+  const accessMode = parseAgentPromptAccessMode(input.accessMode);
 
   const isDirectShellCommand = content.length === 1 && content[0]?.type === "shell_command";
   if (accessMode === "read_only" && isDirectShellCommand) {
@@ -398,7 +422,12 @@ export const submitSessionPrompt = async (
   };
 
   try {
-    await hooks.beforeEnqueue?.({ turnId, userMessageId, content, meta });
+    const metaPatch = await hooks.beforeEnqueue?.({ turnId, userMessageId, content, meta });
+    if (metaPatch && Object.keys(metaPatch).length > 0) {
+      await deps.mergeSessionTurnMeta({ sessionId: input.sessionId, turnId, metaPatch });
+      Object.assign(meta, metaPatch);
+    }
+    await hooks.afterMetaPersistedBeforeEnqueue?.({ turnId, userMessageId, content, meta });
     await deps.enqueueSpacePrompt({
       spaceId: input.spaceId,
       sessionId: input.sessionId,
@@ -408,11 +437,18 @@ export const submitSessionPrompt = async (
       meta,
     });
   } catch (error) {
-    await deps.failSessionTurn({
-      sessionId: input.sessionId,
-      turnId,
-      errorMessage: error instanceof Error ? error.message : String(error),
-    }).catch(() => undefined);
+    await hooks.beforeFailureTerminalized?.({ turnId, userMessageId, error, meta });
+    try {
+      await deps.failSessionTurn({
+        sessionId: input.sessionId,
+        turnId,
+        errorMessage: error instanceof Error ? error.message : String(error),
+      });
+    } catch (terminalizationError) {
+      if (accessMode === "isolated_worker") {
+        throw new AggregateError([error, terminalizationError], "isolated worker prompt failure could not be terminalized");
+      }
+    }
 
     throw error;
   }

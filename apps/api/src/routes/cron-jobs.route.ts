@@ -9,6 +9,7 @@ import { hasPermission } from "../permissions.js";
 import { disableCronJob, enableCronJob, removeCronJob, updateCronJob } from "../tasks.js";
 import { fallbackPublicUserProfile, getProfilesByUuids } from "../user-profiles.js";
 import { sanitizeTaskRunPricingForViewer } from "../task-run-privacy.js";
+import { rejectIsolatedWorkerDisposableRouteMutation } from "../isolated-worker-disposable-guard.js";
 
 const router = new Hono();
 const { CronExpressionParser } = cronParser;
@@ -210,6 +211,13 @@ router.delete("/:id", async (c) => {
     .limit(1);
   if (!job) return c.json({ message: "not found" }, 404);
   if (!(await authorizeCronJobManage(user, job))) return authzDenied(c);
+  if (job.spaceId) {
+    const rejected = await rejectIsolatedWorkerDisposableRouteMutation(c, {
+      spaceId: job.spaceId,
+      operation: "cron_schedule",
+    });
+    if (rejected) return rejected;
+  }
 
   await removeCronJob(cronJobId, job.bullJobKey);
   return c.json({ ok: true });
@@ -229,6 +237,13 @@ router.patch("/:id", async (c) => {
     .limit(1);
   if (!job) return c.json({ message: "not found" }, 404);
   if (!(await authorizeCronJobManage(user, job))) return authzDenied(c);
+  if (job.spaceId) {
+    const rejected = await rejectIsolatedWorkerDisposableRouteMutation(c, {
+      spaceId: job.spaceId,
+      operation: "cron_schedule",
+    });
+    if (rejected) return rejected;
+  }
 
   const body = await c.req.json<Record<string, unknown>>().catch(() => null);
   if (!body || typeof body !== "object" || Array.isArray(body)) return c.json({ message: "invalid json body" }, 400);

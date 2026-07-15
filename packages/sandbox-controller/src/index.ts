@@ -217,6 +217,48 @@ export function isSandboxDialable(sandbox: {
   return Boolean(sandbox && isSandboxUsableStatus(sandbox.status) && hasSandboxEndpoint(sandbox.meta));
 }
 
+export function isIsolatedWorkerSandbox(sandbox: {
+  status?: string | null;
+  meta?: unknown;
+} | null | undefined): boolean {
+  if (!sandbox || !isRecord(sandbox.meta)) return false;
+  return isRecord(sandbox.meta.isolatedWorkerPolicy) || isRecord(sandbox.meta.isolatedWorker);
+}
+
+export function isTerminatedIsolatedWorkerSandbox(sandbox: {
+  status?: string | null;
+  meta?: unknown;
+} | null | undefined): boolean {
+  if (!isIsolatedWorkerSandbox(sandbox) || !isRecord(sandbox?.meta)) return false;
+  const termination = isRecord(sandbox.meta.termination) ? sandbox.meta.termination : null;
+  const claimId = typeof sandbox.meta.terminationClaimId === "string"
+    ? sandbox.meta.terminationClaimId.trim()
+    : "";
+  return sandbox.status === "stopping"
+    || sandbox.status === "terminated"
+    || termination?.sandboxTerminated === true
+    || Boolean(claimId);
+}
+
+export function assertSandboxCanResumeOrRecreate(sandbox: {
+  status?: string | null;
+  meta?: unknown;
+} | null | undefined): void {
+  if (isIsolatedWorkerSandbox(sandbox)) {
+    throw new Error("isolated worker sandbox cannot be resumed or recreated; allocate a new disposable space");
+  }
+}
+
+export function assertSandboxCanAutoRecover(sandbox: {
+  status?: string | null;
+  meta?: unknown;
+} | null | undefined): void {
+  assertSandboxCanResumeOrRecreate(sandbox);
+  if (sandbox?.status === "terminated") {
+    throw new Error("terminated sandbox cannot be automatically recovered");
+  }
+}
+
 /**
  * Clear connection coordinates (+ report token) so concurrent agents stop dialing
  * a dying pod and the old pod cannot report the dead endpoint back.
@@ -296,6 +338,7 @@ export function getSandboxPromptRecoveryReason(
 ): SandboxPromptRecoveryReason | null {
   if (!sandbox) return "missing";
   if (isLocalSandboxProvider(sandbox.provider)) return null;
+  if (isIsolatedWorkerSandbox(sandbox)) return null;
   if (sandbox.status === "provisioning" || sandbox.status === "pending") return null;
   if (sandbox.status === "terminated") return null;
   if (sandbox.status === "error") return "auto_recover";
@@ -451,6 +494,7 @@ export function createSandboxLifecycleController(input: {
     const lifecycleStatus = normalizeSandboxLifecycleStatus(heartbeat.status);
     const reportedImageVersion = heartbeat.metadata?.imageVersion?.trim() || null;
     const existing = await getSandbox(input.spaceId);
+    if (isTerminatedIsolatedWorkerSandbox(existing)) return existing;
     const reportMeta = toReportMeta(heartbeat);
     const shouldRefreshReport = Boolean(reportedImageVersion || heartbeat.capabilities || heartbeat.filesystem || heartbeat.metadata);
 
@@ -499,6 +543,9 @@ export function createSandboxLifecycleController(input: {
       // resumed server-side. Usable only while the local runner is connected.
       return { ok: isSandboxUsableStatus(sandbox.status), status: sandbox.status, resumed: false, local: true };
     }
+    if (isIsolatedWorkerSandbox(sandbox)) {
+      return { ok: false as const, status: sandbox?.status ?? null, resumed: false, message: "isolated worker sandbox cannot be resumed or recreated; allocate a new disposable space" };
+    }
     if (sandbox && isSandboxUsableStatus(sandbox.status)) return { ok: true as const, status: sandbox.status, resumed: false };
     if (sandbox?.status === "provisioning") return { ok: true as const, status: sandbox.status, resumed: false, provisioning: true };
     if (sandbox?.status === "terminated") return { ok: false as const, status: sandbox.status, resumed: false, message: "sandbox is terminated" };
@@ -506,6 +553,9 @@ export function createSandboxLifecycleController(input: {
 
     const result = await withLock(`sandbox:resume:${input.spaceId}`, async () => {
       const latest = await getSandbox(input.spaceId);
+      if (isIsolatedWorkerSandbox(latest)) {
+        return { ok: false as const, status: latest?.status ?? null, resumed: false, message: "isolated worker sandbox cannot be resumed or recreated; allocate a new disposable space" };
+      }
       if (latest && isSandboxUsableStatus(latest.status)) return { ok: true as const, status: latest.status, resumed: false };
       await db.update(spaceSandboxes).set({
         status: "provisioning",

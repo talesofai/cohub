@@ -9,10 +9,14 @@ import type { TaskPayload, TaskScheduleConfig } from "@cohub/protocol/task";
 import { GENERATION_TASK_TYPE } from "@cohub/protocol/generation";
 import { dispatchTaskCreated } from "./realtime-events.js";
 import { createLogger } from "@cohub/infra/logging";
+import {
+  assertIsolatedWorkerDisposableOperationAllowed,
+  type IsolatedWorkerDisposableOperation,
+} from "./isolated-worker-disposable-guard.js";
 
 
 const logger = createLogger({ serviceName: "cohub-api" });
-type TaskEnqueueOptions = Omit<JobsOptions, "scheduledAt"> & { scheduledAt?: Date | null };
+type TaskEnqueueOptions = Omit<JobsOptions, "scheduledAt"> & { scheduledAt?: Date | null; taskRunId?: string };
 
 const QUEUE_NAME = COHUB_TASKS_QUEUE;
 
@@ -21,20 +25,32 @@ export const taskQueue = createBullmqQueue(QUEUE_NAME, {
   telemetryServiceName: "cohub-api",
 });
 
-export const SUPPORTED_TASK_TYPES = new Set<string>(["send_message", "save_checkpoint", "create_space", "run_command", GENERATION_TASK_TYPE]);
+export const SUPPORTED_TASK_TYPES = new Set<string>(["send_message", "save_checkpoint", "create_space", "run_command", "isolated_worker_dispatch", "isolated_worker_revoke", "isolated_worker_receipt_scan", GENERATION_TASK_TYPE]);
 
 export const enqueueTask = async (
   payload: TaskPayload,
   opts?: TaskEnqueueOptions,
-) => enqueueTaskRun({
-  db,
-  payload,
-  options: opts,
-  enqueue: (name, taskPayload, options) => taskQueue.add(name, taskPayload, options),
-  onTaskCreated: (taskRun) => dispatchTaskCreated(taskRun).catch((error) => {
-    logger.warn("[Realtime] failed to dispatch task.created", error);
-  }),
-});
+) => {
+  if (payload.spaceId) {
+    let operation: IsolatedWorkerDisposableOperation = "generic_task_dispatch";
+    if (payload.type === "isolated_worker_dispatch") operation = "isolated_worker_dispatch";
+    else if (payload.type === "isolated_worker_revoke") operation = "isolated_worker_revoke";
+    else if (payload.type === "isolated_worker_receipt_scan") operation = "isolated_worker_receipt_scan";
+    else if (payload.type === "save_checkpoint" && payload.data?.reason === "isolated_worker_revocation") {
+      operation = "isolated_worker_checkpoint";
+    }
+    await assertIsolatedWorkerDisposableOperationAllowed(payload.spaceId, operation);
+  }
+  return enqueueTaskRun({
+    db,
+    payload,
+    options: opts,
+    enqueue: (name, taskPayload, options) => taskQueue.add(name, taskPayload, options),
+    onTaskCreated: (taskRun) => dispatchTaskCreated(taskRun).catch((error) => {
+      logger.warn("[Realtime] failed to dispatch task.created", error);
+    }),
+  });
+};
 
 export const createCronJob = async (params: {
   userId: string;
@@ -45,6 +61,9 @@ export const createCronJob = async (params: {
   spaceId?: string | null;
   sessionId?: string | null;
 }) => {
+  if (params.spaceId) {
+    await assertIsolatedWorkerDisposableOperationAllowed(params.spaceId, "cron_schedule");
+  }
   const taskPayload: TaskPayload = {
     type: params.taskType,
     spaceId: params.spaceId ?? undefined,
@@ -188,6 +207,9 @@ const cronJobScheduleData = (job: CronJobRow): CronJobScheduleData => ({
 });
 
 export const enableCronJob = async (cronJobId: string, bullJobKey: string, jobData: CronJobScheduleData) => {
+  if (jobData.spaceId) {
+    await assertIsolatedWorkerDisposableOperationAllowed(jobData.spaceId, "cron_schedule");
+  }
   const repeatJobKey = await scheduleCronJobRepeat(cronJobId, bullJobKey, jobData);
 
   try {
@@ -226,6 +248,9 @@ export const updateCronJob = async (
   current: CronJobRow,
   patch: CronJobUpdatePatch,
 ) => {
+  if (current.spaceId) {
+    await assertIsolatedWorkerDisposableOperationAllowed(current.spaceId, "cron_schedule");
+  }
   const next = {
     ...current,
     ...patch,

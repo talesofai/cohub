@@ -11,7 +11,7 @@ import type { Job } from "bullmq";
 import type { TaskPayload } from "@cohub/protocol/task";
 import type { GenerationPolicy } from "@cohub/protocol/generation";
 import { normalizePermissionScopes } from "@cohub/core/permissions";
-import { createDelegatedPromptAuth, parsePromptEnv } from "@cohub/core/sessions";
+import { createDelegatedPromptAuth, parseAgentPromptAccessMode, parsePromptEnv } from "@cohub/core/sessions";
 import { config } from "../config.js";
 import { getPromptTemplateService } from "../prompt-templates.js";
 import { getSkillService } from "../skills.js";
@@ -117,8 +117,10 @@ async function notifyRunCommandCompletion(input: {
   result: AgentRunCommandJobResult;
   notify: RunCommandNotify | null;
   origin: RunCommandOrigin | null;
+  accessMode: "read_only" | "full_access" | "isolated_worker";
 }) {
   if (!input.notify) return;
+  if (input.accessMode === "isolated_worker") return;
   const spaceId = input.payload.spaceId;
   const userId = input.payload.userId?.trim();
   if (!spaceId || !userId) return;
@@ -158,7 +160,7 @@ async function notifyRunCommandCompletion(input: {
       })(),
       origin: input.origin,
     },
-    accessMode: "full_access",
+    accessMode: input.accessMode,
   });
 }
 
@@ -180,6 +182,7 @@ registerTask(RUN_COMMAND_TASK_TYPE, async (job) => {
   const generationPolicy = parseGenerationPolicy(data.generationPolicy);
   const promptEnv = parsePromptEnv(data.env);
   const executionScopes = normalizePermissionScopes(Array.isArray(data.executionScopes) ? data.executionScopes : []);
+  const accessMode = parseAgentPromptAccessMode(data.accessMode);
   const origin = parseOrigin(data.origin);
   const notify = parseNotify(data.notify);
   if (!spaceId) throw new Error("spaceId is required for run_command task");
@@ -198,6 +201,7 @@ registerTask(RUN_COMMAND_TASK_TYPE, async (job) => {
     ...(generationPolicy ? { generationPolicy } : {}),
     ...(promptEnv ? { env: promptEnv } : {}),
     ...(executionScopes.length > 0 ? { executionScopes } : {}),
+    accessMode,
     requestId: origin?.requestId ?? null,
     origin,
   });
@@ -220,7 +224,7 @@ registerTask(RUN_COMMAND_TASK_TYPE, async (job) => {
   try {
     const result = await agentJob.waitUntilFinished(queueEvents, ((timeout ?? RUN_COMMAND_TIMEOUT_SECONDS) + 60) * 1000) as AgentRunCommandJobResult;
     await mirrorAgentProgress(job, agentJob.id ?? `run-command-${taskRunId}`);
-    await notifyRunCommandCompletion({ payload, taskRunId, command, result, notify, origin });
+    await notifyRunCommandCompletion({ payload, taskRunId, command, result, notify, origin, accessMode });
     return result;
   } catch (error) {
     throw error instanceof Error ? error : new Error(String(error));
