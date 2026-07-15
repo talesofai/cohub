@@ -1,5 +1,11 @@
 # @neta-art/cohub
 
+## 2.11.1
+
+### Patch Changes
+
+- 43b7653: Record optional provenance on work versions via `meta` (CLI auto-fills `source` from COHUB\_\* env).
+
 ## 2.11.0
 
 ### Minor Changes
