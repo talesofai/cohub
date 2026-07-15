@@ -772,14 +772,14 @@ export const tokenUsageStatsHourly = v2.table(
     updatedAt: timestamp("updated_at", { withTimezone: true }).defaultNow(),
   },
   (table) => ({
-    pk: uniqueIndex("v2_uq_token_usage_stats_hourly_bucket_dims").on(
+    pk: unique("v2_uq_token_usage_stats_hourly_bucket_dims").on(
       table.bucketStartAt,
       table.userId,
       table.spaceId,
       table.sessionId,
       table.provider,
       table.model,
-    ),
+    ).nullsNotDistinct(),
     bucketIdx: index("v2_idx_token_usage_stats_hourly_bucket").on(table.bucketStartAt),
     userBucketIdx: index("v2_idx_token_usage_stats_hourly_user_bucket").on(table.userId, table.bucketStartAt),
     spaceBucketIdx: index("v2_idx_token_usage_stats_hourly_space_bucket").on(table.spaceId, table.bucketStartAt),
