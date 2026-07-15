@@ -193,10 +193,12 @@ jobs:
         if: ${{ inputs.mode == 'diagnose' }}
         env:
           REQUEST_ID: ${{ inputs.request_id }}
+          DISPOSABLE_SPACE_ID: ${{ inputs.disposable_space_id }}
         shell: bash
         run: |
           set -euo pipefail
           [[ "$REQUEST_ID" =~ ^[0-9a-f-]{36}$ ]]
+          [[ "$DISPOSABLE_SPACE_ID" =~ ^[0-9a-f-]{36}$ ]]
           : > diagnostic.log
           for target in \
             "deployment/cohub-api-dev cohub-dev" \
@@ -212,6 +214,12 @@ jobs:
           cat diagnostic.log
           grep -Fq "$REQUEST_ID" diagnostic.log
           test -s diagnostic.log
+          for pod in $(kubectl get pods -n cohub-dev -l cohub.dev/worker-kind=user -o name); do
+            printf '\n===== filesystem %s =====\n' "$pod" | tee -a diagnostic.log
+            kubectl exec -n cohub-dev "$pod" -- sh -lc \
+              "id; ls -ldn /space-storage /space-storage/.isolated-worker-staging /space-storage/.isolated-worker-staging/$REQUEST_ID /space-storage/$DISPOSABLE_SPACE_ID /space-storage/$DISPOSABLE_SPACE_ID/workspace 2>&1 || true" \
+              | tee -a diagnostic.log
+          done
           jq -n --arg requestId "$REQUEST_ID" '{requestId:$requestId,diagnosticCaptured:true}' | tee acceptance.json
 
       - name: Upload acceptance evidence
