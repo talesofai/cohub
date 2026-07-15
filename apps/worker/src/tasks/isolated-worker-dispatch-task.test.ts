@@ -146,6 +146,37 @@ assert.deepEqual(await recoveredHandler({
 }), result);
 assert.deepEqual(recoveredCalls, ["recover-submitted"]);
 
+await assert.rejects(
+  handler({
+    taskRunId: "77777777-7777-4777-8777-777777777777",
+    payload: {
+      type: "isolated_worker_dispatch",
+      spaceId: authoritySpaceId,
+      sessionId,
+      userId: "user-1",
+      data: { ...dispatchData, callerForgedReceipt: "accepted" },
+    },
+  }),
+  /isolated worker dispatch contains unknown field: callerForgedReceipt/,
+);
+
+await assert.rejects(
+  handler({
+    taskRunId: "88888888-8888-4888-8888-888888888888",
+    payload: {
+      type: "isolated_worker_dispatch",
+      spaceId: authoritySpaceId,
+      sessionId,
+      userId: "user-1",
+      data: {
+        ...dispatchData,
+        inputBundle: { ...inputBundle, callerForgedAuthority: true },
+      },
+    },
+  }),
+  /isolated worker input bundle contains unknown field: callerForgedAuthority/,
+);
+
 const reject = createIsolatedWorkerDispatchHandler({
   async recoverReservation() {
     throw new Error("must not recover a terminated workspace");

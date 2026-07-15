@@ -519,7 +519,6 @@ const productionDependencies: IsolatedWorkerDispatchHandlerDependencies = {
             executionTokenIssued: false,
             policySha256: input.policySha256,
           },
-          inputBundle: input.inputBundle,
           inputsMaterializedAt: input.inputsMaterializedAt,
           dispatchTaskRunId: input.dispatchTaskRunId,
           context: { kind: "scheduled_task", taskRunId: input.dispatchTaskRunId },

@@ -1,7 +1,12 @@
 import assert from "node:assert/strict";
 import type { AgentTool } from "@earendil-works/pi-agent-core";
 import { getCurrentToolExecutionContext, runWithToolExecutionContext } from "../tool-context.js";
-import { createSpaceAwareReadTool } from "../runtime/tools/space-aware-query-tools.js";
+import {
+  createSpaceAwareFindTool,
+  createSpaceAwareGrepTool,
+  createSpaceAwareLsTool,
+  createSpaceAwareReadTool,
+} from "../runtime/tools/space-aware-query-tools.js";
 import type { AgentFileVisibility } from "../runtime/workspace-visibility.js";
 
 function createStubTool(name: string): AgentTool {
@@ -63,5 +68,27 @@ await assert.rejects(
   runReadTool({ targetProvider: "cloud", spaceId: "limit\u200b=30" }),
   /Invalid space_id: expected a UUID/,
 );
+
+for (const [name, createTool, params] of [
+  ["read", createSpaceAwareReadTool, { path: "README.md", space_id: TARGET_SPACE_ID }],
+  ["ls", createSpaceAwareLsTool, { path: ".", space_id: TARGET_SPACE_ID }],
+  ["find", createSpaceAwareFindTool, { path: ".", pattern: "*", space_id: TARGET_SPACE_ID }],
+  ["grep", createSpaceAwareGrepTool, { path: ".", pattern: "secret", space_id: TARGET_SPACE_ID }],
+] as const) {
+  const tool = createTool({
+    sandboxTool: createStubTool(`sandbox-${name}`),
+    crossSpaceTool: createStubTool(`cross-${name}`),
+    checkAccess: async () => "full",
+    resolveSandboxProvider: async () => "cloud",
+  });
+  await assert.rejects(
+    runWithToolExecutionContext({
+      spaceId: CURRENT_SPACE_ID,
+      sessionId: "isolated-session",
+      accessMode: "isolated_worker",
+    }, () => tool.execute(`isolated-${name}`, params)),
+    /isolated worker cross-space query is forbidden/,
+  );
+}
 
 console.log("space-aware query tool routing checks passed");

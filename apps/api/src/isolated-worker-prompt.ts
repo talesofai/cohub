@@ -18,10 +18,33 @@ const POLICY_FIELDS = new Set([
   "policySha256",
 ]);
 
+const ISOLATED_PROMPT_BODY_FIELDS = new Set([
+  "content",
+  "userId",
+  "clientMessageId",
+  "source",
+  "model",
+  "provider",
+  "accessMode",
+  "isolatedWorkerPolicy",
+  "inputsMaterializedAt",
+  "dispatchTaskRunId",
+  "context",
+]);
+
 export type IsolatedWorkerPolicyInput = Omit<IsolatedWorkerPolicy, "podUid">;
 
 const isRecord = (value: unknown): value is Record<string, unknown> =>
   Boolean(value) && typeof value === "object" && !Array.isArray(value);
+
+export function assertExactIsolatedWorkerPromptBody(value: unknown): asserts value is Record<string, unknown> {
+  if (!isRecord(value)) throw new Error("isolated worker prompt body is required");
+  const unknownField = Object.keys(value).find((key) => !ISOLATED_PROMPT_BODY_FIELDS.has(key));
+  if (unknownField) throw new Error(`isolated worker prompt contains unknown field: ${unknownField}`);
+  for (const field of ISOLATED_PROMPT_BODY_FIELDS) {
+    if (!(field in value)) throw new Error(`isolated worker prompt is missing field: ${field}`);
+  }
+}
 
 export function parseIsolatedWorkerPolicyInput(value: unknown, disposableSpaceId: string): IsolatedWorkerPolicyInput {
   if (!isRecord(value)) throw new Error("isolatedWorkerPolicy is required");

@@ -105,9 +105,53 @@ export function canonicalIsolatedWorkerJson(value: unknown): string {
   return `{${Object.keys(record).sort().map((key) => `${JSON.stringify(key)}:${canonicalIsolatedWorkerJson(record[key])}`).join(",")}}`;
 }
 
+const DISPATCH_DATA_FIELDS = new Set([
+  "authoritySpaceId",
+  "disposableSpaceId",
+  "sessionId",
+  "clientMessageId",
+  "content",
+  "source",
+  "model",
+  "provider",
+  "policySha256",
+  "inputBundle",
+  "inputManifestSha256",
+  "creationPath",
+  "ordinarySandboxProvisioned",
+  "terminatedSpaceReused",
+  "credentialMode",
+  "engineInternalSecretIssued",
+  "publicPromptUsed",
+  "checkpointAdapter",
+  "repairOfDisposableSpaceId",
+]);
+
+const INPUT_BUNDLE_FIELDS = new Set([
+  "authorityCheckpointId",
+  "authorityCheckpointCommit",
+  "authorityTreeSha256",
+  "inputManifestSha256",
+  "runtimeAuthorityReadAllowed",
+  "items",
+]);
+
+const INPUT_ITEM_FIELDS = new Set([
+  "sourcePath",
+  "destinationPath",
+  "contentSha256",
+  "sourceType",
+]);
+
+function assertExactKeys(value: Record<string, unknown>, allowed: Set<string>, label: string) {
+  const unknownField = Object.keys(value).find((key) => !allowed.has(key));
+  if (unknownField) throw new Error(`${label} contains unknown field: ${unknownField}`);
+}
+
 function parseDispatchData(payload: TaskPayload): IsolatedWorkerDispatchTaskData {
   const data = payload.data;
   if (!isRecord(data)) throw new Error("isolated worker dispatch data is required");
+  assertExactKeys(data, DISPATCH_DATA_FIELDS, "isolated worker dispatch");
   const exact = {
     creationPath: ISOLATED_WORKER_CREATION_PATH,
     ordinarySandboxProvisioned: false,
@@ -127,11 +171,26 @@ function parseDispatchData(payload: TaskPayload): IsolatedWorkerDispatchTaskData
   if (typeof data.policySha256 !== "string" || !/^[a-f0-9]{64}$/.test(data.policySha256)) {
     throw new Error("isolated worker dispatch policySha256 is malformed");
   }
-  if (!isRecord(data.inputBundle) || typeof data.inputManifestSha256 !== "string" || data.inputBundle.inputManifestSha256 !== data.inputManifestSha256) {
+  if (!isRecord(data.inputBundle)) throw new Error("isolated worker dispatch input bundle is invalid");
+  assertExactKeys(data.inputBundle, INPUT_BUNDLE_FIELDS, "isolated worker input bundle");
+  if (typeof data.inputManifestSha256 !== "string" || data.inputBundle.inputManifestSha256 !== data.inputManifestSha256) {
     throw new Error("isolated worker dispatch input bundle is invalid");
   }
   if (!Array.isArray(data.inputBundle.items) || data.inputBundle.items.length < 1 || data.inputBundle.items.length > 32) {
     throw new Error("isolated worker dispatch input bundle items are invalid");
+  }
+  for (const item of data.inputBundle.items) {
+    if (!isRecord(item)) throw new Error("isolated worker input item is invalid");
+    assertExactKeys(item, INPUT_ITEM_FIELDS, "isolated worker input item");
+    if (
+      typeof item.sourcePath !== "string"
+      || typeof item.destinationPath !== "string"
+      || typeof item.contentSha256 !== "string"
+      || !/^[a-f0-9]{64}$/.test(item.contentSha256)
+      || item.sourceType !== "regular_file"
+    ) {
+      throw new Error("isolated worker input item is invalid");
+    }
   }
   const manifestCanonical = canonicalIsolatedWorkerJson({
     authorityCheckpointId: data.inputBundle.authorityCheckpointId,
@@ -172,6 +231,7 @@ export function createIsolatedWorkerDispatchHandler(deps: IsolatedWorkerDispatch
     }
     const raw = input.payload.data;
     if (isRecord(raw) && raw.reuseRejected === true) {
+      assertExactKeys(raw, new Set(["authoritySpaceId", "disposableSpaceId", "reuseRejected", "reason"]), "isolated worker reuse rejection");
       if (
         typeof raw.disposableSpaceId !== "string"
         || raw.reason !== "terminated_space_reuse_forbidden"

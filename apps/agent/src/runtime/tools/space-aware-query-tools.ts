@@ -53,6 +53,9 @@ function routeExecute(options: SpaceAwareToolOptions) {
     const requestedSpaceId = getRequestedSpaceId(params);
     const targetSpaceId = requestedSpaceId ?? ctx.spaceId;
     const isCrossSpace = targetSpaceId !== ctx.spaceId;
+    if (isCrossSpace && ctx.accessMode === "isolated_worker") {
+      throw new Error("isolated worker cross-space query is forbidden");
+    }
     let tool = sandboxTool;
     let visibility = ctx.fileVisibility;
 

@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import type { SubmitSessionPromptHooks } from "@cohub/core/sessions";
 import {
+  assertExactIsolatedWorkerPromptBody,
   parseIsolatedWorkerPolicyInput,
   submitIsolatedWorkerPrompt,
 } from "./isolated-worker-prompt.js";
@@ -23,6 +24,24 @@ assert.throws(() => parseIsolatedWorkerPolicyInput({ ...policy, workspaceReadOnl
 assert.throws(() => parseIsolatedWorkerPolicyInput({ ...policy, authoritySpaceId: disposableSpaceId }, disposableSpaceId), /differ/);
 assert.throws(() => parseIsolatedWorkerPolicyInput({ ...policy, disposableSpaceId: authoritySpaceId }, disposableSpaceId), /binding mismatch/);
 assert.throws(() => parseIsolatedWorkerPolicyInput({ ...policy, extra: true }, disposableSpaceId), /unknown field/);
+
+assert.throws(
+  () => assertExactIsolatedWorkerPromptBody({
+    content: [{ type: "text", text: "work" }],
+    userId: "user-1",
+    clientMessageId: "client-1",
+    source: "isolated_worker_dispatch",
+    model: null,
+    provider: null,
+    accessMode: "isolated_worker",
+    isolatedWorkerPolicy: policy,
+    inputsMaterializedAt: "2026-07-15T00:00:00.000Z",
+    dispatchTaskRunId: "44444444-4444-4444-8444-444444444444",
+    context: { kind: "scheduled_task", taskRunId: "44444444-4444-4444-8444-444444444444" },
+    inputBundle: { callerSupplied: true },
+  }),
+  /isolated worker prompt contains unknown field: inputBundle/,
+);
 
 const events: string[] = [];
 const handle = {

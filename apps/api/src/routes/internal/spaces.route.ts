@@ -41,6 +41,7 @@ import {
   type IsolatedWorkerPodHandle,
 } from "../../isolated-worker-pods.js";
 import {
+  assertExactIsolatedWorkerPromptBody,
   parseIsolatedWorkerPolicyInput,
   submitIsolatedWorkerPrompt,
   type IsolatedWorkerPolicyInput,
@@ -461,6 +462,7 @@ router.post("/:spaceId/sessions/:sessionId/prompt", async (c) => {
   let isolatedWorkerInputManifestSha256: string | null = null;
   if (accessMode === "isolated_worker") {
     try {
+      assertExactIsolatedWorkerPromptBody(body);
       isolatedWorkerPolicy = parseIsolatedWorkerPolicyInput(body.isolatedWorkerPolicy, spaceId);
     } catch (error) {
       return c.json({ message: error instanceof Error ? error.message : String(error) }, 400);
