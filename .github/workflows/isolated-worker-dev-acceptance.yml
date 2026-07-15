@@ -201,13 +201,13 @@ jobs:
           [[ "$DISPOSABLE_SPACE_ID" =~ ^[0-9a-f-]{36}$ ]]
           : > diagnostic.log
           for target in \
-            "deployment/cohub-api-dev cohub-dev" \
-            "deployment/cohub-system-worker-dev cohub-dev" \
-            "deployment/cohub-user-worker-dev cohub-dev"
+            "app.kubernetes.io/name=cohub-api-dev cohub-dev" \
+            "app.kubernetes.io/name=cohub-system-worker-dev cohub-dev" \
+            "app.kubernetes.io/name=cohub-user-worker-dev cohub-dev"
           do
-            read -r workload namespace <<< "$target"
-            printf '\n===== %s (%s) =====\n' "$workload" "$namespace" >> diagnostic.log
-            kubectl logs "$workload" -n "$namespace" --all-containers --since=30m \
+            read -r selector namespace <<< "$target"
+            printf '\n===== %s (%s) =====\n' "$selector" "$namespace" >> diagnostic.log
+            kubectl logs -n "$namespace" -l "$selector" --all-containers --prefix --since=30m --max-log-requests=20 \
               | grep -F -C 20 "$REQUEST_ID" \
               >> diagnostic.log || true
           done
@@ -215,9 +215,9 @@ jobs:
           test -s diagnostic.log
           for pod in $(kubectl get pods -n cohub-dev -l cohub.dev/worker-kind=user -o name); do
             printf '\n===== filesystem %s =====\n' "$pod" | tee -a diagnostic.log
-            kubectl exec -n cohub-dev "$pod" -- sh -lc \
-              "id; ls -ldn /space-storage /space-storage/.isolated-worker-staging /space-storage/.isolated-worker-staging/$REQUEST_ID /space-storage/$DISPOSABLE_SPACE_ID /space-storage/$DISPOSABLE_SPACE_ID/workspace 2>&1 || true" \
-              | tee -a diagnostic.log
+            { kubectl exec -n cohub-dev "$pod" -- sh -lc \
+                "id; ls -ldn /space-storage /space-storage/.isolated-worker-staging /space-storage/.isolated-worker-staging/$REQUEST_ID /space-storage/$DISPOSABLE_SPACE_ID /space-storage/$DISPOSABLE_SPACE_ID/workspace 2>&1 || true" \
+                || true; } | tee -a diagnostic.log
           done
           grep -Fq "$REQUEST_ID" diagnostic.log
           jq -n --arg requestId "$REQUEST_ID" '{requestId:$requestId,diagnosticCaptured:true}' | tee acceptance.json
