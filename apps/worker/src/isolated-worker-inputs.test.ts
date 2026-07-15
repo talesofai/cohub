@@ -1,9 +1,14 @@
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
-import { mkdtemp, mkdir, readFile, symlink, writeFile } from "node:fs/promises";
+import { lstat, mkdtemp, mkdir, readFile, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { materializeFrozenInputManifest } from "./isolated-worker-inputs.js";
+import {
+  materializeFrozenInputManifest,
+  prepareFrozenInputWorkspaceForPublish,
+  removeFrozenInputWorkspace,
+  sealFrozenInputWorkspace,
+} from "./isolated-worker-inputs.js";
 
 const root = await mkdtemp(join(tmpdir(), "cohub-isolated-inputs-"));
 const source = join(root, "source");
@@ -32,6 +37,15 @@ const receipt = await materializeFrozenInputManifest({ sourceRoot: source, targe
 assert.equal(await readFile(join(target, "inputs", "method.md"), "utf8"), "frozen method\n");
 await assert.rejects(readFile(join(target, "inputs", "undeclared.md")), /ENOENT/);
 assert.deepEqual(receipt.files, inputBundle.items);
+await prepareFrozenInputWorkspaceForPublish(target);
+assert.equal((await lstat(target)).mode & 0o777, 0o755);
+await sealFrozenInputWorkspace(target);
+assert.equal((await lstat(target)).mode & 0o777, 0o555);
+
+const cleanupTarget = join(root, "target-cleanup");
+await materializeFrozenInputManifest({ sourceRoot: source, targetRoot: cleanupTarget, inputBundle });
+await removeFrozenInputWorkspace(cleanupTarget);
+await assert.rejects(lstat(cleanupTarget), /ENOENT/);
 
 const symlinkTarget = join(root, "target-symlink");
 await symlink("method.md", join(source, "modules", "link.md"));

@@ -1,4 +1,4 @@
-import { lstat, mkdir, readdir, rename, rm } from "node:fs/promises";
+import { lstat, mkdir, readdir, rename } from "node:fs/promises";
 import { dirname } from "node:path";
 import { and, eq } from "drizzle-orm";
 import type { TaskPayload } from "@cohub/protocol/task";
@@ -11,7 +11,13 @@ import { config } from "../config.js";
 import { getSpaceWorkspaceDir } from "../git.js";
 import { restoreWorkspaceFromCheckpoint } from "../checkpoint/restore.js";
 import { ensureWorkerLocalTmpDir, getWorkerLocalTmpDir, removeWorkerLocalTmpDir } from "../local-tmp.js";
-import { materializeFrozenInputManifest, verifyFrozenInputMaterialization } from "../isolated-worker-inputs.js";
+import {
+  materializeFrozenInputManifest,
+  prepareFrozenInputWorkspaceForPublish,
+  removeFrozenInputWorkspace,
+  sealFrozenInputWorkspace,
+  verifyFrozenInputMaterialization,
+} from "../isolated-worker-inputs.js";
 import { registerTask } from "./registry.js";
 import {
   canonicalIsolatedWorkerJson,
@@ -76,7 +82,7 @@ const productionDependencies: IsolatedWorkerDispatchHandlerDependencies = {
       try {
         await verifyFrozenInputMaterialization({ targetRoot: preparedWorkspace, inputBundle: input.data.inputBundle });
       } catch (error) {
-        await throwWithCleanup(error, [() => rm(preparedWorkspace, { recursive: true, force: true })], "isolated worker abandoned staging validation and cleanup failed");
+        await throwWithCleanup(error, [() => removeFrozenInputWorkspace(preparedWorkspace)], "isolated worker abandoned staging validation and cleanup failed");
       }
       return { state: "staged" as const, inputsMaterializedAt: new Date().toISOString(), preparedWorkspace };
     }
@@ -269,18 +275,18 @@ const productionDependencies: IsolatedWorkerDispatchHandlerDependencies = {
       try {
         await removeWorkerLocalTmpDir(evidenceRoot);
       } catch (cleanupError) {
-        await throwWithCleanup(cleanupError, [() => rm(preparedWorkspace, { recursive: true, force: true })], "isolated worker evidence and staging cleanup failed");
+        await throwWithCleanup(cleanupError, [() => removeFrozenInputWorkspace(preparedWorkspace)], "isolated worker evidence and staging cleanup failed");
       }
       return { inputsMaterializedAt, preparedWorkspace };
     } catch (error) {
       return throwWithCleanup(error, [
         () => removeWorkerLocalTmpDir(evidenceRoot),
-        () => rm(preparedWorkspace, { recursive: true, force: true }),
+        () => removeFrozenInputWorkspace(preparedWorkspace),
       ], "isolated worker input preparation and cleanup failed");
     }
   },
   async cleanupPreparedWorkspace(input) {
-    await rm(input.preparedWorkspace, { recursive: true, force: true });
+    await removeFrozenInputWorkspace(input.preparedWorkspace);
   },
   async allocateReservation(input) {
     const data = input.data;
@@ -402,7 +408,9 @@ const productionDependencies: IsolatedWorkerDispatchHandlerDependencies = {
           await mkdir(spaceBase, { mode: 0o775 });
           spaceBaseCreated = true;
         }
+        await prepareFrozenInputWorkspaceForPublish(input.preparedWorkspace);
         await rename(input.preparedWorkspace, finalWorkspace);
+        await sealFrozenInputWorkspace(finalWorkspace);
       } else {
         spaceBaseCreated = true;
       }
@@ -454,7 +462,7 @@ const productionDependencies: IsolatedWorkerDispatchHandlerDependencies = {
     if (input.cause instanceof IsolatedWorkerPublishError && input.cause.spaceBaseCreated) cleanupPaths.push(spaceBaseDir);
     for (const path of cleanupPaths) {
       try {
-        await rm(path, { recursive: true, force: true });
+        await removeFrozenInputWorkspace(path);
       } catch (error) {
         filesystemErrors.push(error);
       }
