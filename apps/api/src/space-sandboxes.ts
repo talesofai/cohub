@@ -1,12 +1,15 @@
-import { asc, eq, isNull, ne, or, sql } from "drizzle-orm";
+import { and, asc, eq, isNull, ne, or, sql } from "drizzle-orm";
 import { billingOperations, COHUB_BILLING_FEATURES } from "@cohub/billing";
 import {
   DEFAULT_SANDBOX_SPEC_ID,
   SANDBOX_SPECS,
+  assertSandboxCanAutoRecover,
+  assertSandboxCanResumeOrRecreate,
   buildInvalidatedSandboxEndpointMeta,
   getSandboxSpecRank,
   isSandboxAwaitingEndpointReport,
   isSandboxDialable,
+  isTerminatedIsolatedWorkerSandbox,
   normalizeSandboxSpecId,
   resolveSpaceSandboxAutoDestroyPolicy,
   type SandboxSpecId,
@@ -26,6 +29,7 @@ import type { SpaceSandboxRuntimeStatus, SpaceSandboxStatus, SpaceSandboxStopRea
 import { smokeVerifySandboxPod } from "./lib/sandbox/recovery.js";
 import type { V1Pod } from "@kubernetes/client-node";
 import { createLogger } from "@cohub/infra/logging";
+import { assertIsolatedWorkerDisposableOperationAllowed } from "./isolated-worker-disposable-guard.js";
 
 
 const logger = createLogger({ serviceName: "cohub-api" });
@@ -140,6 +144,7 @@ export const markSandboxSpecPendingRestart = async (input: { spaceId: string; sp
 };
 
 export const resizeSpaceSandboxToSpec = async (input: { spaceId: string; specId: SandboxSpecId }) => {
+  await assertIsolatedWorkerDisposableOperationAllowed(input.spaceId, "sandbox_lifecycle");
   const sandbox = await getSpaceSandboxBySpaceId(input.spaceId);
   if (!sandbox || sandbox.provider === "local") return { resized: false, pendingRestart: false, skipped: true };
   if (sandbox.status !== "running" && sandbox.status !== "ready") {
@@ -234,6 +239,9 @@ export const ensureSpaceSandbox = async (input: {
   stopReason?: SpaceSandboxStopReason | null;
   meta?: Record<string, unknown> | null;
 }) => {
+  await assertIsolatedWorkerDisposableOperationAllowed(input.spaceId, "sandbox_lifecycle");
+  const existing = await getSpaceSandboxBySpaceId(input.spaceId);
+  assertSandboxCanResumeOrRecreate(existing);
   const [sandbox] = await db
     .insert(spaceSandboxes)
     .values({
@@ -252,6 +260,10 @@ export const ensureSpaceSandbox = async (input: {
     })
     .onConflictDoUpdate({
       target: spaceSandboxes.spaceId,
+      setWhere: sql`not (
+        coalesce(jsonb_typeof(${spaceSandboxes.meta}->'isolatedWorkerPolicy') = 'object', false)
+        or coalesce(jsonb_typeof(${spaceSandboxes.meta}->'isolatedWorker') = 'object', false)
+      )`,
       set: {
         ...(input.provider !== undefined ? { provider: input.provider } : {}),
         status: input.status ?? "pending",
@@ -269,7 +281,11 @@ export const ensureSpaceSandbox = async (input: {
     })
     .returning();
 
-  if (!sandbox) throw new Error("Failed to ensure space sandbox");
+  if (!sandbox) {
+    const latest = await getSpaceSandboxBySpaceId(input.spaceId);
+    assertSandboxCanResumeOrRecreate(latest);
+    throw new Error("Failed to ensure space sandbox");
+  }
   return sandbox;
 };
 
@@ -298,6 +314,10 @@ export const updateSpaceSandbox = async (input: {
   stopReason?: SpaceSandboxStopReason | null;
   meta?: Record<string, unknown> | null;
 }) => {
+  const existing = await getSpaceSandboxBySpaceId(input.spaceId);
+  if (isTerminatedIsolatedWorkerSandbox(existing) && input.status !== "stopping" && input.status !== "terminated") {
+    throw new Error("terminated isolated worker sandbox state cannot be updated");
+  }
   const [sandbox] = await db
     .update(spaceSandboxes)
     .set({
@@ -314,7 +334,19 @@ export const updateSpaceSandbox = async (input: {
       ...(input.meta !== undefined ? { meta: input.meta } : {}),
       updatedAt: new Date(),
     })
-    .where(eq(spaceSandboxes.spaceId, input.spaceId))
+    .where(and(
+      eq(spaceSandboxes.spaceId, input.spaceId),
+      input.status === "stopping" || input.status === "terminated"
+        ? sql`true`
+        : sql`not (
+          coalesce(jsonb_typeof(${spaceSandboxes.meta}->'isolatedWorkerPolicy') = 'object', false)
+          and (
+            ${spaceSandboxes.status} in ('stopping', 'terminated')
+            or coalesce(${spaceSandboxes.meta}->'termination'->>'sandboxTerminated', 'false') = 'true'
+            or coalesce(${spaceSandboxes.meta}->>'terminationClaimId', '') <> ''
+          )
+        )`,
+    ))
     .returning();
 
   return sandbox ?? null;
@@ -336,6 +368,449 @@ export const mergeSpaceSandboxMeta = async (spaceId: string, metaPatch: Record<s
     .returning();
 
   return sandbox ?? null;
+};
+
+export const claimIsolatedWorkerSandboxAllocation = async (input: {
+  authoritySpaceId: string;
+  disposableSpaceId: string;
+  sessionId: string;
+  turnId: string;
+  policySha256: string;
+  podName: string;
+}) => {
+  const isolatedWorker = {
+    state: "starting",
+    authoritySpaceId: input.authoritySpaceId,
+    disposableSpaceId: input.disposableSpaceId,
+    sessionId: input.sessionId,
+    turnId: input.turnId,
+    policySha256: input.policySha256,
+    resumable: false,
+  };
+  const [sandbox] = await db.update(spaceSandboxes).set({
+    status: "provisioning",
+    runtimeStatus: "starting",
+    podName: input.podName,
+    meta: sql`(
+      CASE
+        WHEN jsonb_typeof(${spaceSandboxes.meta}) = 'object' THEN ${spaceSandboxes.meta}
+        ELSE '{}'::jsonb
+      END
+    ) || ${JSON.stringify({ isolatedWorker, resumable: false })}::jsonb`,
+    updatedAt: new Date(),
+  }).where(and(
+    eq(spaceSandboxes.spaceId, input.disposableSpaceId),
+    sql`${spaceSandboxes.status} = 'allocated'`,
+    isNull(spaceSandboxes.podName),
+    sql`${spaceSandboxes.meta}->'isolatedWorker'->>'state' = 'allocated'`,
+    sql`${spaceSandboxes.meta}->'isolatedWorker'->>'authoritySpaceId' = ${input.authoritySpaceId}`,
+    sql`${spaceSandboxes.meta}->'isolatedWorker'->>'disposableSpaceId' = ${input.disposableSpaceId}`,
+    sql`coalesce(${spaceSandboxes.meta}->'isolatedWorker'->>'resumable', 'true') = 'false'`,
+    sql`coalesce(${spaceSandboxes.meta}->>'terminationClaimId', '') = ''`,
+    sql`coalesce(${spaceSandboxes.meta}->'termination'->>'sandboxTerminated', 'false') <> 'true'`,
+  )).returning({ spaceId: spaceSandboxes.spaceId });
+  return Boolean(sandbox);
+};
+
+export const completeIsolatedWorkerSandboxAllocation = async (input: {
+  registration: {
+    spaceId: string;
+    status: "ready";
+    runtimeStatus: "healthy";
+    podName: string;
+    meta: Record<string, unknown>;
+  };
+  authoritySpaceId: string;
+  sessionId: string;
+  turnId: string;
+  policySha256: string;
+  podUid: string;
+}) => {
+  const isolatedWorker = {
+    state: "ready",
+    authoritySpaceId: input.authoritySpaceId,
+    disposableSpaceId: input.registration.spaceId,
+    sessionId: input.sessionId,
+    turnId: input.turnId,
+    policySha256: input.policySha256,
+    podUid: input.podUid,
+    resumable: false,
+  };
+  const [sandbox] = await db.update(spaceSandboxes).set({
+    status: input.registration.status,
+    runtimeStatus: input.registration.runtimeStatus,
+    podName: input.registration.podName,
+    meta: sql`(
+      CASE
+        WHEN jsonb_typeof(${spaceSandboxes.meta}) = 'object' THEN ${spaceSandboxes.meta}
+        ELSE '{}'::jsonb
+      END
+    ) || ${JSON.stringify({ ...input.registration.meta, isolatedWorker, resumable: false })}::jsonb`,
+    updatedAt: new Date(),
+  }).where(and(
+    eq(spaceSandboxes.spaceId, input.registration.spaceId),
+    eq(spaceSandboxes.status, "provisioning"),
+    eq(spaceSandboxes.podName, input.registration.podName),
+    sql`${spaceSandboxes.meta}->'isolatedWorker'->>'state' = 'starting'`,
+    sql`${spaceSandboxes.meta}->'isolatedWorker'->>'authoritySpaceId' = ${input.authoritySpaceId}`,
+    sql`${spaceSandboxes.meta}->'isolatedWorker'->>'sessionId' = ${input.sessionId}`,
+    sql`${spaceSandboxes.meta}->'isolatedWorker'->>'turnId' = ${input.turnId}`,
+    sql`${spaceSandboxes.meta}->'isolatedWorker'->>'policySha256' = ${input.policySha256}`,
+    sql`coalesce(${spaceSandboxes.meta}->>'terminationClaimId', '') = ''`,
+  )).returning({ spaceId: spaceSandboxes.spaceId });
+  return Boolean(sandbox);
+};
+
+export const markIsolatedWorkerSandboxCreateFailed = async (input: {
+  authoritySpaceId: string;
+  disposableSpaceId: string;
+  sessionId: string;
+  turnId: string;
+  policySha256: string;
+  podName: string;
+  reason: string;
+}) => {
+  const isolatedWorker = {
+    state: "create_failed",
+    authoritySpaceId: input.authoritySpaceId,
+    disposableSpaceId: input.disposableSpaceId,
+    sessionId: input.sessionId,
+    turnId: input.turnId,
+    policySha256: input.policySha256,
+    resumable: false,
+    createFailedAt: new Date().toISOString(),
+    createFailure: input.reason,
+  };
+  const [sandbox] = await db.update(spaceSandboxes).set({
+    status: "error",
+    runtimeStatus: "unhealthy",
+    podName: null,
+    meta: sql`coalesce(${spaceSandboxes.meta}, '{}'::jsonb) || ${JSON.stringify({
+      isolatedWorker,
+      podIp: null,
+      wsEndpoint: null,
+      resumable: false,
+    })}::jsonb`,
+    updatedAt: new Date(),
+  }).where(and(
+    eq(spaceSandboxes.spaceId, input.disposableSpaceId),
+    eq(spaceSandboxes.status, "provisioning"),
+    eq(spaceSandboxes.podName, input.podName),
+    sql`${spaceSandboxes.meta}->'isolatedWorker'->>'state' = 'starting'`,
+    sql`${spaceSandboxes.meta}->'isolatedWorker'->>'authoritySpaceId' = ${input.authoritySpaceId}`,
+    sql`${spaceSandboxes.meta}->'isolatedWorker'->>'sessionId' = ${input.sessionId}`,
+    sql`${spaceSandboxes.meta}->'isolatedWorker'->>'turnId' = ${input.turnId}`,
+    sql`${spaceSandboxes.meta}->'isolatedWorker'->>'policySha256' = ${input.policySha256}`,
+    sql`coalesce(${spaceSandboxes.meta}->>'terminationClaimId', '') = ''`,
+  )).returning({ spaceId: spaceSandboxes.spaceId });
+  return Boolean(sandbox);
+};
+
+export const claimIsolatedWorkerTermination = async (input: {
+  spaceId: string;
+  podUid: string;
+  claimId: string;
+  startedAt: string;
+}) => {
+  const [sandbox] = await db
+    .update(spaceSandboxes)
+    .set({
+      status: "stopping",
+      runtimeStatus: "unknown",
+      meta: sql`jsonb_set((
+        CASE
+          WHEN jsonb_typeof(${spaceSandboxes.meta}) = 'object' THEN ${spaceSandboxes.meta}
+          ELSE '{}'::jsonb
+        END
+      ) || ${JSON.stringify({
+        terminationStartedAt: input.startedAt,
+        terminationClaimId: input.claimId,
+        terminationStage: "deleting",
+        terminationRequired: true,
+        resumable: false,
+      })}::jsonb, '{isolatedWorker,state}', '"stopping"'::jsonb, true)`,
+      updatedAt: new Date(),
+    })
+    .where(and(
+      eq(spaceSandboxes.spaceId, input.spaceId),
+      sql`${spaceSandboxes.status} <> 'terminated'`,
+      sql`${spaceSandboxes.meta}->'isolatedWorkerPolicy'->>'podUid' = ${input.podUid}`,
+      sql`${spaceSandboxes.meta}->>'terminationClaimId' is null`,
+      sql`coalesce(${spaceSandboxes.meta}->'termination'->>'sandboxTerminated', 'false') <> 'true'`,
+    ))
+    .returning({ spaceId: spaceSandboxes.spaceId });
+  if (sandbox) return true;
+  const latest = await getSpaceSandboxBySpaceId(input.spaceId);
+  const meta = asMetaObject(latest?.meta);
+  const policy = asMetaObject(meta.isolatedWorkerPolicy);
+  return latest?.status === "stopping"
+    && policy.podUid === input.podUid
+    && meta.terminationClaimId === input.claimId;
+};
+
+export const markIsolatedWorkerPodDeleted = async (input: {
+  spaceId: string;
+  podUid: string;
+  claimId: string;
+  podDeletedAt: string;
+}) => {
+  const [sandbox] = await db.update(spaceSandboxes).set({
+    meta: sql`coalesce(${spaceSandboxes.meta}, '{}'::jsonb) || ${JSON.stringify({
+      terminationStage: "pod_deleted",
+      podDeletedAt: input.podDeletedAt,
+    })}::jsonb`,
+    updatedAt: new Date(),
+  }).where(and(
+    eq(spaceSandboxes.spaceId, input.spaceId),
+    eq(spaceSandboxes.status, "stopping"),
+    sql`${spaceSandboxes.meta}->'isolatedWorkerPolicy'->>'podUid' = ${input.podUid}`,
+    sql`${spaceSandboxes.meta}->>'terminationClaimId' = ${input.claimId}`,
+    sql`${spaceSandboxes.meta}->>'terminationStage' = 'deleting'`,
+  )).returning({ spaceId: spaceSandboxes.spaceId });
+  if (sandbox) return input.podDeletedAt;
+  const latest = await getSpaceSandboxBySpaceId(input.spaceId);
+  const meta = asMetaObject(latest?.meta);
+  const persistedPodDeletedAt = typeof meta.podDeletedAt === "string" ? meta.podDeletedAt : null;
+  return latest?.status === "stopping"
+    && meta.terminationClaimId === input.claimId
+    && (meta.terminationStage === "pod_deleted" || meta.terminationStage === "checkpointing")
+    && persistedPodDeletedAt
+    ? persistedPodDeletedAt
+    : null;
+};
+
+export const claimIsolatedWorkerCheckpoint = async (input: {
+  spaceId: string;
+  podUid: string;
+  claimId: string;
+  checkpointAttemptId: string;
+  checkpointTaskRunId: string;
+}) => {
+  const [sandbox] = await db.update(spaceSandboxes).set({
+    meta: sql`coalesce(${spaceSandboxes.meta}, '{}'::jsonb) || ${JSON.stringify({
+      terminationStage: "checkpointing",
+      checkpointAttemptId: input.checkpointAttemptId,
+      checkpointTaskRunId: input.checkpointTaskRunId,
+    })}::jsonb`,
+    updatedAt: new Date(),
+  }).where(and(
+    eq(spaceSandboxes.spaceId, input.spaceId),
+    eq(spaceSandboxes.status, "stopping"),
+    sql`${spaceSandboxes.meta}->'isolatedWorkerPolicy'->>'podUid' = ${input.podUid}`,
+    sql`${spaceSandboxes.meta}->>'terminationClaimId' = ${input.claimId}`,
+    sql`${spaceSandboxes.meta}->>'terminationStage' = 'pod_deleted'`,
+    sql`${spaceSandboxes.meta}->>'podDeletedAt' is not null`,
+  )).returning({ spaceId: spaceSandboxes.spaceId });
+  if (sandbox) return {
+    checkpointAttemptId: input.checkpointAttemptId,
+    checkpointTaskRunId: input.checkpointTaskRunId,
+  };
+  const latest = await getSpaceSandboxBySpaceId(input.spaceId);
+  const meta = asMetaObject(latest?.meta);
+  const policy = asMetaObject(meta.isolatedWorkerPolicy);
+  return latest?.status === "stopping"
+    && policy.podUid === input.podUid
+    && meta.terminationClaimId === input.claimId
+    && (meta.terminationStage === "checkpointing" || meta.terminationStage === "checkpointed")
+    && typeof meta.checkpointAttemptId === "string"
+    && typeof meta.checkpointTaskRunId === "string"
+    ? {
+        checkpointAttemptId: meta.checkpointAttemptId,
+        checkpointTaskRunId: meta.checkpointTaskRunId,
+      }
+    : null;
+};
+
+export const rotateIsolatedWorkerCheckpointAttempt = async (input: {
+  spaceId: string;
+  podUid: string;
+  claimId: string;
+  checkpointAttemptId: string;
+  checkpointTaskRunId: string;
+  nextCheckpointAttemptId: string;
+  nextCheckpointTaskRunId: string;
+}) => {
+  const [sandbox] = await db.update(spaceSandboxes).set({
+    meta: sql`coalesce(${spaceSandboxes.meta}, '{}'::jsonb) || ${JSON.stringify({
+      checkpointAttemptId: input.nextCheckpointAttemptId,
+      checkpointTaskRunId: input.nextCheckpointTaskRunId,
+    })}::jsonb`,
+    updatedAt: new Date(),
+  }).where(and(
+    eq(spaceSandboxes.spaceId, input.spaceId),
+    eq(spaceSandboxes.status, "stopping"),
+    sql`${spaceSandboxes.meta}->'isolatedWorkerPolicy'->>'podUid' = ${input.podUid}`,
+    sql`${spaceSandboxes.meta}->>'terminationClaimId' = ${input.claimId}`,
+    sql`${spaceSandboxes.meta}->>'terminationStage' = 'checkpointing'`,
+    sql`${spaceSandboxes.meta}->>'checkpointAttemptId' = ${input.checkpointAttemptId}`,
+    sql`${spaceSandboxes.meta}->>'checkpointTaskRunId' = ${input.checkpointTaskRunId}`,
+    sql`${spaceSandboxes.meta}->'terminationCheckpoint' is null`,
+  )).returning({ spaceId: spaceSandboxes.spaceId });
+  if (sandbox) return {
+    checkpointAttemptId: input.nextCheckpointAttemptId,
+    checkpointTaskRunId: input.nextCheckpointTaskRunId,
+  };
+  const latest = await getSpaceSandboxBySpaceId(input.spaceId);
+  const meta = asMetaObject(latest?.meta);
+  const policy = asMetaObject(meta.isolatedWorkerPolicy);
+  return latest?.status === "stopping"
+    && policy.podUid === input.podUid
+    && meta.terminationClaimId === input.claimId
+    && (meta.terminationStage === "checkpointing" || meta.terminationStage === "checkpointed")
+    && typeof meta.checkpointAttemptId === "string"
+    && typeof meta.checkpointTaskRunId === "string"
+    ? {
+        checkpointAttemptId: meta.checkpointAttemptId,
+        checkpointTaskRunId: meta.checkpointTaskRunId,
+      }
+    : null;
+};
+
+export const readIsolatedWorkerTerminationCheckpoint = async (input: {
+  spaceId: string;
+  podUid: string;
+  claimId: string;
+  checkpointAttemptId: string;
+}) => {
+  const sandbox = await getSpaceSandboxBySpaceId(input.spaceId);
+  const meta = asMetaObject(sandbox?.meta);
+  const policy = asMetaObject(meta.isolatedWorkerPolicy);
+  if (
+    sandbox?.status !== "stopping"
+    || policy.podUid !== input.podUid
+    || meta.terminationClaimId !== input.claimId
+    || meta.checkpointAttemptId !== input.checkpointAttemptId
+    || meta.terminationStage !== "checkpointed"
+  ) return null;
+  const checkpoint = meta.terminationCheckpoint;
+  return checkpoint && typeof checkpoint === "object" && !Array.isArray(checkpoint)
+    ? checkpoint as Record<string, unknown>
+    : null;
+};
+
+export const persistIsolatedWorkerTerminationCheckpoint = async (input: {
+  spaceId: string;
+  podUid: string;
+  claimId: string;
+  checkpointAttemptId: string;
+  checkpoint: {
+    disposableSpaceId: string;
+    checkpointId: string;
+    commit: string;
+    tree: string;
+    treeSha256: string;
+    currentHead: string;
+    checkpointCreatedAt: string;
+  };
+}) => {
+  const [sandbox] = await db.update(spaceSandboxes).set({
+    meta: sql`coalesce(${spaceSandboxes.meta}, '{}'::jsonb) || ${JSON.stringify({
+      terminationStage: "checkpointed",
+      terminationCheckpoint: input.checkpoint,
+    })}::jsonb`,
+    updatedAt: new Date(),
+  }).where(and(
+    eq(spaceSandboxes.spaceId, input.spaceId),
+    eq(spaceSandboxes.status, "stopping"),
+    sql`${spaceSandboxes.meta}->'isolatedWorkerPolicy'->>'podUid' = ${input.podUid}`,
+    sql`${spaceSandboxes.meta}->>'terminationClaimId' = ${input.claimId}`,
+    sql`${spaceSandboxes.meta}->>'terminationStage' = 'checkpointing'`,
+    sql`${spaceSandboxes.meta}->>'checkpointAttemptId' = ${input.checkpointAttemptId}`,
+  )).returning({ spaceId: spaceSandboxes.spaceId });
+  if (sandbox) return true;
+  return Boolean(await readIsolatedWorkerTerminationCheckpoint(input));
+};
+
+export const completeIsolatedWorkerTermination = async (input: {
+  spaceId: string;
+  podUid: string;
+  claimId: string;
+  checkpointAttemptId: string;
+  receipt: {
+    revokeTaskRunId: string;
+    automaticTrigger: "turn_terminal_event";
+    manualEndpointInvoked: false;
+    podUid: string;
+    podDeleted: true;
+    podDeletedAt: string;
+    credentialRevoked: true;
+    sandboxTerminated: true;
+    checkpointCreatedAfterPodDeletion: true;
+    checkpointAdapter: "trusted_production";
+    terminatedAt: string;
+    checkpointId: string;
+    checkpointCommit: string;
+    checkpointTreeSha256: string;
+  };
+}) => {
+  if (input.receipt.podUid !== input.podUid) throw new Error("isolated worker termination receipt pod UID mismatch");
+  if (
+    input.receipt.automaticTrigger !== "turn_terminal_event"
+    || input.receipt.manualEndpointInvoked !== false
+    || !input.receipt.revokeTaskRunId
+  ) throw new Error("isolated worker termination receipt automatic TaskRun binding mismatch");
+  return db.transaction(async (tx) => {
+    const [sandbox] = await tx
+      .update(spaceSandboxes)
+    .set({
+      status: "terminated",
+      runtimeStatus: "unknown",
+      podName: null,
+      stoppedAt: new Date(input.receipt.terminatedAt),
+      meta: sql`jsonb_set((
+        CASE
+          WHEN jsonb_typeof(${spaceSandboxes.meta}) = 'object' THEN ${spaceSandboxes.meta}
+          ELSE '{}'::jsonb
+        END
+      ) || ${JSON.stringify({
+        termination: input.receipt,
+        isolatedWorkerDisposable: {
+          frozenHead: {
+            checkpointId: input.receipt.checkpointId,
+            commitHash: input.receipt.checkpointCommit,
+            treeSha256: input.receipt.checkpointTreeSha256,
+          },
+        },
+        terminationClaimId: null,
+        terminationStage: "terminated",
+        checkpointAttemptId: null,
+        wsEndpoint: null,
+        podIp: null,
+        resumable: false,
+      })}::jsonb, '{isolatedWorker,state}', '"terminated"'::jsonb, true)`,
+      updatedAt: new Date(),
+    })
+    .where(and(
+      eq(spaceSandboxes.spaceId, input.spaceId),
+      sql`${spaceSandboxes.meta}->'isolatedWorkerPolicy'->>'podUid' = ${input.podUid}`,
+      sql`${spaceSandboxes.meta}->>'terminationClaimId' = ${input.claimId}`,
+      sql`${spaceSandboxes.meta}->>'terminationStage' = 'checkpointed'`,
+      sql`${spaceSandboxes.meta}->>'checkpointAttemptId' = ${input.checkpointAttemptId}`,
+      sql`${spaceSandboxes.meta}->'terminationCheckpoint'->>'disposableSpaceId' = ${input.spaceId}`,
+      sql`${spaceSandboxes.meta}->'terminationCheckpoint'->>'checkpointId' = ${input.receipt.checkpointId}`,
+      sql`${spaceSandboxes.meta}->'terminationCheckpoint'->>'commit' = ${input.receipt.checkpointCommit}`,
+      sql`${spaceSandboxes.meta}->'terminationCheckpoint'->>'currentHead' = ${input.receipt.checkpointCommit}`,
+      sql`${spaceSandboxes.meta}->'terminationCheckpoint'->>'treeSha256' = ${input.receipt.checkpointTreeSha256}`,
+      sql`coalesce(${spaceSandboxes.meta}->'termination'->>'sandboxTerminated', 'false') <> 'true'`,
+    ))
+      .returning({ spaceId: spaceSandboxes.spaceId });
+    if (!sandbox) return false;
+    const frozenHead = {
+      checkpointId: input.receipt.checkpointId,
+      commitHash: input.receipt.checkpointCommit,
+      treeSha256: input.receipt.checkpointTreeSha256,
+    };
+    const [updatedSpace] = await tx.update(spaces).set({
+      meta: sql`coalesce(${spaces.meta}, '{}'::jsonb) || jsonb_build_object(
+        'isolatedWorkerDisposable',
+        coalesce(${spaces.meta}->'isolatedWorkerDisposable', '{}'::jsonb)
+          || ${JSON.stringify({ frozenHead })}::jsonb
+      )`,
+      updatedAt: new Date(),
+    }).where(eq(spaces.id, input.spaceId)).returning({ id: spaces.id });
+    if (!updatedSpace) throw new Error("isolated worker disposable space is missing during termination");
+    return true;
+  });
 };
 
 export const listSandboxRolloutTargets = async (input?: {
@@ -428,8 +903,10 @@ export const reconcileSpaceSandbox = async (input: {
   mode: "ensure" | "replace";
   reason: "space_created" | "manual_recreate" | "auto_recover" | "auto_resume" | "space_mods_changed";
 }) => {
+  await assertIsolatedWorkerDisposableOperationAllowed(input.spaceId, "sandbox_lifecycle");
   const podName = `sandbox-${input.spaceId}`;
   const existingSandbox = await getSpaceSandboxBySpaceId(input.spaceId);
+  assertSandboxCanResumeOrRecreate(existingSandbox);
   const existingMeta = asMetaObject(existingSandbox?.meta);
 
   if (input.mode === "replace") {
@@ -639,7 +1116,10 @@ export const recoverSpaceSandbox = async (input: {
   source?: string;
   verify?: boolean;
 }) => {
+  await assertIsolatedWorkerDisposableOperationAllowed(input.spaceId, "sandbox_lifecycle");
   const existing = await getSpaceSandboxBySpaceId(input.spaceId);
+  if (input.source === "manual") assertSandboxCanResumeOrRecreate(existing);
+  else assertSandboxCanAutoRecover(existing);
   if (existing?.provider === "local") {
     // Local sandboxes live on the user's machine; there is nothing to recover
     // server-side. Report current status without attempting a cloud recreate.
@@ -777,4 +1257,3 @@ export const recoverSpaceSandbox = async (input: {
     await redisCommandClient.del(lockKey).catch(() => undefined);
   }
 };
-

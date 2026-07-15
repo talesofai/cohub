@@ -6,3 +6,5 @@ import "./create-space-task.js";
 import "./run-command-task.js";
 import "./generation-task.js";
 import "./generation-billing-retry-task.js";
+import "./isolated-worker-dispatch-task.js";
+import "./isolated-worker-termination-task.js";

@@ -1,5 +1,6 @@
 import { AsyncLocalStorage } from "node:async_hooks";
 import type { GenerationPolicy } from "@cohub/protocol/generation";
+import type { AgentPromptAccessMode } from "@cohub/core/sessions";
 import type { PromptEnv } from "@cohub/core/sessions";
 import type { Permission } from "@cohub/core/permissions";
 import type { AgentFileVisibility } from "./runtime/workspace-visibility.js";
@@ -23,6 +24,7 @@ export type ToolExecutionContext = {
   toolCallId?: string;
   actorUserId?: string | null;
   executionToken?: string | null;
+  accessMode?: AgentPromptAccessMode;
   executionScopes?: Permission[] | null;
   requestId?: string | null;
   metrics?: TurnTelemetryMetrics;

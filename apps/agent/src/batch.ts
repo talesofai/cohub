@@ -35,6 +35,7 @@ export type ClaimedTurnBatch = {
 export type ClaimResult =
   | { kind: "claimed"; batch: ClaimedTurnBatch }
   | { kind: "busy"; activeTurnId: string; activeUpdatedAt: Date | null; activeStatus: string }
+  | { kind: "stale_isolated"; turn: TurnRow }
   | { kind: "noop" };
 
 const STALE_ACTIVE_TURN_MS = env.AGENT_STALE_ACTIVE_TURN_MS;
@@ -165,6 +166,9 @@ export async function claimNextTurnBatch(input: Pick<AgentTurnJobData, "sessionI
     const active = activeRows[0] ? normalizeTurn(activeRows[0] as Record<string, unknown>) : null;
     if (active) {
       if (isStaleActiveTurn(active)) {
+        if (asRecord(active.meta).isolatedWorker) {
+          return { kind: "stale_isolated" as const, turn: active };
+        }
         await markStaleTurnInterrupted(tx, active);
       } else {
         return { kind: "busy" as const, activeTurnId: active.id, activeUpdatedAt: active.updatedAt, activeStatus: active.status };
@@ -193,7 +197,8 @@ export async function claimNextTurnBatch(input: Pick<AgentTurnJobData, "sessionI
     const followups = followupRows.map((row) => normalizeTurn(row as Record<string, unknown>));
     if (followups.length === 0) return { kind: "noop" as const };
 
-    const batch = await claimQueuedTurns(tx, followups);
+    const isolatedFollowup = followups.find((turn) => asRecord(turn.meta).isolatedWorker);
+    const batch = await claimQueuedTurns(tx, isolatedFollowup ? [isolatedFollowup] : followups);
     return batch ? { kind: "claimed" as const, batch } : { kind: "noop" as const };
   });
 }

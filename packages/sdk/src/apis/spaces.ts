@@ -38,6 +38,10 @@ import type {
   SpaceDefaultResponse,
   CreateSpacePromptInput,
   CreateSpacePromptResponse,
+  IsolatedWorkerDispatchInput,
+  IsolatedWorkerDispatchResponse,
+  IsolatedWorkerReuseProbeInput,
+  IsolatedWorkerReuseProbeResponse,
   CreateSpaceCompletionInput,
   SpaceCompletionResult,
   SpaceCompletionStreamEvent,
@@ -1642,6 +1646,28 @@ export class SpaceClient {
   prompt(input: CreateSpacePromptInput) {
     return this.transport.request<CreateSpacePromptResponse>(
       `/api/spaces/${this.id}/prompt`,
+      {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(input),
+      },
+    );
+  }
+
+  dispatchIsolatedWorker(input: IsolatedWorkerDispatchInput) {
+    return this.transport.request<IsolatedWorkerDispatchResponse>(
+      `/api/spaces/${this.id}/isolated-workers/dispatch`,
+      {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(input),
+      },
+    );
+  }
+
+  probeTerminatedIsolatedWorkerReuse(input: IsolatedWorkerReuseProbeInput) {
+    return this.transport.request<IsolatedWorkerReuseProbeResponse>(
+      `/api/spaces/${this.id}/isolated-workers/reuse-probe`,
       {
         method: "POST",
         headers: { "Content-Type": "application/json" },

@@ -626,6 +626,7 @@ function createRemoteBashOperations(): BashOperations {
           ...(ctx.generationPolicy ? { generationPolicy: ctx.generationPolicy } : {}),
           ...(ctx.env ? { env: ctx.env } : {}),
           ...(executionScopes.length ? { executionScopes } : {}),
+          ...(ctx.accessMode ? { accessMode: ctx.accessMode } : {}),
           origin: {
             kind: "bash_tool_call",
             sessionId: ctx.sessionId,

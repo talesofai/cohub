@@ -35,7 +35,10 @@ import {
   type SpaceUploadManifestEntry,
 } from "../../space-upload-storage.js";
 import { enqueueSandboxUploadFilesJob } from "../../sandbox-bash-queue.js";
-import { config } from "../../config.js";
+import { spaceChannels } from "@cohub/db";
+import { eq } from "drizzle-orm";
+import { db } from "../../db/index.js";
+import { rejectIsolatedWorkerDisposableRouteMutation } from "../../isolated-worker-disposable-guard.js";
 
 const logger = createLogger({ serviceName: "cohub-api" });
 const tracer = getTracer("cohub-api");
@@ -199,6 +202,8 @@ router.post("/local-sandbox/status", async (c) => {
   }>().catch(() => null);
   const spaceId = typeof body?.spaceId === "string" ? body.spaceId.trim() : "";
   if (!spaceId || !requireValidId(spaceId)) return c.json({ ok: false, message: "spaceId is required" }, 400);
+  const rejected = await rejectIsolatedWorkerDisposableRouteMutation(c, { spaceId, operation: "sandbox_lifecycle" });
+  if (rejected) return rejected;
   const status = body?.status === "ready" ? "ready" : "stopped";
 
   const sandbox = await getSpaceSandboxBySpaceId(spaceId);
@@ -254,6 +259,16 @@ router.post("/attachments/plan", async (c) => {
   }>().catch(() => null);
   const parsed = gatewayInboundEventSchema.safeParse(body?.event);
   if (!parsed.success) return c.json({ message: "invalid gateway attachment event", issues: parsed.error.issues }, 400);
+
+  const [channel] = await db.select({ spaceId: spaceChannels.spaceId }).from(spaceChannels)
+    .where(eq(spaceChannels.id, parsed.data.channelId)).limit(1);
+  if (channel) {
+    const rejected = await rejectIsolatedWorkerDisposableRouteMutation(c, {
+      spaceId: channel.spaceId,
+      operation: "generic_mutation",
+    });
+    if (rejected) return rejected;
+  }
 
   const resolved = await resolveChannelInboundForEventWithLock(parsed.data);
   if (!resolved) return c.json({ message: "gateway inbound already processed" }, 409);
@@ -398,6 +413,8 @@ router.post("/attachments/materialize", async (c) => {
   const userId = body?.userId?.trim() || null;
   const files = Array.isArray(body?.files) ? body.files : [];
   if (!spaceId || !requireValidId(spaceId)) return c.json({ message: "space not found" }, 404);
+  const rejected = await rejectIsolatedWorkerDisposableRouteMutation(c, { spaceId, operation: "generic_mutation" });
+  if (rejected) return rejected;
   if (files.length === 0) return c.json({ message: "files are required" }, 400);
   if (files.length > MAX_GATEWAY_ATTACHMENT_FILES + MAX_GATEWAY_ATTACHMENT_IMAGES) {
     return c.json({ message: "too many files" }, 413);
@@ -494,6 +511,9 @@ router.post("/attachments/complete", async (c) => {
   const uploadId = body?.uploadId?.trim();
   const entryIds = Array.isArray(body?.entryIds) ? body.entryIds.filter((id): id is string => typeof id === "string" && id.trim().length > 0) : [];
   if (!spaceId || !uploadId || entryIds.length === 0) return c.json({ message: "spaceId, uploadId and entryIds are required" }, 400);
+  if (!requireValidId(spaceId)) return c.json({ message: "space not found" }, 404);
+  const rejected = await rejectIsolatedWorkerDisposableRouteMutation(c, { spaceId, operation: "generic_mutation" });
+  if (rejected) return rejected;
 
   const completeState = await beginSpaceUploadComplete(spaceId, uploadId);
   if (!completeState.acquired) return c.json({ message: "upload is already being completed" }, 409);
@@ -556,6 +576,15 @@ router.post("/inbound", async (c) => {
   if (!parsed.success) return c.json({ message: "invalid gateway inbound event", issues: parsed.error.issues }, 400);
 
   const event = parsed.data;
+  const [channel] = await db.select({ spaceId: spaceChannels.spaceId }).from(spaceChannels)
+    .where(eq(spaceChannels.id, event.channelId)).limit(1);
+  if (channel) {
+    const rejected = await rejectIsolatedWorkerDisposableRouteMutation(c, {
+      spaceId: channel.spaceId,
+      operation: "generic_mutation",
+    });
+    if (rejected) return rejected;
+  }
   const parentCtx = extractTrace(event as unknown as Record<string, unknown>);
   const span = tracer.startSpan("api.gateway_inbound.handle", {
     attributes: {

@@ -17,8 +17,11 @@ import { logger } from "./logger.js";
 import type { AgentRunCommandJobData } from "./queue.js";
 import { createAgentExecutionToken } from "./execution-grants.js";
 import { normalizePermissionScopes } from "@cohub/core/permissions";
+import { parseAgentPromptAccessMode } from "@cohub/core/sessions";
 import { getAbortEvent } from "./abort.js";
 import { clearActiveAbortController, setActiveAbortController, setActiveAbortEvent } from "./active-turns.js";
+import { getSpaceSandbox } from "./api.js";
+import { assertSandboxAccessMode } from "./isolated-worker-access.js";
 
 const tools = createSandboxCodingTools();
 const tracer = getAgentTracer();
@@ -99,7 +102,10 @@ export async function processRunCommandJob(job: Job<AgentRunCommandJobData>): Pr
   const contextSessionId = data.origin?.sessionId ?? data.sessionId ?? "";
   const actorUserId = data.userId?.trim();
   const executionScopes = normalizePermissionScopes(data.executionScopes ?? []);
-  const executionToken = actorUserId
+  const accessMode = parseAgentPromptAccessMode(data.accessMode);
+  const sandboxState = await getSpaceSandbox({ spaceId: data.spaceId });
+  assertSandboxAccessMode(sandboxState?.sandbox, accessMode);
+  const executionToken = actorUserId && accessMode === "full_access"
     ? await createAgentExecutionToken({
         actorUserId,
         spaceId: data.spaceId,
@@ -162,6 +168,7 @@ export async function processRunCommandJob(job: Job<AgentRunCommandJobData>): Pr
       actorUserId: data.userId ?? null,
       executionToken,
       executionScopes,
+      accessMode,
       generationPolicy: data.generationPolicy ?? null,
       env: data.env ?? null,
       llmRound: 0,

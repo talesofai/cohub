@@ -50,6 +50,10 @@
       "types": "./dist/sandbox/index.d.ts",
       "default": "./dist/sandbox/index.js"
     },
+    "./isolated-worker": {
+      "types": "./dist/isolated-worker/index.d.ts",
+      "default": "./dist/isolated-worker/index.js"
+    },
     "./space-style": {
       "types": "./dist/space-style.d.ts",
       "default": "./dist/space-style.js"

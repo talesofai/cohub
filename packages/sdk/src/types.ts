@@ -1041,6 +1041,13 @@ export type UserSessionsResponse = {
 
 export type PromptAccessMode = "read_only" | "full_access";
 
+export type {
+  IsolatedWorkerDispatchInput,
+  IsolatedWorkerDispatchResponse,
+  IsolatedWorkerReuseProbeInput,
+  IsolatedWorkerReuseProbeResponse,
+} from "@cohub/protocol/isolated-worker";
+
 export type CreateSpacePromptInput = {
   sessionId?: string | null;
   title?: string | null;

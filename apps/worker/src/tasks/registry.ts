@@ -12,6 +12,18 @@ import { createLogger } from "@cohub/infra/logging";
 const logger = createLogger({ serviceName: "cohub-worker" });
 export type TaskHandlerContext = {
   taskRunId: string;
+  startedAt: Date;
+};
+
+export type TaskCompletedContext = {
+  taskRunId: string;
+  payload: TaskPayload;
+  result: Record<string, unknown>;
+  finishedAt: Date;
+};
+
+export type RegisterTaskOptions = {
+  afterCompleted?: (context: TaskCompletedContext) => Promise<void>;
 };
 
 export type TaskHandler = (
@@ -35,12 +47,20 @@ function billingFailureResult(error: unknown) {
   return { error: serializeBillingBlocked(error) };
 }
 
+function explicitTaskFailureResult(error: unknown) {
+  if (!error || typeof error !== "object" || Array.isArray(error)) return null;
+  const result = (error as { taskResult?: unknown }).taskResult;
+  return result && typeof result === "object" && !Array.isArray(result)
+    ? result as Record<string, unknown>
+    : null;
+}
+
 export const markTaskRunFailed = async (job: Job, error: unknown) => {
   const jobId = job.id;
   if (!jobId) return;
 
   const errorMessage = error instanceof Error ? error.message : String(error);
-  const result = billingFailureResult(error);
+  const result = explicitTaskFailureResult(error) ?? billingFailureResult(error);
   const [taskRun] = await db
     .update(taskRuns)
     .set({
@@ -50,7 +70,7 @@ export const markTaskRunFailed = async (job: Job, error: unknown) => {
       finishedAt: new Date(),
       updatedAt: new Date(),
     })
-    .where(and(eq(taskRuns.jobId, jobId), ne(taskRuns.status, "failed")))
+    .where(and(eq(taskRuns.jobId, jobId), ne(taskRuns.status, "failed"), ne(taskRuns.status, "completed")))
     .returning();
 
   if (taskRun) {
@@ -61,7 +81,7 @@ export const markTaskRunFailed = async (job: Job, error: unknown) => {
   }
 };
 
-export const registerTask = (type: string, handler: TaskHandler) => {
+export const registerTask = (type: string, handler: TaskHandler, options?: RegisterTaskOptions) => {
   const wrapped: TaskHandler = async (job) => {
     const jobId = job.id;
     if (!jobId) throw new Error("Job has no id");
@@ -71,12 +91,39 @@ export const registerTask = (type: string, handler: TaskHandler) => {
 
     // UPSERT: insert if cron-spawned, or update pending → running
     const existing = await db
-      .select({ id: taskRuns.id })
+      .select({
+        id: taskRuns.id,
+        status: taskRuns.status,
+        payload: taskRuns.payload,
+        result: taskRuns.result,
+        finishedAt: taskRuns.finishedAt,
+      })
       .from(taskRuns)
       .where(eq(taskRuns.jobId, jobId))
       .limit(1);
 
     let taskRunId = existing[0]?.id ?? crypto.randomUUID();
+
+    const alreadyCompleted = existing[0];
+    if (alreadyCompleted?.status === "completed") {
+      if (
+        !alreadyCompleted.finishedAt
+        || !alreadyCompleted.result
+        || typeof alreadyCompleted.result !== "object"
+        || Array.isArray(alreadyCompleted.result)
+      ) {
+        throw new Error(`Completed task ${taskRunId} is missing its completion result`);
+      }
+      if (options?.afterCompleted) {
+        await options.afterCompleted({
+          taskRunId,
+          payload: alreadyCompleted.payload,
+          result: alreadyCompleted.result as Record<string, unknown>,
+          finishedAt: alreadyCompleted.finishedAt,
+        });
+      }
+      return alreadyCompleted.result as Record<string, unknown>;
+    }
 
     if (existing.length > 0) {
       // Already exists (API-enqueued with pending status)
@@ -129,23 +176,34 @@ export const registerTask = (type: string, handler: TaskHandler) => {
     }
 
     try {
-      const result = await handler(job, { taskRunId });
+      const result = await handler(job, { taskRunId, startedAt: now });
 
+      const finishedAt = new Date();
       const [taskRun] = await db
         .update(taskRuns)
         .set({
           status: "completed",
           result: result ?? null,
-          finishedAt: new Date(),
-          updatedAt: new Date(),
+          finishedAt,
+          updatedAt: finishedAt,
         })
-        .where(eq(taskRuns.jobId, jobId))
+        .where(and(eq(taskRuns.jobId, jobId), ne(taskRuns.status, "completed")))
         .returning();
       if (taskRun) {
         await dispatchTaskUpdated({
           task: taskRun,
           changed: ["status", "result", "finishedAt"],
         }).catch((error) => logger.warn("[Realtime] failed to dispatch task.updated", error));
+      }
+
+      if (options?.afterCompleted) {
+        if (!taskRun) throw new Error(`Task ${taskRunId} completion was not persisted`);
+        await options.afterCompleted({
+          taskRunId,
+          payload: taskRun.payload,
+          result: result ?? {},
+          finishedAt,
+        });
       }
 
       return result;

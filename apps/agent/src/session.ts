@@ -26,7 +26,7 @@ import type { AgentMessage } from "@earendil-works/pi-agent-core";
 import { refreshUserEnv } from "./runtime/env-cache.js";
 import type { createSandboxCodingTools } from "./sandbox/tools.js";
 import type { Permission } from "@cohub/core/permissions";
-import type { PromptAccessMode } from "@cohub/core/sessions";
+import type { AgentPromptAccessMode } from "@cohub/core/sessions";
 import {
   applyAssistantMessageEvent,
   applyToolExecutionEnd,
@@ -98,7 +98,7 @@ export type SessionHandle = {
   currentAssistantMessageOrdinal?: number | null;
   currentStreamMessageId?: string | null;
   currentLlmRound?: number | null;
-  currentAccessMode: PromptAccessMode | null;
+  currentAccessMode: AgentPromptAccessMode | null;
   ownerEpoch: number;
   lastActiveAt: number;
   idleTimer: ReturnType<typeof setTimeout> | null;

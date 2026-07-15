@@ -41,6 +41,7 @@ export type AgentRunCommandJobData = {
   generationPolicy?: GenerationPolicy | null;
   env?: Record<string, string> | null;
   executionScopes?: string[] | null;
+  accessMode?: "read_only" | "full_access" | "isolated_worker" | null;
   requestId?: string | null;
   trace?: Record<string, unknown>;
   origin?: AgentRunCommandOrigin | null;

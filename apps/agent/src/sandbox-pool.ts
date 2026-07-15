@@ -2,8 +2,10 @@ import { createLogger } from "@cohub/infra/logging";
 import { createHash } from "node:crypto";
 import type { SandboxHeartbeat } from "@cohub/protocol/sandbox";
 import {
+  assertSandboxCanAutoRecover,
   createSandboxLifecycleController,
   getSandboxPromptRecoveryReason,
+  isTerminatedIsolatedWorkerSandbox,
 } from "@cohub/sandbox-controller";
 import {
   disconnectSandboxWsClient,
@@ -143,10 +145,11 @@ async function resolveSandboxWsUrl(spaceId: string): Promise<string> {
   if (LOCAL_SANDBOX_SPACE_ID && LOCAL_SANDBOX_WS_URL && spaceId === LOCAL_SANDBOX_SPACE_ID) {
     return LOCAL_SANDBOX_WS_URL;
   }
-
   let sandbox = (await getSpaceSandbox({ spaceId }))?.sandbox ?? null;
+  if (isTerminatedIsolatedWorkerSandbox(sandbox)) assertSandboxCanAutoRecover(sandbox);
   const recoverReason = getSandboxPromptRecoveryReason(sandbox);
   if (recoverReason && sandbox?.status !== "stopping") {
+    assertSandboxCanAutoRecover(sandbox);
     await recoverSandboxOnce(spaceId, recoverReason);
     sandbox = (await getSpaceSandbox({ spaceId }))?.sandbox ?? null;
   }

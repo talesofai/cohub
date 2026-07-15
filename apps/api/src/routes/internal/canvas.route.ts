@@ -2,6 +2,7 @@ import { Hono } from "hono";
 import { applyCanvasTransaction, type CanvasSemanticOp } from "../../canvas-service.js";
 import { ensureInternalRequest, requireValidId, type AuthUser } from "../../lib/middleware.js";
 import { hasPermission } from "../../permissions.js";
+import { rejectIsolatedWorkerDisposableRouteMutation } from "../../isolated-worker-disposable-guard.js";
 
 const router = new Hono();
 
@@ -23,6 +24,8 @@ router.post("/:spaceId/:documentId/tx", async (c) => {
   try {
     const actor = { uuid: body.actorId } as AuthUser;
     if (!(await hasPermission(actor, "file.edit", { spaceId }))) return c.json({ message: "forbidden" }, 403);
+    const rejected = await rejectIsolatedWorkerDisposableRouteMutation(c, { spaceId, operation: "generic_mutation" });
+    if (rejected) return rejected;
     const result = await applyCanvasTransaction({
       spaceId,
       documentId,

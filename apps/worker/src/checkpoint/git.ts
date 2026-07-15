@@ -63,6 +63,24 @@ const spawnGitWithOutput = async (args: string[], cwd: string) => {
   });
 };
 
+const spawnGitWithBuffer = async (args: string[], cwd: string) => {
+  return new Promise<{ stdout: Buffer; stderr: string }>((resolve, reject) => {
+    const child = spawn("git", ["-c", `safe.directory=${cwd}`, ...args], {
+      cwd,
+      stdio: ["ignore", "pipe", "pipe"],
+    });
+    const chunks: Buffer[] = [];
+    let stderr = "";
+    child.stdout.on("data", (chunk: Buffer) => chunks.push(chunk));
+    child.stderr.on("data", (chunk: Buffer) => { stderr += chunk.toString("utf8"); });
+    child.on("error", reject);
+    child.on("close", (code) => {
+      if (code === 0) return resolve({ stdout: Buffer.concat(chunks), stderr });
+      reject(new Error(redactBasicAuthUrls(stderr.trim() || `git ${args[0]} exited with non-zero status ${code}`)));
+    });
+  });
+};
+
 export const runGitWithOutput = async (args: string[], cwd: string) => {
   await cleanStaleGitLock(cwd);
   try {
@@ -75,6 +93,20 @@ export const runGitWithOutput = async (args: string[], cwd: string) => {
     const removed = await cleanStaleGitLock(cwd);
     if (!removed) throw error;
     return spawnGitWithOutput(args, cwd);
+  }
+};
+
+export const runGitWithBuffer = async (args: string[], cwd: string) => {
+  await cleanStaleGitLock(cwd);
+  try {
+    return await spawnGitWithBuffer(args, cwd);
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    if (!isGitIndexLockError(message)) throw error;
+    await waitForStaleGitLock(cwd);
+    const removed = await cleanStaleGitLock(cwd);
+    if (!removed) throw error;
+    return spawnGitWithBuffer(args, cwd);
   }
 };
 

@@ -14,6 +14,8 @@ export type SaveCheckpointInput = {
 export type SaveCheckpointResult = {
   checkpointId: string;
   commitHash: string;
+  treeHash: string;
+  checkpointTreeSha256: string;
   branch: string;
   commitMessage: string;
   changedFiles: number;
