@@ -197,9 +197,19 @@ jobs:
         run: |
           set -euo pipefail
           [[ "$REQUEST_ID" =~ ^[0-9a-f-]{36}$ ]]
-          kubectl logs deployment/cohub-api-dev -n cohub-dev --all-containers --since=30m \
-            | grep -F -C 20 "$REQUEST_ID" \
-            | tee diagnostic.log
+          : > diagnostic.log
+          for target in \
+            "deployment/cohub-api-dev cohub-dev" \
+            "deployment/cohub-worker-dev cohub-dev"
+          do
+            read -r workload namespace <<< "$target"
+            printf '\n===== %s (%s) =====\n' "$workload" "$namespace" >> diagnostic.log
+            kubectl logs "$workload" -n "$namespace" --all-containers --since=30m \
+              | grep -F -C 20 "$REQUEST_ID" \
+              >> diagnostic.log || true
+          done
+          cat diagnostic.log
+          grep -Fq "$REQUEST_ID" diagnostic.log
           test -s diagnostic.log
           jq -n --arg requestId "$REQUEST_ID" '{requestId:$requestId,diagnosticCaptured:true}' | tee acceptance.json
 
