@@ -10,6 +10,7 @@ on:
         options:
           - active
           - terminated
+          - diagnose
       authority_space_id:
         description: Authority Space UUID
         required: true
@@ -28,6 +29,10 @@ on:
         type: string
       expected_pod_uid:
         description: Pod UID captured by active phase (terminated phase)
+        required: false
+        type: string
+      request_id:
+        description: API request ID to locate (diagnose phase)
         required: false
         type: string
 
@@ -184,6 +189,20 @@ jobs:
             | tee acceptance.json
           cat acceptance.json >> "$GITHUB_STEP_SUMMARY"
 
+      - name: Diagnose rejected dispatch
+        if: ${{ inputs.mode == 'diagnose' }}
+        env:
+          REQUEST_ID: ${{ inputs.request_id }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          [[ "$REQUEST_ID" =~ ^[0-9a-f-]{36}$ ]]
+          kubectl logs deployment/cohub-api-dev -n cohub-dev --all-containers --since=30m \
+            | grep -F -C 20 "$REQUEST_ID" \
+            | tee diagnostic.log
+          test -s diagnostic.log
+          jq -n --arg requestId "$REQUEST_ID" '{requestId:$requestId,diagnosticCaptured:true}' | tee acceptance.json
+
       - name: Upload acceptance evidence
         uses: actions/upload-artifact@v4
         with:
@@ -192,5 +211,6 @@ jobs:
             acceptance.json
             pod.json
             exec-probe.log
+            diagnostic.log
           if-no-files-found: error
           retention-days: 30
