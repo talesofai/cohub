@@ -703,8 +703,12 @@ export const sessionTurns = v2.table(
     userUuidIdx: index("v2_idx_session_turns_user_uuid").on(table.userUuid),
     createdAtIdx: index("v2_idx_session_turns_created_at").on(table.createdAt),
     userTextSearchIdx: index("v2_idx_session_turns_user_text_trgm").using("gin", table.userText.op("gin_trgm_ops")),
+    sequenceCheck: check("v2_chk_session_turns_sequence", sql`${table.sequence} > 0`),
   }),
 );
+
+export const allocateSessionMessageSequence = (sessionId: string) =>
+  sql<number>`v2.allocate_session_message_sequence(${sessionId}::uuid)`;
 
 export const sessionMessages = v2.table(
   "session_messages",
@@ -738,6 +742,7 @@ export const sessionMessages = v2.table(
       table.sessionId,
       table.idempotencyKey,
     ),
+    sequenceCheck: check("v2_chk_session_messages_sequence", sql`${table.sequence} > 0`),
   }),
 );
 

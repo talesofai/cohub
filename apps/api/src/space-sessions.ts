@@ -11,6 +11,7 @@ import { assignSessionParticipantSystemLabels } from "@cohub/core/labels/session
 import { initializeSessionParticipantsMeta, readSessionParticipantUserUuids } from "@cohub/core/sessions";
 import { db } from "./db/index.js";
 import {
+  allocateSessionMessageSequence,
   sessionMessages,
   sessionTurnSegments,
   sessionTurns,
@@ -427,11 +428,6 @@ export const listUserSessions = async (
   return mergeUserSessionListBranches([creatorRows, participantRows], limit);
 };
 
-const getNextSessionSequence = async (sessionId: string) => {
-  const [row] = await db.select({ max: sql<number>`coalesce(max(${sessionMessages.sequence}), 0)::int` }).from(sessionMessages).where(eq(sessionMessages.sessionId, sessionId));
-  return (row?.max ?? 0) + 1;
-};
-
 const updateSessionAfterAppend = async (session: Pick<typeof spaceSessions.$inferSelect, "id" | "spaceId">, message: typeof sessionMessages.$inferSelect) => {
   const activityAt = message.createdAt ?? new Date();
   await db.update(spaceSessions).set({
@@ -474,7 +470,6 @@ export const persistMessageNode = async (input: PersistMessageInput & { message:
     if (!previous) throw new Error("Previous message not found");
   }
 
-  const sequence = await getNextSessionSequence(input.sessionId);
   const content = sanitizeContentBlocksForPostgresJson(input.message.content);
   const text = deriveMessagePreviewText({ content }) || null;
   const messageRole = input.message.role ?? "assistant";
@@ -500,7 +495,7 @@ export const persistMessageNode = async (input: PersistMessageInput & { message:
   const startedAt = toDateOrNull(input.message.startedAt) ?? completedAt;
   const durationMs = normalizeDurationMs(input.message.durationMs, durationBetweenMs(startedAt, completedAt));
 
-  const [messageNode] = await db.insert(sessionMessages).values({
+  const [insertedMessage] = await db.insert(sessionMessages).values({
     id: input.message.id?.trim() || undefined,
     sessionId: input.sessionId,
     role: messageRole,
@@ -514,7 +509,7 @@ export const persistMessageNode = async (input: PersistMessageInput & { message:
       providerResponseId: ((input.message.meta as Record<string, unknown> | null)?.responseId as string | undefined) ?? null,
     }),
     idempotencyKey: input.idempotencyKey,
-    sequence,
+    sequence: allocateSessionMessageSequence(input.sessionId),
     provider: input.message.provider ?? null,
     model: input.message.model ?? null,
     stopReason: input.message.stopReason ?? null,
@@ -523,8 +518,24 @@ export const persistMessageNode = async (input: PersistMessageInput & { message:
     startedAt,
     completedAt,
     durationMs,
+  }).onConflictDoNothing({
+    target: [sessionMessages.sessionId, sessionMessages.idempotencyKey],
   }).returning();
-  if (!messageNode) throw new Error("Failed to persist message");
+  if (!insertedMessage) {
+    const [existingAfterConflict] = await db.select().from(sessionMessages).where(and(
+      eq(sessionMessages.sessionId, input.sessionId),
+      eq(sessionMessages.idempotencyKey, input.idempotencyKey),
+    )).limit(1);
+    if (!existingAfterConflict) throw new Error("Failed to resolve idempotent message conflict");
+    if (existingAfterConflict.role === "assistant") {
+      await enqueueSessionMessagePostprocess({
+        sessionId: input.sessionId,
+        messageId: existingAfterConflict.id,
+      });
+    }
+    return existingAfterConflict;
+  }
+  const messageNode = insertedMessage;
 
   if (messageRole === "user" && !session.title?.trim()) {
     const titleText = (text ?? extractPlainText(content)).replace(/\s+/g, " ").replace(/^[:\-\s]+/, "").trim().slice(0, 60);

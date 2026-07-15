@@ -4,7 +4,7 @@ import type { ContentBlock, Usage } from "@cohub/protocol/core";
 import type { MessageRecord, MessageToolCallsFile, PersistMessageInput, SessionTurnRecord, SessionTurnStatus, StoredIntermediateMessage, StoredToolCall, TurnIntermediateMessagesFile } from "@cohub/protocol/model";
 import type { ChannelProvider, GatewayOutboundCommand } from "@cohub/protocol/gateway";
 import { getRealtimeUserRoom } from "@cohub/protocol/realtime";
-import { sessionMessages, sessionTurns, spaceChannels, spaceSessionBindings, spaceSessions, providerMessageRefs, userChannels, userProfiles } from "@cohub/db";
+import { allocateSessionMessageSequence, sessionMessages, sessionTurns, spaceChannels, spaceSessionBindings, spaceSessions, providerMessageRefs, userChannels, userProfiles } from "@cohub/db";
 import { sanitizeContentBlocksForPostgresJson, sanitizePostgresJsonValue } from "@cohub/core/content/sanitize";
 import { countToolCallsInContent, deriveMessagePreviewText, extractPlainText } from "@cohub/core/sessions";
 import { buildTraceHeaders, getCurrentRequestId } from "@cohub/infra/tracing";
@@ -93,11 +93,6 @@ const normalizeUsage = (usage: PersistMessageInput["message"]["usage"]): Usage |
 };
 
 const normalizeRecord = (value: unknown): Record<string, unknown> | null => value && typeof value === "object" && !Array.isArray(value) ? value as Record<string, unknown> : null;
-
-const getNextSessionSequence = async (sessionId: string) => {
-  const [row] = await db.select({ max: sql<number>`coalesce(max(${sessionMessages.sequence}), 0)::int` }).from(sessionMessages).where(eq(sessionMessages.sessionId, sessionId));
-  return (row?.max ?? 0) + 1;
-};
 
 const toIso = (value: Date | string | null | undefined) => value instanceof Date ? value.toISOString() : value ?? new Date().toISOString();
 const toIsoOrNull = (value: Date | string | null | undefined) => value ? toIso(value) : null;
@@ -240,7 +235,6 @@ async function persistMessageNode(input: PersistMessageInput & { message: Persis
     if (!previous) throw new Error("Previous message not found");
   }
 
-  const sequence = await getNextSessionSequence(input.sessionId);
   const content = sanitizeContentBlocksForPostgresJson(input.message.content);
   const text = deriveMessagePreviewText({ content }) || null;
   const messageRole = input.message.role ?? "assistant";
@@ -257,7 +251,7 @@ async function persistMessageNode(input: PersistMessageInput & { message: Persis
   const durationMs = typeof input.message.durationMs === "number" ? Math.max(0, Math.floor(input.message.durationMs)) : Math.max(0, completedAt.getTime() - startedAt.getTime());
   const anchorUserMessageId = input.anchorUserMessageId?.trim() || null;
 
-  const [messageNode] = await db.insert(sessionMessages).values({
+  const [insertedMessage] = await db.insert(sessionMessages).values({
     id: input.message.id?.trim() || undefined,
     sessionId: input.sessionId,
     role: messageRole,
@@ -265,7 +259,7 @@ async function persistMessageNode(input: PersistMessageInput & { message: Persis
     text,
     meta: sanitizePostgresJsonValue({ ...input.message.meta, messageKind, anchorUserMessageId, actorUserId: input.userId ?? null, providerResponseId: input.message.meta?.responseId ?? null }),
     idempotencyKey: input.idempotencyKey,
-    sequence,
+    sequence: allocateSessionMessageSequence(input.sessionId),
     provider: input.message.provider ?? null,
     model: input.message.model ?? null,
     stopReason: input.message.stopReason ?? null,
@@ -274,8 +268,18 @@ async function persistMessageNode(input: PersistMessageInput & { message: Persis
     startedAt,
     completedAt,
     durationMs,
+  }).onConflictDoNothing({
+    target: [sessionMessages.sessionId, sessionMessages.idempotencyKey],
   }).returning();
-  if (!messageNode) throw new Error("Failed to persist message");
+  if (!insertedMessage) {
+    const [existingAfterConflict] = await db.select().from(sessionMessages).where(and(
+      eq(sessionMessages.sessionId, input.sessionId),
+      eq(sessionMessages.idempotencyKey, input.idempotencyKey),
+    )).limit(1);
+    if (!existingAfterConflict) throw new Error("Failed to resolve idempotent message conflict");
+    return { message: existingAfterConflict, created: false };
+  }
+  const messageNode = insertedMessage;
 
   if (messageRole === "user" && !session.title?.trim()) {
     const titleText = (text ?? extractPlainText(content)).replace(/\s+/g, " ").replace(/^[:\-\s]+/, "").trim().slice(0, 60);
@@ -771,6 +775,11 @@ export async function persistCompactionTurn(input: {
 
   try {
     await db.transaction(async (tx) => {
+      const [sessionRow] = await tx.execute(sql`
+        select id from v2.space_sessions where id = ${input.sessionId} for update
+      `);
+      if (!sessionRow) throw new Error("Session not found while persisting compaction");
+
       // Step 1: Shift turns with sequence >= compactSequence by big offset.
       await tx.update(sessionTurns)
         .set({ sequence: sql`${sessionTurns.sequence} + 1000000` })
@@ -808,20 +817,19 @@ export async function persistCompactionTurn(input: {
       state.turnRow = row;
 
       // Step 4: Insert system message in the same transaction.
-      const [maxMsgRow] = await tx.select({ max: sql<number>`coalesce(max(${sessionMessages.sequence}), 0)::int` }).from(sessionMessages).where(eq(sessionMessages.sessionId, input.sessionId));
-      state.messageSequence = (maxMsgRow?.max ?? 0) + 1;
       const [msgRow] = await tx.insert(sessionMessages).values({
         sessionId: input.sessionId,
         role: "system",
         content: [{ type: "system_note", note_type: "compacted", text: input.summary }],
         text: null,
-        sequence: state.messageSequence,
+        sequence: allocateSessionMessageSequence(input.sessionId),
         meta: { messageKind: "compacted", turnId: state.turnRow?.id ?? null, ...compactionMeta },
         startedAt: now,
         completedAt: now,
         durationMs: 0,
       }).returning();
       state.messageRow = msgRow ?? null;
+      state.messageSequence = msgRow?.sequence ?? 0;
     });
   } catch (error) {
     logger.error(`[Compaction] DB transaction failed sessionId=${input.sessionId}:`, error);
