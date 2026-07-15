@@ -372,6 +372,26 @@ await assert.rejects(
 );
 assert.deepEqual(publishFailureCalls, ["recover", "prepare", "allocate", "publish", "rollback"]);
 
+const publishAndRollbackFailure = createIsolatedWorkerDispatchHandler({
+  async recoverReservation() { return { state: "none" }; },
+  async prepareWorkspace() {
+    return { inputsMaterializedAt: "2026-07-15T00:00:00.000Z", preparedWorkspace: "/stage" };
+  },
+  async cleanupPreparedWorkspace() {},
+  async allocateReservation() {},
+  async publishWorkspace() { throw new Error("publish root cause"); },
+  async rollbackReservation() { throw new Error("rollback root cause"); },
+  async readReservation() { throw new Error("must not read after publish failure"); },
+  async submitInternal() { throw new Error("must not submit after publish failure"); },
+});
+await assert.rejects(
+  publishAndRollbackFailure({
+    taskRunId,
+    payload: { type: "isolated_worker_dispatch", spaceId: authoritySpaceId, sessionId, userId: "user-1", data: dispatchData },
+  }),
+  /publish root cause.*rollback root cause/,
+);
+
 for (const recoveryState of ["staged", "prepared", "published"] as const) {
   const recoveryCalls: string[] = [];
   const recovery = createIsolatedWorkerDispatchHandler({
