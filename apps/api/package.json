@@ -15,6 +15,7 @@
     "start": "node --import ./dist/register-otel-esm-hook.js dist/index.js",
     "db:generate": "drizzle-kit generate",
     "db:migrate": "tsx src/db/migrate.ts",
+    "db:migrate:channel-credentials": "tsx src/db/migrate-channel-credentials.ts",
     "db:migrate:data:v2": "tsx src/db/migrate-v2-data.ts",
     "db:push": "drizzle-kit push",
     "db:studio": "drizzle-kit studio"

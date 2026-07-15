@@ -7,6 +7,7 @@ const env = process.env.ENV === "prod" ? "prod" : "dev";
 export const gatewayConfig = {
   apiBaseUrl: normalizeBaseUrl(process.env.API_BASE_URL ?? "http://localhost:8787"),
   workerSecret: process.env.WORKER_SECRET ?? "",
+  gatewayInternalSecret: process.env.GATEWAY_INTERNAL_SECRET ?? "",
   logtoEndpoint: resolveLogtoEndpoint({ endpoint: process.env.LOGTO_ENDPOINT, env }),
   port: Number(process.env.PORT ?? 8788),
   // Pod IP used to build the cluster-internal relay endpoint advertised to
@@ -18,6 +19,11 @@ export const gatewayConfig = {
     resourceId: "volc.seedasr.sauc.duration",
     url: "wss://openspeech.bytedance.com/api/v3/sauc/bigmodel_async",
   },
+};
+
+export const assertGatewayConfig = () => {
+  if (!gatewayConfig.workerSecret) throw new Error("Missing required env: WORKER_SECRET");
+  if (!gatewayConfig.gatewayInternalSecret) throw new Error("Missing required env: GATEWAY_INTERNAL_SECRET");
 };
 
 export type GatewayAuthUser = {

@@ -2,11 +2,13 @@ import { randomUUID } from "node:crypto";
 import { Hono } from "hono";
 import { db } from "../db/index.js";
 import { userChannels, spaceChannels, spaces } from "@cohub/db";
-import { eq, and, desc, inArray } from "drizzle-orm";
+import { eq, and, desc, inArray, sql } from "drizzle-orm";
 import { useAuth, requireValidId } from "../lib/middleware.js";
 import { redisCommandClient } from "../redis.js";
 import { deleteChannelResponse, type DeleteChannelResult } from "./channel-delete.js";
 import { fallbackBoundChannelHealth, getChannelHealthMap } from "../channel-health.js";
+import { encryptChannelCredentials, resolveChannelCredentials } from "../channel-credentials.js";
+import { refreshUserChannelGatewayBindings } from "../channels.js";
 
 const WECHAT_LOGIN_BASE_URL = "https://ilinkai.weixin.qq.com";
 const WECHAT_CDN_BASE_URL = "https://novac2c.cdn.weixin.qq.com/c2c";
@@ -20,8 +22,17 @@ const WECHAT_CONFIRM_LOCK_TTL_SECONDS = 60;
 
 const router = new Hono();
 
-const serializeChannel = <T extends { credentials?: unknown }>(channel: T) => {
-  const { credentials: _credentials, ...safeChannel } = channel;
+const serializeChannel = <T extends {
+  credentials?: unknown;
+  credentialEnvelope?: unknown;
+  credentialRevision?: unknown;
+}>(channel: T) => {
+  const {
+    credentials: _credentials,
+    credentialEnvelope: _credentialEnvelope,
+    credentialRevision: _credentialRevision,
+    ...safeChannel
+  } = channel;
   return safeChannel;
 };
 
@@ -93,11 +104,24 @@ async function listUserWeChatChannels(userUuid: string) {
     .orderBy(desc(userChannels.updatedAt), desc(userChannels.createdAt));
 }
 
-function getWeChatCredentials(channel: { credentials: unknown }) {
-  return (channel.credentials && typeof channel.credentials === "object" ? channel.credentials : {}) as WeChatChannelCredentials;
+function getWeChatCredentials(channel: typeof userChannels.$inferSelect) {
+  const credentials = resolveChannelCredentials({
+    channelId: channel.id,
+    userUuid: channel.userUuid,
+    provider: channel.provider,
+    credentials: channel.credentials,
+    credentialEnvelope: channel.credentialEnvelope,
+  });
+  return {
+    token: typeof credentials.token === "string" ? credentials.token : undefined,
+    accountId: typeof credentials.accountId === "string" ? credentials.accountId : undefined,
+    userId: typeof credentials.userId === "string" ? credentials.userId : undefined,
+    baseUrl: typeof credentials.baseUrl === "string" ? credentials.baseUrl : undefined,
+    cdnBaseUrl: typeof credentials.cdnBaseUrl === "string" ? credentials.cdnBaseUrl : undefined,
+  } satisfies WeChatChannelCredentials;
 }
 
-function findWeChatChannelByAccountId<T extends { credentials: unknown }>(channels: T[], accountId: string | undefined) {
+function findWeChatChannelByAccountId(channels: Array<typeof userChannels.$inferSelect>, accountId: string | undefined) {
   const normalized = accountId?.trim();
   if (!normalized) return null;
   return channels.find((channel) => getWeChatCredentials(channel).accountId?.trim() === normalized) ?? null;
@@ -250,19 +274,38 @@ router.post("/wechat/login/wait", async (c) => {
     };
     const existingChannel = findWeChatChannelByAccountId(await listUserWeChatChannels(user.uuid), status.ilink_bot_id);
     if (existingChannel) {
+      const credentialEnvelope = encryptChannelCredentials(credentials, {
+        channelId: existingChannel.id,
+        userUuid: existingChannel.userUuid,
+        provider: existingChannel.provider,
+      });
       const [channel] = await db.update(userChannels)
-        .set({ credentials, status: "active", updatedAt: new Date() })
+        .set({
+          credentials: null,
+          credentialEnvelope,
+          credentialRevision: sql`${userChannels.credentialRevision} + 1`,
+          status: "active",
+          updatedAt: new Date(),
+        })
         .where(and(eq(userChannels.id, existingChannel.id), eq(userChannels.userUuid, user.uuid)))
         .returning();
+      if (channel) await refreshUserChannelGatewayBindings(channel.id);
       await redisCommandClient.del(wechatLoginKey(sessionKey));
       return c.json({ connected: true, alreadyConnected: true, message: "WeChat is already connected.", channel: channel ? serializeChannel(channel) : null });
     }
 
+    const channelId = randomUUID();
     const [channel] = await db.insert(userChannels).values({
+      id: channelId,
       userUuid: user.uuid,
       provider: "wechat",
       name: state.name,
-      credentials,
+      credentials: null,
+      credentialEnvelope: encryptChannelCredentials(credentials, {
+        channelId,
+        userUuid: user.uuid,
+        provider: "wechat",
+      }),
       status: "active",
     }).returning();
 
@@ -334,13 +377,20 @@ router.post("/", async (c) => {
     return c.json({ message: "Create WeChat channels through the QR login flow." }, 400);
   }
 
+  const channelId = randomUUID();
   const [channel] = await db
     .insert(userChannels)
     .values({
+      id: channelId,
       userUuid: user.uuid,
       provider,
       name,
-      credentials: body.credentials,
+      credentials: null,
+      credentialEnvelope: encryptChannelCredentials(body.credentials, {
+        channelId,
+        userUuid: user.uuid,
+        provider,
+      }),
       status: "active",
     })
     .returning();

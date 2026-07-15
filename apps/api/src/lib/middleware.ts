@@ -142,9 +142,8 @@ export const isPrivateNetworkAddress = (value: string | null | undefined) => {
   return false;
 };
 
-export const ensureInternalRequest = (c: Context) => {
-  const secret = c.req.header("x-worker-secret");
-  const expectedSecret = config.workerSecret;
+const ensureSharedSecretRequest = (c: Context, header: string, expectedSecret: string) => {
+  const secret = c.req.header(header);
   if (!secret || !expectedSecret) return c.json({ message: "forbidden" }, 403);
   const provided = new TextEncoder().encode(secret);
   const expected = new TextEncoder().encode(expectedSecret);
@@ -153,6 +152,12 @@ export const ensureInternalRequest = (c: Context) => {
   }
   return null;
 };
+
+export const ensureInternalRequest = (c: Context) =>
+  ensureSharedSecretRequest(c, "x-worker-secret", config.workerSecret);
+
+export const ensureGatewayRequest = (c: Context) =>
+  ensureSharedSecretRequest(c, "x-gateway-secret", config.gatewayInternalSecret);
 
 // ── Space helpers ────────────────────────────────────────────────────────────
 

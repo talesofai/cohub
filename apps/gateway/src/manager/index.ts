@@ -11,17 +11,43 @@ import {
   markChannelError,
   markChannelStopped,
 } from "../channel-health.js";
+import { requestGatewayChannelCredentials } from "../api-client.js";
 
 
 const logger = createLogger({ serviceName: "cohub-gateway" });
 const GATEWAY_NODE_TTL_MS = 15_000;
 
-interface ChannelConfig {
+interface ChannelAssignment {
   provider: string;
-  credentials: Record<string, unknown>;
+  credentialRevision: number;
   spaceId?: string;
   externalChatId?: string;
 }
+
+interface ChannelConfig extends ChannelAssignment {
+  credentials: Record<string, unknown>;
+}
+
+const parseChannelAssignment = (value: unknown): ChannelAssignment => {
+  if (typeof value !== "object" || value === null || Array.isArray(value)) {
+    throw new Error("assignment is invalid");
+  }
+  const record = Object.fromEntries(Object.entries(value));
+  if (
+    typeof record.provider !== "string"
+    || typeof record.credentialRevision !== "number"
+    || !Number.isInteger(record.credentialRevision)
+    || record.credentialRevision <= 0
+  ) {
+    throw new Error("assignment is invalid");
+  }
+  return {
+    provider: record.provider,
+    credentialRevision: record.credentialRevision,
+    spaceId: typeof record.spaceId === "string" ? record.spaceId : undefined,
+    externalChatId: typeof record.externalChatId === "string" ? record.externalChatId : undefined,
+  };
+};
 
 type ProviderFactory = (channelId: string, credentials: Record<string, unknown>) => GatewayProvider;
 
@@ -62,6 +88,7 @@ export class GatewayManager {
 
   // 本地维持的实例集合 Map<ChannelId, ProviderInstance>
   private providers = new Map<string, GatewayProvider>();
+  private providerCredentialRevisions = new Map<string, number>();
 
   constructor(options: GatewayManagerOptions = {}) {
     // 优先使用 k8s 的 pod name (如 gateway-0)，回退到 hostname，再回退到随机生成的 id
@@ -111,6 +138,7 @@ export class GatewayManager {
       }
     }
     this.providers.clear();
+    this.providerCredentialRevisions.clear();
 
     logger.info("[Manager] Leaving task assignments intact for stable restart handoff");
 
@@ -147,10 +175,19 @@ export class GatewayManager {
       const syncStart = Date.now();
       // 获取分配给本节点的专属任务
       // 数据结构: HASH gateway:node:<nodeId>:channels
-      // Field: channelId, Value: JSON string of ChannelConfig
+      // Field: channelId, Value: JSON string of ChannelAssignment (never credentials)
       const tasksStr = await redisCommandClient.hgetall(`gateway:node:${this.nodeId}:channels`);
 
-      const expectedChannelIds = new Set(Object.keys(tasksStr));
+      const assignments = new Map<string, ChannelAssignment>();
+      for (const [channelId, assignmentJson] of Object.entries(tasksStr)) {
+        try {
+          assignments.set(channelId, parseChannelAssignment(JSON.parse(assignmentJson)));
+        } catch (error) {
+          logger.error("[Manager] Ignoring invalid channel assignment", { channelId, error });
+        }
+      }
+
+      const expectedChannelIds = new Set(assignments.keys());
       const currentChannelIds = new Set(this.providers.keys());
 
       logger.info(`[Manager] Sync tasks: expected=${expectedChannelIds.size}, current=${currentChannelIds.size}`);
@@ -162,24 +199,39 @@ export class GatewayManager {
       }
 
       // 1. 需要新增或更新的连接
-      const toAdd = Array.from(expectedChannelIds).filter(id => !currentChannelIds.has(id));
+      const toSync = Array.from(expectedChannelIds).filter((id) => {
+        const assignment = assignments.get(id);
+        return !currentChannelIds.has(id)
+          || this.providerCredentialRevisions.get(id) !== assignment?.credentialRevision;
+      });
       const toRemove = Array.from(currentChannelIds).filter(id => !expectedChannelIds.has(id));
 
-      if (toAdd.length > 0) {
-        logger.info(`[Manager] Channels to add: [${toAdd.join(", ")}]`);
+      if (toSync.length > 0) {
+        logger.info(`[Manager] Channels to start or refresh: [${toSync.join(", ")}]`);
       }
       if (toRemove.length > 0) {
         logger.info(`[Manager] Channels to remove: [${toRemove.join(", ")}]`);
       }
 
-      for (const channelId of toAdd) {
-        const configStr = tasksStr[channelId];
-        if (configStr) {
-          const config = JSON.parse(configStr);
-          this.startProvider(channelId, config);
+      for (const channelId of toSync) {
+        const assignment = assignments.get(channelId);
+        if (!assignment) continue;
+        try {
+          const resolved = await requestGatewayChannelCredentials({
+            channelId,
+            credentialRevision: assignment.credentialRevision,
+            gatewayNodeId: this.nodeId,
+          });
+          if (resolved.provider !== assignment.provider) {
+            throw new Error("channel provider changed during credential resolution");
+          }
+          if (this.providers.has(channelId)) await this.stopProvider(channelId);
+          this.startProvider(channelId, { ...assignment, ...resolved });
+        } catch (error) {
+          logger.error("[Manager] Failed to resolve channel credentials", { channelId, error });
+          void markChannelError(channelId, error, { nodeId: this.nodeId }).catch(() => undefined);
         }
       }
-      // TODO: 如果配置变了(比如 token 变了)，可能需要重启 provider
 
       // 2. 需要断开的连接 (本地有，但 Redis 里没有了)
       for (const channelId of toRemove) {
@@ -210,6 +262,7 @@ export class GatewayManager {
       }
       const provider = factory(channelId, config.credentials);
       this.providers.set(channelId, provider);
+      this.providerCredentialRevisions.set(channelId, config.credentialRevision);
       logger.info(`[Manager] Provider for ${channelId} created and added to active providers`);
     } catch (error) {
       logger.error(`[Manager] Error starting provider for ${channelId}:`, error);
@@ -228,6 +281,7 @@ export class GatewayManager {
         logger.error(`[Manager] Error destroying provider for ${channelId}:`, error);
       }
       this.providers.delete(channelId);
+      this.providerCredentialRevisions.delete(channelId);
     }
     await markChannelStopped(channelId).catch((error) => {
       logger.warn("[Manager] failed to mark channel stopped", { channelId, error });

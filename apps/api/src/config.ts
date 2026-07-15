@@ -1,4 +1,5 @@
 import { resolveLogtoEndpoint } from "@cohub/identity";
+import { parseChannelCredentialKeyring } from "./channel-credentials.js";
 
 export type AppConfig = {
   logtoEndpoint: string;
@@ -10,11 +11,14 @@ export type AppConfig = {
   talesofaiBillingAdminApiKey?: string;
   env: "dev" | "prod";
   appEncryptionKey: string;
+  channelCredentialKeys: string;
+  channelCredentialPrimaryKeyId: string;
   sandboxImage: string;
   sandboxNodeSelector: Record<string, string>;
   sandboxTolerations: SandboxToleration[];
   bullmqRedisUrl: string;
   workerSecret: string;
+  gatewayInternalSecret: string;
   spaceStorageRoot: string;
   spaceStoragePvc: string;
   checkpointCachePvc: string;
@@ -119,6 +123,7 @@ const parseSandboxTolerations = (value: string | undefined): SandboxToleration[]
 
 export const config: AppConfig = {
   workerSecret: process.env.WORKER_SECRET ?? "",
+  gatewayInternalSecret: process.env.GATEWAY_INTERNAL_SECRET ?? "",
   logtoEndpoint: resolveLogtoEndpoint({ endpoint: process.env.LOGTO_ENDPOINT, env }),
   webOrigin: process.env.WEB_ORIGIN,
   redisUrl: process.env.REDIS_URL ?? "redis://localhost:6379",
@@ -128,6 +133,8 @@ export const config: AppConfig = {
   talesofaiBillingAdminApiKey: process.env.TALESOFAI_BILLING_ADMIN_API_KEY,
   env,
   appEncryptionKey: process.env.APP_ENCRYPTION_KEY ?? "",
+  channelCredentialKeys: process.env.CHANNEL_CREDENTIAL_KEYS ?? "",
+  channelCredentialPrimaryKeyId: process.env.CHANNEL_CREDENTIAL_PRIMARY_KEY_ID ?? "",
   sandboxImage:
     process.env.SANDBOX_IMAGE ?? getDefaultSandboxImage(env),
   sandboxNodeSelector: parseSandboxNodeSelector(process.env.SANDBOX_NODE_SELECTOR),
@@ -175,8 +182,21 @@ export const assertRequiredConfig = () => {
   if (!config.appEncryptionKey) {
     throw new Error("Missing required env: APP_ENCRYPTION_KEY");
   }
+  if (!config.channelCredentialKeys) {
+    throw new Error("Missing required env: CHANNEL_CREDENTIAL_KEYS");
+  }
+  if (!config.channelCredentialPrimaryKeyId) {
+    throw new Error("Missing required env: CHANNEL_CREDENTIAL_PRIMARY_KEY_ID");
+  }
+  parseChannelCredentialKeyring(
+    config.channelCredentialKeys,
+    config.channelCredentialPrimaryKeyId,
+  );
   if (!config.workerSecret) {
     throw new Error("Missing required env: WORKER_SECRET");
+  }
+  if (!config.gatewayInternalSecret) {
+    throw new Error("Missing required env: GATEWAY_INTERNAL_SECRET");
   }
   if (!config.bullmqRedisUrl) {
     throw new Error("Missing required env: BULLMQ_REDIS_URL");

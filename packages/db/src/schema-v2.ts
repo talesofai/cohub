@@ -31,6 +31,15 @@ export type AccessPolicyResourceType = "space" | "session";
 export type ReferralCodeStatus = "active" | "revoked";
 export type ReferralStatus = "pending" | "qualified" | "rewarded";
 
+export type UserChannelCredentialEnvelope = {
+  version: 1;
+  keyId: string;
+  algorithm: "aes-256-gcm";
+  nonce: string;
+  authTag: string;
+  ciphertext: string;
+};
+
 /** Endpoints of a reference: the kinds of resources that can point or be pointed at. */
 export type ReferenceResourceType =
   | "space"
@@ -111,7 +120,9 @@ export const userChannels = v2.table(
     userUuid: varchar("user_uuid", { length: 255 }).notNull(),
     provider: varchar("provider", { length: 50 }).notNull(),
     name: varchar("name", { length: 255 }),
-    credentials: jsonb("credentials").notNull(),
+    credentials: jsonb("credentials"),
+    credentialEnvelope: jsonb("credential_envelope").$type<UserChannelCredentialEnvelope>(),
+    credentialRevision: integer("credential_revision").default(1).notNull(),
     status: varchar("status", { length: 20 }).default("active"),
     createdAt: timestamp("created_at", { withTimezone: true }).defaultNow(),
     updatedAt: timestamp("updated_at", { withTimezone: true }).defaultNow(),
@@ -119,6 +130,27 @@ export const userChannels = v2.table(
   (table) => ({
     userUuidIdx: index("v2_idx_user_channels_user_uuid").on(table.userUuid),
     providerIdx: index("v2_idx_user_channels_provider").on(table.provider),
+    credentialsStorageCheck: check(
+      "v2_chk_user_channels_credentials_storage",
+      sql`num_nonnulls(${table.credentials}, ${table.credentialEnvelope}) = 1`,
+    ),
+    credentialEnvelopeCheck: check(
+      "v2_chk_user_channels_credential_envelope",
+      sql`${table.credentialEnvelope} is null or coalesce(
+        jsonb_typeof(${table.credentialEnvelope}) = 'object'
+        and ${table.credentialEnvelope}->'version' = '1'::jsonb
+        and ${table.credentialEnvelope}->>'algorithm' = 'aes-256-gcm'
+        and ${table.credentialEnvelope}->>'keyId' ~ '^[A-Za-z0-9._-]{1,64}$'
+        and ${table.credentialEnvelope}->>'nonce' ~ '^[A-Za-z0-9_-]{16}$'
+        and ${table.credentialEnvelope}->>'authTag' ~ '^[A-Za-z0-9_-]{22}$'
+        and ${table.credentialEnvelope}->>'ciphertext' ~ '^[A-Za-z0-9_-]{3,}$',
+        false
+      )`,
+    ),
+    credentialRevisionCheck: check(
+      "v2_chk_user_channels_credential_revision",
+      sql`${table.credentialRevision} > 0`,
+    ),
   }),
 );
 

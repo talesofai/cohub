@@ -6,9 +6,19 @@ import { parseRealtimeRoom } from "@cohub/protocol/realtime";
 import { dispatchSpacePresenceUpdated } from "../../realtime-events.js";
 import { getSpacePresenceSnapshot } from "../../space-presence.js";
 import { Hono } from "hono";
-import { bindAllActiveSpaceChannelsToGateway, handleInboundEvent, resolveChannelInboundForEventWithLock } from "../../channels.js";
+import {
+  bindAllActiveSpaceChannelsToGateway,
+  handleInboundEvent,
+  resolveChannelInboundForEventWithLock,
+  resolveGatewayChannelCredentials,
+} from "../../channels.js";
 import { hasPermission } from "../../permissions.js";
-import { ensureInternalRequest, getOptionalAuth, requireValidId } from "../../lib/middleware.js";
+import {
+  ensureGatewayRequest,
+  ensureInternalRequest,
+  getOptionalAuth,
+  requireValidId,
+} from "../../lib/middleware.js";
 import { getSpaceById } from "../../space-sessions.js";
 import { getSpaceSandboxBySpaceId, updateSpaceSandbox } from "../../space-sandboxes.js";
 import { normalizeSandboxLifecycleStatus, normalizeSandboxRuntimeStatus } from "@cohub/sandbox-controller";
@@ -35,7 +45,7 @@ import {
   type SpaceUploadManifestEntry,
 } from "../../space-upload-storage.js";
 import { enqueueSandboxUploadFilesJob } from "../../sandbox-bash-queue.js";
-import { config } from "../../config.js";
+import { redisCommandClient } from "../../redis.js";
 
 const logger = createLogger({ serviceName: "cohub-api" });
 const tracer = getTracer("cohub-api");
@@ -89,6 +99,35 @@ router.post("/reconcile-channels", async (c) => {
   } finally {
     span.end();
   }
+});
+
+router.post("/channels/:id/credentials", async (c) => {
+  const forbidden = ensureGatewayRequest(c);
+  if (forbidden) return forbidden;
+
+  const spaceChannelId = c.req.param("id");
+  if (!requireValidId(spaceChannelId)) return c.json({ message: "channel not found" }, 404);
+  const gatewayNodeId = c.req.header("x-gateway-node-id")?.trim();
+  if (!gatewayNodeId || gatewayNodeId.length > 255) return c.json({ message: "forbidden" }, 403);
+  const routedNodeId = await redisCommandClient.hget("gateway:channel_routing", spaceChannelId);
+  if (routedNodeId !== gatewayNodeId) return c.json({ message: "forbidden" }, 403);
+  const body = await c.req.json<{ credentialRevision?: number }>().catch(() => null);
+  const credentialRevision = body?.credentialRevision;
+  if (typeof credentialRevision !== "number" || !Number.isInteger(credentialRevision) || credentialRevision <= 0) {
+    return c.json({ message: "credentialRevision must be a positive integer" }, 400);
+  }
+
+  const result = await resolveGatewayChannelCredentials(spaceChannelId, credentialRevision);
+  c.header("cache-control", "no-store");
+  c.header("pragma", "no-cache");
+  if (result.kind === "not_found") return c.json({ message: "channel not found" }, 404);
+  if (result.kind === "revision_mismatch") {
+    return c.json({
+      message: "channel credential revision changed",
+      credentialRevision: result.credentialRevision,
+    }, 409);
+  }
+  return c.json(result);
 });
 
 router.post("/space-presence-updated", async (c) => {

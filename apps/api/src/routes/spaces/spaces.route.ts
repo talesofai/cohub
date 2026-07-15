@@ -2150,7 +2150,12 @@ router.get("/:id/channels", async (c) => {
     channels.map((channel) => {
       const userChannel = userChannelById.get(channel.channelId) ?? null;
       const safeChannel = userChannel
-        ? (({ credentials: _credentials, ...rest }) => rest)(userChannel)
+        ? (({
+            credentials: _credentials,
+            credentialEnvelope: _credentialEnvelope,
+            credentialRevision: _credentialRevision,
+            ...rest
+          }) => rest)(userChannel)
         : null;
       return {
         ...channel,

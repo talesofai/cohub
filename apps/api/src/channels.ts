@@ -21,6 +21,7 @@ import { buildSessionSourceChannel } from "./lib/session-source-channel.js";
 import { assignSessionChannelSystemLabel } from "@cohub/core/labels/session-channel";
 import { assignSessionSourceSystemLabel } from "@cohub/core/labels/session-source";
 import { dispatchLabelAssignmentsUpdated } from "./realtime-events.js";
+import { resolveChannelCredentials } from "./channel-credentials.js";
 
 
 const logger = createLogger({ serviceName: "cohub-api" });
@@ -190,6 +191,48 @@ export async function getSpaceChannelRecord(spaceChannelId: string) {
   return channel ?? null;
 }
 
+export type GatewayChannelCredentialResolution =
+  | { kind: "not_found" }
+  | { kind: "revision_mismatch"; credentialRevision: number }
+  | {
+      kind: "ok";
+      provider: string;
+      credentials: Record<string, unknown>;
+      credentialRevision: number;
+    };
+
+export async function resolveGatewayChannelCredentials(
+  spaceChannelId: string,
+  expectedCredentialRevision: number,
+): Promise<GatewayChannelCredentialResolution> {
+  const [row] = await db
+    .select({
+      channelId: userChannels.id,
+      userUuid: userChannels.userUuid,
+      provider: userChannels.provider,
+      status: userChannels.status,
+      credentials: userChannels.credentials,
+      credentialEnvelope: userChannels.credentialEnvelope,
+      credentialRevision: userChannels.credentialRevision,
+    })
+    .from(spaceChannels)
+    .innerJoin(userChannels, eq(userChannels.id, spaceChannels.channelId))
+    .where(eq(spaceChannels.id, spaceChannelId))
+    .limit(1);
+
+  if (row?.status !== "active") return { kind: "not_found" };
+  if (row.credentialRevision !== expectedCredentialRevision) {
+    return { kind: "revision_mismatch", credentialRevision: row.credentialRevision };
+  }
+
+  return {
+    kind: "ok",
+    provider: row.provider,
+    credentials: resolveChannelCredentials(row),
+    credentialRevision: row.credentialRevision,
+  };
+}
+
 export async function bindSpaceChannelsToGateway(spaceId: string) {
   const channels = await db.select().from(spaceChannels).where(eq(spaceChannels.spaceId, spaceId));
   if (channels.length === 0) return;
@@ -238,6 +281,21 @@ export async function bindAllActiveSpaceChannelsToGateway() {
   return stats;
 }
 
+export async function refreshUserChannelGatewayBindings(userChannelId: string) {
+  const [userChannel] = await db
+    .select()
+    .from(userChannels)
+    .where(eq(userChannels.id, userChannelId))
+    .limit(1);
+  if (userChannel?.status !== "active") return;
+
+  const bindings = await db
+    .select()
+    .from(spaceChannels)
+    .where(eq(spaceChannels.channelId, userChannelId));
+  for (const binding of bindings) await bindSingleChannelToGateway(binding, userChannel);
+}
+
 async function bindSingleChannelToGateway(spaceChannel: typeof spaceChannels.$inferSelect, userChannel: typeof userChannels.$inferSelect | undefined) {
   if (userChannel?.status !== "active") return;
 
@@ -266,7 +324,7 @@ async function bindSingleChannelToGateway(spaceChannel: typeof spaceChannels.$in
     channelId: spaceChannel.id,
     spaceId: spaceChannel.spaceId,
     provider: userChannel.provider,
-    credentials: userChannel.credentials,
+    credentialRevision: userChannel.credentialRevision,
   });
 
   const pipeline = redisCommandClient.multi()

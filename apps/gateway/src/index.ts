@@ -34,7 +34,7 @@ import { getOrCreateRequestId } from "@cohub/infra/tracing";
 import { authenticateRealtimeToken, authorizeRealtimeRooms, notifySpacePresenceUpdated, requestGatewayChannelReconcile, submitCanvasTransaction, submitInternalSessionPrompt, InternalCanvasTransactionError, InternalPromptError, type RealtimeAuthResult } from "./api-client.js";
 import { listenOutboundCommands, initOutboundConsumerGroup } from "./bus.js";
 import { summarizeRedisUrl } from "./logging.js";
-import { gatewayConfig } from "./config.js";
+import { assertGatewayConfig, gatewayConfig } from "./config.js";
 import { GatewayManager } from "./manager/index.js";
 import { markChannelDegraded, touchChannelOutbound } from "./channel-health.js";
 import { handleAsrWebSocketConnection } from "./asr/session.js";
@@ -561,6 +561,7 @@ const submitWebsocketSessionMessage = async (ctx: WsConnectionContext, requestId
 };
 
 async function main() {
+  assertGatewayConfig();
   logStartupInfo();
 
   startWsConnectionSweeper();

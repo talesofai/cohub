@@ -91,7 +91,12 @@ if [ ! -f "secrets.yaml" ]; then
   echo -e "${RED}✗ 缺少 secrets.yaml${NC}"
   exit 1
 fi
+if [ ! -f "private-secrets.yaml" ]; then
+  echo -e "${RED}✗ 缺少 private-secrets.yaml${NC}"
+  exit 1
+fi
 kubectl apply -f secrets.yaml
+kubectl apply -f private-secrets.yaml
 
 mkdir -p rendered
 

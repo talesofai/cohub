@@ -118,6 +118,53 @@ export const requestGatewayChannelReconcile = async (): Promise<{ stats: unknown
   return { stats: data.stats };
 };
 
+export type GatewayChannelCredentials = {
+  provider: string;
+  credentials: Record<string, unknown>;
+  credentialRevision: number;
+};
+
+export const requestGatewayChannelCredentials = async (input: {
+  channelId: string;
+  credentialRevision: number;
+  gatewayNodeId: string;
+}): Promise<GatewayChannelCredentials> => {
+  const response = await fetch(
+    `${gatewayConfig.apiBaseUrl}/internal/gateway/channels/${encodeURIComponent(input.channelId)}/credentials`,
+    {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+        "x-gateway-secret": gatewayConfig.gatewayInternalSecret,
+        "x-gateway-node-id": input.gatewayNodeId,
+        ...buildTraceHeaders(),
+      },
+      body: JSON.stringify({ credentialRevision: input.credentialRevision }),
+    },
+  );
+  if (!response.ok) {
+    const text = await response.text().catch(() => "");
+    throw new Error(`Gateway channel credentials request failed ${response.status}: ${text}`);
+  }
+  const data = await parseJson<unknown>(response);
+  if (
+    !isRecord(data)
+    || data.kind !== "ok"
+    || typeof data.provider !== "string"
+    || !isRecord(data.credentials)
+    || typeof data.credentialRevision !== "number"
+    || !Number.isInteger(data.credentialRevision)
+    || data.credentialRevision <= 0
+  ) {
+    throw new Error("Gateway channel credentials response is invalid");
+  }
+  return {
+    provider: data.provider,
+    credentials: data.credentials,
+    credentialRevision: data.credentialRevision,
+  };
+};
+
 export const notifySpacePresenceUpdated = async (spaceId: string): Promise<void> => {
   const response = await fetch(`${gatewayConfig.apiBaseUrl}/internal/gateway/space-presence-updated`, {
     method: "POST",
