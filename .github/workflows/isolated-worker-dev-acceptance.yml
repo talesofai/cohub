@@ -212,7 +212,6 @@ jobs:
               >> diagnostic.log || true
           done
           cat diagnostic.log
-          grep -Fq "$REQUEST_ID" diagnostic.log
           test -s diagnostic.log
           for pod in $(kubectl get pods -n cohub-dev -l cohub.dev/worker-kind=user -o name); do
             printf '\n===== filesystem %s =====\n' "$pod" | tee -a diagnostic.log
@@ -220,6 +219,7 @@ jobs:
               "id; ls -ldn /space-storage /space-storage/.isolated-worker-staging /space-storage/.isolated-worker-staging/$REQUEST_ID /space-storage/$DISPOSABLE_SPACE_ID /space-storage/$DISPOSABLE_SPACE_ID/workspace 2>&1 || true" \
               | tee -a diagnostic.log
           done
+          grep -Fq "$REQUEST_ID" diagnostic.log
           jq -n --arg requestId "$REQUEST_ID" '{requestId:$requestId,diagnosticCaptured:true}' | tee acceptance.json
 
       - name: Upload acceptance evidence
