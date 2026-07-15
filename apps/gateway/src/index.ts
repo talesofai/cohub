@@ -45,6 +45,7 @@ import {
   REALTIME_OUTBOUND_CHANNEL,
   AGENT_REALTIME_PATCH_CHANNEL,
 } from "./redis.js";
+import { createRealtimeEventDeduplicator } from "./realtime-event-dedup.js";
 
 const logger = createLogger({ serviceName: "cohub-gateway" });
 type WsConnectionContext = {
@@ -69,6 +70,10 @@ const WS_MAX_MESSAGE_BYTES = 64 * 1024;
 const ROOM_AUTH_CACHE_TTL_MS = 30_000;
 const PRESENCE_UPDATE_DEBOUNCE_MS = 200;
 const ROOM_AUTH_CACHE_MAX_ENTRIES = 10_000;
+const realtimeEventDeduplicator = createRealtimeEventDeduplicator({
+  ttlMs: 10 * 60 * 1000,
+  maxEntries: 50_000,
+});
 
 type RealtimeRoomRejection = { room: string; code: "BAD_ROOM" | "FORBIDDEN"; message: string };
 
@@ -477,6 +482,7 @@ const resolveRealtimeRoomsForEnvelope = (payload: GatewayWsBroadcastPayload): Re
 };
 
 async function fanOutBroadcastToLocalSockets(payload: GatewayWsBroadcastPayload) {
+  if (!realtimeEventDeduplicator.accept(payload.id)) return;
   const envelope = payload as RealtimeEnvelope;
   const deliveredConnectionIds = new Set<string>();
 

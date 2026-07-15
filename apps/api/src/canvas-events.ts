@@ -1,17 +1,18 @@
 import { randomUUID } from "node:crypto";
-import { dispatchRealtimeEvent } from "./channels.js";
+import type { CanvasTransactionAppliedEvent } from "@cohub/protocol/realtime";
 
-export async function dispatchCanvasTransactionApplied(input: {
+export function createCanvasTransactionAppliedEvent(input: {
   spaceId: string;
   documentId: string;
   actorId: string;
   txId: string;
   version: number;
   ops: Array<Record<string, unknown>>;
-}) {
-  await dispatchRealtimeEvent({
+  occurredAt: Date;
+}): CanvasTransactionAppliedEvent {
+  return {
     id: randomUUID(),
-    timestamp: Date.now(),
+    timestamp: input.occurredAt.getTime(),
     domain: "space",
     type: "canvas.tx.applied",
     spaceId: input.spaceId,
@@ -23,5 +24,5 @@ export async function dispatchCanvasTransactionApplied(input: {
       version: input.version,
       ops: input.ops,
     },
-  });
+  };
 }

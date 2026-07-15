@@ -17,6 +17,7 @@ import {
 } from "drizzle-orm/pg-core";
 import type { ContentBlock } from "@cohub/protocol/core";
 import type { TaskPayload } from "@cohub/protocol/task";
+import type { RealtimeRoom, RealtimeServerEvent } from "@cohub/protocol/realtime";
 import type {
   SessionTurnIntent,
   SessionTurnIntermediateIndex,
@@ -30,6 +31,7 @@ export type AccessPolicyRole = "builder" | "guest" | null;
 export type AccessPolicyResourceType = "space" | "session";
 export type ReferralCodeStatus = "active" | "revoked";
 export type ReferralStatus = "pending" | "qualified" | "rewarded";
+export type RealtimeOutboxEnvelope = RealtimeServerEvent & { rooms?: RealtimeRoom[] };
 
 export type UserChannelCredentialEnvelope = {
   version: 1;
@@ -60,6 +62,51 @@ export type ReferenceKind =
   | "participant";
 
 export const v2 = pgSchema("v2");
+
+export const outboxEvents = v2.table(
+  "outbox_events",
+  {
+    id: uuid("id").primaryKey(),
+    destination: varchar("destination", { length: 50 }).notNull(),
+    deduplicationKey: varchar("deduplication_key", { length: 255 }).notNull(),
+    aggregateType: varchar("aggregate_type", { length: 100 }).notNull(),
+    aggregateId: varchar("aggregate_id", { length: 255 }).notNull(),
+    aggregateSequence: integer("aggregate_sequence"),
+    eventType: varchar("event_type", { length: 255 }).notNull(),
+    payload: jsonb("payload").$type<RealtimeOutboxEnvelope>().notNull(),
+    occurredAt: timestamp("occurred_at", { withTimezone: true }).notNull().defaultNow(),
+    availableAt: timestamp("available_at", { withTimezone: true }).notNull().defaultNow(),
+    attemptCount: integer("attempt_count").notNull().default(0),
+    publishedAt: timestamp("published_at", { withTimezone: true }),
+    failedAt: timestamp("failed_at", { withTimezone: true }),
+    lastError: text("last_error"),
+    updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (table) => ({
+    deduplicationKeyUniqueIdx: uniqueIndex("v2_uq_outbox_events_deduplication_key").on(table.deduplicationKey),
+    aggregateSequenceUniqueIdx: uniqueIndex("v2_uq_outbox_events_aggregate_sequence")
+      .on(table.destination, table.aggregateType, table.aggregateId, table.aggregateSequence)
+      .where(sql`${table.aggregateSequence} IS NOT NULL`),
+    pendingIdx: index("v2_idx_outbox_events_pending")
+      .on(table.availableAt, table.occurredAt, table.id)
+      .where(sql`${table.publishedAt} IS NULL AND ${table.failedAt} IS NULL`),
+    publishedAtIdx: index("v2_idx_outbox_events_published_at")
+      .on(table.publishedAt)
+      .where(sql`${table.publishedAt} IS NOT NULL`),
+    failedAtIdx: index("v2_idx_outbox_events_failed_at")
+      .on(table.failedAt)
+      .where(sql`${table.failedAt} IS NOT NULL`),
+    attemptCountCheck: check("v2_chk_outbox_events_attempt_count", sql`${table.attemptCount} >= 0`),
+    aggregateSequenceCheck: check(
+      "v2_chk_outbox_events_aggregate_sequence",
+      sql`${table.aggregateSequence} IS NULL OR ${table.aggregateSequence} > 0`,
+    ),
+    deliveryStateCheck: check(
+      "v2_chk_outbox_events_delivery_state",
+      sql`${table.publishedAt} IS NULL OR ${table.failedAt} IS NULL`,
+    ),
+  }),
+);
 
 export const userProfiles = v2.table(
   "user_profiles",

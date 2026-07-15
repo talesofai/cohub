@@ -1,7 +1,8 @@
 import { and, eq, inArray, isNull, sql } from "drizzle-orm";
 import { canvasDocuments, canvasNodes, canvasUpdates } from "@cohub/db";
 import { db } from "./db/index.js";
-import { dispatchCanvasTransactionApplied } from "./canvas-events.js";
+import { createCanvasTransactionAppliedEvent } from "./canvas-events.js";
+import { enqueueRealtimeOutboxEvent } from "./db/outbox.js";
 import {
   CanvasServiceError,
   canvasRequestHash,
@@ -14,6 +15,8 @@ import {
 
 export { CanvasServiceError, normalizeNodes } from "./canvas-protocol.js";
 export type { CanvasNodeInput, CanvasSemanticOp } from "./canvas-protocol.js";
+
+type CanvasDatabase = Pick<typeof db, "transaction">;
 
 export type CanvasTransactionResponse = {
   transaction: {
@@ -69,12 +72,12 @@ export async function applyCanvasTransaction(input: {
   undoGroupId?: string | null;
   ops: CanvasSemanticOp[];
   broadcast?: boolean;
-}) {
+}, database: CanvasDatabase = db) {
   const { txId } = normalizeCanvasTransactionIdentity(input);
   const normalizedOps = normalizeCanvasOps(input.ops);
   const requestHash = canvasRequestHash(normalizedOps);
   const now = new Date();
-  const result = await db.transaction(async (tx) => {
+  const result = await database.transaction(async (tx) => {
     const [document] = await tx
       .select()
       .from(canvasDocuments)
@@ -91,16 +94,12 @@ export async function applyCanvasTransaction(input: {
       if (existingUpdate.requestHash && existingUpdate.requestHash !== requestHash) {
         throw new CanvasServiceError(409, "txId was already used for a different transaction", "tx_id_conflict", document.version);
       }
-      return {
-        response: readStoredTransactionResult(existingUpdate.result, {
+      return readStoredTransactionResult(existingUpdate.result, {
           txId,
           baseVersion: existingUpdate.baseVersion,
           version: existingUpdate.version,
           meta: document.meta,
-        }),
-        broadcast: false,
-        ops: normalizedOps,
-      };
+        });
     }
     if (input.baseVersion !== document.version) {
       throw new CanvasServiceError(409, "canvas version conflict", "version_conflict", document.version);
@@ -216,18 +215,25 @@ export async function applyCanvasTransaction(input: {
       undoGroupId: input.undoGroupId ?? null,
       createdAt: now,
     });
-    return { response, broadcast: true, ops: normalizedOps };
+    if (input.broadcast !== false) {
+      const event = createCanvasTransactionAppliedEvent({
+        spaceId: input.spaceId,
+        documentId: input.documentId,
+        actorId: input.actorId,
+        txId,
+        version: nextVersion,
+        ops: normalizedOps as Array<Record<string, unknown>>,
+        occurredAt: now,
+      });
+      await enqueueRealtimeOutboxEvent(tx, {
+        deduplicationKey: `canvas.tx.applied:${input.documentId}:${nextVersion}`,
+        aggregateType: "canvas_document",
+        aggregateId: input.documentId,
+        aggregateSequence: nextVersion,
+        event,
+      });
+    }
+    return response;
   });
-
-  if (input.broadcast !== false && result.broadcast) {
-    await dispatchCanvasTransactionApplied({
-      spaceId: input.spaceId,
-      documentId: input.documentId,
-      actorId: input.actorId,
-      txId,
-      version: result.response.transaction.version,
-      ops: result.ops as Array<Record<string, unknown>>,
-    }).catch(() => undefined);
-  }
-  return result.response;
+  return result;
 }

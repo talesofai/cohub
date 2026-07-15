@@ -447,9 +447,9 @@ export async function dispatchRealtimeEvent(input: RealtimeServerEvent & { rooms
     spaceId: input.spaceId,
     userIds: userId ? [userId] : undefined,
   });
-  if (rooms.length === 0) return;
+  if (rooms.length === 0) return 0;
 
-  await redisCommandClient.publish(
+  return redisCommandClient.publish(
     REALTIME_OUTBOUND_CHANNEL,
     JSON.stringify({
       ...input,
