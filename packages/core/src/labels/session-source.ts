@@ -15,7 +15,6 @@ type SourceLabelDefinition = {
   ref: string;
 };
 
-const SCOPE_TYPE = "space";
 const ROOT_LABEL_NAME = "Source";
 const CUSTOM_LABEL_NAME_SUFFIX = " (Custom)";
 
@@ -86,7 +85,7 @@ async function findLabelBySystemKey(db: LabelsDb, spaceId: string, systemKey: st
   const [row] = await db
     .select()
     .from(labels)
-    .where(and(eq(labels.scopeType, SCOPE_TYPE), eq(labels.scopeId, spaceId), eq(labels.systemKey, systemKey)))
+    .where(and(eq(labels.spaceId, spaceId), eq(labels.systemKey, systemKey)))
     .limit(1);
   return row ?? null;
 }
@@ -96,8 +95,7 @@ async function findLabelByName(db: LabelsDb, spaceId: string, name: string, pare
     .select()
     .from(labels)
     .where(and(
-      eq(labels.scopeType, SCOPE_TYPE),
-      eq(labels.scopeId, spaceId),
+      eq(labels.spaceId, spaceId),
       parentId ? eq(labels.parentId, parentId) : sql`${labels.parentId} is null`,
       sql`lower(${labels.name}) = lower(${name})`,
     ))
@@ -110,8 +108,7 @@ async function nextLabelRank(db: LabelsDb, spaceId: string, parentId: string | n
     .select({ value: max(labels.rank) })
     .from(labels)
     .where(and(
-      eq(labels.scopeType, SCOPE_TYPE),
-      eq(labels.scopeId, spaceId),
+      eq(labels.spaceId, spaceId),
       parentId ? eq(labels.parentId, parentId) : sql`${labels.parentId} is null`,
     ));
   return Number(value ?? 0) + 10;
@@ -163,8 +160,7 @@ async function getOrCreateSystemLabel(db: LabelsDb, input: {
   if (existingByName?.source === "system") return existingByName;
 
   const [created] = await db.insert(labels).values({
-    scopeType: SCOPE_TYPE,
-    scopeId: input.spaceId,
+    spaceId: input.spaceId,
     name: input.name,
     slug: slugifyLabelName(input.name),
     parentId: input.parentId,

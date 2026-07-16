@@ -358,13 +358,12 @@ router.get("/", async (c) => {
           ELSE parent.name || '/' || l.name
         END AS label_ref
       FROM v2.labels l
-      JOIN visible_spaces sp ON sp.id::text = l.scope_id
+      JOIN visible_spaces sp ON sp.id = l.space_id
       LEFT JOIN v2.labels parent
-        ON parent.id = l.parent_id AND parent.scope_type = l.scope_type AND parent.scope_id = l.scope_id
+        ON parent.id = l.parent_id AND parent.space_id = l.space_id
       WHERE
         ${includeLabels}
         AND ${labelRef} <> ''
-        AND l.scope_type = 'space'
         AND (
           lower(CASE WHEN parent.id IS NULL THEN l.name ELSE parent.name || '/' || l.name END) = lower(${labelRef})
           OR lower(l.name) = lower(${labelRef})
@@ -374,8 +373,8 @@ router.get("/", async (c) => {
       SELECT
         'label'::text AS type,
         la.id AS id,
-        lm.scope_id::uuid AS space_id,
-        CASE WHEN la.resource_type = 'session' AND la.resource_ref ~* '^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$' THEN la.resource_ref::uuid ELSE NULL::uuid END AS session_id,
+        lm.space_id AS space_id,
+        la.session_id AS session_id,
         NULL::uuid AS turn_id,
         NULL::int AS sequence,
         CASE
@@ -421,11 +420,11 @@ router.get("/", async (c) => {
         la.resource_ref AS label_resource_ref
       FROM label_matches lm
       JOIN v2.label_assignments la
-        ON la.label_id = lm.id AND la.scope_type = 'space' AND la.scope_id = lm.scope_id
+        ON la.label_id = lm.id AND la.space_id = lm.space_id
       LEFT JOIN visible_sessions sess
-        ON sess.id = CASE WHEN la.resource_type = 'session' AND la.resource_ref ~* '^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$' THEN la.resource_ref::uuid ELSE NULL::uuid END
+        ON sess.id = la.session_id
       LEFT JOIN v2.checkpoints cp
-        ON cp.space_id = lm.scope_id::uuid AND cp.id = CASE WHEN la.resource_type = 'checkpoint' AND la.resource_ref ~* '^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$' THEN la.resource_ref::uuid ELSE NULL::uuid END
+        ON cp.space_id = lm.space_id AND cp.id = la.checkpoint_id
       WHERE
         ${includeLabels}
         AND (

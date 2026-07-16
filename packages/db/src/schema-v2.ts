@@ -426,6 +426,7 @@ export const checkpoints = v2.table(
     spaceIdx: index("v2_idx_checkpoints_space_id").on(table.spaceId),
     parentIdx: index("v2_idx_checkpoints_parent_id").on(table.parentCheckpointId),
     rootIdx: index("v2_idx_checkpoints_root_id").on(table.rootCheckpointId),
+    idSpaceUniqueIdx: uniqueIndex("v2_uq_checkpoints_id_space").on(table.id, table.spaceId),
     descriptionSearchIdx: index("v2_idx_checkpoints_description_trgm").using("gin", table.description.op("gin_trgm_ops")),
     spaceCommitUniqueIdx: uniqueIndex("v2_uq_checkpoints_space_commit").on(
       table.spaceId,
@@ -1336,8 +1337,7 @@ export const labels = v2.table(
   "labels",
   {
     id: uuid("id").primaryKey().defaultRandom(),
-    scopeType: varchar("scope_type", { length: 30 }).notNull(),
-    scopeId: text("scope_id").notNull(),
+    spaceId: uuid("space_id").notNull(),
     name: varchar("name", { length: 80 }).notNull(),
     slug: varchar("slug", { length: 100 }).notNull(),
     parentId: uuid("parent_id"),
@@ -1350,38 +1350,42 @@ export const labels = v2.table(
     updatedAt: timestamp("updated_at", { withTimezone: true }).defaultNow(),
   },
   (table) => ({
+    spaceFk: foreignKey({
+      name: "v2_fk_labels_space",
+      columns: [table.spaceId],
+      foreignColumns: [spaces.id],
+    }).onDelete("cascade"),
     parentFk: foreignKey({
       name: "v2_fk_labels_parent",
-      columns: [table.parentId],
-      foreignColumns: [table.id],
+      columns: [table.parentId, table.spaceId],
+      foreignColumns: [table.id, table.spaceId],
     }).onDelete("restrict"),
-    idScopeUniqueIdx: uniqueIndex("v2_uq_labels_id_scope").on(
+    idSpaceUniqueIdx: uniqueIndex("v2_uq_labels_id_space").on(
       table.id,
-      table.scopeType,
-      table.scopeId,
+      table.spaceId,
     ),
-    scopeRankIdx: index("v2_idx_labels_scope_rank").on(
-      table.scopeType,
-      table.scopeId,
+    spaceRankIdx: index("v2_idx_labels_space_rank").on(
+      table.spaceId,
       table.rank,
     ),
-    scopeParentIdx: index("v2_idx_labels_scope_parent").on(
-      table.scopeType,
-      table.scopeId,
+    spaceParentIdx: index("v2_idx_labels_space_parent").on(
+      table.spaceId,
       table.parentId,
     ),
-    siblingNameUniqueIdx: uniqueIndex("v2_uq_labels_scope_parent_name").on(
-      table.scopeType,
-      table.scopeId,
+    siblingNameUniqueIdx: uniqueIndex("v2_uq_labels_space_parent_name").on(
+      table.spaceId,
       sql`coalesce(${table.parentId}::text, '')`,
       sql`lower(${table.name})`,
     ),
-    systemKeyUniqueIdx: uniqueIndex("v2_uq_labels_scope_system_key").on(
-      table.scopeType,
-      table.scopeId,
+    systemKeyUniqueIdx: uniqueIndex("v2_uq_labels_space_system_key").on(
+      table.spaceId,
       table.systemKey,
     ),
-    depthCheck: check("v2_chk_labels_depth", sql`${table.depth} in (0, 1)`),
+    hierarchyCheck: check(
+      "v2_chk_labels_hierarchy",
+      sql`(${table.parentId} is null and ${table.depth} = 0) or (${table.parentId} is not null and ${table.depth} = 1)`,
+    ),
+    sourceCheck: check("v2_chk_labels_source", sql`${table.source} in ('user', 'system')`),
   }),
 );
 
@@ -1390,10 +1394,15 @@ export const labelAssignments = v2.table(
   {
     id: uuid("id").primaryKey().defaultRandom(),
     labelId: uuid("label_id").notNull(),
-    scopeType: varchar("scope_type", { length: 30 }).notNull(),
-    scopeId: text("scope_id").notNull(),
+    spaceId: uuid("space_id").notNull(),
     resourceType: varchar("resource_type", { length: 30 }).notNull(),
     resourceRef: text("resource_ref").notNull(),
+    sessionId: uuid("session_id").generatedAlwaysAs(
+      sql`case when "resource_type" = 'session' then "resource_ref"::uuid end`,
+    ),
+    checkpointId: uuid("checkpoint_id").generatedAlwaysAs(
+      sql`case when "resource_type" = 'checkpoint' then "resource_ref"::uuid end`,
+    ),
     rank: integer("rank"),
     source: varchar("source", { length: 30 }).notNull().default("user"),
     createdBy: varchar("created_by", { length: 255 }),
@@ -1402,10 +1411,25 @@ export const labelAssignments = v2.table(
     updatedAt: timestamp("updated_at", { withTimezone: true }).defaultNow(),
   },
   (table) => ({
-    labelScopeFk: foreignKey({
-      name: "v2_fk_label_assignments_label_scope",
-      columns: [table.labelId, table.scopeType, table.scopeId],
-      foreignColumns: [labels.id, labels.scopeType, labels.scopeId],
+    spaceFk: foreignKey({
+      name: "v2_fk_label_assignments_space",
+      columns: [table.spaceId],
+      foreignColumns: [spaces.id],
+    }).onDelete("cascade"),
+    labelSpaceFk: foreignKey({
+      name: "v2_fk_label_assignments_label_space",
+      columns: [table.labelId, table.spaceId],
+      foreignColumns: [labels.id, labels.spaceId],
+    }).onDelete("cascade"),
+    sessionSpaceFk: foreignKey({
+      name: "v2_fk_label_assignments_session_space",
+      columns: [table.sessionId, table.spaceId],
+      foreignColumns: [spaceSessions.id, spaceSessions.spaceId],
+    }).onDelete("cascade"),
+    checkpointSpaceFk: foreignKey({
+      name: "v2_fk_label_assignments_checkpoint_space",
+      columns: [table.checkpointId, table.spaceId],
+      foreignColumns: [checkpoints.id, checkpoints.spaceId],
     }).onDelete("cascade"),
     uniqueLabelResourceIdx: uniqueIndex("v2_uq_label_assignments_label_resource").on(
       table.labelId,
@@ -1416,20 +1440,18 @@ export const labelAssignments = v2.table(
       table.labelId,
       table.rank,
     ),
-    scopeResourceIdx: index("v2_idx_label_assignments_scope_resource").on(
-      table.scopeType,
-      table.scopeId,
+    spaceResourceIdx: index("v2_idx_label_assignments_space_resource").on(
+      table.spaceId,
       table.resourceType,
       table.resourceRef,
     ),
-    scopeLabelIdx: index("v2_idx_label_assignments_scope_label").on(
-      table.scopeType,
-      table.scopeId,
+    spaceLabelIdx: index("v2_idx_label_assignments_space_label").on(
+      table.spaceId,
       table.labelId,
     ),
     sessionLabelResourceIdx: index("v2_idx_label_assignments_session_label_resource").on(
       table.labelId,
-      table.resourceRef,
+      table.sessionId,
     ).where(sql`${table.resourceType} = 'session'`),
     resourceLabelIdx: index("v2_idx_label_assignments_resource_label").on(
       table.resourceType,
@@ -1437,6 +1459,18 @@ export const labelAssignments = v2.table(
       table.labelId,
     ),
     resourceRefSearchIdx: index("v2_idx_label_assignments_resource_ref_trgm").using("gin", table.resourceRef.op("gin_trgm_ops")),
+    resourceTypeCheck: check(
+      "v2_chk_label_assignments_resource_type",
+      sql`${table.resourceType} in ('session', 'checkpoint', 'file')`,
+    ),
+    resourceRefCheck: check(
+      "v2_chk_label_assignments_resource_ref",
+      sql`length(btrim(${table.resourceRef})) > 0`,
+    ),
+    sourceCheck: check(
+      "v2_chk_label_assignments_source",
+      sql`${table.source} in ('user', 'system')`,
+    ),
   }),
 );
 

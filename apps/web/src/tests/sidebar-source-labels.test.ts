@@ -13,8 +13,7 @@ function makeLabel(
 ): LabelListItem {
 	return {
 		id: partial.id,
-		scopeType: partial.scopeType ?? "space",
-		scopeId: partial.scopeId ?? "space-1",
+		spaceId: partial.spaceId ?? "space-1",
 		name: partial.name,
 		slug: partial.slug ?? partial.name.toLowerCase(),
 		parentId: partial.parentId ?? null,

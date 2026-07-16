@@ -7,7 +7,6 @@ export type LabelPath = readonly [string] | readonly [string, string];
 type LabelsDb = PostgresJsDatabase<Record<string, unknown>>;
 export type LabelSource = "user" | "system";
 
-const SCOPE_TYPE = "space";
 const MAX_LABEL_NAME_LENGTH = 80;
 const MAX_LABEL_REFS = 20;
 const RESERVED_SYSTEM_ROOT_LABELS = new Set(["source", "user", "channel"]);
@@ -59,8 +58,7 @@ async function findLabelByName(db: LabelsDb, spaceId: string, name: string, pare
     .select()
     .from(labels)
     .where(and(
-      eq(labels.scopeType, SCOPE_TYPE),
-      eq(labels.scopeId, spaceId),
+      eq(labels.spaceId, spaceId),
       parentId ? eq(labels.parentId, parentId) : sql`${labels.parentId} is null`,
       sql`lower(${labels.name}) = lower(${name})`,
     ))
@@ -73,8 +71,7 @@ async function nextLabelRank(db: LabelsDb, spaceId: string, parentId: string | n
     .select({ value: max(labels.rank) })
     .from(labels)
     .where(and(
-      eq(labels.scopeType, SCOPE_TYPE),
-      eq(labels.scopeId, spaceId),
+      eq(labels.spaceId, spaceId),
       parentId ? eq(labels.parentId, parentId) : sql`${labels.parentId} is null`,
     ));
   return Number(value ?? 0) + 10;
@@ -92,8 +89,7 @@ async function getOrCreateLabel(db: LabelsDb, input: {
   if (existing) return existing;
 
   const [created] = await db.insert(labels).values({
-    scopeType: SCOPE_TYPE,
-    scopeId: input.spaceId,
+    spaceId: input.spaceId,
     name: input.name,
     slug: slugifyLabelName(input.name),
     parentId: input.parentId,
@@ -181,7 +177,7 @@ export async function assignLabelsToSession(input: {
   const existing = await input.db
     .select({ id: labels.id })
     .from(labels)
-    .where(and(eq(labels.scopeType, SCOPE_TYPE), eq(labels.scopeId, input.spaceId), inArray(labels.id, labelIds)));
+    .where(and(eq(labels.spaceId, input.spaceId), inArray(labels.id, labelIds)));
   const existingIds = existing.map((label) => label.id);
   if (existingIds.length === 0) return;
   const rows = await Promise.all(existingIds.map(async (labelId) => {
@@ -193,8 +189,7 @@ export async function assignLabelsToSession(input: {
       : null;
     return {
       labelId,
-      scopeType: SCOPE_TYPE,
-      scopeId: input.spaceId,
+      spaceId: input.spaceId,
       resourceType: "session",
       resourceRef: input.sessionId,
       rank,
@@ -213,7 +208,7 @@ export async function listLabelsByRank(db: LabelsDb, spaceId: string) {
   return db
     .select()
     .from(labels)
-    .where(and(eq(labels.scopeType, SCOPE_TYPE), eq(labels.scopeId, spaceId)))
+    .where(eq(labels.spaceId, spaceId))
     .orderBy(asc(labels.rank), asc(labels.name));
 }
 

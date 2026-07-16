@@ -10,7 +10,6 @@ export type SessionUserLabelInput = {
   userId?: string | null;
 };
 
-const SCOPE_TYPE = "space";
 const ROOT_LABEL_NAME = "User";
 const CUSTOM_LABEL_NAME_SUFFIX = " (Custom)";
 const MAX_LABEL_NAME_LENGTH = 80;
@@ -47,8 +46,7 @@ async function findLabelByName(db: PostgresJsDatabase<Record<string, unknown>>, 
     .select()
     .from(labels)
     .where(and(
-      eq(labels.scopeType, SCOPE_TYPE),
-      eq(labels.scopeId, spaceId),
+      eq(labels.spaceId, spaceId),
       parentId ? eq(labels.parentId, parentId) : sql`${labels.parentId} is null`,
       sql`lower(${labels.name}) = lower(${name})`,
     ))
@@ -60,7 +58,7 @@ async function findLabelBySystemKey(db: PostgresJsDatabase<Record<string, unknow
   const [row] = await db
     .select()
     .from(labels)
-    .where(and(eq(labels.scopeType, SCOPE_TYPE), eq(labels.scopeId, spaceId), eq(labels.systemKey, systemKey)))
+    .where(and(eq(labels.spaceId, spaceId), eq(labels.systemKey, systemKey)))
     .limit(1);
   return row ?? null;
 }
@@ -70,8 +68,7 @@ async function nextLabelRank(db: PostgresJsDatabase<Record<string, unknown>>, sp
     .select({ value: max(labels.rank) })
     .from(labels)
     .where(and(
-      eq(labels.scopeType, SCOPE_TYPE),
-      eq(labels.scopeId, spaceId),
+      eq(labels.spaceId, spaceId),
       parentId ? eq(labels.parentId, parentId) : sql`${labels.parentId} is null`,
     ));
   return Number(value ?? 0) + 10;
@@ -132,8 +129,7 @@ async function getOrCreateSystemLabel(db: PostgresJsDatabase<Record<string, unkn
   if (existingByName?.source === "system") return existingByName;
 
   const [created] = await db.insert(labels).values({
-    scopeType: SCOPE_TYPE,
-    scopeId: input.spaceId,
+    spaceId: input.spaceId,
     name: input.name,
     slug: slugifyLabelName(input.name),
     parentId: input.parentId,
@@ -178,8 +174,7 @@ export async function assignSessionParticipantSystemLabels(input: SessionUserLab
     .select({ labelId: labelAssignments.labelId })
     .from(labelAssignments)
     .where(and(
-      eq(labelAssignments.scopeType, SCOPE_TYPE),
-      eq(labelAssignments.scopeId, input.spaceId),
+      eq(labelAssignments.spaceId, input.spaceId),
       eq(labelAssignments.resourceType, "session"),
       eq(labelAssignments.resourceRef, input.sessionId),
       inArray(labelAssignments.labelId, labelIds),
@@ -190,8 +185,7 @@ export async function assignSessionParticipantSystemLabels(input: SessionUserLab
     .filter((label) => !existingIds.has(label.id))
     .map((label) => ({
       labelId: label.id,
-      scopeType: SCOPE_TYPE,
-      scopeId: input.spaceId,
+      spaceId: input.spaceId,
       resourceType: "session",
       resourceRef: input.sessionId,
       rank: null,

@@ -128,10 +128,11 @@ export function buildOptimisticWebAppLabelSessionItem(input: {
 	return {
 		id: `optimistic:${labelId}:${session.id}`,
 		labelId,
-		scopeType: "space",
-		scopeId: spaceId,
+		spaceId,
 		resourceType: "session",
 		resourceRef: session.id,
+		sessionId: session.id,
+		checkpointId: null,
 		rank: null,
 		source: "system",
 		createdBy: null,

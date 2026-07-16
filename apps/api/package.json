@@ -19,6 +19,7 @@
     "db:migrate:data:v2": "tsx src/db/migrate-v2-data.ts",
     "db:backfill:billing-ledger": "tsx src/db/backfill-billing-usage-ledger.ts",
     "db:validate:relational-integrity": "tsx src/db/validate-relational-integrity.ts",
+    "db:validate:label-integrity": "tsx src/db/validate-label-integrity.ts",
     "db:push": "drizzle-kit push",
     "db:studio": "drizzle-kit studio"
   },

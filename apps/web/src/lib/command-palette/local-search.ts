@@ -212,7 +212,7 @@ function labelAssignmentToItem(input: {
 			};
 	const partial = {
 		type: "label" as const,
-		spaceId: input.assignment.scopeId,
+		spaceId: input.assignment.spaceId,
 		sessionId:
 			input.assignment.resourceType === "session"
 				? input.assignment.resourceRef

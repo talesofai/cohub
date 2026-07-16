@@ -7,8 +7,6 @@ export type LabelResourceType = "session" | "checkpoint" | "file";
 
 type LabelsDb = PostgresJsDatabase<Record<string, unknown>>;
 
-const SCOPE_TYPE = "space";
-
 function buildHref(spaceId: string, resourceType: string, resourceRef: string) {
   if (resourceType === "session") return `/spaces/${spaceId}/sessions/${resourceRef}`;
   if (resourceType === "checkpoint") return `/spaces/${spaceId}/checkpoints/${resourceRef}`;
@@ -107,8 +105,7 @@ export async function buildResourceLabelSnapshot(input: {
       .select()
       .from(labelAssignments)
       .where(and(
-        eq(labelAssignments.scopeType, SCOPE_TYPE),
-        eq(labelAssignments.scopeId, input.spaceId),
+        eq(labelAssignments.spaceId, input.spaceId),
         eq(labelAssignments.resourceType, input.resourceType),
         eq(labelAssignments.resourceRef, input.resourceRef),
       ))

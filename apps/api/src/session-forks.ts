@@ -298,16 +298,14 @@ export async function createSessionFork(input: {
       createdBy: labelAssignments.createdBy,
       meta: labelAssignments.meta,
     }).from(labelAssignments).where(and(
-      eq(labelAssignments.scopeType, "space"),
-      eq(labelAssignments.scopeId, input.spaceId),
+      eq(labelAssignments.spaceId, input.spaceId),
       eq(labelAssignments.resourceType, "session"),
       eq(labelAssignments.resourceRef, parent.id),
     ));
     if (parentLabelAssignments.length > 0) {
       await tx.insert(labelAssignments).values(parentLabelAssignments.map((assignment) => ({
         labelId: assignment.labelId,
-        scopeType: "space",
-        scopeId: input.spaceId,
+        spaceId: input.spaceId,
         resourceType: "session",
         resourceRef: child.id,
         rank: assignment.rank,

@@ -1306,16 +1306,13 @@ export type SpaceMember = {
   updatedAt: string;
 };
 
-export type LabelScopeType = "space" | "user" | "org";
-
 export type LabelSource = "user" | "system";
 
 export type LabelResourceType = "session" | "checkpoint" | "file";
 
 export type LabelRecord = {
   id: string;
-  scopeType: LabelScopeType;
-  scopeId: string;
+  spaceId: string;
   name: string;
   slug: string;
   parentId: string | null;
@@ -1335,10 +1332,11 @@ export type LabelListItem = LabelRecord & {
 export type LabelAssignmentRecord = {
   id: string;
   labelId: string;
-  scopeType: LabelScopeType;
-  scopeId: string;
+  spaceId: string;
   resourceType: LabelResourceType;
   resourceRef: string;
+  sessionId: string | null;
+  checkpointId: string | null;
   rank: number | null;
   source: LabelSource;
   createdBy: string | null;

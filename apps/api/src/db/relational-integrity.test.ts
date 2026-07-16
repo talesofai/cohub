@@ -27,7 +27,7 @@ import {
   workViewerGrants,
   works,
 } from "@cohub/db";
-import { and, eq } from "drizzle-orm";
+import { eq, inArray } from "drizzle-orm";
 import { drizzle } from "drizzle-orm/postgres-js";
 import postgres from "postgres";
 
@@ -147,6 +147,7 @@ test("owned label and work rows cascade from their canonical parent", {
   const db = drizzle(client, { schema });
   const spaceId = randomUUID();
   const labelId = randomUUID();
+  const labelSessionId = randomUUID();
   const workId = randomUUID();
   const workVersionId = randomUUID();
 
@@ -159,17 +160,16 @@ test("owned label and work rows cascade from their canonical parent", {
     });
     await db.insert(labels).values({
       id: labelId,
-      scopeType: "space",
-      scopeId: spaceId,
+      spaceId,
       name: "Test label",
       slug: `label-${labelId}`,
     });
+    await db.insert(spaceSessions).values({ id: labelSessionId, spaceId });
     await db.insert(labelAssignments).values({
       labelId,
-      scopeType: "space",
-      scopeId: spaceId,
+      spaceId,
       resourceType: "session",
-      resourceRef: randomUUID(),
+      resourceRef: labelSessionId,
     });
     await db.insert(works).values({
       id: workId,
@@ -201,12 +201,151 @@ test("owned label and work rows cascade from their canonical parent", {
     assert.equal((await db.select().from(workViewerGrants).where(eq(workViewerGrants.workId, workId))).length, 0);
   } finally {
     try {
-      await db.delete(labelAssignments).where(and(
-        eq(labelAssignments.scopeType, "space"),
-        eq(labelAssignments.scopeId, spaceId),
-      ));
-      await db.delete(labels).where(and(eq(labels.scopeType, "space"), eq(labels.scopeId, spaceId)));
+      await db.delete(labelAssignments).where(eq(labelAssignments.spaceId, spaceId));
+      await db.delete(labels).where(eq(labels.spaceId, spaceId));
       await db.delete(spaces).where(eq(spaces.id, spaceId));
+    } finally {
+      await client.end();
+    }
+  }
+});
+
+test("label assignments enforce space ownership and typed resource integrity", {
+  skip: databaseUrl ? false : "TEST_DATABASE_URL is not configured",
+}, async () => {
+  if (!databaseUrl) return;
+  const client = postgres(databaseUrl, { prepare: false, max: 4 });
+  const db = drizzle(client, { schema });
+  const firstSpaceId = randomUUID();
+  const secondSpaceId = randomUUID();
+  const labelId = randomUUID();
+  const sessionId = randomUUID();
+  const checkpointId = randomUUID();
+
+  try {
+    await db.insert(spaces).values([
+      {
+        id: firstSpaceId,
+        userUuid: randomUUID(),
+        name: `space-${firstSpaceId}`,
+        storageRepoName: `repo-${firstSpaceId}`,
+      },
+      {
+        id: secondSpaceId,
+        userUuid: randomUUID(),
+        name: `space-${secondSpaceId}`,
+        storageRepoName: `repo-${secondSpaceId}`,
+      },
+    ]);
+    await db.insert(labels).values({
+      id: labelId,
+      spaceId: firstSpaceId,
+      name: "Owned label",
+      slug: `owned-${labelId}`,
+    });
+    await db.insert(spaceSessions).values({ id: sessionId, spaceId: firstSpaceId });
+    await db.insert(checkpoints).values({
+      id: checkpointId,
+      spaceId: firstSpaceId,
+      commitHash: "3".repeat(40),
+      description: "Typed assignment",
+    });
+
+    await assert.rejects(
+      db.insert(labels).values({
+        spaceId: secondSpaceId,
+        name: "Cross-space child",
+        slug: `child-${labelId}`,
+        parentId: labelId,
+        depth: 1,
+      }),
+      (error: unknown) => hasSqlState(error, "23503"),
+    );
+    await assert.rejects(
+      db.insert(labels).values({
+        spaceId: firstSpaceId,
+        name: "Invalid hierarchy",
+        slug: `invalid-${labelId}`,
+        depth: 1,
+      }),
+      (error: unknown) => hasSqlState(error, "23514"),
+    );
+    await assert.rejects(
+      db.insert(labelAssignments).values({
+        labelId,
+        spaceId: secondSpaceId,
+        resourceType: "file",
+        resourceRef: "README.md",
+      }),
+      (error: unknown) => hasSqlState(error, "23503"),
+    );
+    await assert.rejects(
+      db.insert(labelAssignments).values({
+        labelId,
+        spaceId: firstSpaceId,
+        resourceType: "session",
+        resourceRef: randomUUID(),
+      }),
+      (error: unknown) => hasSqlState(error, "23503"),
+    );
+    await assert.rejects(
+      db.insert(labelAssignments).values({
+        labelId,
+        spaceId: firstSpaceId,
+        resourceType: "session",
+        resourceRef: "not-a-uuid",
+      }),
+      (error: unknown) => hasSqlState(error, "22P02"),
+    );
+
+    await db.insert(labelAssignments).values([
+      {
+        labelId,
+        spaceId: firstSpaceId,
+        resourceType: "session",
+        resourceRef: sessionId,
+      },
+      {
+        labelId,
+        spaceId: firstSpaceId,
+        resourceType: "checkpoint",
+        resourceRef: checkpointId,
+      },
+      {
+        labelId,
+        spaceId: firstSpaceId,
+        resourceType: "file",
+        resourceRef: "README.md",
+      },
+    ]);
+    const typedAssignments = await db.select({
+      resourceType: labelAssignments.resourceType,
+      sessionId: labelAssignments.sessionId,
+      checkpointId: labelAssignments.checkpointId,
+    }).from(labelAssignments).where(eq(labelAssignments.labelId, labelId));
+    assert.deepEqual(
+      typedAssignments.map((assignment) => assignment.resourceType).sort(),
+      ["checkpoint", "file", "session"],
+    );
+    assert.equal(typedAssignments.find((assignment) => assignment.resourceType === "session")?.sessionId, sessionId);
+    assert.equal(
+      typedAssignments.find((assignment) => assignment.resourceType === "checkpoint")?.checkpointId,
+      checkpointId,
+    );
+
+    await db.delete(spaceSessions).where(eq(spaceSessions.id, sessionId));
+    await db.delete(checkpoints).where(eq(checkpoints.id, checkpointId));
+    const remaining = await db.select({ resourceType: labelAssignments.resourceType })
+      .from(labelAssignments)
+      .where(eq(labelAssignments.labelId, labelId));
+    assert.deepEqual(remaining, [{ resourceType: "file" }]);
+
+    await db.delete(spaces).where(eq(spaces.id, firstSpaceId));
+    assert.equal((await db.select().from(labels).where(eq(labels.spaceId, firstSpaceId))).length, 0);
+    assert.equal((await db.select().from(labelAssignments).where(eq(labelAssignments.spaceId, firstSpaceId))).length, 0);
+  } finally {
+    try {
+      await db.delete(spaces).where(inArray(spaces.id, [firstSpaceId, secondSpaceId]));
     } finally {
       await client.end();
     }

@@ -12,7 +12,6 @@ export type SessionChannelLabelInput = {
   userId?: string | null;
 };
 
-const SCOPE_TYPE = "space";
 const ROOT_LABEL_NAME = "Channel";
 const CUSTOM_LABEL_NAME_SUFFIX = " (Custom)";
 const MAX_LABEL_NAME_LENGTH = 80;
@@ -50,8 +49,7 @@ async function findLabelByName(
     .select()
     .from(labels)
     .where(and(
-      eq(labels.scopeType, SCOPE_TYPE),
-      eq(labels.scopeId, spaceId),
+      eq(labels.spaceId, spaceId),
       parentId ? eq(labels.parentId, parentId) : sql`${labels.parentId} is null`,
       sql`lower(${labels.name}) = lower(${name})`,
     ))
@@ -67,7 +65,7 @@ async function findLabelBySystemKey(
   const [row] = await db
     .select()
     .from(labels)
-    .where(and(eq(labels.scopeType, SCOPE_TYPE), eq(labels.scopeId, spaceId), eq(labels.systemKey, systemKey)))
+    .where(and(eq(labels.spaceId, spaceId), eq(labels.systemKey, systemKey)))
     .limit(1);
   return row ?? null;
 }
@@ -81,8 +79,7 @@ async function nextLabelRank(
     .select({ value: max(labels.rank) })
     .from(labels)
     .where(and(
-      eq(labels.scopeType, SCOPE_TYPE),
-      eq(labels.scopeId, spaceId),
+      eq(labels.spaceId, spaceId),
       parentId ? eq(labels.parentId, parentId) : sql`${labels.parentId} is null`,
     ));
   return Number(value ?? 0) + 10;
@@ -144,8 +141,7 @@ async function getOrCreateSystemLabel(
   if (existingByName?.source === "system") return existingByName;
 
   const [created] = await db.insert(labels).values({
-    scopeType: SCOPE_TYPE,
-    scopeId: input.spaceId,
+    spaceId: input.spaceId,
     name: input.name,
     slug: slugifyLabelName(input.name),
     parentId: input.parentId,
@@ -189,8 +185,7 @@ export async function assignSessionChannelSystemLabel(input: SessionChannelLabel
     .select({ labelId: labelAssignments.labelId })
     .from(labelAssignments)
     .where(and(
-      eq(labelAssignments.scopeType, SCOPE_TYPE),
-      eq(labelAssignments.scopeId, input.spaceId),
+      eq(labelAssignments.spaceId, input.spaceId),
       eq(labelAssignments.resourceType, "session"),
       eq(labelAssignments.resourceRef, input.sessionId),
       eq(labelAssignments.labelId, childLabel.id),
@@ -200,8 +195,7 @@ export async function assignSessionChannelSystemLabel(input: SessionChannelLabel
   if (existingAssignment.length === 0) {
     await input.db.insert(labelAssignments).values({
       labelId: childLabel.id,
-      scopeType: SCOPE_TYPE,
-      scopeId: input.spaceId,
+      spaceId: input.spaceId,
       resourceType: "session",
       resourceRef: input.sessionId,
       rank: null,

@@ -16,6 +16,14 @@ External identity IDs, immutable billing audit context, analytics dimensions, po
 
 Migration `0052` removes the polymorphic access-policy table. Space and session policies now use their resource ID as the primary key in separate tables with cascading foreign keys. The migration stops with SQLSTATE `55000` before DDL when a legacy policy has an unsupported role, unsupported resource type, or orphan resource ID; it never guesses which resource an invalid row was meant to reference.
 
+Migration `0053` makes labels directly owned by a UUID `space_id`. Label assignments retain the public `resource_type`/`resource_ref` identity, while generated UUID projections enforce same-space foreign keys for session and checkpoint targets. File references remain paths owned by the space. Before deploying the migration, run the read-only preflight against the legacy schema:
+
+```bash
+pnpm --filter @cohub/api db:validate:label-integrity
+```
+
+Repair every reported blocker deliberately. The migration raises SQLSTATE `55000` before DDL if a label has an invalid scope, hierarchy, source, or parent, or if an assignment points to the wrong label scope or a missing session/checkpoint. After migration the command reports `normalized`.
+
 ## Rollout
 
 After migration and application deployment, run the validator in dry-run mode. It attempts each unvalidated foreign-key and check constraint inside a transaction and rolls back, so it changes no rows or constraint state:

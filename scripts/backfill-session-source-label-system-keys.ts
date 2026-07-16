@@ -37,8 +37,7 @@ async function hasSystemKey(spaceId: string, systemKey: string) {
     .select({ id: schema.labels.id })
     .from(schema.labels)
     .where(and(
-      eq(schema.labels.scopeType, "space"),
-      eq(schema.labels.scopeId, spaceId),
+      eq(schema.labels.spaceId, spaceId),
       eq(schema.labels.systemKey, systemKey),
     ))
     .limit(1);
@@ -53,12 +52,11 @@ async function main() {
   }
   const args = parseArgs(rawArgs);
   const rootFilters = [
-    eq(schema.labels.scopeType, "space"),
     eq(schema.labels.source, "system"),
     isNull(schema.labels.parentId),
     sql`lower(${schema.labels.name}) = 'source'`,
   ];
-  if (args.spaceId) rootFilters.push(eq(schema.labels.scopeId, args.spaceId));
+  if (args.spaceId) rootFilters.push(eq(schema.labels.spaceId, args.spaceId));
   const sourceRoots = await db
     .select()
     .from(schema.labels)
@@ -71,7 +69,7 @@ async function main() {
   let skippedExistingSystemKey = 0;
 
   for (const root of sourceRoots) {
-    if (!root.systemKey && !(await hasSystemKey(root.scopeId, SESSION_SOURCE_ROOT_LABEL_SYSTEM_KEY))) {
+    if (!root.systemKey && !(await hasSystemKey(root.spaceId, SESSION_SOURCE_ROOT_LABEL_SYSTEM_KEY))) {
       if (args.write) {
         const result = await db
           .update(schema.labels)
@@ -90,8 +88,7 @@ async function main() {
       .select()
       .from(schema.labels)
       .where(and(
-        eq(schema.labels.scopeType, "space"),
-        eq(schema.labels.scopeId, root.scopeId),
+        eq(schema.labels.spaceId, root.spaceId),
         eq(schema.labels.source, "system"),
         eq(schema.labels.parentId, root.id),
         isNull(schema.labels.systemKey),
@@ -104,7 +101,7 @@ async function main() {
         skippedUnknown += 1;
         continue;
       }
-      if (await hasSystemKey(root.scopeId, systemKey)) {
+      if (await hasSystemKey(root.spaceId, systemKey)) {
         skippedExistingSystemKey += 1;
         continue;
       }
