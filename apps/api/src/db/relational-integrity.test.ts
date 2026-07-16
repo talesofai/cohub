@@ -62,8 +62,14 @@ test("relational constraints reject cross-space bindings and preserve channel me
       id: channelId,
       userUuid: randomUUID(),
       provider: "test",
-      credentials: {},
-      credentialEnvelope: null,
+      credentialEnvelope: {
+        version: 1,
+        keyId: "test",
+        algorithm: "aes-256-gcm",
+        nonce: "AAAAAAAAAAAAAAAA",
+        authTag: "AAAAAAAAAAAAAAAAAAAAAA",
+        ciphertext: "AAA",
+      },
     });
     await db.insert(spaceChannels).values({ id: spaceChannelId, spaceId: firstSpaceId, channelId });
     await db.insert(spaceSessions).values({ id: sessionId, spaceId: firstSpaceId });

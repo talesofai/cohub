@@ -243,8 +243,7 @@ export const userChannels = v2.table(
     userUuid: varchar("user_uuid", { length: 255 }).notNull(),
     provider: varchar("provider", { length: 50 }).notNull(),
     name: varchar("name", { length: 255 }),
-    credentials: jsonb("credentials"),
-    credentialEnvelope: jsonb("credential_envelope").$type<UserChannelCredentialEnvelope>(),
+    credentialEnvelope: jsonb("credential_envelope").$type<UserChannelCredentialEnvelope>().notNull(),
     credentialRevision: integer("credential_revision").default(1).notNull(),
     status: varchar("status", { length: 20 }).default("active"),
     createdAt: timestamp("created_at", { withTimezone: true }).defaultNow(),
@@ -253,13 +252,9 @@ export const userChannels = v2.table(
   (table) => ({
     userUuidIdx: index("v2_idx_user_channels_user_uuid").on(table.userUuid),
     providerIdx: index("v2_idx_user_channels_provider").on(table.provider),
-    credentialsStorageCheck: check(
-      "v2_chk_user_channels_credentials_storage",
-      sql`num_nonnulls(${table.credentials}, ${table.credentialEnvelope}) = 1`,
-    ),
     credentialEnvelopeCheck: check(
       "v2_chk_user_channels_credential_envelope",
-      sql`${table.credentialEnvelope} is null or coalesce(
+      sql`coalesce(
         jsonb_typeof(${table.credentialEnvelope}) = 'object'
         and ${table.credentialEnvelope}->'version' = '1'::jsonb
         and ${table.credentialEnvelope}->>'algorithm' = 'aes-256-gcm'

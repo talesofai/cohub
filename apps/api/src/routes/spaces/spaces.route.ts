@@ -2151,7 +2151,6 @@ router.get("/:id/channels", async (c) => {
       const userChannel = userChannelById.get(channel.channelId) ?? null;
       const safeChannel = userChannel
         ? (({
-            credentials: _credentials,
             credentialEnvelope: _credentialEnvelope,
             credentialRevision: _credentialRevision,
             ...rest

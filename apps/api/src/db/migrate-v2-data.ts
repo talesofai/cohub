@@ -1,7 +1,7 @@
 import "dotenv/config";
 import postgres from "postgres";
 import { createLogger } from "@cohub/infra/logging";
-
+import { migrateLegacyUserChannels } from "./migrate-legacy-user-channels.js";
 
 const logger = createLogger({ serviceName: "cohub-api" });
 const connectionString = process.env.DATABASE_URL;
@@ -62,29 +62,8 @@ async function migrateV2Data() {
     `;
 
     logger.info("[V2 Data Migration] Migrating user channels...");
-    await sql`
-      INSERT INTO v2.user_channels (
-        id,
-        user_uuid,
-        provider,
-        name,
-        credentials,
-        status,
-        created_at,
-        updated_at
-      )
-      SELECT
-        id,
-        user_uuid,
-        provider,
-        name,
-        credentials,
-        status,
-        created_at,
-        updated_at
-      FROM public.user_channels
-      ON CONFLICT DO NOTHING
-    `;
+    const migratedUserChannels = await migrateLegacyUserChannels(sql);
+    logger.info(`[V2 Data Migration] Migrated ${migratedUserChannels} user channels.`);
 
     logger.info("[V2 Data Migration] Migrating runtimes as spaces...");
     await sql`

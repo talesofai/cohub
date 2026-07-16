@@ -23,12 +23,10 @@ const WECHAT_CONFIRM_LOCK_TTL_SECONDS = 60;
 const router = new Hono();
 
 const serializeChannel = <T extends {
-  credentials?: unknown;
   credentialEnvelope?: unknown;
   credentialRevision?: unknown;
 }>(channel: T) => {
   const {
-    credentials: _credentials,
     credentialEnvelope: _credentialEnvelope,
     credentialRevision: _credentialRevision,
     ...safeChannel
@@ -109,7 +107,6 @@ function getWeChatCredentials(channel: typeof userChannels.$inferSelect) {
     channelId: channel.id,
     userUuid: channel.userUuid,
     provider: channel.provider,
-    credentials: channel.credentials,
     credentialEnvelope: channel.credentialEnvelope,
   });
   return {
@@ -281,7 +278,6 @@ router.post("/wechat/login/wait", async (c) => {
       });
       const [channel] = await db.update(userChannels)
         .set({
-          credentials: null,
           credentialEnvelope,
           credentialRevision: sql`${userChannels.credentialRevision} + 1`,
           status: "active",
@@ -300,7 +296,6 @@ router.post("/wechat/login/wait", async (c) => {
       userUuid: user.uuid,
       provider: "wechat",
       name: state.name,
-      credentials: null,
       credentialEnvelope: encryptChannelCredentials(credentials, {
         channelId,
         userUuid: user.uuid,
@@ -385,7 +380,6 @@ router.post("/", async (c) => {
       userUuid: user.uuid,
       provider,
       name,
-      credentials: null,
       credentialEnvelope: encryptChannelCredentials(body.credentials, {
         channelId,
         userUuid: user.uuid,

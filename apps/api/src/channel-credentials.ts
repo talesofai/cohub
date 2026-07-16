@@ -162,17 +162,10 @@ export const decryptChannelCredentials = (
 
 export const resolveChannelCredentials = (
   channel: ChannelCredentialContext & {
-    credentials: unknown;
     credentialEnvelope: unknown;
   },
   keyring: ChannelCredentialKeyring = getChannelCredentialKeyring(),
-) => {
-  if (channel.credentialEnvelope !== null && channel.credentialEnvelope !== undefined) {
-    return decryptChannelCredentials(channel.credentialEnvelope, channel, keyring);
-  }
-  if (isRecord(channel.credentials)) return channel.credentials;
-  throw new ChannelCredentialError(`Channel ${channel.channelId} has no readable credentials`);
-};
+) => decryptChannelCredentials(channel.credentialEnvelope, channel, keyring);
 
 export const shouldRotateChannelCredentials = (
   value: unknown,

@@ -26,13 +26,16 @@ test("channel credential envelopes round-trip and bind ciphertext to its row", (
   );
 });
 
-test("legacy plaintext rows remain readable during backfill", () => {
+test("credential resolution requires an authenticated envelope", () => {
   const keyring = parseChannelCredentialKeyring(JSON.stringify({ current: key(1) }), "current");
-  assert.deepEqual(resolveChannelCredentials({
-    ...context,
-    credentials: { token: "legacy" },
-    credentialEnvelope: null,
-  }, keyring), { token: "legacy" });
+  const envelope = encryptChannelCredentials({ token: "secret" }, context, keyring);
+  assert.deepEqual(resolveChannelCredentials({ ...context, credentialEnvelope: envelope }, keyring), {
+    token: "secret",
+  });
+  assert.throws(
+    () => resolveChannelCredentials({ ...context, credentialEnvelope: null }, keyring),
+    ChannelCredentialError,
+  );
 });
 
 test("key rotation decrypts old envelopes and writes with the primary key", () => {

@@ -3,19 +3,14 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ENVIRONMENT="${1:-}"
-MODE="${2:-}"
-APPLY="${3:-}"
+APPLY="${2:-}"
 
 if [[ "$ENVIRONMENT" != "dev" && "$ENVIRONMENT" != "prod" ]]; then
-  echo "Usage: $0 <dev|prod> <backfill|rotate> [--apply]" >&2
-  exit 1
-fi
-if [[ "$MODE" != "backfill" && "$MODE" != "rotate" ]]; then
-  echo "Usage: $0 <dev|prod> <backfill|rotate> [--apply]" >&2
+  echo "Usage: $0 <dev|prod> [--apply]" >&2
   exit 1
 fi
 if [[ -n "$APPLY" && "$APPLY" != "--apply" ]]; then
-  echo "Third argument must be --apply when provided" >&2
+  echo "Second argument must be --apply when provided" >&2
   exit 1
 fi
 
@@ -37,12 +32,12 @@ IMAGE_REPOSITORY="$(get_value IMAGE_REPOSITORY)"
 IMAGE_TAG="${OVERRIDE_IMAGE_TAG:-$(get_value IMAGE_TAG)}"
 IMAGE_PULL_POLICY="$(get_value IMAGE_PULL_POLICY)"
 IMAGE_PULL_SECRET="$(get_value IMAGE_PULL_SECRET)"
-JOB_NAME="${APP_NAME}-channel-credentials"
+JOB_NAME="${APP_NAME}-channel-credential-rotation"
 RENDERED_DIR="$ENV_DIR/rendered"
-RENDERED_FILE="$RENDERED_DIR/channel-credential-job.yaml"
+RENDERED_FILE="$RENDERED_DIR/channel-credential-rotation-job.yaml"
 
 mkdir -p "$RENDERED_DIR"
-cp "$SCRIPT_DIR/manifests/channel-credential-job.tmpl.yaml" "$RENDERED_FILE"
+cp "$SCRIPT_DIR/manifests/channel-credential-rotation-job.tmpl.yaml" "$RENDERED_FILE"
 
 python3 - "$RENDERED_FILE" "$IMAGE_PULL_SECRET" "$APPLY" <<'PY'
 from pathlib import Path
@@ -55,9 +50,9 @@ text = path.read_text()
 pull_block = ""
 if image_pull_secret:
     pull_block = f"      imagePullSecrets:\n        - name: {image_pull_secret}\n"
-apply_block = '            - "--apply"\n' if apply == "--apply" else ""
+args_block = '          args:\n            - "--apply"\n' if apply == "--apply" else ""
 text = text.replace("__IMAGE_PULL_SECRETS_BLOCK__\n", pull_block)
-text = text.replace("__APPLY_ARG_BLOCK__\n", apply_block)
+text = text.replace("__ARGS_BLOCK__\n", args_block)
 path.write_text(text)
 PY
 
@@ -67,7 +62,6 @@ sed -i.bak \
   -e "s|__IMAGE_REPOSITORY__|${IMAGE_REPOSITORY}|g" \
   -e "s|__IMAGE_TAG__|${IMAGE_TAG}|g" \
   -e "s|__IMAGE_PULL_POLICY__|${IMAGE_PULL_POLICY}|g" \
-  -e "s|__MODE__|${MODE}|g" \
   "$RENDERED_FILE"
 rm -f "$RENDERED_FILE.bak"
 

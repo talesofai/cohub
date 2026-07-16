@@ -211,7 +211,6 @@ export async function resolveGatewayChannelCredentials(
       userUuid: userChannels.userUuid,
       provider: userChannels.provider,
       status: userChannels.status,
-      credentials: userChannels.credentials,
       credentialEnvelope: userChannels.credentialEnvelope,
       credentialRevision: userChannels.credentialRevision,
     })
