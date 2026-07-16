@@ -1,7 +1,7 @@
 import { Hono } from "hono";
-import { and, eq } from "drizzle-orm";
+import { eq } from "drizzle-orm";
 import { db } from "../db/index.js";
-import { accessPolicies, spaceSessions } from "@cohub/db";
+import { sessionAccessPolicies, spaceSessions } from "@cohub/db";
 import { requireValidId, useAuth, authzDenied } from "../lib/middleware.js";
 import { hasPermission } from "../permissions.js";
 import type { AccessPolicyRole } from "@cohub/db";
@@ -21,9 +21,12 @@ router.get("/:id/access", async (c) => {
   if (!(await hasPermission(user, "member.view", { spaceId: session.spaceId, sessionId }))) return authzDenied(c);
 
   const [policy] = await db
-    .select({ signed_in_user: accessPolicies.signedInUserRole, anonymous_user: accessPolicies.anonymousUserRole })
-    .from(accessPolicies)
-    .where(and(eq(accessPolicies.resourceType, "session"), eq(accessPolicies.resourceId, sessionId)))
+    .select({
+      signed_in_user: sessionAccessPolicies.signedInUserRole,
+      anonymous_user: sessionAccessPolicies.anonymousUserRole,
+    })
+    .from(sessionAccessPolicies)
+    .where(eq(sessionAccessPolicies.sessionId, sessionId))
     .limit(1);
 
   return c.json({
@@ -61,17 +64,16 @@ router.patch("/:id/access", async (c) => {
   if (body.anonymous_user !== undefined) updateSet.anonymousUserRole = body.anonymous_user;
 
   const [policy] = await db
-    .insert(accessPolicies)
+    .insert(sessionAccessPolicies)
     .values({
-      resourceType: "session",
-      resourceId: sessionId,
+      sessionId,
       signedInUserRole: body.signed_in_user ?? null,
       anonymousUserRole: body.anonymous_user ?? null,
       createdBy: user.uuid,
       updatedBy: user.uuid,
     })
     .onConflictDoUpdate({
-      target: [accessPolicies.resourceType, accessPolicies.resourceId],
+      target: sessionAccessPolicies.sessionId,
       set: updateSet,
     })
     .returning();
@@ -92,7 +94,7 @@ router.delete("/:id/access", async (c) => {
   if (!session) return c.json({ message: "session not found" }, 404);
   if (!(await hasPermission(user, "member.manage", { spaceId: session.spaceId, sessionId }))) return authzDenied(c);
 
-  await db.delete(accessPolicies).where(and(eq(accessPolicies.resourceType, "session"), eq(accessPolicies.resourceId, sessionId)));
+  await db.delete(sessionAccessPolicies).where(eq(sessionAccessPolicies.sessionId, sessionId));
   return c.json({ ok: true });
 });
 

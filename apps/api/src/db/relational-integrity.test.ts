@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
 import { test } from "node:test";
+import { createDrizzlePermissionStore } from "@cohub/core/permissions";
 import * as schema from "@cohub/db";
 import {
   canvasCheckpointSnapshots,
@@ -10,11 +11,13 @@ import {
   labels,
   proposals,
   providerMessageRefs,
+  sessionAccessPolicies,
   sessionForks,
   sessionMessages,
   sessionTurnSegments,
   sessionTurns,
   spaceChannels,
+  spaceAccessPolicies,
   spaceSessionBindings,
   spaceSessions,
   spaces,
@@ -363,6 +366,86 @@ test("space deletion resolves checkpoint, proposal, and canvas ownership cycles"
     assert.equal((await db.select().from(checkpoints).where(eq(checkpoints.spaceId, spaceId))).length, 0);
     assert.equal((await db.select().from(canvasDocuments).where(eq(canvasDocuments.spaceId, spaceId))).length, 0);
     assert.equal((await db.select().from(proposals).where(eq(proposals.id, proposalId))).length, 0);
+  } finally {
+    try {
+      await db.delete(spaces).where(eq(spaces.id, spaceId));
+    } finally {
+      await client.end();
+    }
+  }
+});
+
+test("concrete access policies require and follow their owned resource", {
+  skip: databaseUrl ? false : "TEST_DATABASE_URL is not configured",
+}, async () => {
+  if (!databaseUrl) return;
+  const client = postgres(databaseUrl, { prepare: false, max: 4 });
+  const db = drizzle(client, { schema });
+  const spaceId = randomUUID();
+  const sessionId = randomUUID();
+  const actorId = randomUUID();
+
+  try {
+    await db.insert(spaces).values({
+      id: spaceId,
+      userUuid: actorId,
+      name: `space-${spaceId}`,
+      storageRepoName: `repo-${spaceId}`,
+    });
+    await db.insert(spaceSessions).values({ id: sessionId, spaceId });
+    await db.insert(spaceAccessPolicies).values({
+      spaceId,
+      signedInUserRole: "builder",
+      anonymousUserRole: "guest",
+      createdBy: actorId,
+      updatedBy: actorId,
+    });
+    await db.insert(sessionAccessPolicies).values({
+      sessionId,
+      signedInUserRole: "guest",
+      anonymousUserRole: null,
+      createdBy: actorId,
+      updatedBy: actorId,
+    });
+    const permissionStore = createDrizzlePermissionStore(db);
+    assert.deepEqual(await permissionStore.getAccessPolicy("space", spaceId), {
+      signedInUserRole: "builder",
+      anonymousUserRole: "guest",
+    });
+    assert.deepEqual(await permissionStore.getAccessPolicy("session", sessionId), {
+      signedInUserRole: "guest",
+      anonymousUserRole: null,
+    });
+
+    await assert.rejects(
+      db.insert(spaceAccessPolicies).values({
+        spaceId: randomUUID(),
+        createdBy: actorId,
+        updatedBy: actorId,
+      }),
+      (error: unknown) => hasSqlState(error, "23503"),
+    );
+    await assert.rejects(
+      db.insert(sessionAccessPolicies).values({
+        sessionId: randomUUID(),
+        createdBy: actorId,
+        updatedBy: actorId,
+      }),
+      (error: unknown) => hasSqlState(error, "23503"),
+    );
+    await assert.rejects(
+      db.update(spaceAccessPolicies)
+        .set({ anonymousUserRole: "builder" })
+        .where(eq(spaceAccessPolicies.spaceId, spaceId)),
+      (error: unknown) => hasSqlState(error, "23514"),
+    );
+
+    await db.delete(spaceSessions).where(eq(spaceSessions.id, sessionId));
+    assert.equal((await db.select().from(sessionAccessPolicies).where(eq(sessionAccessPolicies.sessionId, sessionId))).length, 0);
+    assert.equal((await db.select().from(spaceAccessPolicies).where(eq(spaceAccessPolicies.spaceId, spaceId))).length, 1);
+
+    await db.delete(spaces).where(eq(spaces.id, spaceId));
+    assert.equal((await db.select().from(spaceAccessPolicies).where(eq(spaceAccessPolicies.spaceId, spaceId))).length, 0);
   } finally {
     try {
       await db.delete(spaces).where(eq(spaces.id, spaceId));

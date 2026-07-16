@@ -381,37 +381,57 @@ async function migrateV2Data() {
       }
 
       if (permission.grantee_uuid === null) {
-        await sql`
-          INSERT INTO v2.access_policies (
-            resource_type,
-            resource_id,
-            signed_in_user_role,
-            anonymous_user_role,
-            created_by,
-            updated_by,
-            created_at,
-            updated_at
-          )
-          VALUES (
-            ${resourceType},
-            ${permission.resource_id},
-            ${permission.level === "private" ? null : "guest"},
-            ${permission.level === "private" ? null : "guest"},
-            ${permission.created_by},
-            ${permission.created_by},
-            ${permission.created_at},
-            ${permission.created_at}
-          )
-          ON CONFLICT (resource_type, resource_id) DO NOTHING
-        `;
+        const publicRole = permission.level === "private" ? null : "guest";
+        if (resourceType === "space") {
+          await sql`
+            INSERT INTO v2.space_access_policies (
+              space_id,
+              signed_in_user_role,
+              anonymous_user_role,
+              created_by,
+              updated_by,
+              created_at,
+              updated_at
+            ) VALUES (
+              ${permission.resource_id},
+              ${publicRole},
+              ${publicRole},
+              ${permission.created_by},
+              ${permission.created_by},
+              ${permission.created_at},
+              ${permission.created_at}
+            )
+            ON CONFLICT (space_id) DO NOTHING
+          `;
+        } else {
+          await sql`
+            INSERT INTO v2.session_access_policies (
+              session_id,
+              signed_in_user_role,
+              anonymous_user_role,
+              created_by,
+              updated_by,
+              created_at,
+              updated_at
+            ) VALUES (
+              ${permission.resource_id},
+              ${publicRole},
+              ${publicRole},
+              ${permission.created_by},
+              ${permission.created_by},
+              ${permission.created_at},
+              ${permission.created_at}
+            )
+            ON CONFLICT (session_id) DO NOTHING
+          `;
+        }
       }
     }
 
     logger.info("[V2 Data Migration] Migrating public runtime permissions from public workspace visibility...");
     await sql`
-      INSERT INTO v2.access_policies (
-        resource_type,
-        resource_id,
+      INSERT INTO v2.space_access_policies (
+        space_id,
         signed_in_user_role,
         anonymous_user_role,
         created_by,
@@ -420,7 +440,6 @@ async function migrateV2Data() {
         updated_at
       )
       SELECT
-        'space',
         r.id,
         'guest',
         'guest',

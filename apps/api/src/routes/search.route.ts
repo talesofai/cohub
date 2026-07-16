@@ -205,9 +205,8 @@ router.get("/", async (c) => {
           OR sm.user_id IS NOT NULL
           OR EXISTS (
             SELECT 1
-            FROM v2.access_policies ap
-            WHERE ap.resource_type = 'space'
-              AND ap.resource_id = s.id
+            FROM v2.space_access_policies ap
+            WHERE ap.space_id = s.id
               AND (ap.signed_in_user_role IS NOT NULL OR ap.anonymous_user_role IS NOT NULL)
           )
         )

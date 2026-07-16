@@ -1,6 +1,6 @@
 import { Hono } from "hono";
 import { and, desc, eq, or, sql } from "drizzle-orm";
-import { accessPolicies, spaces, userProfiles, works } from "@cohub/db";
+import { spaceAccessPolicies, spaces, userProfiles, works } from "@cohub/db";
 import { db } from "../db/index.js";
 import { getSpacePublicProfile, requireValidId, useAuth } from "../lib/middleware.js";
 import { createWorkPublicUrl } from "../lib/work-public-url.js";
@@ -36,9 +36,9 @@ const workTitleFromMeta = (meta: unknown, fallback: string) => {
 };
 
 const isDiscoverableSpacePolicy = or(
-  eq(accessPolicies.anonymousUserRole, "guest"),
-  eq(accessPolicies.signedInUserRole, "guest"),
-  eq(accessPolicies.signedInUserRole, "builder"),
+  eq(spaceAccessPolicies.anonymousUserRole, "guest"),
+  eq(spaceAccessPolicies.signedInUserRole, "guest"),
+  eq(spaceAccessPolicies.signedInUserRole, "builder"),
 );
 
 router.post("/profiles/batch", async (c) => {
@@ -96,15 +96,12 @@ router.get("/by-username/:username", async (c) => {
       updatedAt: spaces.updatedAt,
       lastActivityAt: spaces.lastActivityAt,
       createdAt: spaces.createdAt,
-      anonymousUserRole: accessPolicies.anonymousUserRole,
+      anonymousUserRole: spaceAccessPolicies.anonymousUserRole,
     })
     .from(spaces)
     .innerJoin(
-      accessPolicies,
-      and(
-        eq(accessPolicies.resourceType, "space"),
-        eq(accessPolicies.resourceId, spaces.id),
-      ),
+      spaceAccessPolicies,
+      eq(spaceAccessPolicies.spaceId, spaces.id),
     )
     .where(and(
       eq(spaces.userUuid, profile.userUuid),

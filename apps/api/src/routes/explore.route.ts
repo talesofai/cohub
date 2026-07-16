@@ -2,7 +2,7 @@ import { createLogger } from "@cohub/infra/logging";
 import { readFile } from "node:fs/promises";
 import { join } from "node:path";
 import { Hono } from "hono";
-import { and, eq, inArray, sql } from "drizzle-orm";
+import { inArray, sql } from "drizzle-orm";
 import {
   createCachedExploreConfig,
   EXPLORE_CACHE_TTL_SEC,
@@ -14,7 +14,7 @@ import {
   type ExploreSectionConfig,
   type ExploreSpaceConfig,
 } from "@cohub/infra/config-runtime";
-import { accessPolicies, checkpoints, spaces } from "@cohub/db";
+import { checkpoints, spaceAccessPolicies, spaces } from "@cohub/db";
 import { config } from "../config.js";
 import { db } from "../db/index.js";
 import { redisCommandClient } from "../redis.js";
@@ -205,14 +205,11 @@ router.get("/spaces", async (c) => {
     const spaceIds = [...new Set(configuredSpaces.map((item) => item.spaceId))];
     const [spaceRows, policyRows] = await Promise.all([
       db.select().from(spaces).where(inArray(spaces.id, spaceIds)),
-      db.select().from(accessPolicies).where(and(
-        eq(accessPolicies.resourceType, "space"),
-        inArray(accessPolicies.resourceId, spaceIds),
-      )),
+      db.select().from(spaceAccessPolicies).where(inArray(spaceAccessPolicies.spaceId, spaceIds)),
     ]);
 
     const spacesById = new Map(spaceRows.map((space) => [space.id, space]));
-    const policyBySpaceId = new Map(policyRows.map((policy) => [policy.resourceId, policy]));
+    const policyBySpaceId = new Map(policyRows.map((policy) => [policy.spaceId, policy]));
     const visibleIds = configuredSpaces
       .map((item) => item.spaceId)
       .filter((spaceId) => {

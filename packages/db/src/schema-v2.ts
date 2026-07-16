@@ -31,7 +31,6 @@ import type {
 
 export type SpaceRole = "host" | "builder" | "guest";
 export type AccessPolicyRole = "builder" | "guest" | null;
-export type AccessPolicyResourceType = "space" | "session";
 export type ReferralCodeStatus = "active" | "revoked";
 export type ReferralStatus = "pending" | "qualified" | "rewarded";
 export type RealtimeOutboxEnvelope = RealtimeServerEvent & { rooms?: RealtimeRoom[] };
@@ -1238,25 +1237,59 @@ export const spaceMembers = v2.table(
   }),
 );
 
-export const accessPolicies = v2.table(
-  "access_policies",
+export const spaceAccessPolicies = v2.table(
+  "space_access_policies",
   {
-    id: uuid("id").primaryKey().defaultRandom(),
-    resourceType: varchar("resource_type", { length: 20 }).$type<AccessPolicyResourceType>().notNull(),
-    resourceId: uuid("resource_id").notNull(),
-    signedInUserRole: varchar("signed_in_user_role", { length: 20 }).$type<SpaceRole | null>(),
-    anonymousUserRole: varchar("anonymous_user_role", { length: 20 }).$type<SpaceRole | null>(),
+    spaceId: uuid("space_id").primaryKey(),
+    signedInUserRole: varchar("signed_in_user_role", { length: 20 }).$type<AccessPolicyRole>(),
+    anonymousUserRole: varchar("anonymous_user_role", { length: 20 }).$type<AccessPolicyRole>(),
     createdBy: varchar("created_by", { length: 255 }).notNull(),
     updatedBy: varchar("updated_by", { length: 255 }).notNull(),
     createdAt: timestamp("created_at", { withTimezone: true }).defaultNow(),
     updatedAt: timestamp("updated_at", { withTimezone: true }).defaultNow(),
   },
   (table) => ({
-    uniqueResourceIdx: uniqueIndex("v2_uq_access_policies_resource").on(
-      table.resourceType,
-      table.resourceId,
+    spaceFk: foreignKey({
+      name: "v2_fk_space_access_policies_space",
+      columns: [table.spaceId],
+      foreignColumns: [spaces.id],
+    }).onDelete("cascade"),
+    signedInRoleCheck: check(
+      "v2_chk_space_access_policies_signed_in_role",
+      sql`${table.signedInUserRole} is null or ${table.signedInUserRole} in ('builder', 'guest')`,
     ),
-    resourceIdx: index("v2_idx_access_policies_resource").on(table.resourceType, table.resourceId),
+    anonymousRoleCheck: check(
+      "v2_chk_space_access_policies_anonymous_role",
+      sql`${table.anonymousUserRole} is null or ${table.anonymousUserRole} = 'guest'`,
+    ),
+  }),
+);
+
+export const sessionAccessPolicies = v2.table(
+  "session_access_policies",
+  {
+    sessionId: uuid("session_id").primaryKey(),
+    signedInUserRole: varchar("signed_in_user_role", { length: 20 }).$type<AccessPolicyRole>(),
+    anonymousUserRole: varchar("anonymous_user_role", { length: 20 }).$type<AccessPolicyRole>(),
+    createdBy: varchar("created_by", { length: 255 }).notNull(),
+    updatedBy: varchar("updated_by", { length: 255 }).notNull(),
+    createdAt: timestamp("created_at", { withTimezone: true }).defaultNow(),
+    updatedAt: timestamp("updated_at", { withTimezone: true }).defaultNow(),
+  },
+  (table) => ({
+    sessionFk: foreignKey({
+      name: "v2_fk_session_access_policies_session",
+      columns: [table.sessionId],
+      foreignColumns: [spaceSessions.id],
+    }).onDelete("cascade"),
+    signedInRoleCheck: check(
+      "v2_chk_session_access_policies_signed_in_role",
+      sql`${table.signedInUserRole} is null or ${table.signedInUserRole} in ('builder', 'guest')`,
+    ),
+    anonymousRoleCheck: check(
+      "v2_chk_session_access_policies_anonymous_role",
+      sql`${table.anonymousUserRole} is null or ${table.anonymousUserRole} = 'guest'`,
+    ),
   }),
 );
 

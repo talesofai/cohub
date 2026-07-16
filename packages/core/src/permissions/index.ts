@@ -1,9 +1,15 @@
 import { and, eq, inArray } from "drizzle-orm";
 import type { PostgresJsDatabase } from "drizzle-orm/postgres-js";
-import { accessPolicies, spaceMembers, spaceSessions } from "@cohub/db";
-import type { AccessPolicyResourceType, SpaceRole } from "@cohub/db";
+import {
+  sessionAccessPolicies,
+  spaceAccessPolicies,
+  spaceMembers,
+  spaceSessions,
+} from "@cohub/db";
+import type { SpaceRole } from "@cohub/db";
 
 export type Audience = "member_user" | "signed_in_user" | "anonymous_user";
+export type AccessPolicyResourceType = "space" | "session";
 export const ALL_PERMISSIONS = [
   "space.view",
   "space.edit",
@@ -299,14 +305,23 @@ export function createDrizzlePermissionStore(db: DrizzlePermissionDb): Permissio
       return member?.role ?? null;
     },
     async getAccessPolicy(resourceType, resourceId) {
-      const [policy] = await db
-        .select({
-          signedInUserRole: accessPolicies.signedInUserRole,
-          anonymousUserRole: accessPolicies.anonymousUserRole,
-        })
-        .from(accessPolicies)
-        .where(and(eq(accessPolicies.resourceType, resourceType), eq(accessPolicies.resourceId, resourceId)))
-        .limit(1);
+      const [policy] = resourceType === "space"
+        ? await db
+          .select({
+            signedInUserRole: spaceAccessPolicies.signedInUserRole,
+            anonymousUserRole: spaceAccessPolicies.anonymousUserRole,
+          })
+          .from(spaceAccessPolicies)
+          .where(eq(spaceAccessPolicies.spaceId, resourceId))
+          .limit(1)
+        : await db
+          .select({
+            signedInUserRole: sessionAccessPolicies.signedInUserRole,
+            anonymousUserRole: sessionAccessPolicies.anonymousUserRole,
+          })
+          .from(sessionAccessPolicies)
+          .where(eq(sessionAccessPolicies.sessionId, resourceId))
+          .limit(1);
       return policy ?? null;
     },
     async getSessionSpaceId(sessionId) {
@@ -342,12 +357,12 @@ export function createBatchDrizzlePermissionStore(db: DrizzlePermissionDb): Perm
       const sessionIds = input.sessions.map((session) => session.id);
       const sessionPolicyRows = await queryDb
         .select({
-          resourceId: accessPolicies.resourceId,
-          signedInUserRole: accessPolicies.signedInUserRole,
-          anonymousUserRole: accessPolicies.anonymousUserRole,
+          resourceId: sessionAccessPolicies.sessionId,
+          signedInUserRole: sessionAccessPolicies.signedInUserRole,
+          anonymousUserRole: sessionAccessPolicies.anonymousUserRole,
         })
-        .from(accessPolicies)
-        .where(and(eq(accessPolicies.resourceType, "session"), inArray(accessPolicies.resourceId, sessionIds)));
+        .from(sessionAccessPolicies)
+        .where(inArray(sessionAccessPolicies.sessionId, sessionIds));
       const sessionPolicyMap = new Map(sessionPolicyRows.map((policy) => [policy.resourceId, policy]));
 
       return input.sessions.filter((session) => {

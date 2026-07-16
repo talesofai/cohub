@@ -1,7 +1,7 @@
 import { Hono } from "hono";
-import { and, eq } from "drizzle-orm";
+import { eq } from "drizzle-orm";
 import { db } from "../../db/index.js";
-import { accessPolicies } from "@cohub/db";
+import { spaceAccessPolicies } from "@cohub/db";
 import { requireValidId, useAuth, authzDenied } from "../../lib/middleware.js";
 import { hasPermission } from "../../permissions.js";
 import type { AccessPolicyRole } from "@cohub/db";
@@ -19,11 +19,11 @@ router.get("/", async (c) => {
 
   const [policy] = await db
     .select({
-      signed_in_user: accessPolicies.signedInUserRole,
-      anonymous_user: accessPolicies.anonymousUserRole,
+      signed_in_user: spaceAccessPolicies.signedInUserRole,
+      anonymous_user: spaceAccessPolicies.anonymousUserRole,
     })
-    .from(accessPolicies)
-    .where(and(eq(accessPolicies.resourceType, "space"), eq(accessPolicies.resourceId, spaceId)))
+    .from(spaceAccessPolicies)
+    .where(eq(spaceAccessPolicies.spaceId, spaceId))
     .limit(1);
 
   return c.json({
@@ -58,17 +58,16 @@ router.patch("/", async (c) => {
   if (body.anonymous_user !== undefined) updateSet.anonymousUserRole = body.anonymous_user;
 
   const [policy] = await db
-    .insert(accessPolicies)
+    .insert(spaceAccessPolicies)
     .values({
-      resourceType: "space",
-      resourceId: spaceId,
+      spaceId,
       signedInUserRole: body.signed_in_user ?? null,
       anonymousUserRole: body.anonymous_user ?? null,
       createdBy: user.uuid,
       updatedBy: user.uuid,
     })
     .onConflictDoUpdate({
-      target: [accessPolicies.resourceType, accessPolicies.resourceId],
+      target: spaceAccessPolicies.spaceId,
       set: updateSet,
     })
     .returning();

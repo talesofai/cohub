@@ -14,6 +14,8 @@ Lineage `NO ACTION` constraints are `DEFERRABLE INITIALLY DEFERRED`. They still 
 
 External identity IDs, immutable billing audit context, analytics dimensions, polymorphic resource references, and outbox aggregate pointers intentionally do not reference `user_profiles` or a single domain table. `user_profiles` is a cache of the external identity authority, and audit/analytics identifiers must remain stable after operational data is removed.
 
+Migration `0052` removes the polymorphic access-policy table. Space and session policies now use their resource ID as the primary key in separate tables with cascading foreign keys. The migration stops with SQLSTATE `55000` before DDL when a legacy policy has an unsupported role, unsupported resource type, or orphan resource ID; it never guesses which resource an invalid row was meant to reference.
+
 ## Rollout
 
 After migration and application deployment, run the validator in dry-run mode. It attempts each unvalidated foreign-key and check constraint inside a transaction and rolls back, so it changes no rows or constraint state:
