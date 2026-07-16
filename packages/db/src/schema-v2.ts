@@ -15,6 +15,7 @@ import {
   check,
   doublePrecision,
   foreignKey,
+  type AnyPgColumn,
 } from "drizzle-orm/pg-core";
 import type { ContentBlock } from "@cohub/protocol/core";
 import type { TaskPayload } from "@cohub/protocol/task";
@@ -285,8 +286,14 @@ export const spaces = v2.table(
     slug: varchar("slug", { length: 80 }),
     description: text("description"),
     storageRepoName: varchar("storage_repo_name", { length: 255 }).notNull(),
-    baseCheckpointId: uuid("base_checkpoint_id"),
-    headCheckpointId: uuid("head_checkpoint_id"),
+    baseCheckpointId: uuid("base_checkpoint_id").references(
+      (): AnyPgColumn => checkpoints.id,
+      { onDelete: "set null" },
+    ),
+    headCheckpointId: uuid("head_checkpoint_id").references(
+      (): AnyPgColumn => checkpoints.id,
+      { onDelete: "set null" },
+    ),
     meta: jsonb("meta"),
     createdAt: timestamp("created_at", { withTimezone: true }).defaultNow(),
     updatedAt: timestamp("updated_at", { withTimezone: true }).defaultNow(),
@@ -328,6 +335,16 @@ export const spaceMods = v2.table(
     updatedAt: timestamp("updated_at", { withTimezone: true }).defaultNow(),
   },
   (table) => ({
+    spaceFk: foreignKey({
+      name: "v2_fk_space_mods_space",
+      columns: [table.spaceId],
+      foreignColumns: [spaces.id],
+    }).onDelete("cascade"),
+    modSpaceFk: foreignKey({
+      name: "v2_fk_space_mods_mod_space",
+      columns: [table.modSpaceId],
+      foreignColumns: [spaces.id],
+    }).onDelete("restrict"),
     spaceIdx: index("v2_idx_space_mods_space_id").on(table.spaceId),
     modSpaceIdx: index("v2_idx_space_mods_mod_space_id").on(table.modSpaceId),
     spaceModUniqueIdx: uniqueIndex("v2_uq_space_mods_space_mod").on(
@@ -362,6 +379,11 @@ export const spaceSandboxes = v2.table(
     updatedAt: timestamp("updated_at", { withTimezone: true }).defaultNow(),
   },
   (table) => ({
+    spaceFk: foreignKey({
+      name: "v2_fk_space_sandboxes_space",
+      columns: [table.spaceId],
+      foreignColumns: [spaces.id],
+    }).onDelete("cascade"),
     spaceIdx: uniqueIndex("v2_uq_space_sandboxes_space_id").on(table.spaceId),
     statusIdx: index("v2_idx_space_sandboxes_status").on(table.status),
     desiredImageIdx: index("v2_idx_space_sandboxes_desired_image").on(table.desiredImage),
@@ -392,6 +414,21 @@ export const checkpoints = v2.table(
     createdAt: timestamp("created_at", { withTimezone: true }).defaultNow(),
   },
   (table) => ({
+    spaceFk: foreignKey({
+      name: "v2_fk_checkpoints_space",
+      columns: [table.spaceId],
+      foreignColumns: [spaces.id],
+    }).onDelete("cascade"),
+    parentFk: foreignKey({
+      name: "v2_fk_checkpoints_parent",
+      columns: [table.parentCheckpointId],
+      foreignColumns: [table.id],
+    }).onDelete("no action"),
+    rootFk: foreignKey({
+      name: "v2_fk_checkpoints_root",
+      columns: [table.rootCheckpointId],
+      foreignColumns: [table.id],
+    }).onDelete("no action"),
     spaceIdx: index("v2_idx_checkpoints_space_id").on(table.spaceId),
     parentIdx: index("v2_idx_checkpoints_parent_id").on(table.parentCheckpointId),
     rootIdx: index("v2_idx_checkpoints_root_id").on(table.rootCheckpointId),
@@ -415,7 +452,10 @@ export const works = v2.table(
     targetType: varchar("target_type", { length: 20 }).notNull(),
     targetRef: text("target_ref").notNull(),
     assetKey: text("asset_key"),
-    currentVersionId: uuid("current_version_id"),
+    currentVersionId: uuid("current_version_id").references(
+      (): AnyPgColumn => workVersions.id,
+      { onDelete: "set null" },
+    ),
     latestVersion: integer("latest_version").notNull().default(0),
     publishedAt: timestamp("published_at", { withTimezone: true }),
     workScopes: jsonb("work_scopes").$type<string[]>().notNull().default(sql`'[]'::jsonb`),
@@ -425,12 +465,18 @@ export const works = v2.table(
     updatedAt: timestamp("updated_at", { withTimezone: true }).defaultNow(),
   },
   (table) => ({
+    spaceFk: foreignKey({
+      name: "v2_fk_works_space",
+      columns: [table.spaceId],
+      foreignColumns: [spaces.id],
+    }).onDelete("cascade"),
     spaceIdx: index("v2_idx_works_space_id").on(table.spaceId),
     userUuidIdx: index("v2_idx_works_user_uuid").on(table.userUuid),
     statusIdx: index("v2_idx_works_status").on(table.status),
     visibilityIdx: index("v2_idx_works_visibility").on(table.visibility),
     statusCheck: check("v2_chk_works_status", sql`${table.status} in ('published', 'disabled')`),
     visibilityCheck: check("v2_chk_works_visibility", sql`${table.visibility} in ('public', 'space')`),
+    idSpaceUniqueIdx: uniqueIndex("v2_uq_works_id_space").on(table.id, table.spaceId),
     spaceSlugUniqueIdx: uniqueIndex("v2_uq_works_space_slug").on(table.spaceId, table.slug),
     slugFormatCheck: check(
       "v2_chk_works_slug_format",
@@ -453,6 +499,11 @@ export const workVersions = v2.table(
     createdAt: timestamp("created_at", { withTimezone: true }).defaultNow(),
   },
   (table) => ({
+    workFk: foreignKey({
+      name: "v2_fk_work_versions_work",
+      columns: [table.workId],
+      foreignColumns: [works.id],
+    }).onDelete("cascade"),
     workIdx: index("v2_idx_work_versions_work_id").on(table.workId),
     workVersionUniqueIdx: uniqueIndex("v2_uq_work_versions_work_version").on(table.workId, table.version),
   }),
@@ -473,6 +524,11 @@ export const workViewerGrants = v2.table(
     updatedAt: timestamp("updated_at", { withTimezone: true }).defaultNow(),
   },
   (table) => ({
+    workSpaceFk: foreignKey({
+      name: "v2_fk_work_viewer_grants_work_space",
+      columns: [table.workId, table.spaceId],
+      foreignColumns: [works.id, works.spaceId],
+    }).onDelete("cascade"),
     workIdx: index("v2_idx_work_viewer_grants_work_id").on(table.workId),
     spaceIdx: index("v2_idx_work_viewer_grants_space_id").on(table.spaceId),
     viewerIdx: index("v2_idx_work_viewer_grants_viewer_user_uuid").on(table.viewerUserUuid),
@@ -489,6 +545,11 @@ export const spaceCommerceBusinesses = v2.table(
     updatedAt: timestamp("updated_at", { withTimezone: true }).defaultNow(),
   },
   (table) => ({
+    spaceFk: foreignKey({
+      name: "v2_fk_space_commerce_businesses_space",
+      columns: [table.spaceId],
+      foreignColumns: [spaces.id],
+    }).onDelete("cascade"),
     businessKeyUniqueIdx: uniqueIndex("v2_uq_space_commerce_businesses_business_key").on(table.billingBusinessKey),
   }),
 );
@@ -585,6 +646,21 @@ export const canvasCheckpointSnapshots = v2.table(
     createdAt: timestamp("created_at", { withTimezone: true }).defaultNow(),
   },
   (table) => ({
+    checkpointFk: foreignKey({
+      name: "v2_fk_canvas_checkpoint_snapshots_checkpoint",
+      columns: [table.checkpointId],
+      foreignColumns: [checkpoints.id],
+    }).onDelete("cascade"),
+    sourceDocumentFk: foreignKey({
+      name: "v2_fk_canvas_checkpoint_snapshots_source_document",
+      columns: [table.sourceDocumentId],
+      foreignColumns: [canvasDocuments.id],
+    }).onDelete("cascade"),
+    sourceSpaceFk: foreignKey({
+      name: "v2_fk_canvas_checkpoint_snapshots_source_space",
+      columns: [table.sourceSpaceId],
+      foreignColumns: [spaces.id],
+    }).onDelete("cascade"),
     checkpointPathUniqueIdx: uniqueIndex("v2_uq_canvas_checkpoint_snapshots_path").on(table.checkpointId, table.sourceFilePath),
     checkpointIdx: index("v2_idx_canvas_checkpoint_snapshots_checkpoint_id").on(table.checkpointId),
   }),
@@ -607,6 +683,16 @@ export const proposals = v2.table(
     updatedAt: timestamp("updated_at", { withTimezone: true }).defaultNow(),
   },
   (table) => ({
+    sourceCheckpointFk: foreignKey({
+      name: "v2_fk_proposals_source_checkpoint",
+      columns: [table.sourceCheckpointId],
+      foreignColumns: [checkpoints.id],
+    }).onDelete("no action"),
+    targetSpaceFk: foreignKey({
+      name: "v2_fk_proposals_target_space",
+      columns: [table.targetSpaceId],
+      foreignColumns: [spaces.id],
+    }).onDelete("cascade"),
     targetSpaceIdx: index("v2_idx_proposals_target_space_id").on(table.targetSpaceId),
     sourceCheckpointIdx: index("v2_idx_proposals_source_checkpoint_id").on(table.sourceCheckpointId),
     statusIdx: index("v2_idx_proposals_status").on(table.status),
@@ -623,7 +709,18 @@ export const spaceChannels = v2.table(
     createdAt: timestamp("created_at", { withTimezone: true }).defaultNow(),
   },
   (table) => ({
+    spaceFk: foreignKey({
+      name: "v2_fk_space_channels_space",
+      columns: [table.spaceId],
+      foreignColumns: [spaces.id],
+    }).onDelete("cascade"),
+    channelFk: foreignKey({
+      name: "v2_fk_space_channels_channel",
+      columns: [table.channelId],
+      foreignColumns: [userChannels.id],
+    }).onDelete("restrict"),
     spaceIdx: index("v2_idx_space_channels_space").on(table.spaceId),
+    idSpaceUniqueIdx: uniqueIndex("v2_uq_space_channels_id_space").on(table.id, table.spaceId),
     channelIdx: uniqueIndex("v2_uq_space_channels_channel").on(table.channelId),
   }),
 );
@@ -641,12 +738,21 @@ export const spaceSessions = v2.table(
     meta: jsonb("meta"),
     latestMessageText: text("latest_message_text"),
     lastMessageAt: timestamp("last_message_at", { withTimezone: true }),
-    lastMessageId: uuid("last_message_id"),
+    lastMessageId: uuid("last_message_id").references(
+      (): AnyPgColumn => sessionMessages.id,
+      { onDelete: "set null" },
+    ),
     createdAt: timestamp("created_at", { withTimezone: true }).defaultNow(),
     updatedAt: timestamp("updated_at", { withTimezone: true }).defaultNow(),
   },
   (table) => ({
+    spaceFk: foreignKey({
+      name: "v2_fk_space_sessions_space",
+      columns: [table.spaceId],
+      foreignColumns: [spaces.id],
+    }).onDelete("cascade"),
     spaceIdx: index("v2_idx_space_sessions_space_id").on(table.spaceId),
+    idSpaceUniqueIdx: uniqueIndex("v2_uq_space_sessions_id_space").on(table.id, table.spaceId),
     userUuidIdx: index("v2_idx_space_sessions_user_uuid").on(table.userUuid),
     lastMessageIdx: index("v2_idx_space_sessions_last_message_id").on(table.lastMessageId),
     lastMessageAtIdx: index("v2_idx_space_sessions_last_message_at").on(table.lastMessageAt),
@@ -681,7 +787,10 @@ export const sessionForks = v2.table(
     rootSessionId: uuid("root_session_id").notNull(),
     depth: integer("depth").notNull(),
     anchorSourceSessionId: uuid("anchor_source_session_id").notNull(),
-    anchorTurnId: uuid("anchor_turn_id").notNull(),
+    anchorTurnId: uuid("anchor_turn_id").notNull().references(
+      (): AnyPgColumn => sessionTurns.id,
+      { onDelete: "no action" },
+    ),
     anchorSequence: integer("anchor_sequence").notNull(),
     ancestorSessionIds: uuid("ancestor_session_ids").array().notNull(),
     sessionPath: uuid("session_path").array().notNull(),
@@ -689,6 +798,31 @@ export const sessionForks = v2.table(
     createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
   },
   (table) => ({
+    spaceFk: foreignKey({
+      name: "v2_fk_session_forks_space",
+      columns: [table.spaceId],
+      foreignColumns: [spaces.id],
+    }).onDelete("cascade"),
+    parentSessionFk: foreignKey({
+      name: "v2_fk_session_forks_parent_session",
+      columns: [table.parentSessionId, table.spaceId],
+      foreignColumns: [spaceSessions.id, spaceSessions.spaceId],
+    }).onDelete("no action"),
+    childSessionFk: foreignKey({
+      name: "v2_fk_session_forks_child_session",
+      columns: [table.childSessionId, table.spaceId],
+      foreignColumns: [spaceSessions.id, spaceSessions.spaceId],
+    }).onDelete("cascade"),
+    rootSessionFk: foreignKey({
+      name: "v2_fk_session_forks_root_session",
+      columns: [table.rootSessionId, table.spaceId],
+      foreignColumns: [spaceSessions.id, spaceSessions.spaceId],
+    }).onDelete("no action"),
+    anchorSourceSessionFk: foreignKey({
+      name: "v2_fk_session_forks_anchor_source_session",
+      columns: [table.anchorSourceSessionId, table.spaceId],
+      foreignColumns: [spaceSessions.id, spaceSessions.spaceId],
+    }).onDelete("no action"),
     childUniqueIdx: uniqueIndex("v2_uq_session_forks_child").on(table.childSessionId),
     parentIdx: index("v2_idx_session_forks_parent").on(table.parentSessionId),
     rootDepthIdx: index("v2_idx_session_forks_root_depth").on(table.rootSessionId, table.depth, table.createdAt),
@@ -708,6 +842,16 @@ export const sessionTurnSegments = v2.table(
     createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
   },
   (table) => ({
+    sessionFk: foreignKey({
+      name: "v2_fk_session_turn_segments_session",
+      columns: [table.sessionId],
+      foreignColumns: [spaceSessions.id],
+    }).onDelete("cascade"),
+    sourceSessionFk: foreignKey({
+      name: "v2_fk_session_turn_segments_source_session",
+      columns: [table.sourceSessionId],
+      foreignColumns: [spaceSessions.id],
+    }).onDelete("no action"),
     sessionOrdinalUniqueIdx: uniqueIndex("v2_uq_session_turn_segments_session_ordinal").on(table.sessionId, table.ordinal),
     sessionIdx: index("v2_idx_session_turn_segments_session").on(table.sessionId, table.ordinal),
     sourceIdx: index("v2_idx_session_turn_segments_source").on(table.sourceSessionId),
@@ -731,6 +875,16 @@ export const spaceSessionBindings = v2.table(
     lastMessageAt: timestamp("last_message_at", { withTimezone: true }),
   },
   (table) => ({
+    sessionSpaceFk: foreignKey({
+      name: "v2_fk_space_session_bindings_session_space",
+      columns: [table.spaceSessionId, table.spaceId],
+      foreignColumns: [spaceSessions.id, spaceSessions.spaceId],
+    }).onDelete("cascade"),
+    channelSpaceFk: foreignKey({
+      name: "v2_fk_space_session_bindings_channel_space",
+      columns: [table.spaceChannelId, table.spaceId],
+      foreignColumns: [spaceChannels.id, spaceChannels.spaceId],
+    }).onDelete("cascade"),
     spaceIdx: index("v2_idx_space_session_bindings_space").on(table.spaceId),
     sessionIdx: index("v2_idx_space_session_bindings_session").on(table.spaceSessionId),
     channelIdx: index("v2_idx_space_session_bindings_channel").on(table.spaceChannelId),
@@ -751,7 +905,10 @@ export const providerMessageRefs = v2.table(
     spaceId: uuid("space_id").notNull(),
     spaceSessionId: uuid("space_session_id").notNull(),
     spaceChannelId: uuid("space_channel_id"),
-    sessionMessageId: uuid("session_message_id"),
+    sessionMessageId: uuid("session_message_id").references(
+      (): AnyPgColumn => sessionMessages.id,
+      { onDelete: "set null" },
+    ),
     direction: varchar("direction", { length: 20 }).notNull(),
     externalConversationId: varchar("external_conversation_id", { length: 255 }).notNull(),
     externalMessageId: varchar("external_message_id", { length: 255 }).notNull(),
@@ -764,6 +921,16 @@ export const providerMessageRefs = v2.table(
     updatedAt: timestamp("updated_at", { withTimezone: true }).defaultNow(),
   },
   (table) => ({
+    sessionSpaceFk: foreignKey({
+      name: "v2_fk_provider_message_refs_session_space",
+      columns: [table.spaceSessionId, table.spaceId],
+      foreignColumns: [spaceSessions.id, spaceSessions.spaceId],
+    }).onDelete("cascade"),
+    spaceChannelFk: foreignKey({
+      name: "v2_fk_provider_message_refs_space_channel",
+      columns: [table.spaceChannelId],
+      foreignColumns: [spaceChannels.id],
+    }).onDelete("set null"),
     providerConversationIdx: index("v2_idx_provider_message_refs_provider_conversation").on(
       table.provider,
       table.externalConversationId,
@@ -817,6 +984,11 @@ export const sessionTurns = v2.table(
     updatedAt: timestamp("updated_at", { withTimezone: true }).defaultNow(),
   },
   (table) => ({
+    sessionFk: foreignKey({
+      name: "v2_fk_session_turns_session",
+      columns: [table.sessionId],
+      foreignColumns: [spaceSessions.id],
+    }).onDelete("cascade"),
     sessionIdx: index("v2_idx_session_turns_session_id").on(table.sessionId),
     sessionSequenceUniqueIdx: uniqueIndex("v2_uq_session_turns_session_sequence").on(
       table.sessionId,
@@ -855,6 +1027,11 @@ export const sessionMessages = v2.table(
     createdAt: timestamp("created_at", { withTimezone: true }).defaultNow(),
   },
   (table) => ({
+    sessionFk: foreignKey({
+      name: "v2_fk_session_messages_session",
+      columns: [table.sessionId],
+      foreignColumns: [spaceSessions.id],
+    }).onDelete("cascade"),
     sessionIdx: index("v2_idx_session_messages_session_id").on(table.sessionId),
     sessionSequenceUniqueIdx: uniqueIndex("v2_uq_session_messages_session_sequence").on(
       table.sessionId,
@@ -1023,6 +1200,11 @@ export const referrals = v2.table(
     updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
   },
   (table) => ({
+    referralCodeFk: foreignKey({
+      name: "v2_fk_referrals_referral_code",
+      columns: [table.referralCodeId],
+      foreignColumns: [referralCodes.id],
+    }).onDelete("restrict"),
     inviteeUniqueIdx: uniqueIndex("v2_uq_referrals_invitee").on(table.inviteeUserId),
     inviterIdx: index("v2_idx_referrals_inviter").on(table.inviterUserId),
     codeIdx: index("v2_idx_referrals_code").on(table.referralCodeId),
@@ -1045,6 +1227,11 @@ export const spaceMembers = v2.table(
     updatedAt: timestamp("updated_at", { withTimezone: true }).defaultNow(),
   },
   (table) => ({
+    spaceFk: foreignKey({
+      name: "v2_fk_space_members_space",
+      columns: [table.spaceId],
+      foreignColumns: [spaces.id],
+    }).onDelete("cascade"),
     uniqueSpaceUserIdx: uniqueIndex("v2_uq_space_members_space_user").on(
       table.spaceId,
       table.userId,
@@ -1093,6 +1280,11 @@ export const spaceMarks = v2.table(
     updatedAt: timestamp("updated_at", { withTimezone: true }).defaultNow(),
   },
   (table) => ({
+    spaceFk: foreignKey({
+      name: "v2_fk_space_marks_space",
+      columns: [table.spaceId],
+      foreignColumns: [spaces.id],
+    }).onDelete("cascade"),
     uniqueResourceMarkIdx: uniqueIndex("v2_uq_space_marks_resource").on(
       table.spaceId,
       table.kind,
@@ -1130,6 +1322,16 @@ export const labels = v2.table(
     updatedAt: timestamp("updated_at", { withTimezone: true }).defaultNow(),
   },
   (table) => ({
+    parentFk: foreignKey({
+      name: "v2_fk_labels_parent",
+      columns: [table.parentId],
+      foreignColumns: [table.id],
+    }).onDelete("restrict"),
+    idScopeUniqueIdx: uniqueIndex("v2_uq_labels_id_scope").on(
+      table.id,
+      table.scopeType,
+      table.scopeId,
+    ),
     scopeRankIdx: index("v2_idx_labels_scope_rank").on(
       table.scopeType,
       table.scopeId,
@@ -1172,6 +1374,11 @@ export const labelAssignments = v2.table(
     updatedAt: timestamp("updated_at", { withTimezone: true }).defaultNow(),
   },
   (table) => ({
+    labelScopeFk: foreignKey({
+      name: "v2_fk_label_assignments_label_scope",
+      columns: [table.labelId, table.scopeType, table.scopeId],
+      foreignColumns: [labels.id, labels.scopeType, labels.scopeId],
+    }).onDelete("cascade"),
     uniqueLabelResourceIdx: uniqueIndex("v2_uq_label_assignments_label_resource").on(
       table.labelId,
       table.resourceType,
@@ -1224,6 +1431,25 @@ export const cronJobs = v2.table(
     updatedAt: timestamp("updated_at", { withTimezone: true }).defaultNow(),
   },
   (table) => ({
+    spaceFk: foreignKey({
+      name: "v2_fk_cron_jobs_space",
+      columns: [table.spaceId],
+      foreignColumns: [spaces.id],
+    }).onDelete("restrict"),
+    sessionFk: foreignKey({
+      name: "v2_fk_cron_jobs_session",
+      columns: [table.sessionId],
+      foreignColumns: [spaceSessions.id],
+    }).onDelete("restrict"),
+    sessionSpaceFk: foreignKey({
+      name: "v2_fk_cron_jobs_session_space",
+      columns: [table.sessionId, table.spaceId],
+      foreignColumns: [spaceSessions.id, spaceSessions.spaceId],
+    }),
+    sessionContextCheck: check(
+      "v2_chk_cron_jobs_session_context",
+      sql`${table.sessionId} IS NULL OR ${table.spaceId} IS NOT NULL`,
+    ),
     userIdx: index("v2_idx_cron_jobs_user_uuid").on(table.userUuid),
     spaceIdx: index("v2_idx_cron_jobs_space_id").on(table.spaceId),
     enabledIdx: index("v2_idx_cron_jobs_enabled").on(table.enabled),
@@ -1254,6 +1480,26 @@ export const taskRuns = v2.table(
     updatedAt: timestamp("updated_at", { withTimezone: true }).defaultNow(),
   },
   (table) => ({
+    cronJobFk: foreignKey({
+      name: "v2_fk_task_runs_cron_job",
+      columns: [table.cronJobId],
+      foreignColumns: [cronJobs.id],
+    }).onDelete("set null"),
+    spaceFk: foreignKey({
+      name: "v2_fk_task_runs_space",
+      columns: [table.spaceId],
+      foreignColumns: [spaces.id],
+    }).onDelete("set null"),
+    sessionFk: foreignKey({
+      name: "v2_fk_task_runs_session",
+      columns: [table.sessionId],
+      foreignColumns: [spaceSessions.id],
+    }).onDelete("set null"),
+    turnFk: foreignKey({
+      name: "v2_fk_task_runs_turn",
+      columns: [table.turnId],
+      foreignColumns: [sessionTurns.id],
+    }).onDelete("set null"),
     jobIdUniqueIdx: uniqueIndex("v2_uq_task_runs_job_id").on(table.jobId),
     cronJobIdx: index("v2_idx_task_runs_cron_job_id").on(table.cronJobId),
     spaceIdx: index("v2_idx_task_runs_space_id").on(table.spaceId),
@@ -1327,6 +1573,21 @@ export const resourceReferences = v2.table(
     updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
   },
   (table) => ({
+    spaceFk: foreignKey({
+      name: "v2_fk_resource_references_space",
+      columns: [table.spaceId],
+      foreignColumns: [spaces.id],
+    }).onDelete("cascade"),
+    sessionSpaceFk: foreignKey({
+      name: "v2_fk_resource_references_session",
+      columns: [table.sessionId, table.spaceId],
+      foreignColumns: [spaceSessions.id, spaceSessions.spaceId],
+    }).onDelete("cascade"),
+    sourceTurnFk: foreignKey({
+      name: "v2_fk_resource_references_source_turn",
+      columns: [table.sourceTurnId],
+      foreignColumns: [sessionTurns.id],
+    }).onDelete("cascade"),
     // Identity of a reference. `nullsNotDistinct` makes null turn ids compare
     // equal so structural references (fork/mod, turn-less) also get a stable
     // uniqueness key, while a plain-column target keeps upserts simple.

@@ -15,6 +15,10 @@ test("session message sequence allocation is atomic and idempotency-safe", {
   const spaceId = randomUUID();
   try {
     await sql`
+      insert into v2.spaces (id, user_uuid, name, storage_repo_name)
+      values (${spaceId}, ${randomUUID()}, ${`space-${spaceId}`}, ${`repo-${spaceId}`})
+    `;
+    await sql`
       insert into v2.space_sessions (id, space_id, title)
       values (${sessionId}, ${spaceId}, 'sequence test')
     `;
@@ -58,8 +62,11 @@ test("session message sequence allocation is atomic and idempotency-safe", {
     const [next] = await append("after-duplicates");
     assert.equal(next?.sequence, 34);
   } finally {
-    await sql`delete from v2.session_messages where session_id = ${sessionId}`;
-    await sql`delete from v2.space_sessions where id = ${sessionId}`;
-    await sql.end();
+    try {
+      await sql`delete from v2.space_sessions where id = ${sessionId}`;
+      await sql`delete from v2.spaces where id = ${spaceId}`;
+    } finally {
+      await sql.end();
+    }
   }
 });
