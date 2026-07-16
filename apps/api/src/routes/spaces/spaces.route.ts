@@ -70,6 +70,7 @@ import { parseChannelConfigPatch, mergeChannelConfig, validateChannelModelConfig
 import { redisCommandClient } from "../../redis.js";
 import { featureGateResponse } from "../../lib/feature-gate.js";
 import { billingBlockedResponse } from "../../lib/billing-blocked.js";
+import { sanitizeSpaceMeta } from "../../space-response-sanitize.js";
 
 
 const logger = createLogger({ serviceName: "cohub-api" });
@@ -1011,55 +1012,6 @@ async function serializeSpaceForResponse(space: typeof spaces.$inferSelect, user
     access,
     ownerProfile,
   };
-}
-
-function sanitizeRepoUrl(url: string): string {
-  try {
-    const parsed = new URL(url);
-    parsed.username = "";
-    parsed.password = "";
-    return parsed.toString();
-  } catch {
-    return url;
-  }
-}
-
-function sanitizeSpaceMeta(meta: unknown): Record<string, unknown> | null {
-  if (!meta || typeof meta !== "object" || Array.isArray(meta)) {
-    return meta as null;
-  }
-  const metaObj = meta as Record<string, unknown>;
-  const bootstrap = metaObj.bootstrap;
-  if (
-    !bootstrap ||
-    typeof bootstrap !== "object" ||
-    Array.isArray(bootstrap)
-  ) {
-    return metaObj;
-  }
-  const bootstrapObj = bootstrap as Record<string, unknown>;
-  const source = bootstrapObj.source;
-  if (
-    !source ||
-    typeof source !== "object" ||
-    Array.isArray(source)
-  ) {
-    return metaObj;
-  }
-  const sourceObj = source as Record<string, unknown>;
-  if (sourceObj.type === "git_repo" && typeof sourceObj.repoUrl === "string") {
-    return {
-      ...metaObj,
-      bootstrap: {
-        ...bootstrapObj,
-        source: {
-          ...sourceObj,
-          repoUrl: sanitizeRepoUrl(sourceObj.repoUrl as string),
-        },
-      },
-    };
-  }
-  return metaObj;
 }
 
 router.get("/:id", async (c) => {

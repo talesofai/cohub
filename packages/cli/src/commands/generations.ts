@@ -5,6 +5,7 @@ import {
   GenerationPolicyError,
   assertGenerationRequestAllowedByPolicy,
   parseGenerationPolicyFromEnv,
+  type CohubHttpClient,
   type GenerationContentBlock,
 } from "@neta-art/cohub";
 import { createClient } from "../client.js";
@@ -87,7 +88,13 @@ async function parseMediaInput(type: MediaInputType, rawValue: string): Promise<
   return { value, role };
 }
 
-async function contentFromPathOrUrl(type: MediaInputType, rawValue: string): Promise<GenerationContentBlock> {
+async function contentFromPathOrUrl(
+  client: CohubHttpClient,
+  spaceId: string,
+  sessionId: string | undefined,
+  type: MediaInputType,
+  rawValue: string,
+): Promise<GenerationContentBlock> {
   const { value, role } = await parseMediaInput(type, rawValue);
   const meta = role ? { role } : undefined;
   if (/^https?:\/\//.test(value)) {
@@ -95,9 +102,16 @@ async function contentFromPathOrUrl(type: MediaInputType, rawValue: string): Pro
   }
   const data = await readFile(value);
   const mediaType = mimeByExt[extname(value).toLowerCase()] ?? "application/octet-stream";
+  const asset = await client.publicAssets.uploadChatAttachment({
+    spaceId,
+    sessionId,
+    file: new Blob([new Uint8Array(data)], { type: mediaType }),
+    mimeType: mediaType,
+    filename: basename(value),
+  });
   return {
     type,
-    source: { type: "base64", mediaType, data: data.toString("base64") },
+    source: { type: "url", url: asset.publicUrl },
     ...(meta ? { meta } : {}),
   } as GenerationContentBlock;
 }
@@ -275,7 +289,7 @@ export function registerGenerations(program: Command): void {
   program
     .command("generate")
     .description("Generate multimodal outputs")
-    .argument("<prompt>", "Prompt text")
+    .argument("[prompt]", "Prompt text")
     .requiredOption("-m, --model <model>", "Multimodal model ID from `cohub models ls --model-type multimodal`")
     .option(
       "--image <path-or-url>",
@@ -302,12 +316,13 @@ export function registerGenerations(program: Command): void {
 Examples:
   cohub models ls --model-type multimodal
   cohub -s <space-id> generate "A calm lake at sunrise" -m <model> -o lake.png
+  cohub -s <space-id> generate -m birefnet-general --image portrait.png -o cutout.png
   COHUB_SPACE_ID=<space-id> cohub generate "Restyle this image" -m <model> --image input.png
   cohub -s <space-id> generate "Smooth transition" -m seedance-2-0-fast --image first_frame=https://example.com/first.png --image last_frame=https://example.com/last.png
   cohub -s <space-id> generate "Use these references" -m seedance-2-0-fast --image reference_image=https://example.com/a.png --image reference_image=https://example.com/b.png
   cohub -s <space-id> generate "A calm lake" -m <model> --async
 `)
-    .action(async (prompt: string, opts: {
+    .action(async (prompt: string | undefined, opts: {
       model: string;
       image: string[];
       video: string[];
@@ -322,10 +337,26 @@ Examples:
     }) => {
       try {
         const spaceId = resolveSpace(program);
-        const content: GenerationContentBlock[] = [{ type: "text", text: prompt }];
-        content.push(...await Promise.all(opts.image.map((value) => contentFromPathOrUrl("image", value))));
-        content.push(...await Promise.all(opts.video.map((value) => contentFromPathOrUrl("video", value))));
-        content.push(...await Promise.all(opts.audio.map((value) => contentFromPathOrUrl("audio", value))));
+        const sessionId = envValue("COHUB_SESSION_ID");
+        const client = createClient();
+        const content: GenerationContentBlock[] = [];
+        if (prompt?.trim()) content.push({ type: "text", text: prompt });
+        content.push(
+          ...await Promise.all(
+            opts.image.map((value) => contentFromPathOrUrl(client, spaceId, sessionId, "image", value)),
+          ),
+        );
+        content.push(
+          ...await Promise.all(
+            opts.video.map((value) => contentFromPathOrUrl(client, spaceId, sessionId, "video", value)),
+          ),
+        );
+        content.push(
+          ...await Promise.all(
+            opts.audio.map((value) => contentFromPathOrUrl(client, spaceId, sessionId, "audio", value)),
+          ),
+        );
+        if (content.length === 0) return error("Missing generation input", "Provide a prompt or media input.");
         validateMediaRoleModes(content);
 
         const parameters = parseParams(opts.param, opts.parameters);
@@ -341,10 +372,9 @@ Examples:
         }
 
         const meta = mergeCohubMeta(parseMeta(opts.meta));
-        const client = createClient();
         const created = await client.generations.create({
           spaceId,
-          sessionId: envValue("COHUB_SESSION_ID"),
+          sessionId,
           turnId: envValue("COHUB_TURN_ID"),
           model: opts.model,
           content,

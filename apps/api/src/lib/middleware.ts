@@ -17,6 +17,7 @@ export type RequestPrincipal =
 
 import { config } from "../config.js";
 import { getProfilesByUuids } from "../user-profiles.js";
+import { sanitizeSpaceMeta } from "../space-response-sanitize.js";
 import { getSpaceSandboxBySpaceId } from "../space-sandboxes.js";
 import { spaceSandboxes } from "@cohub/db";
 import { db } from "../db/index.js";
@@ -184,6 +185,7 @@ export const buildSpaceListItem = async (space: typeof spaces.$inferSelect) => {
   const sandbox = await getSpaceSandboxBySpaceId(space.id);
   return {
     ...space,
+    meta: sanitizeSpaceMeta(space.meta),
     publicProfile: getSpacePublicProfile(space),
     sandboxStatus: sandbox?.status ?? null,
   };
@@ -206,6 +208,7 @@ export const buildSpaceListItems = async (spaceList: typeof spaces.$inferSelect[
 
   return spaceList.map((space) => ({
     ...space,
+    meta: sanitizeSpaceMeta(space.meta),
     publicProfile: getSpacePublicProfile(space),
     sandboxStatus: statusBySpaceId.get(space.id) ?? null,
     ownerProfile: profileByUserUuid.get(space.userUuid) ?? null,
