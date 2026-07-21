@@ -2,6 +2,7 @@ export const MODELS_REDIS_KEY_VERSION = "v2";
 export const PLATFORM_MODELS_REDIS_KEY = `configs:models:${MODELS_REDIS_KEY_VERSION}:platform`;
 export const USER_MODELS_REDIS_KEY_PREFIX = `configs:models:${MODELS_REDIS_KEY_VERSION}:user`;
 export const MODELS_CACHE_TTL_SEC = 24 * 60 * 60;
+export const GPT_RESPONSES_USER_AGENT = "codex_cli_rs/0.144.0";
 
 const SAFE_REDIS_KEY_SEGMENT_REGEX = /^[0-9a-zA-Z_-]+$/;
 
@@ -54,6 +55,25 @@ export type CachedModelsConfig = {
   sourceCheckpointId?: string | null;
   content: ModelsConfig | null;
 };
+
+export function resolveModelRequestHeaders(
+  model: Pick<ModelDef, "api" | "id"> | undefined,
+  configuredHeaders: Record<string, string> | undefined,
+): Record<string, string> | undefined {
+  if (model?.api !== "openai-responses" || !model.id.toLowerCase().startsWith("gpt-")) {
+    return configuredHeaders;
+  }
+
+  const hasConfiguredUserAgent = Object.keys(configuredHeaders ?? {}).some(
+    (name) => name.toLowerCase() === "user-agent",
+  );
+  if (hasConfiguredUserAgent) return configuredHeaders;
+
+  return {
+    ...(configuredHeaders ?? {}),
+    "User-Agent": GPT_RESPONSES_USER_AGENT,
+  };
+}
 
 export type ModelCatalogEntry = {
   provider: string;
