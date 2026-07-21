@@ -1,5 +1,11 @@
 # @neta-art/cohub
 
+## 2.14.1
+
+### Patch Changes
+
+- dad311e: Recover WebSocket sessions from a transient authentication failure by forcing one access-token refresh, reconnecting once, and restoring room subscriptions without entering an infinite retry loop.
+
 ## 2.14.0
 
 ### Minor Changes
