@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import {
+  CODEX_ORIGINATOR,
   GPT_RESPONSES_USER_AGENT,
   resolveModelRequestHeaders,
 } from "./models.js";
@@ -14,12 +15,16 @@ test("adds the Codex CLI user agent to GPT Responses requests", () => {
     {
       "X-Trace-Id": "trace-1",
       "User-Agent": GPT_RESPONSES_USER_AGENT,
+      Originator: CODEX_ORIGINATOR,
     },
   );
 });
 
-test("preserves an explicitly configured user agent", () => {
-  const configured = { "user-agent": "custom-client/1.0" };
+test("preserves explicitly configured client identity headers", () => {
+  const configured = {
+    "user-agent": "custom-client/1.0",
+    originator: "custom-originator",
+  };
   assert.equal(
     resolveModelRequestHeaders(
       { api: "openai-responses", id: "gpt-5.4" },

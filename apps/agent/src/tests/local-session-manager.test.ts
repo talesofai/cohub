@@ -10,6 +10,8 @@ try {
   const sessionFile = join(sessionsDir, "session.jsonl");
   const manager = SessionManager.create(root, sessionsDir);
   manager.newSession({ id: "session" });
+  assert.equal(manager.getSessionId(), "session");
+  assert.equal(manager.getContextWindowId(), "session:0");
   manager.setSessionFile(sessionFile);
   manager.appendMessage({
     role: "user",
@@ -31,7 +33,7 @@ try {
 
   const branchedSessionFile = join(sessionsDir, "branched.jsonl");
   await writeFile(branchedSessionFile, [
-    JSON.stringify({ type: "session", version: 3, id: "branched", timestamp: new Date().toISOString(), cwd: root }),
+    JSON.stringify({ type: "session", version: 3, id: "branched", timestamp: new Date().toISOString(), cwd: root, compactionArchive: "archives/branched.3.jsonl" }),
     JSON.stringify({ type: "message", id: "root", parentId: null, timestamp: new Date().toISOString(), message: { role: "user", content: [{ type: "text", text: "root" }], timestamp: Date.now(), meta: { messageId: "root-message" } } }),
     JSON.stringify({ type: "message", id: "side", parentId: "root", timestamp: new Date().toISOString(), message: { role: "user", content: [{ type: "text", text: "side" }], timestamp: Date.now(), meta: { messageId: "side-message" } } }),
     JSON.stringify({ type: "message", id: "main", parentId: "root", timestamp: new Date().toISOString(), message: { role: "assistant", content: [{ type: "text", text: "main" }], timestamp: Date.now() } }),
@@ -39,6 +41,7 @@ try {
   ].join("\n"));
 
   const branched = await SessionManager.open(branchedSessionFile, sessionsDir);
+  assert.equal(branched.getContextWindowId(), "branched:3");
   assert.equal(branched.hasUserMessage("root-message"), true);
   assert.equal(branched.hasUserMessage("side-message"), false);
 } finally {

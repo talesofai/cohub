@@ -3,7 +3,7 @@ import { mkdtemp, rm } from "node:fs/promises";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import type { AgentMessage, AgentTool } from "@earendil-works/pi-agent-core";
-import { createAssistantMessageEventStream, type AssistantMessageEventStream } from "@earendil-works/pi-ai";
+import { createAssistantMessageEventStream, type AssistantMessageEventStream, type SimpleStreamOptions } from "@earendil-works/pi-ai";
 import type { Context, Model, Api, AssistantMessage } from "@earendil-works/pi-ai";
 import type { ModelsConfig } from "@cohub/infra/config-runtime/models";
 import { CohubModelRegistry } from "../runtime/model-registry.js";
@@ -45,11 +45,19 @@ async function withSession<T>(fn: (sessionManager: SessionManager) => Promise<T>
  * Build a minimal mock streamFn that records the number of messages sent to
  * each LLM call and returns a deterministic assistant message.
  */
-function createMockStreamFn(recorded: { messageCounts: number[] }) {
+function createMockStreamFn(recorded: {
+  messageCounts: number[];
+  sessionIds: Array<string | undefined>;
+}) {
   let callIndex = 0;
-  return (_model: Model<Api>, ctx: Context): AssistantMessageEventStream => {
+  return (
+    _model: Model<Api>,
+    ctx: Context,
+    options?: SimpleStreamOptions,
+  ): AssistantMessageEventStream => {
     const index = callIndex++;
     recorded.messageCounts[index] = ctx.messages.length;
+    recorded.sessionIds[index] = options?.sessionId;
 
     const stream = createAssistantMessageEventStream();
     const assistantMessage: AssistantMessage = {
@@ -96,9 +104,13 @@ await withSession(async (sessionManager) => {
     sessionManager,
     tools: [] as AgentTool[],
   });
+  assert.equal(sessionManager.getContextWindowId(), "test-session:0");
 
   // Replace the streamFn with a mock that records message counts.
-  const recorded = { messageCounts: [] as number[] };
+  const recorded = {
+    messageCounts: [] as number[],
+    sessionIds: [] as Array<string | undefined>,
+  };
   (session.agent as unknown as { streamFn: unknown }).streamFn = createMockStreamFn(recorded);
 
   let transformCalls = 0;
@@ -126,6 +138,7 @@ await withSession(async (sessionManager) => {
 
     assert.equal(transformCalls, 2, "transformContext should fire again for the second prompt");
     assert.equal(recorded.messageCounts.length, 2, "exactly two LLM calls expected");
+    assert.deepEqual(recorded.sessionIds, ["test-session", "test-session"]);
 
     // The mock streamFn always returns stopReason "stop", so agent.state.messages
     // should include the two new user messages plus mock assistant responses.
