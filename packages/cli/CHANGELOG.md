@@ -1,5 +1,19 @@
 # @neta-art/cohub-cli
 
+## 2.6.0
+
+### Minor Changes
+
+- f72fa82: Expose structured canvas transaction conflicts and richer published Work metadata through the Cohub SDK and CLI dependency bundle.
+
+  - Export `CanvasTransactionError` with status, code, and `isVersionConflict` so clients can rebase and retry rejected canvas transactions.
+  - Add `lang` and `themeColor` to published Work metadata types.
+
+### Patch Changes
+
+- Updated dependencies [f72fa82]
+  - @neta-art/cohub@2.14.0
+
 ## 2.5.1
 
 ### Patch Changes
