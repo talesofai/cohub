@@ -10,10 +10,8 @@ try {
   const sessionFile = join(sessionsDir, "session.jsonl");
   const manager = SessionManager.create(root, sessionsDir);
   manager.newSession({ id: "session" });
-  assert.equal(manager.getSessionId(), "session");
-  assert.equal(manager.getContextWindowId(), "session:0");
   manager.setSessionFile(sessionFile);
-  const rootEntryId = manager.appendMessage({
+  manager.appendMessage({
     role: "user",
     content: [{ type: "text", text: "hello" }],
     timestamp: Date.now(),
@@ -31,41 +29,9 @@ try {
   assert.equal(reopened.hasUserMessage("user-message-1"), true);
   assert.equal(reopened.buildSessionContext().messages.length, 1);
 
-  const firstCompactionId = manager.appendCompaction("first summary", rootEntryId, 100);
-  const firstArchive = await manager.archiveAndRewrite(firstCompactionId, rootEntryId);
-  assert.match(firstArchive ?? "", /\.1\.jsonl$/);
-  assert.equal(manager.getContextWindowId(), "session:1");
-  const firstArchiveContent = await readFile(join(sessionsDir, firstArchive ?? ""), "utf8");
-
-  const secondKeptId = manager.appendMessage({
-    role: "user",
-    content: [{ type: "text", text: "after first compaction" }],
-    timestamp: Date.now(),
-  } as never);
-  const secondCompactionId = manager.appendCompaction("second summary", secondKeptId, 100);
-  const secondArchive = await manager.archiveAndRewrite(secondCompactionId, secondKeptId);
-  assert.match(secondArchive ?? "", /\.2\.jsonl$/);
-  assert.equal(manager.getContextWindowId(), "session:2");
-
-  assert.equal(await manager.restoreFromArchive(secondArchive ?? ""), true);
-  assert.equal(manager.getContextWindowId(), "session:1");
-
-  const rollbackKeptId = manager.appendMessage({
-    role: "user",
-    content: [{ type: "text", text: "after rollback" }],
-    timestamp: Date.now(),
-  } as never);
-  const retryCompactionId = manager.appendCompaction("retry summary", rollbackKeptId, 100);
-  const retryArchive = await manager.archiveAndRewrite(retryCompactionId, rollbackKeptId);
-  assert.match(retryArchive ?? "", /\.2\.jsonl$/);
-  assert.equal(
-    await readFile(join(sessionsDir, firstArchive ?? ""), "utf8"),
-    firstArchiveContent,
-  );
-
   const branchedSessionFile = join(sessionsDir, "branched.jsonl");
   await writeFile(branchedSessionFile, [
-    JSON.stringify({ type: "session", version: 3, id: "branched", timestamp: new Date().toISOString(), cwd: root, compactionArchive: "archives/branched.3.jsonl" }),
+    JSON.stringify({ type: "session", version: 3, id: "branched", timestamp: new Date().toISOString(), cwd: root }),
     JSON.stringify({ type: "message", id: "root", parentId: null, timestamp: new Date().toISOString(), message: { role: "user", content: [{ type: "text", text: "root" }], timestamp: Date.now(), meta: { messageId: "root-message" } } }),
     JSON.stringify({ type: "message", id: "side", parentId: "root", timestamp: new Date().toISOString(), message: { role: "user", content: [{ type: "text", text: "side" }], timestamp: Date.now(), meta: { messageId: "side-message" } } }),
     JSON.stringify({ type: "message", id: "main", parentId: "root", timestamp: new Date().toISOString(), message: { role: "assistant", content: [{ type: "text", text: "main" }], timestamp: Date.now() } }),
@@ -73,7 +39,6 @@ try {
   ].join("\n"));
 
   const branched = await SessionManager.open(branchedSessionFile, sessionsDir);
-  assert.equal(branched.getContextWindowId(), "branched:3");
   assert.equal(branched.hasUserMessage("root-message"), true);
   assert.equal(branched.hasUserMessage("side-message"), false);
 } finally {

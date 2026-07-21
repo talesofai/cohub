@@ -122,7 +122,6 @@ try {
     modelRegistry: firstRegistry,
     sessionManager,
     tools: [] as AgentTool[],
-    codexInstallationId: "11111111-1111-4111-8111-111111111111",
   });
 
   await session.configureTools([{ name: "read" } as AgentTool]);

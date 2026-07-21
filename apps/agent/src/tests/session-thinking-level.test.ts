@@ -61,7 +61,6 @@ await withSession(async (sessionManager) => {
     modelRegistry,
     sessionManager,
     tools,
-    codexInstallationId: "11111111-1111-4111-8111-111111111111",
   });
 
   assert.equal(session.agent.state.thinkingLevel, "high");
@@ -78,7 +77,6 @@ await withSession(async (sessionManager) => {
     modelRegistry,
     sessionManager,
     tools,
-    codexInstallationId: "11111111-1111-4111-8111-111111111111",
   });
 
   assert.equal(session.agent.state.thinkingLevel, "high");
@@ -93,7 +91,6 @@ await withSession(async (sessionManager) => {
     modelRegistry,
     sessionManager,
     tools,
-    codexInstallationId: "11111111-1111-4111-8111-111111111111",
   });
 
   assert.equal(session.agent.state.thinkingLevel, "low");
@@ -105,7 +102,6 @@ await withSession(async (sessionManager) => {
     modelRegistry,
     sessionManager,
     tools,
-    codexInstallationId: "11111111-1111-4111-8111-111111111111",
   });
   const plainModel = modelRegistry.find("test", "plain");
   assert.ok(plainModel);

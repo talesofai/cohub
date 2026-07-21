@@ -215,16 +215,6 @@ export class SessionManager {
     return [...this.entries];
   }
 
-  getSessionId(): string | null {
-    return this.header?.id ?? null;
-  }
-
-  getContextWindowId(): string | null {
-    if (!this.header) return null;
-    const archiveNumber = this.header.compactionArchive?.match(/\.(\d+)\.jsonl$/)?.[1];
-    return `${this.header.id}:${archiveNumber ?? "0"}`;
-  }
-
   /** Returns the linear branch from root to current leaf. */
   getBranchEntries(): SessionEntry[] {
     return this.getBranch();
@@ -599,7 +589,7 @@ export class SessionManager {
     const header = parsed.find((e) => e.type === "session") as SessionHeader | undefined;
     if (!header) return false;
     const entries = parsed.filter((e) => e.type !== "session") as SessionEntry[];
-    this.header = header;
+    this.header = { ...header, compactionArchive: undefined };
     this.entries = entries;
     this.rebuildIndex();
     this.fileReady = false;
