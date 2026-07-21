@@ -8,6 +8,7 @@ import type { Context, Model, Api, AssistantMessage } from "@earendil-works/pi-a
 import type { ModelsConfig } from "@cohub/infra/config-runtime/models";
 import { CohubModelRegistry } from "../runtime/model-registry.js";
 import { SessionManager } from "../runtime/local-session-manager.js";
+import { runWithToolExecutionContext } from "../tool-context.js";
 
 process.env.DATABASE_URL ??= "postgres://user:pass@localhost:5432/cohub_test";
 process.env.APP_ENCRYPTION_KEY ??= "test-encryption-key";
@@ -23,7 +24,10 @@ const baseConfig: ModelsConfig = {
       api: "openai-responses",
       baseUrl: "https://example.test/v1",
       apiKey: "TEST_API_KEY",
-      models: [{ id: "plain", reasoning: false }],
+      models: [
+        { id: "plain", reasoning: false },
+        { id: "gpt-5.4", reasoning: false },
+      ],
     },
   },
 };
@@ -103,8 +107,31 @@ await withSession(async (sessionManager) => {
     modelRegistry,
     sessionManager,
     tools: [] as AgentTool[],
+    codexInstallationId: "11111111-1111-4111-8111-111111111111",
   });
   assert.equal(sessionManager.getContextWindowId(), "test-session:0");
+  const gptModel = modelRegistry.find("test", "gpt-5.4");
+  assert.ok(gptModel);
+  await runWithToolExecutionContext({
+    spaceId: "space-1",
+    sessionId: "test-session",
+    turnId: "turn-1",
+  }, async () => {
+    const compactionOptions = session.prepareModelRequest(gptModel, undefined, "compaction");
+    assert.equal(compactionOptions.sessionId, "test-session");
+    const compactionPayload = await compactionOptions.onPayload?.({ model: "gpt-5.4" }, gptModel) as Record<string, unknown>;
+    const compactionMetadata = compactionPayload.client_metadata as Record<string, string>;
+    const compactionTurnMetadata = JSON.parse(compactionMetadata["x-codex-turn-metadata"] ?? "{}");
+    assert.equal(compactionMetadata["x-codex-installation-id"], "11111111-1111-4111-8111-111111111111");
+    assert.equal(compactionTurnMetadata.request_kind, "compaction");
+
+    await compactionOptions.onResponse?.({
+      status: 200,
+      headers: { "x-codex-turn-state": "sticky-1" },
+    }, gptModel);
+    const turnOptions = session.prepareModelRequest(gptModel, undefined, "turn");
+    assert.equal(turnOptions.headers?.["X-Codex-Turn-State"], "sticky-1");
+  });
 
   // Replace the streamFn with a mock that records message counts.
   const recorded = {
@@ -138,7 +165,7 @@ await withSession(async (sessionManager) => {
 
     assert.equal(transformCalls, 2, "transformContext should fire again for the second prompt");
     assert.equal(recorded.messageCounts.length, 2, "exactly two LLM calls expected");
-    assert.deepEqual(recorded.sessionIds, ["test-session", "test-session"]);
+    assert.deepEqual(recorded.sessionIds, [undefined, undefined]);
 
     // The mock streamFn always returns stopReason "stop", so agent.state.messages
     // should include the two new user messages plus mock assistant responses.

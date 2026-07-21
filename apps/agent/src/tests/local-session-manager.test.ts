@@ -13,7 +13,7 @@ try {
   assert.equal(manager.getSessionId(), "session");
   assert.equal(manager.getContextWindowId(), "session:0");
   manager.setSessionFile(sessionFile);
-  manager.appendMessage({
+  const rootEntryId = manager.appendMessage({
     role: "user",
     content: [{ type: "text", text: "hello" }],
     timestamp: Date.now(),
@@ -30,6 +30,38 @@ try {
   const reopened = await SessionManager.open(sessionFile, sessionsDir);
   assert.equal(reopened.hasUserMessage("user-message-1"), true);
   assert.equal(reopened.buildSessionContext().messages.length, 1);
+
+  const firstCompactionId = manager.appendCompaction("first summary", rootEntryId, 100);
+  const firstArchive = await manager.archiveAndRewrite(firstCompactionId, rootEntryId);
+  assert.match(firstArchive ?? "", /\.1\.jsonl$/);
+  assert.equal(manager.getContextWindowId(), "session:1");
+  const firstArchiveContent = await readFile(join(sessionsDir, firstArchive ?? ""), "utf8");
+
+  const secondKeptId = manager.appendMessage({
+    role: "user",
+    content: [{ type: "text", text: "after first compaction" }],
+    timestamp: Date.now(),
+  } as never);
+  const secondCompactionId = manager.appendCompaction("second summary", secondKeptId, 100);
+  const secondArchive = await manager.archiveAndRewrite(secondCompactionId, secondKeptId);
+  assert.match(secondArchive ?? "", /\.2\.jsonl$/);
+  assert.equal(manager.getContextWindowId(), "session:2");
+
+  assert.equal(await manager.restoreFromArchive(secondArchive ?? ""), true);
+  assert.equal(manager.getContextWindowId(), "session:1");
+
+  const rollbackKeptId = manager.appendMessage({
+    role: "user",
+    content: [{ type: "text", text: "after rollback" }],
+    timestamp: Date.now(),
+  } as never);
+  const retryCompactionId = manager.appendCompaction("retry summary", rollbackKeptId, 100);
+  const retryArchive = await manager.archiveAndRewrite(retryCompactionId, rollbackKeptId);
+  assert.match(retryArchive ?? "", /\.2\.jsonl$/);
+  assert.equal(
+    await readFile(join(sessionsDir, firstArchive ?? ""), "utf8"),
+    firstArchiveContent,
+  );
 
   const branchedSessionFile = join(sessionsDir, "branched.jsonl");
   await writeFile(branchedSessionFile, [

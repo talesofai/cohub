@@ -52,6 +52,7 @@ test("sends Codex identity and active prompt-cache metadata on the wire", async 
       maxTokens: 4096,
     };
     const codexContext: CodexRequestContext = {
+      installationId: "11111111-1111-4111-8111-111111111111",
       sessionId: "session-1",
       windowId: "session-1:0",
       turnId: "turn-1",
@@ -85,9 +86,12 @@ test("sends Codex identity and active prompt-cache metadata on the wire", async 
     assert.equal(captured.body.prompt_cache_retention, undefined);
 
     const clientMetadata = captured.body.client_metadata as Record<string, unknown>;
+    assert.equal(clientMetadata["x-codex-installation-id"], codexContext.installationId);
     assert.equal(clientMetadata.session_id, "session-1");
     assert.equal(clientMetadata.thread_id, "session-1");
     assert.equal(clientMetadata.turn_id, "turn-1");
+    const turnMetadata = JSON.parse(String(clientMetadata["x-codex-turn-metadata"]));
+    assert.equal(turnMetadata.installation_id, codexContext.installationId);
   } finally {
     server.close();
     await once(server, "close");

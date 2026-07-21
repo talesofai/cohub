@@ -1,5 +1,6 @@
 import type { Agent, AgentEvent, AgentMessage, AgentTool, StreamFn, ThinkingLevel } from "@earendil-works/pi-agent-core";
 import { Agent as PiAgent } from "@earendil-works/pi-agent-core";
+import { join } from "node:path";
 import { clampThinkingLevel, createAssistantMessageEventStream, type Api, type Context, type ImageContent, type Model, type SimpleStreamOptions, isContextOverflow, type AssistantMessage } from "@earendil-works/pi-ai";
 import { context, trace, type Span } from "@opentelemetry/api";
 import { logger } from "../logger.js";
@@ -20,8 +21,11 @@ import {
   withCodexRequestHeaders,
   type CodexRequestContext,
 } from "./codex-request.js";
+import { getCodexInstallationId } from "./codex-installation-id.js";
+import { env } from "../env.js";
 
 export type CohubAgentSessionEvent = AgentEvent;
+export type CohubModelRequestKind = "turn" | "compaction";
 
 export type CohubAgentSession = {
   agent: Agent;
@@ -32,6 +36,7 @@ export type CohubAgentSession = {
   shouldDeferErrorPersistence(message: Record<string, unknown>): boolean;
   /** Consume one-shot force-compact flag set after a context-overflow failure. */
   consumePendingForcedCompaction(): boolean;
+  prepareModelRequest(model: Model<Api>, options: SimpleStreamOptions | undefined, requestKind: CohubModelRequestKind): SimpleStreamOptions;
   prompt(text: string, options?: { images?: ImageContent[] }): Promise<void>;
   promptMessages(messages: AgentMessage[]): Promise<void>;
   steer(text: string, images?: ImageContent[]): Promise<void>;
@@ -167,6 +172,7 @@ export type CreateCohubAgentSessionOptions = {
   tools: ToolLike[];
   spaceMods?: SpaceModListItem[];
   model?: Model<Api>;
+  codexInstallationId?: string;
 };
 
 function extractTextFromToolResultContent(content: unknown): string {
@@ -432,32 +438,89 @@ function shouldIncludeUserSkills(userId: string | null, spaceOwnerUserId: string
   return Boolean(userId && spaceOwnerUserId && userId === spaceOwnerUserId);
 }
 
-function createStreamFn(getRuntime: () => {
+type RequestRuntime = {
   modelRegistry: CohubModelRegistry;
+  installationId: string;
   sessionId: string;
   userId: string | null;
   windowId: string;
-}): StreamFn {
-  const tracer = getAgentTracer();
-  const codexTurns = new CodexTurnStateTracker();
+};
 
-  return async (model: Model<Api>, ctx: Context, options?: SimpleStreamOptions) => {
+type PrepareModelRequest = (
+  model: Model<Api>,
+  options: SimpleStreamOptions | undefined,
+  requestKind: CohubModelRequestKind,
+) => SimpleStreamOptions;
+
+function createModelRequestPreparer(
+  getRuntime: () => RequestRuntime,
+  codexTurns: CodexTurnStateTracker,
+): PrepareModelRequest {
+  return (model, options, requestKind) => {
     const runtime = getRuntime();
     const toolCtx = getCurrentToolExecutionContext();
     const codexRequest = isGptResponsesModel(model);
     const turnId = toolCtx?.turnId ?? undefined;
-    const currentCodexTurn = codexRequest
-      ? codexTurns.current(turnId)
-      : undefined;
+    const currentTurn = codexRequest ? codexTurns.current(turnId) : undefined;
     const codexContext: CodexRequestContext | undefined = codexRequest
       ? {
+          installationId: runtime.installationId,
           sessionId: runtime.sessionId,
           windowId: runtime.windowId,
+          requestKind,
           turnId,
-          turnStartedAtUnixMs: currentCodexTurn?.turnStartedAtUnixMs,
-          turnState: currentCodexTurn?.turnState,
+          turnStartedAtUnixMs: currentTurn?.turnStartedAtUnixMs,
+          turnState: currentTurn?.turnState,
         }
       : undefined;
+
+    const configuredHeaders = runtime.modelRegistry.getHeaders(model.provider, model.id);
+    const streamHeaders = configuredHeaders
+      ? { ...configuredHeaders, ...(options?.headers ?? {}) }
+      : options?.headers;
+    const trackedHeaders = model.provider === "cohub"
+      ? {
+          ...streamHeaders,
+          "x-litellm-track-extra": JSON.stringify({
+            user_uuid: runtime.userId,
+            cohub_space_uuid: toolCtx?.spaceId ?? null,
+            cohub_session_uuid: toolCtx?.sessionId ?? null,
+          }),
+        }
+      : streamHeaders;
+
+    if (!codexContext) {
+      return { ...options, headers: trackedHeaders };
+    }
+
+    return {
+      ...options,
+      sessionId: runtime.sessionId,
+      headers: withCodexRequestHeaders(trackedHeaders, codexContext),
+      onPayload: async (payload, payloadModel) => {
+        const transformed = await options?.onPayload?.(payload, payloadModel);
+        return withCodexClientMetadata(
+          transformed === undefined ? payload : transformed,
+          codexContext,
+        );
+      },
+      onResponse: async (response, responseModel) => {
+        codexTurns.capture(turnId, response);
+        await options?.onResponse?.(response, responseModel);
+      },
+    };
+  };
+}
+
+function createStreamFn(
+  getRuntime: () => RequestRuntime,
+  prepareModelRequest: PrepareModelRequest,
+): StreamFn {
+  const tracer = getAgentTracer();
+
+  return async (model: Model<Api>, ctx: Context, options?: SimpleStreamOptions) => {
+    const runtime = getRuntime();
+    const toolCtx = getCurrentToolExecutionContext();
     const round = (toolCtx?.llmRound ?? 0) + 1;
     if (toolCtx) {
       toolCtx.llmRound = round;
@@ -484,21 +547,6 @@ function createStreamFn(getRuntime: () => {
         if (toolCtx?.assistantMessageTiming && !toolCtx.assistantMessageTiming.startedAt) {
           toolCtx.assistantMessageTiming.startedAt = new Date().toISOString();
         }
-        const headers = runtime.modelRegistry.getHeaders(model.provider, model.id);
-        const streamHeaders = headers ? { ...headers, ...(options?.headers ?? {}) } : options?.headers;
-        const trackedHeaders = model.provider === "cohub"
-          ? {
-              ...streamHeaders,
-              "x-litellm-track-extra": JSON.stringify({
-                user_uuid: runtime.userId,
-                cohub_space_uuid: toolCtx?.spaceId ?? null,
-                cohub_session_uuid: toolCtx?.sessionId ?? null,
-              }),
-            }
-          : streamHeaders;
-        const requestHeaders = codexContext
-          ? withCodexRequestHeaders(trackedHeaders, codexContext)
-          : trackedHeaders;
         if (toolCtx?.spaceId && toolCtx.sessionId) {
           const at = new Date().toISOString();
           await sendOutput({
@@ -518,23 +566,8 @@ function createStreamFn(getRuntime: () => {
           });
         }
         const models = createModelsFromRegistry(runtime.modelRegistry, model);
-        const stream = streamSimpleWithModels(models, model, ctx, {
-          ...options,
-          sessionId: runtime.sessionId,
-          headers: requestHeaders,
-          onPayload: codexContext
-            ? async (payload, payloadModel) => {
-                const transformed = await options?.onPayload?.(payload, payloadModel);
-                return withCodexClientMetadata(transformed ?? payload, codexContext);
-              }
-            : options?.onPayload,
-          onResponse: codexContext
-            ? async (response, responseModel) => {
-                codexTurns.capture(turnId, response);
-                await options?.onResponse?.(response, responseModel);
-              }
-            : options?.onResponse,
-        });
+        const requestOptions = prepareModelRequest(model, options, "turn");
+        const stream = streamSimpleWithModels(models, model, ctx, requestOptions);
 
         const wrapped = createAssistantMessageEventStream();
         void context.with(llmRound.context, async () => {
@@ -615,6 +648,8 @@ export async function createCohubAgentSession(options: CreateCohubAgentSessionOp
   const sessionContext = options.sessionManager.buildSessionContext();
   const sessionId = options.sessionManager.getSessionId();
   if (!sessionId) throw new Error("Session manager must be initialized before creating an agent session");
+  const installationId = options.codexInstallationId
+    ?? await getCodexInstallationId(join(env.SESSIONS_DIR, "codex_installation_id"));
   let runtimeUserId = normalizeUserId(options.userId);
   let runtimeSpaceOwnerUserId = normalizeUserId(options.spaceOwnerUserId);
   let runtimeModelRegistry = options.modelRegistry;
@@ -622,10 +657,13 @@ export async function createCohubAgentSession(options: CreateCohubAgentSessionOp
   let systemPromptStateKey: string | null = null;
   const getRuntime = () => ({
     modelRegistry: runtimeModelRegistry,
+    installationId,
     sessionId,
     userId: runtimeUserId,
     windowId: options.sessionManager.getContextWindowId() ?? `${sessionId}:0`,
   });
+  const codexTurns = new CodexTurnStateTracker();
+  const prepareModelRequest = createModelRequestPreparer(getRuntime, codexTurns);
   const model = options.model ?? (sessionContext.model ? runtimeModelRegistry.find(sessionContext.model.provider, sessionContext.model.modelId) : undefined) ?? runtimeModelRegistry.getDefault();
   if (!model) {
     throw new Error("No model available. Check platform models.json");
@@ -668,9 +706,8 @@ export async function createCohubAgentSession(options: CreateCohubAgentSessionOp
       messages: sessionContext.messages,
     },
     steeringMode: "all",
-    sessionId,
     convertToLlm: toLlmMessages,
-    streamFn: createStreamFn(getRuntime),
+    streamFn: createStreamFn(getRuntime, prepareModelRequest),
     getApiKey: (provider: string) => runtimeModelRegistry.getApiKey(provider),
     async afterToolCall({ result }) {
       if (isToolFailureDetails(result.details)) return { isError: true };
@@ -847,6 +884,7 @@ export async function createCohubAgentSession(options: CreateCohubAgentSessionOp
       forcedCompactionPending = false;
       return true;
     },
+    prepareModelRequest,
     async prompt(text, inputOptions) {
       await agent.prompt(text, inputOptions?.images);
       await agent.waitForIdle();

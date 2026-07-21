@@ -599,7 +599,7 @@ export class SessionManager {
     const header = parsed.find((e) => e.type === "session") as SessionHeader | undefined;
     if (!header) return false;
     const entries = parsed.filter((e) => e.type !== "session") as SessionEntry[];
-    this.header = { ...header, compactionArchive: undefined };
+    this.header = header;
     this.entries = entries;
     this.rebuildIndex();
     this.fileReady = false;

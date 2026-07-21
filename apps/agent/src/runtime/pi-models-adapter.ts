@@ -177,6 +177,32 @@ export function createModelsFromCohubRegistry(
   return createModelsFromRegistry(registry, focusModel);
 }
 
+export function withSimpleStreamOptions(
+  models: Models,
+  prepare: (model: Model<Api>, options: SimpleStreamOptions | undefined) => SimpleStreamOptions,
+): Models {
+  return {
+    getProviders: () => models.getProviders(),
+    getProvider: (id) => models.getProvider(id),
+    getModels: (provider) => models.getModels(provider),
+    getModel: (provider, id) => models.getModel(provider, id),
+    refresh: (provider) => models.refresh(provider),
+    getAuth: (model) => models.getAuth(model),
+    stream: (model, context, options) => models.stream(model, context, options),
+    complete: (model, context, options) => models.complete(model, context, options),
+    streamSimple: (model, context, options) => models.streamSimple(
+      model,
+      context,
+      prepare(model, options),
+    ),
+    completeSimple: (model, context, options) => models.completeSimple(
+      model,
+      context,
+      prepare(model, options),
+    ),
+  };
+}
+
 /**
  * Stream via Models while preserving request-level option overrides
  * (apiKey from agent-loop, headers, onPayload, reasoning, signal, ...).

@@ -1,8 +1,10 @@
 import type { ProviderHeaders, ProviderResponse } from "@earendil-works/pi-ai";
 
 export type CodexRequestContext = {
+  installationId: string;
   sessionId: string;
   windowId: string;
+  requestKind?: "turn" | "compaction";
   turnId?: string;
   turnStartedAtUnixMs?: number;
   turnState?: string;
@@ -33,7 +35,9 @@ export class CodexTurnStateTracker {
   capture(turnId: string | undefined, response: ProviderResponse): void {
     if (!turnId || this.activeTurn?.turnId !== turnId) return;
     const turnState = getCodexTurnState(response);
-    if (turnState) this.activeTurn.turnState = turnState;
+    if (turnState && this.activeTurn.turnState === undefined) {
+      this.activeTurn.turnState = turnState;
+    }
   }
 }
 
@@ -52,11 +56,12 @@ function setHeader(
 function buildTurnMetadata(context: CodexRequestContext): string | undefined {
   if (!context.turnId || context.turnStartedAtUnixMs === undefined) return undefined;
   return JSON.stringify({
+    installation_id: context.installationId,
     session_id: context.sessionId,
     thread_id: context.sessionId,
     turn_id: context.turnId,
     window_id: context.windowId,
-    request_kind: "turn",
+    request_kind: context.requestKind ?? "turn",
     turn_started_at_unix_ms: context.turnStartedAtUnixMs,
   });
 }
@@ -97,6 +102,7 @@ export function withCodexClientMetadata(
 
   clientMetadata.session_id = context.sessionId;
   clientMetadata.thread_id = context.sessionId;
+  clientMetadata["x-codex-installation-id"] = context.installationId;
   clientMetadata["x-codex-window-id"] = context.windowId;
   if (context.turnId) clientMetadata.turn_id = context.turnId;
 
