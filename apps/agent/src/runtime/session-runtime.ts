@@ -564,6 +564,8 @@ function createStreamFn(getRuntime: () => { modelRegistry: CohubModelRegistry; u
                   user_uuid: runtime.userId,
                   cohub_space_uuid: toolCtx?.spaceId ?? null,
                   cohub_session_uuid: toolCtx?.sessionId ?? null,
+                  cohub_turn_uuid: toolCtx?.turnId ?? null,
+                  cohub_llm_round: round,
                 }),
               }
             : streamHeaders,
