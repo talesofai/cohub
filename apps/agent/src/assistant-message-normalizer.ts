@@ -19,6 +19,18 @@ const summarizeThinking = (thinking: string): string => {
   return lines.slice(0, 3).join("\n").slice(0, 600);
 };
 
+export const hasAssistantOutcomeContent = (content: unknown): boolean => {
+  if (!Array.isArray(content)) return false;
+  return content.some((item) => {
+    if (!item || typeof item !== "object") return false;
+    const block = item as Record<string, unknown>;
+    const type = typeof block.type === "string" ? block.type : "";
+    if (type === "text") return typeof block.text === "string" && block.text.trim().length > 0;
+    if (type === "thinking" || type === "redacted_thinking" || type === "reasoning" || type === "reasoning_content") return false;
+    return type.length > 0;
+  });
+};
+
 const summarizeToolArgs = (toolName: string, args: unknown): string => {
   if (!args || typeof args !== "object") return "";
   const record = args as Record<string, unknown>;

@@ -44,13 +44,18 @@ const emptyUsage: AssistantMessage["usage"] = {
   cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
 };
 
-type MockOutcome = { error: string } | { text: string };
+type MockOutcome = { error: string } | { text: string } | { thinking: string };
 
 function createAssistantMessage(outcome: MockOutcome): AssistantMessage {
   const failed = "error" in outcome;
+  const content = failed
+    ? []
+    : "thinking" in outcome
+      ? [{ type: "thinking" as const, thinking: outcome.thinking }]
+      : [{ type: "text" as const, text: outcome.text }];
   return {
     role: "assistant",
-    content: failed ? [] : [{ type: "text", text: outcome.text }],
+    content,
     api: "openai-responses",
     provider: "test",
     model: "plain",
@@ -155,6 +160,19 @@ for (const errorMessage of [
 ]) {
   assert.equal(isRetryableAssistantFailure(createAssistantMessage({ error: errorMessage })), false, errorMessage);
 }
+assert.equal(
+  isRetryableAssistantFailure(createAssistantMessage({ thinking: "unfinished reasoning" })),
+  true,
+  "thinking-only completion must be continued",
+);
+assert.equal(
+  isRetryableAssistantFailure({
+    ...createAssistantMessage({ text: "" }),
+    content: [{ type: "text", text: "   " }],
+  }),
+  true,
+  "empty text blocks must be continued",
+);
 
 async function* createThrowingPartialStream(): AsyncGenerator<import("@earendil-works/pi-ai").AssistantMessageEvent> {
   const partial: AssistantMessage = {
@@ -197,6 +215,19 @@ await withSession(
     const assistants = sessionManager.buildSessionContext().messages.filter((message) => message.role === "assistant");
     assert.equal(assistants.length, 1);
     assert.deepEqual(assistants[0]?.content, [{ type: "text", text: "recovered" }]);
+  },
+);
+
+await withSession(
+  [{ thinking: "unfinished reasoning" }, { text: "continued result" }],
+  async ({ session, sessionManager, calls }) => {
+    await session.promptMessages([
+      { role: "user", content: [{ type: "text", text: "continue incomplete reasoning" }], timestamp: Date.now() } as AgentMessage,
+    ]);
+    assert.equal(calls.count, 2);
+    const assistants = sessionManager.buildSessionContext().messages.filter((message) => message.role === "assistant");
+    assert.equal(assistants.length, 1);
+    assert.deepEqual(assistants[0]?.content, [{ type: "text", text: "continued result" }]);
   },
 );
 

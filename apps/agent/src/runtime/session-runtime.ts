@@ -13,6 +13,7 @@ import { getCurrentToolExecutionContext, runWithToolExecutionContext, type ToolE
 import { isToolFailureDetails } from "./tools/index.js";
 import { applyRequestProfile } from "./request-profile.js";
 import { mergeHeaders } from "@cohub/infra/config-runtime/models";
+import { hasAssistantOutcomeContent } from "../assistant-message-normalizer.js";
 
 import type { SpaceModListItem } from "@cohub/core/space-mods";
 
@@ -87,15 +88,10 @@ function isRetryableProviderError(message: AssistantMessage | undefined): boolea
   return isRetryableAssistantError(message) || COHUB_RETRYABLE_ERROR_PATTERN.test(message.errorMessage);
 }
 
-function hasAssistantContent(message: AssistantMessage): boolean {
-  const content = Array.isArray(message.content) ? message.content : [];
-  return content.length > 0;
-}
-
-function isEmptySuccessfulAssistantMessage(message: AssistantMessage | undefined): boolean {
+function isIncompleteSuccessfulAssistantMessage(message: AssistantMessage | undefined): boolean {
   if (!message) return false;
   if (message.stopReason === "error" || message.stopReason === "aborted") return false;
-  return !hasAssistantContent(message);
+  return !hasAssistantOutcomeContent(message.content);
 }
 
 /**
@@ -119,7 +115,7 @@ export function isContextOverflowFailure(message: AssistantMessage | undefined):
 
 export function isRetryableAssistantFailure(message: AssistantMessage | undefined): boolean {
   return isRetryableProviderError(message)
-    || isEmptySuccessfulAssistantMessage(message)
+    || isIncompleteSuccessfulAssistantMessage(message)
     || isContextOverflowFailure(message);
 }
 
@@ -149,7 +145,7 @@ function getAssistantRetryOutcome(message: AssistantMessage | undefined, retryAt
       ? "context_overflow"
       : message?.stopReason === "error"
         ? (message?.errorMessage ?? "assistant_error")
-        : "empty_assistant_message",
+        : "missing_assistant_outcome",
     forceCompaction: overflow,
   };
 }

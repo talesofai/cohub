@@ -10,7 +10,7 @@ import { sanitizeContentBlocksForPostgresJson, sanitizePostgresJsonValue } from 
 import { countToolCallsInContent, deriveMessagePreviewText, extractPlainText } from "@cohub/core/sessions";
 import { buildTraceHeaders, getCurrentRequestId } from "@cohub/infra/tracing";
 import { enqueueSessionMessagePostprocess } from "./session-message-postprocess-queue.js";
-import { normalizeAssistantTurn } from "./assistant-message-normalizer.js";
+import { hasAssistantOutcomeContent, normalizeAssistantTurn } from "./assistant-message-normalizer.js";
 import { indexTurnReferences } from "./reference-index.js";
 import { db } from "./db.js";
 import { env } from "./env.js";
@@ -623,7 +623,7 @@ export async function persistUserMessage(input: { spaceId: string; sessionId: st
   return { ok: true, message: record };
 }
 
-const EMPTY_ASSISTANT_MESSAGE_ERROR = "LLM returned an empty assistant message after streaming completed.";
+const INCOMPLETE_ASSISTANT_MESSAGE_ERROR = "LLM returned no final assistant output after streaming completed.";
 
 export async function persistAssistantMessage(input: { spaceId: string; spaceSessionId: string; userMessageId: string; event: Record<string, unknown>; userId?: string | null; turnId?: string | null; startedAt?: string | null; completedAt?: string | null; messageOrdinal?: number | null; thinkingLevel?: string | null }) {
   const assistantMessage = input.event.message;
@@ -637,9 +637,9 @@ export async function persistAssistantMessage(input: { spaceId: string; spaceSes
   const stopReason = typeof assistant.stopReason === "string" ? assistant.stopReason : null;
   const errorMessage = typeof assistant.errorMessage === "string" ? assistant.errorMessage : null;
   const hasAssistantError = stopReason === "error" || stopReason === "aborted" || Boolean(errorMessage);
-  const isEmptySuccessfulAssistant = normalized.content.length === 0 && !hasAssistantError;
-  const effectiveStopReason = isEmptySuccessfulAssistant ? "error" : stopReason;
-  const effectiveErrorMessage = isEmptySuccessfulAssistant ? EMPTY_ASSISTANT_MESSAGE_ERROR : errorMessage;
+  const isIncompleteSuccessfulAssistant = !hasAssistantOutcomeContent(normalized.content) && !hasAssistantError;
+  const effectiveStopReason = isIncompleteSuccessfulAssistant ? "error" : stopReason;
+  const effectiveErrorMessage = isIncompleteSuccessfulAssistant ? INCOMPLETE_ASSISTANT_MESSAGE_ERROR : errorMessage;
   const timing = completeMessageTiming({ startedAt: input.startedAt, completedAt: input.completedAt });
 
   const message: PersistMessageInput["message"] = {
@@ -657,7 +657,7 @@ export async function persistAssistantMessage(input: { spaceId: string; spaceSes
     // 与 stream-snapshot API 重新编号的 ordinal:N 不在同一套去重 key 体系里，
     // 导致同一条中间消息在快照恢复与实时事件两条路径里无法合并，最终在
     // ProcessCard/ToolCallList 的 {#each ... (id)} 产生重复 key(each_key_duplicate)。
-    meta: { ...(normalizeRecord(assistant.meta) ?? {}), turnId: input.turnId ?? null, spaceId: input.spaceId, sessionId: input.spaceSessionId, rawStopReason: stopReason, messageOrdinal: input.messageOrdinal ?? null, ...(isEmptySuccessfulAssistant ? { emptyAssistantMessageConvertedToError: true } : {}), thinking: normalized.thinking, thinkingSummary: normalized.thinkingSummary, toolCallRenderStates: normalized.toolCallRenderStates, agentSessionEntryId: typeof assistant.sessionEntryId === "string" ? assistant.sessionEntryId : null },
+    meta: { ...(normalizeRecord(assistant.meta) ?? {}), turnId: input.turnId ?? null, spaceId: input.spaceId, sessionId: input.spaceSessionId, rawStopReason: stopReason, messageOrdinal: input.messageOrdinal ?? null, ...(isIncompleteSuccessfulAssistant ? { incompleteAssistantMessageConvertedToError: true } : {}), thinking: normalized.thinking, thinkingSummary: normalized.thinkingSummary, toolCallRenderStates: normalized.toolCallRenderStates, agentSessionEntryId: typeof assistant.sessionEntryId === "string" ? assistant.sessionEntryId : null },
     usage: normalizeUsage(assistant.usage as PersistMessageInput["message"]["usage"]),
     ...timing,
   };
