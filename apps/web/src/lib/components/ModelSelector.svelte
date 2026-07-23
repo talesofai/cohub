@@ -5,6 +5,11 @@ import { Brain, Check, ChevronDown, Image } from "lucide-svelte";
 import Dialog from "$lib/components/Dialog.svelte";
 import { isComposingKeyboardEvent } from "$lib/keyboard";
 import {
+	AVAILABILITY_LABEL,
+	type AvailabilityLevel,
+	availabilityLevel,
+} from "$lib/model-availability";
+import {
 	clampThinkingLevel,
 	formatThinkingLevelFull,
 	formatThinkingLevelShort,
@@ -12,11 +17,6 @@ import {
 	getSupportedThinkingLevels,
 	type ModelThinkingLevel,
 } from "$lib/model-catalog";
-import {
-	availabilityLevel,
-	AVAILABILITY_LABEL,
-	type AvailabilityLevel,
-} from "$lib/model-availability";
 
 type ModelItem = {
 	provider: string;
@@ -723,13 +723,21 @@ function fmtMs(ms: number | null | undefined): string {
 	return `${m}m${rs}s`;
 }
 
-function fmtAgo(iso: string | null | undefined): string {
-	if (!iso) return "—";
-	const s = Math.max(0, Math.round((Date.now() - new Date(iso).getTime()) / 1000));
+function fmtAgoSec(s: number): string {
+	s = Math.max(0, Math.round(s));
 	if (s < 60) return `${s}s ago`;
 	const m = Math.floor(s / 60);
 	if (m < 60) return `${m}m ago`;
 	return `${Math.floor(m / 60)}h ago`;
+}
+
+function fmtAgo(iso: string | null | undefined): string {
+	if (!iso) return "—";
+	return fmtAgoSec((Date.now() - new Date(iso).getTime()) / 1000);
+}
+
+function fmtAgoMs(ms: number): string {
+	return fmtAgoSec(ms / 1000);
 }
 
 function fmtRate(rate: number | null | undefined): string {
@@ -763,7 +771,7 @@ function onDotMouseEnter(modelId: string, e: MouseEvent) {
 		hoverShowTimer = setTimeout(() => {
 			hoveredModelId = modelId;
 			hoverAnchorRect = target.getBoundingClientRect();
-		}, 220);
+		}, 120);
 	}
 }
 
@@ -801,8 +809,20 @@ const hoveredLevel = $derived(
 	hoveredModelId ? getAvailabilityLevel(hoveredModelId) : "available",
 );
 
-/** 24h history (96 × 15-min buckets) for the bar chart. */
-const hoveredHistory = $derived(hoveredEntry?.history ?? []);
+/** Bar-chart series (96 buckets): online traffic first, probe history fallback. */
+const hoveredHeartbeats = $derived(hoveredEntry?.heartbeats8h ?? []);
+/** Total minutes the bar series spans (online 480 / history fallback 1440). */
+const hoveredHeartbeatWindowMin = $derived(
+	hoveredEntry?.heartbeatsWindowMinutes ?? 480,
+);
+const hoveredHeartbeatHours = $derived(
+	Math.round(hoveredHeartbeatWindowMin / 60),
+);
+const hoveredHeartbeatPerBucketMin = $derived(
+	hoveredHeartbeats.length
+		? hoveredHeartbeatWindowMin / hoveredHeartbeats.length
+		: 5,
+);
 
 // Card width is fixed at 288px (see .model-avail-card). Estimate height for
 // flip-above calculation; we don't depend on hoverCardEl here to avoid a
@@ -907,11 +927,13 @@ const hoverCardPos = $derived.by(() => {
 									{/if}
 									{#if modelStatus}
 										<span
-											class={`avail-dot avail-dot--${getAvailabilityLevel(item.id)}`}
+											class="avail-dot-target"
 											onmouseenter={(e) => onDotMouseEnter(item.id, e)}
 											onmouseleave={onDotMouseLeave}
 											role="presentation"
-										></span>
+										>
+											<span class={`avail-dot avail-dot--${getAvailabilityLevel(item.id)}`}></span>
+										</span>
 									{/if}
 								</div>
 								{#if costText}
@@ -1152,19 +1174,19 @@ const hoverCardPos = $derived.by(() => {
 		</div>
 		<div class="mt-0.5 font-mono text-[10px] text-text-tertiary">{hoveredModelId}</div>
 		<div class="my-2 h-px bg-border-subtle"></div>
-		<div class="mb-1 text-[10px] font-semibold uppercase tracking-wider text-text-tertiary">Past 24 hours</div>
-		{#if hoveredHistory.length}
+		<div class="mb-1 text-[10px] font-semibold uppercase tracking-wider text-text-tertiary">Past {hoveredHeartbeatHours} hours</div>
+		{#if hoveredHeartbeats.length}
 			<div class="flex items-stretch gap-px h-[26px]">
-				{#each hoveredHistory as bucket}
+				{#each hoveredHeartbeats as rate, i}
 					<i
 						class="avail-bar"
-						style={`background:${rateToBarColor(bucket.rate)}`}
-						title={`${new Date(bucket.t).toLocaleString([], {month:'short',day:'numeric',hour:'2-digit',minute:'2-digit'})} · ${fmtRate(bucket.rate)}${bucket.samples ? ` (${bucket.samples})` : ''}`}
+						style={`background:${rateToBarColor(rate)}`}
+						title={`${fmtAgoMs((hoveredHeartbeats.length - 1 - i) * hoveredHeartbeatPerBucketMin * 60 * 1000)} · ${fmtRate(rate)}`}
 					></i>
 				{/each}
 			</div>
 			<div class="mt-1 flex justify-between text-[9px] text-text-tertiary">
-				<span>24h ago</span><span>now</span>
+				<span>{hoveredHeartbeatHours}h ago</span><span>now</span>
 			</div>
 		{:else}
 			<div class="text-[11px] text-text-tertiary">No history</div>
@@ -1194,6 +1216,19 @@ const hoverCardPos = $derived.by(() => {
 {/if}
 
 <style>
+	.avail-dot-target {
+		display: inline-flex;
+		align-items: center;
+		justify-content: center;
+		flex: 0 0 18px;
+		width: 18px;
+		height: 18px;
+		margin: -6px;
+		cursor: help;
+	}
+	.avail-dot-target .avail-dot {
+		margin-left: 0;
+	}
 	.avail-dot {
 		display: inline-block;
 		flex: 0 0 auto;

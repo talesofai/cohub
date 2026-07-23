@@ -56,6 +56,7 @@ type RawCheck = {
 type RawOnlineHeartbeat = {
 	start?: string;
 	success_rate?: number;
+	sample_count?: number;
 };
 
 type RawOnlineModel = {
@@ -102,7 +103,11 @@ function uptime24h(history: RawCheck["history"]): number | null {
 	return total > 0 ? (op / total) * 100 : null;
 }
 
-function slimCheck(c: RawCheck, heartbeats8h: number[] | null): ModelStatusEntry {
+function slimCheck(
+	c: RawCheck,
+	heartbeats8h: Array<number | null> | null,
+	heartbeatsWindowMinutes: number | null,
+): ModelStatusEntry {
 	const windows = c.windows ?? {};
 	const l = c.latency_1h;
 	return {
@@ -116,6 +121,7 @@ function slimCheck(c: RawCheck, heartbeats8h: number[] | null): ModelStatusEntry
 		checkedAt: c.checked_at ?? null,
 		probeIntervalSeconds: c.probe_interval_seconds ?? null,
 		heartbeats8h,
+		heartbeatsWindowMinutes,
 		history: c.history?.length
 			? c.history.map((b) => ({
 					t: b.started_at ?? "",
@@ -145,23 +151,67 @@ async function fetchUpstream(): Promise<ModelStatusResponse> {
 		}
 	}
 
-	// 8h/2min heartbeats from the online section (fine-grained bar chart data).
+	// 8h online heartbeats arrive as 2-min buckets (~240) — too dense for the
+	// 288px hover card (gaps alone would overflow). Resample to 5-min buckets
+	// (96 bars over 8h), matching the validated bar density. Each 5-min bucket
+	// is the sample-weighted mean success rate of the 2-min buckets it covers;
+	// empty buckets stay null (rendered gray).
+	const HEARTBEAT_BUCKET_MS = 5 * 60 * 1000;
+	const windowStartMs = raw.online?.window?.start
+		? Date.parse(raw.online.window.start)
+		: Number.NaN;
+	const windowMinutes = raw.online?.window?.minutes ?? 480;
+	const heartbeatBucketCount = Math.max(1, Math.round(windowMinutes / 5));
+
+	function resampleHeartbeats(heartbeats: RawOnlineHeartbeat[]): Array<number | null> | null {
+		if (!Number.isFinite(windowStartMs) || !heartbeats.length) return null;
+		const acc = new Map<number, { sum: number; weight: number }>();
+		for (const hb of heartbeats) {
+			const t = hb.start ? Date.parse(hb.start) : Number.NaN;
+			if (!Number.isFinite(t) || typeof hb.success_rate !== "number") continue;
+			const idx = Math.floor((t - windowStartMs) / HEARTBEAT_BUCKET_MS);
+			if (idx < 0 || idx >= heartbeatBucketCount) continue;
+			const w = hb.sample_count && hb.sample_count > 0 ? hb.sample_count : 1;
+			const slot = acc.get(idx) ?? { sum: 0, weight: 0 };
+			slot.sum += hb.success_rate * w;
+			slot.weight += w;
+			acc.set(idx, slot);
+		}
+		const out: Array<number | null> = [];
+		for (let i = 0; i < heartbeatBucketCount; i++) {
+			const slot = acc.get(i);
+			out.push(slot && slot.weight > 0 ? Math.round((slot.sum / slot.weight) * 10) / 10 : null);
+		}
+		return out;
+	}
+
 	const onlineModels = raw.online?.models ?? [];
-	const heartbeatsByModel = new Map<string, number[]>();
+	const onlineHeartbeatsByModel = new Map<string, Array<number | null> | null>();
 	for (const m of onlineModels) {
-		if (!m.heartbeats?.length) continue;
-		heartbeatsByModel.set(
-			m.model,
-			m.heartbeats.map((hb) =>
-				typeof hb.success_rate === "number" ? Math.round(hb.success_rate * 10) / 10 : 0,
-			),
+		onlineHeartbeatsByModel.set(m.model, m.heartbeats ? resampleHeartbeats(m.heartbeats) : null);
+	}
+	const onlineWindowMinutes = windowMinutes;
+	const HISTORY_WINDOW_MINUTES = 24 * 60;
+
+	// Per-model bar series: real observed traffic (online) first; fall back to
+	// the probe self-test history for models not yet covered by online (new
+	// models, or a stale/missing online snapshot). Each branch yields 96
+	// buckets; windowMinutes tags the source so the axis label stays honest.
+	function historyRates(c: RawCheck): Array<number | null> {
+		return (c.history ?? []).map((b) =>
+			b.sample_count ? Math.round(((b.operational_samples ?? 0) / b.sample_count) * 100) : null,
 		);
 	}
-	const heartbeats8hStart = raw.online?.window?.start ?? null;
 
 	const models: Record<string, ModelStatusEntry> = {};
-	for (const [id, c] of byModel)
-		models[id] = slimCheck(c, heartbeatsByModel.get(id) ?? null);
+	for (const [id, c] of byModel) {
+		const online = onlineHeartbeatsByModel.get(id) ?? null;
+		if (online?.some((r) => r != null)) {
+			models[id] = slimCheck(c, online, onlineWindowMinutes);
+		} else {
+			models[id] = slimCheck(c, historyRates(c), HISTORY_WINDOW_MINUTES);
+		}
+	}
 
 	const overall = raw.overall_status;
 	const response: ModelStatusResponse = {
@@ -170,7 +220,6 @@ async function fetchUpstream(): Promise<ModelStatusResponse> {
 			overall === "operational" || overall === "degraded" || overall === "outage"
 				? overall
 				: "unknown",
-		heartbeats8hStart,
 		models,
 	};
 

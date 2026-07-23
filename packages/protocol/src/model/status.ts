@@ -26,18 +26,24 @@ export type ModelStatusEntry = {
 		samples: number;
 	}> | null;
 	/**
-	 * 8-hour heartbeat rates in 2-minute buckets (oldest → newest), or null.
-	 * Parallel to `heartbeats8hStart`. Drives the fine-grained hover card
-	 * bar chart, matching router-status.neta.art's 8h/2min visualization.
+	 * Bar-chart series (oldest → newest), always 96 buckets. Source is real
+	 * observed traffic (`online` heartbeats resampled to 5-min buckets) when
+	 * available, else the probe self-test `history` (15-min buckets) as a
+	 * fallback for models not yet covered by online. Drives the hover card
+	 * bar chart; color each bucket via the 6-tier success-rate scale.
 	 */
-	heartbeats8h: number[] | null;
+	heartbeats8h: Array<number | null> | null;
+	/**
+	 * Total minutes spanned by `heartbeats8h` (online → 480, history fallback
+	 * → 1440). The frontend divides by bucket count for the per-bar age and
+	 * the axis label, so the window reads honestly regardless of source.
+	 */
+	heartbeatsWindowMinutes: number | null;
 };
 
 export type ModelStatusResponse = {
 	generatedAt: string;
 	overallStatus: ModelAvailabilityStatus | "unknown";
-	/** Start of the 8h heartbeat window (ISO). Buckets are 2 minutes apart. */
-	heartbeats8hStart: string | null;
 	/** Keyed by model id. */
 	models: Record<string, ModelStatusEntry>;
 };
