@@ -1,5 +1,15 @@
 # @neta-art/cohub
 
+## 3.0.0
+
+### Major Changes
+
+- ac1a3ce: Adopt Board across SDK types, REST endpoints, file formats, and realtime events. Add bound `BoardClient` entities with transaction and playback subscriptions.
+
+### Minor Changes
+
+- 077ce83: Add the Space startup API for preloading UI configuration and local preview sessions.
+
 ## 2.15.0
 
 ### Minor Changes

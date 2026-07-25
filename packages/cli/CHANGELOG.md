@@ -1,5 +1,21 @@
 # @neta-art/cohub-cli
 
+## 3.0.0
+
+### Major Changes
+
+- 760a6ec: Align the CLI with the Board domain rename in `@neta-art/cohub` 3.0.0. The CLI now targets the Board transaction and playback APIs; canvas-era SDK surfaces it depended on are gone.
+
+### Minor Changes
+
+- e5e7060: Add space-scoped Board creation, inspection, transaction, playback, and realtime watch commands with structured JSON input.
+
+### Patch Changes
+
+- Updated dependencies [077ce83]
+- Updated dependencies [ac1a3ce]
+  - @neta-art/cohub@3.0.0
+
 ## 2.7.0
 
 ### Minor Changes
