@@ -75,16 +75,35 @@ function getHttpErrorStatus(errorMessage: string): number | null {
   return status ? Number(status) : null;
 }
 
+/**
+ * Classify a raw provider error string. `null` means the string alone is
+ * inconclusive and the caller should consult pi's own classification.
+ */
+function classifyProviderErrorMessage(errorMessage: string): boolean | null {
+  if (COHUB_RETRYABLE_ERROR_OVERRIDE_PATTERN.test(errorMessage)) return true;
+  if (COHUB_NON_RETRYABLE_ERROR_PATTERN.test(errorMessage)) return false;
+
+  const status = getHttpErrorStatus(errorMessage);
+  if (status != null) return status === 408 || status === 413 || status === 429 || status >= 500;
+  if (COHUB_MODEL_UNAVAILABLE_PATTERN.test(errorMessage)) return false;
+  if (COHUB_RETRYABLE_ERROR_PATTERN.test(errorMessage)) return true;
+
+  return null;
+}
+
+/**
+ * Whether a raw provider error string is worth retrying. Shares the rules used
+ * for assistant retries so callers holding only an error message (compaction's
+ * summarize step) don't invent their own classification.
+ */
+export function isRetryableProviderErrorMessage(errorMessage: string): boolean {
+  if (!errorMessage) return false;
+  return classifyProviderErrorMessage(errorMessage) === true;
+}
+
 function isRetryableProviderError(message: AssistantMessage | undefined): boolean {
   if (message?.stopReason !== "error" || !message.errorMessage) return false;
-  if (COHUB_RETRYABLE_ERROR_OVERRIDE_PATTERN.test(message.errorMessage)) return true;
-  if (COHUB_NON_RETRYABLE_ERROR_PATTERN.test(message.errorMessage)) return false;
-
-  const status = getHttpErrorStatus(message.errorMessage);
-  if (status != null) return status === 408 || status === 413 || status === 429 || status >= 500;
-  if (COHUB_MODEL_UNAVAILABLE_PATTERN.test(message.errorMessage)) return false;
-
-  return isRetryableAssistantError(message) || COHUB_RETRYABLE_ERROR_PATTERN.test(message.errorMessage);
+  return classifyProviderErrorMessage(message.errorMessage) ?? isRetryableAssistantError(message);
 }
 
 function hasAssistantContent(message: AssistantMessage): boolean {

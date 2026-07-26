@@ -18,6 +18,8 @@ import { and, eq, sql } from "drizzle-orm";
 import { getCurrentToolExecutionContext } from "../tool-context.js";
 import type { AgentMessage } from "@earendil-works/pi-agent-core";
 import { createModelsFromCohubRegistry } from "./pi-models-adapter.js";
+import { estimateProxyContextTokens, resolveReserveTokens } from "./compaction-policy.js";
+import { isRetryableProviderErrorMessage } from "./session-runtime.js";
 
 export type CompactionOutcome =
   | { compacted: true; summary: string; tokensBefore: number; firstKeptEntryId: string; archivePath: string | undefined; compactSequence: number }
@@ -31,17 +33,6 @@ export class OverflowRecoveryError extends Error {
     this.name = "OverflowRecoveryError";
     this.reason = reason;
   }
-}
-
-// Cap above pi default (16k). Scaled down for small windows so we never
-// reserve more than the whole context (which would compact on every turn).
-const RESERVE_TOKENS_CAP = 32_768;
-const RESERVE_TOKENS_RATIO = 0.25;
-
-/** Resolve reserveTokens for a model context window (exported for tests). */
-export function resolveReserveTokens(contextWindow: number): number {
-  if (contextWindow <= 0) return RESERVE_TOKENS_CAP;
-  return Math.min(RESERVE_TOKENS_CAP, Math.max(1, Math.floor(contextWindow * RESERVE_TOKENS_RATIO)));
 }
 
 function resolveCompactionSettings(contextWindow: number) {
@@ -91,6 +82,42 @@ function getCompactableBranchEntries(handle: SessionHandle) {
   return currentTurnStartIndex >= 0 ? branchEntries.slice(0, currentTurnStartIndex) : branchEntries;
 }
 
+const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
+
+const SUMMARIZE_MAX_ATTEMPTS = 2;
+const SUMMARIZE_RETRY_DELAY_MS = 1_000;
+
+/**
+ * Summarize with a small retry budget of its own.
+ *
+ * The summarize call is a plain LLM request and hits the same transient upstream
+ * failures (timeouts, 5xx) as any other. Without a retry here a single blip fails
+ * the whole compaction, and for overflow recovery that fails the turn. Retry
+ * eligibility reuses the assistant-retry classification so quota / content-filter
+ * style errors still fail fast.
+ */
+async function compactWithRetry(
+  handle: SessionHandle,
+  preparation: Parameters<typeof compact>[0],
+  models: Parameters<typeof compact>[1],
+  model: Parameters<typeof compact>[2],
+  abortSignal?: AbortSignal,
+): Promise<Awaited<ReturnType<typeof compact>>> {
+  let result = await compact(preparation, models, model, undefined, abortSignal);
+
+  for (let attempt = 1; attempt < SUMMARIZE_MAX_ATTEMPTS && !result.ok; attempt++) {
+    const error = result.error.message;
+    if (abortSignal?.aborted || !isRetryableProviderErrorMessage(error)) break;
+    logger.warn(
+      `[Compaction] summarization attempt ${attempt}/${SUMMARIZE_MAX_ATTEMPTS} failed sessionId=${handle.sessionId}, retrying: ${error}`,
+    );
+    await sleep(SUMMARIZE_RETRY_DELAY_MS);
+    result = await compact(preparation, models, model, undefined, abortSignal);
+  }
+
+  return result;
+}
+
 /**
  * Check if the session needs auto-compaction and run it if so.
  * Called before LLM requests while the session lock is held.
@@ -119,16 +146,21 @@ export async function maybeAutoCompact(
   const force = input.force === true;
   const messages = handle.session.agent.state.messages;
   const tokenBudget = getContextTokenBudget(messages);
+  // Provider usage undercounts inline base64 images on proxies that bill them
+  // as text, so take the larger of the two views for the threshold decision.
+  // tokensBefore reporting keeps using the accurate provider number.
+  const proxyTokens = estimateProxyContextTokens(messages);
+  const thresholdTokens = Math.max(tokenBudget?.estimatedTokens ?? 0, proxyTokens);
   if (!force) {
-    if (!tokenBudget) return { compacted: false, reason: "no_usage_data" };
-    if (!shouldCompact(tokenBudget.estimatedTokens, contextWindow, settings)) {
+    if (!tokenBudget && proxyTokens <= 0) return { compacted: false, reason: "no_usage_data" };
+    if (!shouldCompact(thresholdTokens, contextWindow, settings)) {
       return { compacted: false, reason: "below_threshold" };
     }
   }
 
   const tokensLabel = tokenBudget?.estimatedTokens ?? "unknown";
   logger.info(
-    `[Compaction] ${force ? "overflow-compact" : "auto-compact"} triggered sessionId=${handle.sessionId} contextWindow=${contextWindow} reserve=${settings.reserveTokens} tokens=${tokensLabel}`,
+    `[Compaction] ${force ? "overflow-compact" : "auto-compact"} triggered sessionId=${handle.sessionId} contextWindow=${contextWindow} reserve=${settings.reserveTokens} tokens=${tokensLabel} proxyTokens=${proxyTokens}`,
   );
 
   const tracer = getAgentTracer();
@@ -159,19 +191,14 @@ export async function maybeAutoCompact(
       }
 
       span.setAttribute("agent.compaction.tokens_before", preparation.tokensBefore);
+      span.setAttribute("agent.compaction.proxy_tokens", proxyTokens);
       span.setAttribute("agent.compaction.messages_to_summarize", preparation.messagesToSummarize.length);
 
       const apiKey = handle.session.modelRegistry.getApiKey(model.provider);
       if (!apiKey) return { compacted: false, reason: "no_api_key" };
 
       const models = createModelsFromCohubRegistry(handle.session.modelRegistry, model);
-      const compactResult = await compact(
-        preparation,
-        models,
-        model,
-        undefined,
-        input.abortSignal,
-      );
+      const compactResult = await compactWithRetry(handle, preparation, models, model, input.abortSignal);
       if (!compactResult.ok) {
         span.setAttribute("agent.compaction.error", compactResult.error.message);
         logger.warn(`[Compaction] summarization failed sessionId=${handle.sessionId}: ${compactResult.error.message}`);
