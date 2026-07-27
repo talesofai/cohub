@@ -1,5 +1,24 @@
 # @neta-art/cohub
 
+## 4.0.0
+
+### Major Changes
+
+- b9e6840: Remove note board nodes and render Markdown file-card titles from frontmatter.
+
+### Minor Changes
+
+- 9350706: Add shared Board geometry for Figma-style rotation zones outside selection corners.
+- 9350706: Add black and white to the shared Board tool palette and color types.
+- ba7d325: Add shared Board tool-style defaults and controls, and increase the default text size.
+
+### Patch Changes
+
+- c1eb8ef: Allow Board hosts to render a themed image backdrop beneath the transparent canvas.
+- 95ae57d: Render freehand Board strokes with stable rounded outlines through sharp turns and self-intersections.
+- a98f930: Add typed `work.version.published` Space realtime events.
+- 9350706: Preserve image proportions in Board file-card covers and remove the metadata footer.
+
 ## 3.2.0
 
 ### Minor Changes
