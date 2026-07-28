@@ -66,6 +66,7 @@ func newProcessDispatcher(t *testing.T, root string) (*Dispatcher, *collectRoute
 	t.Helper()
 	cfg := env.Config{WorkspaceDir: root, Fence: true}
 	d := NewDispatcher(cfg, process.NewManager(slog.Default()), slog.Default())
+	t.Cleanup(d.Close)
 	router := newCollectRouter()
 	d.SetRouter(router)
 	return d, router

@@ -133,7 +133,8 @@ func main() {
 
 // buildRuntime wires the shared sandbox runtime (process manager, dispatcher, ws
 // server) and starts the file/port watchers. The returned cleanup closes the
-// watchers. It is used by both cloud (listen) and local (dial-out) modes.
+// runtime resources. It is used by both cloud (listen) and local (dial-out)
+// modes.
 //
 // fsSink/portsSink override where watcher batches are delivered. Cloud mode
 // leaves them nil and broadcasts to attached data sessions; local mode routes
@@ -187,6 +188,7 @@ func buildRuntime(
 	}
 
 	return server, func() {
+		dispatcher.Close()
 		for _, close := range closers {
 			close()
 		}

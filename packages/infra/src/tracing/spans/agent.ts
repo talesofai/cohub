@@ -89,6 +89,12 @@ function buildRpcParamAttributes(method: string, params?: Record<string, unknown
   if (typeof params.ignoreCase === "boolean") attributes["sandbox.rpc.params.ignore_case"] = params.ignoreCase;
   if (typeof params.literal === "boolean") attributes["sandbox.rpc.params.literal"] = params.literal;
   if (typeof params.context === "number") attributes["sandbox.rpc.params.context"] = params.context;
+  if (method === "lsp.query" && typeof params.action === "string") {
+    attributes["sandbox.rpc.params.action"] = truncateAttribute(params.action, 40);
+  }
+  if (method === "lsp.query" && typeof params.language === "string") {
+    attributes["sandbox.rpc.params.language"] = truncateAttribute(params.language, 40);
+  }
   if (typeof params.pattern === "string") {
     attributes["sandbox.rpc.params.pattern_length"] = params.pattern.length;
     attributes["sandbox.rpc.params.pattern_hash"] = hashAttribute(params.pattern);

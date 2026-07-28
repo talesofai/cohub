@@ -145,6 +145,10 @@ pnpm dev
 - `ls` -> `fs.stat` + `fs.ls`
 - `find` -> `fs.stat` + `fs.find`
 - `grep` -> `fs.grep`
+- `lsp` -> `lsp.query`（TypeScript/JavaScript、Go、Python，只读语义查询）
+
+LSP 的完整边界、配置与验证方式见
+[`docs/language-intelligence.md`](./language-intelligence.md)。
 
 ## Web/API 文件系统（local sandbox，M4）
 

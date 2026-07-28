@@ -14,6 +14,7 @@
 - `fs.grep`
 - `process.start`
 - `process.abort`
+- `lsp.query`（只读 diagnostics / definition / references / hover / symbols）
 
 sandbox 只保证工作目录挂载可用，不再负责 clone repo 或初始化 workspace 内容。
 这些内容初始化流程统一由 worker 完成，再通过共享 PVC 暴露给 sandbox。

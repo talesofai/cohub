@@ -15,9 +15,16 @@ type FilesystemRoot struct {
 }
 
 const (
-	DefaultSandboxWSHost = "0.0.0.0"
-	DefaultSandboxWSPort = 8788
-	DefaultHeartbeatSecs = 5
+	DefaultSandboxWSHost       = "0.0.0.0"
+	DefaultSandboxWSPort       = 8788
+	DefaultHeartbeatSecs       = 5
+	LSPTypeScriptExecutableEnv = "LSP_TYPESCRIPT_EXECUTABLE"
+	LSPTypeScriptTsserverEnv   = "LSP_TYPESCRIPT_TSSERVER_PATH"
+	LSPGoExecutableEnv         = "LSP_GO_EXECUTABLE"
+	LSPPythonExecutableEnv     = "LSP_PYTHON_EXECUTABLE"
+	LSPRequestTimeoutMSEnv     = "LSP_REQUEST_TIMEOUT_MS"
+	LSPIdleTimeoutSecsEnv      = "LSP_IDLE_TIMEOUT_SECS"
+	LSPMaxMessageBytesEnv      = "LSP_MAX_MESSAGE_BYTES"
 )
 
 // Mode selects how the sandbox exposes itself.
@@ -41,6 +48,13 @@ type Config struct {
 	PublicURLPrefix                string
 	PodIP                          string
 	PublicPorts                    []int
+	LSPTypeScriptExecutable        string
+	LSPTypeScriptTsserverPath      string
+	LSPGoExecutable                string
+	LSPPythonExecutable            string
+	LSPRequestTimeoutMS            int
+	LSPIdleTimeoutSecs             int
+	LSPMaxMessageBytes             int
 	ZombieSelfHealThreshold        int
 	ZombieSelfHealConsecutiveTicks int
 
@@ -96,6 +110,13 @@ func Load() (Config, error) {
 		PublicURLPrefix:                strings.TrimSpace(os.Getenv("PUBLIC_URL_PREFIX")),
 		PodIP:                          strings.TrimSpace(os.Getenv("POD_IP")),
 		PublicPorts:                    parsePortsEnv("COHUB_PUBLIC_PORTS", []int{3000, 5173}),
+		LSPTypeScriptExecutable:        stringEnv(LSPTypeScriptExecutableEnv, "typescript-language-server"),
+		LSPTypeScriptTsserverPath:      strings.TrimSpace(os.Getenv(LSPTypeScriptTsserverEnv)),
+		LSPGoExecutable:                stringEnv(LSPGoExecutableEnv, "gopls"),
+		LSPPythonExecutable:            stringEnv(LSPPythonExecutableEnv, "basedpyright-langserver"),
+		LSPRequestTimeoutMS:            parseBoundedIntEnv(LSPRequestTimeoutMSEnv, 5_000, 250, 60_000),
+		LSPIdleTimeoutSecs:             parseBoundedIntEnv(LSPIdleTimeoutSecsEnv, 300, 5, 3_600),
+		LSPMaxMessageBytes:             parseBoundedIntEnv(LSPMaxMessageBytesEnv, 4*1024*1024, 64*1024, 16*1024*1024),
 		ZombieSelfHealThreshold:        parseIntEnv("ZOMBIE_SELF_HEAL_THRESHOLD", 0),
 		ZombieSelfHealConsecutiveTicks: parseIntEnv("ZOMBIE_SELF_HEAL_CONSECUTIVE_TICKS", 3),
 	}, nil
@@ -153,17 +174,40 @@ func LoadLocal(opts LocalOptions) (Config, error) {
 	}
 
 	return Config{
-		SpaceID:           opts.SpaceID,
-		Mode:              ModeLocal,
-		WorkspaceDir:      resolvedRoot,
-		PlatformAgentsDir: filepath.Join(cacheDir, "platform-agents"),
-		UserAgentsDir:     filepath.Join(cacheDir, "user-agents"),
-		ImageVersion:      imageVersion,
-		PublicPorts:       parsePortsEnv("COHUB_PUBLIC_PORTS", []int{3000, 5173}),
-		RelayURL:          strings.TrimSpace(opts.RelayURL),
-		RelayToken:        strings.TrimSpace(opts.RelayToken),
-		Fence:             true,
+		SpaceID:                   opts.SpaceID,
+		Mode:                      ModeLocal,
+		WorkspaceDir:              resolvedRoot,
+		PlatformAgentsDir:         filepath.Join(cacheDir, "platform-agents"),
+		UserAgentsDir:             filepath.Join(cacheDir, "user-agents"),
+		ImageVersion:              imageVersion,
+		PublicPorts:               parsePortsEnv("COHUB_PUBLIC_PORTS", []int{3000, 5173}),
+		LSPTypeScriptExecutable:   stringEnv(LSPTypeScriptExecutableEnv, "typescript-language-server"),
+		LSPTypeScriptTsserverPath: strings.TrimSpace(os.Getenv(LSPTypeScriptTsserverEnv)),
+		LSPGoExecutable:           stringEnv(LSPGoExecutableEnv, "gopls"),
+		LSPPythonExecutable:       stringEnv(LSPPythonExecutableEnv, "basedpyright-langserver"),
+		LSPRequestTimeoutMS:       parseBoundedIntEnv(LSPRequestTimeoutMSEnv, 5_000, 250, 60_000),
+		LSPIdleTimeoutSecs:        parseBoundedIntEnv(LSPIdleTimeoutSecsEnv, 300, 5, 3_600),
+		LSPMaxMessageBytes:        parseBoundedIntEnv(LSPMaxMessageBytesEnv, 4*1024*1024, 64*1024, 16*1024*1024),
+		RelayURL:                  strings.TrimSpace(opts.RelayURL),
+		RelayToken:                strings.TrimSpace(opts.RelayToken),
+		Fence:                     true,
 	}, nil
+}
+
+func stringEnv(name string, fallback string) string {
+	value := strings.TrimSpace(os.Getenv(name))
+	if value == "" {
+		return fallback
+	}
+	return value
+}
+
+func parseBoundedIntEnv(name string, defaultValue int, minimum int, maximum int) int {
+	value := parseIntEnv(name, defaultValue)
+	if value < minimum || value > maximum {
+		return defaultValue
+	}
+	return value
 }
 
 func parseIntEnv(name string, defaultValue int) int {

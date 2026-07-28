@@ -136,6 +136,7 @@ Source of truth for product docs content:
 Engineering notes still in the repo:
 - `docs/self-hosting.md`
 - `docs/agent-sandbox-runtime.md`
+- `docs/language-intelligence.md`
 - `docs/works-guide.md`
 - `docs/work-commerce-guide.md`
 - `docs/generations.md`
@@ -154,4 +155,3 @@ Engineering notes still in the repo:
 ## License
 
 Apache License 2.0 © Viscept Limited
-

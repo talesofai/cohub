@@ -23,6 +23,7 @@ export const RPC_METHODS = [
   "fs.grep",
   "process.start",
   "process.abort",
+  "lsp.query",
 ] as const;
 
 export type FsChange = {
@@ -77,6 +78,9 @@ export const RPC_ERROR_CODES = [
   "TIMEOUT",
   "PROCESS_SPAWN_FAILED",
   "PROCESS_ABORT_FAILED",
+  "LSP_UNAVAILABLE",
+  "LSP_START_FAILED",
+  "LSP_PROTOCOL_ERROR",
   "IO_ERROR",
   "INTERNAL_ERROR",
 ] as const;
@@ -118,6 +122,7 @@ export type SandboxCapabilities = {
   /** process.start supports argv exec mode (no shell). */
   processStartArgv?: boolean;
   processAbort: boolean;
+  lspRead?: boolean;
 };
 
 export type SandboxFilesystemRoot = {
@@ -348,6 +353,96 @@ export type ProcessAbortResult = {
   aborted: boolean;
 };
 
+export const LSP_ACTIONS = [
+  "status",
+  "diagnostics",
+  "definition",
+  "references",
+  "hover",
+  "symbols",
+] as const;
+
+export type LspAction = (typeof LSP_ACTIONS)[number];
+export type LspLanguage = "typescript" | "go" | "python";
+export type LspSymbolScope = "document" | "workspace";
+
+export type LspPosition = {
+  line: number;
+  character: number;
+};
+
+export type LspRange = {
+  start: LspPosition;
+  end: LspPosition;
+};
+
+export type LspDiagnostic = {
+  range: LspRange;
+  severity?: number;
+  code?: string | number;
+  source?: string;
+  message: string;
+};
+
+export type LspLocation = {
+  path: string;
+  range: LspRange;
+};
+
+export type LspHover = {
+  text: string;
+  range?: LspRange;
+};
+
+export type LspSymbol = {
+  name: string;
+  kind: number;
+  containerName?: string;
+  path?: string;
+  range: LspRange;
+  selectionRange?: LspRange;
+  children?: LspSymbol[];
+};
+
+export type LspServerStatus = {
+  language: LspLanguage;
+  available: boolean;
+  active: boolean;
+  executable?: string;
+  version?: string;
+  error?: string;
+};
+
+export type LspQueryParams = {
+  action: LspAction;
+  language?: LspLanguage;
+  path?: string;
+  cwd?: string;
+  line?: number;
+  character?: number;
+  symbolScope?: LspSymbolScope;
+  query?: string;
+  limit?: number;
+  timeoutMs?: number;
+};
+
+export type LspQueryResult = {
+  action: LspAction;
+  language?: LspLanguage;
+  server?: string;
+  available: boolean;
+  active?: boolean;
+  status?: LspServerStatus[];
+  diagnostics?: LspDiagnostic[];
+  locations?: LspLocation[];
+  hover?: LspHover;
+  symbols?: LspSymbol[];
+  total?: number;
+  returned?: number;
+  truncated?: boolean;
+  durationMs: number;
+};
+
 export type RpcRequestMap = {
   "fs.read": {
     params: FsReadParams;
@@ -384,6 +479,10 @@ export type RpcRequestMap = {
   "process.abort": {
     params: ProcessAbortParams;
     result: ProcessAbortResult;
+  };
+  "lsp.query": {
+    params: LspQueryParams;
+    result: LspQueryResult;
   };
 };
 

@@ -59,6 +59,17 @@ type ExitInfo struct {
 	TimeoutSecs int
 }
 
+// ProtocolProcess is a long-lived, stdin-driven child such as a language
+// server. Its executable and arguments come from trusted sandbox configuration,
+// never directly from an RPC request.
+type ProtocolProcess struct {
+	ID     string
+	Stdin  io.WriteCloser
+	Stdout io.ReadCloser
+	Stderr io.ReadCloser
+	Exit   <-chan ExitInfo
+}
+
 type Stats struct {
 	ActiveProcesses        int   `json:"activeProcesses"`
 	StartedTotal           int64 `json:"startedTotal"`
@@ -104,6 +115,27 @@ func (m *Manager) Start(ownerIdentity string, command string, cwd string, timeou
 }
 
 func (m *Manager) StartWithOptions(ownerIdentity string, options StartOptions) (string, io.ReadCloser, io.ReadCloser, <-chan ExitInfo, error) {
+	started, err := m.startWithOptions(ownerIdentity, options, false, false)
+	if err != nil {
+		return "", nil, nil, nil, err
+	}
+	return started.ID, started.Stdout, started.Stderr, started.Exit, nil
+}
+
+func (m *Manager) StartProtocol(ownerIdentity string, executable string, args []string, cwd string, timeoutSecs int, extraEnv map[string]string) (*ProtocolProcess, error) {
+	if strings.TrimSpace(executable) == "" {
+		return nil, fmt.Errorf("start command: executable is required")
+	}
+	argv := append([]string{executable}, args...)
+	return m.startWithOptions(ownerIdentity, StartOptions{
+		Argv:        argv,
+		CWD:         cwd,
+		TimeoutSecs: timeoutSecs,
+		Env:         extraEnv,
+	}, true, true)
+}
+
+func (m *Manager) startWithOptions(ownerIdentity string, options StartOptions, withStdin bool, trustedEnv bool) (*ProtocolProcess, error) {
 	ctx := context.Background()
 	var cancel context.CancelFunc
 	if options.TimeoutSecs > 0 {
@@ -131,6 +163,22 @@ func (m *Manager) StartWithOptions(ownerIdentity string, options StartOptions) (
 			key, _, _ := strings.Cut(e, "=")
 			existingKeys[key] = true
 		}
+		if trustedEnv {
+			filtered := inheritedEnv[:0]
+			for _, e := range inheritedEnv {
+				key, _, _ := strings.Cut(e, "=")
+				if _, override := options.Env[key]; override {
+					continue
+				}
+				filtered = append(filtered, e)
+			}
+			inheritedEnv = filtered
+			existingKeys = make(map[string]bool)
+			for _, e := range inheritedEnv {
+				key, _, _ := strings.Cut(e, "=")
+				existingKeys[key] = true
+			}
+		}
 		var merged []string
 		for key, value := range options.Env {
 			if key == "" || existingKeys[key] {
@@ -153,17 +201,25 @@ func (m *Manager) StartWithOptions(ownerIdentity string, options StartOptions) (
 	stdout, err := cmd.StdoutPipe()
 	if err != nil {
 		cancel()
-		return "", nil, nil, nil, fmt.Errorf("stdout pipe: %w", err)
+		return nil, fmt.Errorf("stdout pipe: %w", err)
 	}
 	stderr, err := cmd.StderrPipe()
 	if err != nil {
 		cancel()
-		return "", nil, nil, nil, fmt.Errorf("stderr pipe: %w", err)
+		return nil, fmt.Errorf("stderr pipe: %w", err)
+	}
+	var stdin io.WriteCloser
+	if withStdin {
+		stdin, err = cmd.StdinPipe()
+		if err != nil {
+			cancel()
+			return nil, fmt.Errorf("stdin pipe: %w", err)
+		}
 	}
 
 	if err := cmd.Start(); err != nil {
 		cancel()
-		return "", nil, nil, nil, fmt.Errorf("start command: %w", err)
+		return nil, fmt.Errorf("start command: %w", err)
 	}
 
 	m.startedTotal.Add(1)
@@ -228,7 +284,13 @@ func (m *Manager) StartWithOptions(ownerIdentity string, options StartOptions) (
 		exitCh <- ExitInfo{ExitCode: exitCode, Reason: reason, TimeoutSecs: options.TimeoutSecs}
 	}()
 
-	return processID, stdout, stderr, exitCh, nil
+	return &ProtocolProcess{
+		ID:     processID,
+		Stdin:  stdin,
+		Stdout: stdout,
+		Stderr: stderr,
+		Exit:   exitCh,
+	}, nil
 }
 
 func (m *Manager) Abort(processID string) error {

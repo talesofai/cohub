@@ -14,6 +14,7 @@ import { getSpace } from "./api.js";
 import { abortSessionTurn, failSessionTurn, interruptSessionTurn, persistAssistantMessage, persistUserMessage } from "./persistence.js";
 import { ensureSandboxConnection } from "./sandbox-pool.js";
 import { createSandboxCodingTools } from "./sandbox/tools.js";
+import { READ_ONLY_SANDBOX_TOOL_NAMES } from "./sandbox/lsp-contract.js";
 import { CohubModelRegistry } from "./runtime/model-registry.js";
 import { loadRuntimeModelsConfigs } from "./runtime/models-loader.js";
 import { maybeAutoCompact, OverflowRecoveryError, type CompactionOutcome } from "./runtime/compaction.js";
@@ -714,7 +715,7 @@ async function createTurnExecutionToken(input: {
 
 function filterToolsForAccessMode(allTools: AgentTool[], accessMode: PromptAccessMode) {
   if (accessMode === "full_access") return allTools;
-  const readOnlyTools = new Set(["read", "ls", "find", "grep"]);
+  const readOnlyTools = new Set<string>(READ_ONLY_SANDBOX_TOOL_NAMES);
   return allTools.filter((tool) => readOnlyTools.has(tool.name));
 }
 

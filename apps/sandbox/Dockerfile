@@ -68,7 +68,7 @@ ENV PATH="/home/node/.bun/bin:${NPM_CONFIG_PREFIX}/bin:/home/node/.local/bin:/ho
 
 RUN curl -fsSL https://bun.sh/install | bash
 RUN corepack enable && corepack prepare pnpm@10.32.1 --activate
-RUN npm install -g typescript tsx @neta-art/cohub-cli
+RUN npm install -g typescript@6.0.3 typescript-language-server@5.3.0 basedpyright@1.39.9 tsx @neta-art/cohub-cli
 # Create directories and ensure node user owns them for runtime access
 RUN mkdir -p /home/node/.npm-global /home/node/.bun /home/node/.local /home/node/go/bin /home/node/.pnpm-global/bin \
     && chown -R node:node /home/node/.npm-global /home/node/.bun /home/node/.local /home/node/go /home/node/.pnpm-global
@@ -76,6 +76,7 @@ RUN mkdir -p /home/node/.npm-global /home/node/.bun /home/node/.local /home/node
 # Install Go toolchain
 RUN curl -fsSL https://go.dev/dl/go1.24.2.linux-amd64.tar.gz | tar xz -C /usr/local
 ENV PATH="/usr/local/go/bin:${PATH}"
+RUN GOBIN=/usr/local/bin go install golang.org/x/tools/gopls@v0.20.0
 
 WORKDIR /app
 

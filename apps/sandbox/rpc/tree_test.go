@@ -15,7 +15,9 @@ import (
 func newTreeDispatcher(t *testing.T, root string) *Dispatcher {
 	t.Helper()
 	cfg := env.Config{WorkspaceDir: root, Fence: true}
-	return NewDispatcher(cfg, process.NewManager(slog.Default()), slog.Default())
+	dispatcher := NewDispatcher(cfg, process.NewManager(slog.Default()), slog.Default())
+	t.Cleanup(dispatcher.Close)
+	return dispatcher
 }
 
 func treeRequest(t *testing.T, params fsTreeParams) protocol.RPCRequest {

@@ -209,6 +209,7 @@ func (s *Server) sendHeartbeat(session *connectionSession, includeSnapshot bool)
 			ProcessStart:     true,
 			ProcessStartArgv: true,
 			ProcessAbort:     true,
+			LSPRead:          true,
 		}
 		message.Filesystem = &protocol.SandboxFilesystem{
 			DefaultCwd: s.cfg.WorkspaceDir,

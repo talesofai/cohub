@@ -18,6 +18,7 @@ import (
 	ignore "github.com/sabhiram/go-gitignore"
 
 	"github.com/cohub/apps/sandbox/env"
+	"github.com/cohub/apps/sandbox/lsp"
 	"github.com/cohub/apps/sandbox/process"
 	"github.com/cohub/apps/sandbox/protocol"
 )
@@ -29,6 +30,7 @@ type IdentityRouter interface {
 type Dispatcher struct {
 	cfg            env.Config
 	processManager *process.Manager
+	lspManager     *lsp.Manager
 	logger         *slog.Logger
 	router         IdentityRouter
 	opSeq          int64
@@ -93,13 +95,22 @@ func (d *Dispatcher) loadGitignore(respect bool) *gitignoreMatcher {
 }
 
 func NewDispatcher(cfg env.Config, processManager *process.Manager, logger *slog.Logger) *Dispatcher {
-	return &Dispatcher{cfg: cfg, processManager: processManager, logger: logger}
+	return &Dispatcher{
+		cfg:            cfg,
+		processManager: processManager,
+		lspManager:     lsp.NewManager(cfg, processManager, logger),
+		logger:         logger,
+	}
 }
 
 func (d *Dispatcher) SetRouter(router IdentityRouter) {
 	d.mu.Lock()
 	defer d.mu.Unlock()
 	d.router = router
+}
+
+func (d *Dispatcher) Close() {
+	d.lspManager.Close()
 }
 
 func (d *Dispatcher) nextSeq() int64 {
@@ -142,6 +153,8 @@ func (d *Dispatcher) Handle(request protocol.RPCRequest, ownerIdentity string) (
 		return accepted, d.handleProcessStart(request, accepted.OpID, ownerIdentity)
 	case "process.abort":
 		return accepted, d.complete(request, accepted.OpID, d.handleProcessAbort(request))
+	case "lsp.query":
+		return accepted, d.complete(request, accepted.OpID, d.handleLSPQuery(request, ownerIdentity))
 	default:
 		return accepted, d.failed(request, accepted.OpID, "UNSUPPORTED_METHOD", fmt.Sprintf("unsupported method: %s", request.Method))
 	}
@@ -222,6 +235,19 @@ type processStartParams struct {
 
 type processAbortParams struct {
 	ProcessID string `json:"processId"`
+}
+
+type lspQueryParams struct {
+	Action      string `json:"action"`
+	Language    string `json:"language"`
+	Path        string `json:"path"`
+	CWD         string `json:"cwd"`
+	Line        int    `json:"line"`
+	Character   int    `json:"character"`
+	SymbolScope string `json:"symbolScope"`
+	Query       string `json:"query"`
+	Limit       int    `json:"limit"`
+	TimeoutMS   int    `json:"timeoutMs"`
 }
 
 func (d *Dispatcher) resolvePathForRequest(request protocol.RPCRequest, rawPath string, cwd string) (resolvedSandboxPath, interface{}, bool) {
@@ -959,6 +985,128 @@ func (d *Dispatcher) handleProcessAbort(request protocol.RPCRequest) interface{}
 		"processId": params.ProcessID,
 		"aborted":   true,
 	}
+}
+
+func (d *Dispatcher) handleLSPQuery(request protocol.RPCRequest, ownerIdentity string) interface{} {
+	var params lspQueryParams
+	if err := json.Unmarshal(request.Params, &params); err != nil {
+		return d.failed(request, "", "BAD_REQUEST", err.Error())
+	}
+
+	action := lsp.Action(strings.TrimSpace(params.Action))
+	switch action {
+	case lsp.ActionStatus, lsp.ActionDiagnostics, lsp.ActionDefinition, lsp.ActionReferences, lsp.ActionHover, lsp.ActionSymbols:
+	default:
+		return d.failed(request, "", "BAD_REQUEST", fmt.Sprintf("unsupported LSP action: %s", params.Action))
+	}
+
+	language := lsp.Language(strings.TrimSpace(params.Language))
+	if language != "" && !lsp.IsSupportedLanguage(language) {
+		return d.failed(request, "", "BAD_REQUEST", fmt.Sprintf("unsupported LSP language: %s", params.Language))
+	}
+	if params.Line < 0 || params.Character < 0 {
+		return d.failed(request, "", "BAD_REQUEST", "line and character must be non-negative")
+	}
+
+	path := ""
+	if action != lsp.ActionStatus {
+		if strings.TrimSpace(params.Path) == "" {
+			return d.failed(request, "", "BAD_REQUEST", "path is required for this LSP action")
+		}
+		resolved, errResponse, ok := d.resolvePathForRequest(request, params.Path, params.CWD)
+		if !ok {
+			return errResponse
+		}
+		path = resolved.path
+	}
+
+	symbolScope := lsp.SymbolScope(strings.TrimSpace(params.SymbolScope))
+	if symbolScope == "" {
+		symbolScope = lsp.SymbolScopeDocument
+	}
+	if symbolScope != lsp.SymbolScopeDocument && symbolScope != lsp.SymbolScopeWorkspace {
+		return d.failed(request, "", "BAD_REQUEST", fmt.Sprintf("unsupported LSP symbol scope: %s", params.SymbolScope))
+	}
+
+	policy := lsp.NewReadPolicy(d.cfg.WorkspaceDir)
+	result, err := d.lspManager.Query(ownerIdentity, policy, lsp.Query{
+		Action:      action,
+		Language:    language,
+		Path:        path,
+		Line:        params.Line,
+		Character:   params.Character,
+		SymbolScope: symbolScope,
+		Search:      params.Query,
+		Limit:       params.Limit,
+		TimeoutMS:   params.TimeoutMS,
+	})
+	if err != nil {
+		code := "LSP_PROTOCOL_ERROR"
+		var typed *lsp.Error
+		if errors.As(err, &typed) {
+			code = string(typed.Code)
+		}
+		return d.failed(request, "", code, err.Error())
+	}
+	d.sanitizeLSPResult(&result, policy)
+	return result
+}
+
+func (d *Dispatcher) sanitizeLSPResult(result *lsp.QueryResult, policy lsp.ReadPolicy) {
+	locations := result.Locations[:0]
+	for _, location := range result.Locations {
+		if !policy.CanRead(location.Path) {
+			continue
+		}
+		location.Path = d.toSandboxVisiblePath(location.Path)
+		locations = append(locations, location)
+	}
+	result.Locations = locations
+	if result.Action == lsp.ActionDefinition || result.Action == lsp.ActionReferences {
+		result.Returned = len(locations)
+	}
+	result.Symbols = d.sanitizeLSPSymbols(result.Symbols, policy)
+	if result.Action == lsp.ActionSymbols {
+		result.Returned = countLSPSymbols(result.Symbols)
+	}
+}
+
+func (d *Dispatcher) sanitizeLSPSymbols(symbols []lsp.Symbol, policy lsp.ReadPolicy) []lsp.Symbol {
+	filtered := make([]lsp.Symbol, 0, len(symbols))
+	for _, symbol := range symbols {
+		if symbol.Path != "" {
+			if !policy.CanRead(symbol.Path) {
+				continue
+			}
+			symbol.Path = d.toSandboxVisiblePath(symbol.Path)
+		}
+		symbol.Children = d.sanitizeLSPSymbols(symbol.Children, policy)
+		filtered = append(filtered, symbol)
+	}
+	return filtered
+}
+
+func countLSPSymbols(symbols []lsp.Symbol) int {
+	total := 0
+	for _, symbol := range symbols {
+		total += 1 + countLSPSymbols(symbol.Children)
+	}
+	return total
+}
+
+func (d *Dispatcher) toSandboxVisiblePath(path string) string {
+	if !d.cfg.Fence {
+		return path
+	}
+	root := filepath.Clean(d.cfg.WorkspaceDir)
+	relative, err := filepath.Rel(root, filepath.Clean(path))
+	if err != nil || relative == ".." || strings.HasPrefix(relative, ".."+string(filepath.Separator)) {
+		return ""
+	}
+	if relative == "." {
+		return virtualWorkspaceRoot
+	}
+	return filepath.ToSlash(filepath.Join(virtualWorkspaceRoot, relative))
 }
 
 func (d *Dispatcher) complete(request protocol.RPCRequest, opID string, result interface{}) interface{} {

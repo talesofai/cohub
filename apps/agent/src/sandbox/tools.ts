@@ -1,4 +1,5 @@
 import { randomUUID } from "node:crypto";
+import { Type, type Static } from "@earendil-works/pi-ai";
 import {
   createBashTool,
   createToolFailure,
@@ -68,6 +69,7 @@ import {
   SandboxRpcError,
   type SandboxRpcDiagnostics,
 } from "@cohub/sandbox-client";
+import { LSP_AGENT_ACTIONS } from "./lsp-contract.js";
 
 import { ensureSandboxConnection, pruneSandboxConnections } from "../sandbox-pool.js";
 import { getSpaceSandbox, recoverSpaceSandbox } from "../api.js";
@@ -1215,6 +1217,98 @@ async function tracedRpcAbortProcess(connection: SandboxConnection, processId: s
   }
 }
 
+export function createLspTool(): AgentTool {
+  const parameters = Type.Object({
+    action: Type.Union(LSP_AGENT_ACTIONS.map((action) => Type.Literal(action)), {
+      description: "Read-only language intelligence action.",
+    }),
+    language: Type.Optional(Type.Union([
+      Type.Literal("typescript"),
+      Type.Literal("go"),
+      Type.Literal("python"),
+    ], {
+      description: "Language server to use. Omit to infer it from the file extension.",
+    })),
+    path: Type.Optional(Type.String({
+      description: "Path inside the current Space. Required except for status.",
+    })),
+    line: Type.Optional(Type.Integer({
+      minimum: 0,
+      description: "Zero-based line for definition, references, and hover.",
+    })),
+    character: Type.Optional(Type.Integer({
+      minimum: 0,
+      description: "Zero-based UTF-16 character offset for definition, references, and hover.",
+    })),
+    symbolScope: Type.Optional(Type.Union([
+      Type.Literal("document"),
+      Type.Literal("workspace"),
+    ], {
+      description: "Use document symbols by default or search workspace symbols.",
+    })),
+    query: Type.Optional(Type.String({
+      description: "Workspace symbol search query.",
+    })),
+    limit: Type.Optional(Type.Integer({
+      minimum: 1,
+      maximum: 500,
+      description: "Maximum normalized results to return.",
+    })),
+    timeoutMs: Type.Optional(Type.Integer({
+      minimum: 250,
+      maximum: 60_000,
+      description: "Bounded language server request timeout.",
+    })),
+  });
+
+  return {
+    name: "lsp",
+    label: "language intelligence",
+    description: "Query read-only TypeScript/JavaScript, Go, or Python language intelligence inside the current Space. This tool cannot rename, apply edits, or write files.",
+    parameters,
+    async execute(toolCallId, rawParams) {
+      const params = rawParams as Static<typeof parameters>;
+      if (params.action !== "status" && !params.path?.trim()) {
+        throw new Error(`LSP action ${params.action} requires a path.`);
+      }
+      if (params.path?.trim()) {
+        const requestedPath = params.path.trim();
+        const sandboxPath = requestedPath.startsWith("/")
+          ? requestedPath
+          : `${SANDBOX_WORKSPACE_PATH}/${requestedPath}`;
+        await assertSandboxPathVisible(sandboxPath);
+      }
+
+      const toolCtx = getCurrentToolExecutionContext();
+      incrementToolCallCount(toolCtx?.metrics);
+      const connection = await getCurrentConnection("lsp.query");
+      return wrapToolCall(getAgentTracer(), {
+        toolName: "lsp",
+        input: params as Record<string, unknown>,
+        ...getCurrentTraceContext(),
+        toolCallId,
+      }, async () => {
+        const result = await tracedRpc(connection, "lsp.query", {
+          action: params.action,
+          language: params.language,
+          path: params.path,
+          cwd: SANDBOX_WORKSPACE_PATH,
+          line: params.line,
+          character: params.character,
+          symbolScope: params.symbolScope,
+          query: params.query,
+          limit: params.limit,
+          timeoutMs: params.timeoutMs,
+        });
+        return {
+          content: [{ type: "text", text: JSON.stringify(result, null, 2) }],
+          details: result,
+        };
+      });
+    },
+  };
+}
+
 function getCurrentActorUserId() {
   const ctx = getCurrentToolExecutionContext();
   if (ctx?.actorUserId) return ctx.actorUserId;
@@ -1346,5 +1440,6 @@ export function createSandboxCodingTools() {
       checkAccess: assertCurrentActorCanViewSpaceFiles,
       resolveSandboxProvider,
     })),
+    withSandboxFailureResult(createLspTool()),
   ];
 }

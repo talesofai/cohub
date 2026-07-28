@@ -136,6 +136,7 @@ pnpm build
 仓库内工程说明仍保留：
 - `docs/self-hosting.md`
 - `docs/agent-sandbox-runtime.md`
+- `docs/language-intelligence.md`
 - `docs/works-guide.md`
 - `docs/work-commerce-guide.md`
 - `docs/generations.md`
@@ -154,4 +155,3 @@ pnpm build
 ## License
 
 Apache License 2.0 © Viscept Limited
-
