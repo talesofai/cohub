@@ -148,7 +148,11 @@ onMount(() => {
 	{/if}
 </svelte:head>
 
-<div class={isBackground ? "work-surface background" : "work-surface page"}>
+<div
+	class={isBackground
+		? "work-surface background"
+		: "work-surface page public-work-viewport"}
+>
 	{#if shouldRenderFrame}
 		<iframe
 			bind:this={frame}
@@ -224,10 +228,6 @@ onMount(() => {
 		color: var(--text-primary);
 	}
 
-	.work-surface.page {
-		min-height: 100vh;
-	}
-
 	.work-surface.background {
 		width: 100%;
 		height: 100%;
@@ -243,7 +243,7 @@ onMount(() => {
 	}
 
 	.work-surface.page .work-frame {
-		height: 100vh;
+		height: 100%;
 	}
 
 	.empty-state {

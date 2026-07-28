@@ -126,16 +126,16 @@ $effect(() => {
 	/>
 {:else if ready}
 	<!-- SSR / first paint: head already has share meta; surface hydrates client-side. -->
-	<div class="min-h-screen bg-bg-primary" aria-hidden="true"></div>
+	<div class="public-work-viewport bg-bg-primary" aria-hidden="true"></div>
 {:else if clientLoading}
 	<div
-		class="flex min-h-screen items-center justify-center bg-bg-primary px-4 text-[13px] text-text-tertiary"
+		class="public-work-viewport flex items-center justify-center bg-bg-primary px-4 text-[13px] text-text-tertiary"
 	>
 		Loading Work…
 	</div>
 {:else}
 	<div
-		class="flex min-h-screen items-center justify-center bg-bg-primary px-4 text-[13px] text-text-secondary"
+		class="public-work-viewport flex items-center justify-center bg-bg-primary px-4 text-[13px] text-text-secondary"
 	>
 		{clientError || "Work is unavailable."}
 	</div>

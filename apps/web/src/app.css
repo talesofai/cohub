@@ -28,6 +28,29 @@ body {
 		color 0.2s ease;
 }
 
+/* Public Works must follow Safari's visible viewport, not its larger layout viewport. */
+.public-work-viewport {
+	--public-work-viewport-height: 100vh;
+
+	width: 100%;
+	height: var(--public-work-viewport-height);
+	min-height: 0;
+	overflow: hidden;
+	overscroll-behavior: none;
+}
+
+@supports (height: 100svh) {
+	.public-work-viewport {
+		--public-work-viewport-height: 100svh;
+	}
+}
+
+@supports (height: 100dvh) {
+	.public-work-viewport {
+		--public-work-viewport-height: 100dvh;
+	}
+}
+
 /* Motion tokens — keep numeric values aligned with $lib/motion.svelte.ts */
 :root {
 	--motion-panel-duration: 280ms;
