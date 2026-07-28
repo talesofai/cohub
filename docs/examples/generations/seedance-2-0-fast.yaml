@@ -31,7 +31,7 @@ parameters:
     type: string
     optional: true
     default: 720p
-    enum: [480p, 720p, 1080p, 2K]
+    enum: [480p, 720p]
     description: Output video resolution.
   aspect_ratio:
     type: string
