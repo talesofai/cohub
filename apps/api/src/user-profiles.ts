@@ -93,23 +93,21 @@ const emailLocalPart = (value: string | null) => {
 const fallbackDisplayName = (userUuid: string) => userUuid.replaceAll("-", "").slice(0, 8);
 
 const USERNAME_MAX_LENGTH = 39;
+const DEFAULT_USERNAME_REGEX = /^[a-z][a-z0-9]*$/;
 const DEFAULT_USERNAME_SUFFIX_ATTEMPTS = 8;
 /** Inclusive range for conflict suffixes — wide space so common email locals rarely retry. */
 const DEFAULT_USERNAME_SUFFIX_MIN = 1_000;
 const DEFAULT_USERNAME_SUFFIX_MAX = 1_000_000; // 1000..999999
 const DEFAULT_USERNAME_ALLOCATE_ROUNDS = 3;
 
-/** Slugify a raw string into a username-shaped base (may still be reserved). */
+/** Slugify a raw string into a base accepted by both Cohub and Logto. */
 export function slugifyUsernameBase(value: string): string | null {
   const slug = value
     .trim()
     .toLowerCase()
-    .replace(/[^a-z0-9]+/g, "-")
-    .replace(/-{2,}/g, "-")
-    .replace(/^-+|-+$/g, "")
-    .slice(0, USERNAME_MAX_LENGTH)
-    .replace(/-+$/g, "");
-  if (!slug || !USERNAME_REGEX.test(slug)) return null;
+    .replace(/[^a-z0-9]+/g, "")
+    .slice(0, USERNAME_MAX_LENGTH);
+  if (!slug || !DEFAULT_USERNAME_REGEX.test(slug)) return null;
   return slug;
 }
 
@@ -123,17 +121,19 @@ export function usernameBaseFromEmail(email: string | null | undefined): string 
 
 function uuidUsernameFallback(userUuid: string): string {
   const compact = userUuid.replaceAll("-", "").toLowerCase();
-  // `u-` prefix stays clear of the reserved exact name `user`.
-  return normalizeUsername(`u-${compact.slice(0, 12)}`) ?? `u-${compact.slice(0, 12)}`.slice(0, USERNAME_MAX_LENGTH);
+  // The letter prefix satisfies Logto's first-character requirement.
+  return normalizeUsername(`u${compact.slice(0, 12)}`) ?? `u${compact.slice(0, 12)}`.slice(0, USERNAME_MAX_LENGTH);
 }
 
 function withRandomSuffix(base: string): string | null {
   const suffix = String(randomInt(DEFAULT_USERNAME_SUFFIX_MIN, DEFAULT_USERNAME_SUFFIX_MAX));
-  const maxBaseLen = USERNAME_MAX_LENGTH - 1 - suffix.length;
+  const maxBaseLen = USERNAME_MAX_LENGTH - suffix.length;
   if (maxBaseLen < 1) return null;
-  const trimmed = base.slice(0, maxBaseLen).replace(/-+$/g, "");
+  const trimmed = base.slice(0, maxBaseLen);
   if (!trimmed) return null;
-  return normalizeUsername(`${trimmed}-${suffix}`);
+  const candidate = `${trimmed}${suffix}`;
+  if (!DEFAULT_USERNAME_REGEX.test(candidate)) return null;
+  return normalizeUsername(candidate);
 }
 
 /** Build a wide candidate set: bare email base (if allowed), then random suffixes, then uuid fallback. */
@@ -156,7 +156,7 @@ export function buildDefaultUsernameCandidates(input: {
 
   candidates.push(uuidUsernameFallback(input.userUuid));
   for (let i = 0; i < 4; i += 1) {
-    const candidate = withRandomSuffix(`u-${input.userUuid.replaceAll("-", "").slice(0, 8)}`);
+    const candidate = withRandomSuffix(`u${input.userUuid.replaceAll("-", "").toLowerCase().slice(0, 8)}`);
     if (candidate) candidates.push(candidate);
   }
 

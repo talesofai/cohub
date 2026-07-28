@@ -9,7 +9,7 @@ import {
 
 describe("usernameBaseFromEmail", () => {
   it("slugifies email local parts", () => {
-    assert.equal(usernameBaseFromEmail("Alice.Smith+tag@example.com"), "alice-smith-tag");
+    assert.equal(usernameBaseFromEmail("Alice.Smith+tag@example.com"), "alicesmithtag");
     assert.equal(usernameBaseFromEmail("  bob@example.com "), "bob");
   });
 
@@ -18,12 +18,13 @@ describe("usernameBaseFromEmail", () => {
     assert.equal(usernameBaseFromEmail(""), null);
     assert.equal(usernameBaseFromEmail("@example.com"), null);
     assert.equal(usernameBaseFromEmail("你好@example.com"), null);
+    assert.equal(usernameBaseFromEmail("123@example.com"), null);
   });
 });
 
 describe("slugifyUsernameBase", () => {
-  it("collapses separators and trims edges", () => {
-    assert.equal(slugifyUsernameBase("--Hello__World!!"), "hello-world");
+  it("removes separators and trims edges", () => {
+    assert.equal(slugifyUsernameBase("--Hello__World!!"), "helloworld");
   });
 
   it("rejects reserved-incompatible empty results", () => {
@@ -40,10 +41,11 @@ describe("buildDefaultUsernameCandidates", () => {
     });
 
     assert.equal(candidates[0], "alice");
-    assert.ok(candidates.some((value) => value.startsWith("alice-")));
-    assert.ok(candidates.some((value) => value.startsWith("u-")));
+    assert.ok(candidates.some((value) => /^alice\d+$/.test(value)));
+    assert.ok(candidates.some((value) => value.startsWith("u")));
     assert.equal(new Set(candidates).size, candidates.length);
     for (const candidate of candidates) {
+      assert.match(candidate, /^[a-z][a-z0-9]*$/);
       assert.equal(normalizeUsername(candidate), candidate);
     }
   });
@@ -56,7 +58,7 @@ describe("buildDefaultUsernameCandidates", () => {
     });
 
     assert.ok(!candidates.includes("admin"));
-    assert.ok(candidates.some((value) => value.startsWith("admin-")));
+    assert.ok(candidates.some((value) => /^admin\d+$/.test(value)));
   });
 
   it("falls back without email", () => {
@@ -67,6 +69,7 @@ describe("buildDefaultUsernameCandidates", () => {
     });
 
     assert.ok(candidates.length >= 1);
-    assert.ok(candidates.every((value) => value.startsWith("u-")));
+    assert.ok(candidates.every((value) => value.startsWith("u")));
+    assert.ok(candidates.every((value) => /^[a-z][a-z0-9]*$/.test(value)));
   });
 });
