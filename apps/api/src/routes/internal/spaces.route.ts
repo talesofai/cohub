@@ -19,7 +19,12 @@ import { abortSessionTurn, failSessionTurn, interruptSessionTurn } from "../../s
 import { hasPermission } from "../../permissions.js";
 import { dispatchTurnFinalized } from "../../session-output.js";
 import { submitSessionPrompt, type PromptAccessMode, type SubmitSessionPromptContext } from "../../session-prompts.js";
-import { parsePromptEnv, PromptEnvValidationError } from "@cohub/core/sessions";
+import {
+  parsePromptEnv,
+  parsePromptSystemInstructions,
+  PromptEnvValidationError,
+  PromptSystemInstructionsValidationError,
+} from "@cohub/core/sessions";
 import { verifyWorkSessionToken } from "../../work-sessions.js";
 import { mergePromptContextAuth, promptAuthContextFromWorkSession } from "../../prompt-auth-context.js";
 import { getSpaceSandboxBySpaceId, updateSpaceSandbox, recoverSpaceSandbox } from "../../space-sandboxes.js";
@@ -391,6 +396,7 @@ router.post("/:spaceId/sessions/:sessionId/prompt", async (c) => {
       thinkingLevel?: string | null;
       accessMode?: PromptAccessMode | null;
       env?: unknown;
+      systemInstructions?: unknown;
       context?: SubmitSessionPromptContext | null;
     }>()
     .catch(() => null);
@@ -419,13 +425,15 @@ router.post("/:spaceId/sessions/:sessionId/prompt", async (c) => {
   if (!clientMessageId) return c.json({ message: "clientMessageId is required" }, 400);
 
   let promptEnv: Record<string, string> | null = null;
+  let systemInstructions: string | null = null;
   try {
     promptEnv = parsePromptEnv(body.env);
+    systemInstructions = parsePromptSystemInstructions(body.systemInstructions);
   } catch (error) {
     if (error instanceof PromptEnvValidationError) return c.json({ message: error.message }, 400);
+    if (error instanceof PromptSystemInstructionsValidationError) return c.json({ message: error.message }, 400);
     throw error;
   }
-
   try {
     const result = await submitSessionPrompt({
       spaceId,
@@ -439,6 +447,7 @@ router.post("/:spaceId/sessions/:sessionId/prompt", async (c) => {
       thinkingLevel: promptThinkingLevel ?? null,
       accessMode,
       env: promptEnv,
+      systemInstructions,
       context: mergePromptContextAuth(body.context ?? null, promptAuth),
     });
     return c.json({ ok: true, ...result });

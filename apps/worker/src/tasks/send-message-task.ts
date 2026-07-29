@@ -4,7 +4,7 @@ import type { TaskPayload } from "@cohub/protocol/task";
 import { registerTask } from "./registry.js";
 import { assignLabelsToSession } from "@cohub/core/labels";
 import { assignSessionSourceSystemLabel } from "@cohub/core/labels/session-source";
-import { getPromptAuthScopes, parsePromptEnv, type PromptAccessMode, type PromptAuthContext, type PromptEnv, type SubmitSessionPromptContext } from "@cohub/core/sessions";
+import { getPromptAuthScopes, parsePromptEnv, parsePromptSystemInstructions, type PromptAccessMode, type PromptAuthContext, type PromptEnv, type SubmitSessionPromptContext } from "@cohub/core/sessions";
 import type { SessionTurnIntent } from "@cohub/protocol/model";
 import { getPromptTemplateService } from "../prompt-templates.js";
 import { getSkillService } from "../skills.js";
@@ -39,7 +39,7 @@ function sanitizeTaskPromptAuth(auth: PromptAuthContext | null | undefined, inpu
 const sendMessageHandler = async (job: import("bullmq").Job, context?: { taskRunId: string }) => {
   const payload = job.data as TaskPayload;
   const spaceId = payload.spaceId;
-  const { content, sessionId, title, source: payloadSource, model, provider, thinkingLevel, clientMessageId, generationPolicy, accessMode, intent, labelIds, auth, env } = (payload.data ?? {}) as {
+  const { content, sessionId, title, source: payloadSource, model, provider, thinkingLevel, clientMessageId, generationPolicy, accessMode, intent, labelIds, auth, env, systemInstructions } = (payload.data ?? {}) as {
     content?: ContentBlock[];
     sessionId?: string;
     title?: string;
@@ -54,6 +54,7 @@ const sendMessageHandler = async (job: import("bullmq").Job, context?: { taskRun
     labelIds?: string[];
     auth?: PromptAuthContext | null;
     env?: PromptEnv | null;
+    systemInstructions?: string | null;
   };
 
   if (!spaceId) throw new Error("spaceId is required for send_message task");
@@ -66,6 +67,7 @@ const sendMessageHandler = async (job: import("bullmq").Job, context?: { taskRun
   if (!taskRunId) throw new Error("taskRunId is required for send_message task");
 
   const promptEnv = parsePromptEnv(env);
+  const promptSystemInstructions = parsePromptSystemInstructions(systemInstructions);
   const source = normalizeTaskSource(payloadSource);
   const targetSessionId = sessionId?.trim() || null;
   const createdSession = targetSessionId ? null : await sessionPromptService.registerCronjobSession(spaceId, { source, title: title ?? null, userUuid: userId });
@@ -99,6 +101,7 @@ const sendMessageHandler = async (job: import("bullmq").Job, context?: { taskRun
     generationPolicy: generationPolicy ?? null,
     accessMode: accessMode ?? "full_access",
     env: promptEnv,
+    systemInstructions: promptSystemInstructions,
     intent: intent ?? null,
     context: {
       kind: "scheduled_task",

@@ -657,6 +657,12 @@ function resolvePromptAccessMode(ownerMeta: Record<string, unknown>): PromptAcce
   return ownerMeta.accessMode === "read_only" ? "read_only" : "full_access";
 }
 
+function resolvePromptSystemInstructions(ownerMeta: Record<string, unknown>) {
+  return typeof ownerMeta.systemInstructions === "string" && ownerMeta.systemInstructions.trim()
+    ? ownerMeta.systemInstructions.trim()
+    : null;
+}
+
 function resolveContextHookEnv(ownerMeta: Record<string, unknown>) {
   const context = ownerMeta.context && typeof ownerMeta.context === "object" && !Array.isArray(ownerMeta.context)
     ? ownerMeta.context as Record<string, unknown>
@@ -875,8 +881,9 @@ export async function processAgentTurnJob(job: Job<AgentTurnJobData>) {
       const activeHandle = handle;
       try {
         await configureHandleAccessMode(activeHandle, accessMode);
+        await activeHandle.session.configureSystemInstructions(resolvePromptSystemInstructions(ownerMeta));
       } catch (error) {
-        logger.error(`[Agent] failed to configure tools sessionId=${data.sessionId} turnId=${batch.ownerTurn.id} accessMode=${accessMode}:`, error);
+        logger.error(`[Agent] failed to configure prompt runtime sessionId=${data.sessionId} turnId=${batch.ownerTurn.id} accessMode=${accessMode}:`, error);
         throw error;
       }
 

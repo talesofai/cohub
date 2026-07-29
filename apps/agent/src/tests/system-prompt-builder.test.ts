@@ -45,6 +45,20 @@ const promptWithoutUser = await buildCohubSystemPrompt({
 assert.ok(!promptWithoutUser.includes("# User Context"), "should not include user context without userId");
 assert.ok(promptWithoutUser.includes("# Project Context"), "should still include project context without userId");
 
+const promptWithRequestInstructions = await buildCohubSystemPrompt({
+  cwd: workspace,
+  userId,
+  selectedTools: [],
+  appendInstructions: "Return only one final image-generation prompt.",
+});
+assert.ok(promptWithRequestInstructions.includes("# Request Instructions"));
+assert.ok(promptWithRequestInstructions.includes("Return only one final image-generation prompt."));
+assert.ok(
+  promptWithRequestInstructions.indexOf("# Project Context")
+    < promptWithRequestInstructions.indexOf("# Request Instructions"),
+  "request instructions should be appended after stable project context",
+);
+
 // Test YAML block scalar frontmatter parsing
 await mkdir(join(workspace, ".agents", "skills", "test-folded"), { recursive: true });
 await mkdir(join(workspace, ".agents", "skills", "test-literal"), { recursive: true });

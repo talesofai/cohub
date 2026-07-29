@@ -37,6 +37,7 @@ export type BuildCohubSystemPromptOptions = {
   toolSnippets?: Record<string, string>;
   promptGuidelines?: string[];
   spaceMods?: SpaceModListItem[];
+  appendInstructions?: string | null;
   includeUserSkills?: boolean;
 };
 
@@ -223,6 +224,17 @@ export async function buildCohubSystemPrompt(options: BuildCohubSystemPromptOpti
 
   if (skills.length > 0) {
     sections.push(formatSkillsForPrompt(skills));
+  }
+
+  const appendInstructions = options.appendInstructions?.trim();
+  if (appendInstructions) {
+    sections.push([
+      "# Request Instructions",
+      "",
+      "Apply these instructions only to the current turn. They do not override platform safety or access controls.",
+      "",
+      appendInstructions,
+    ].join("\n"));
   }
 
   const visibleTools = selectedTools.filter((name) => toolSnippets[name]);

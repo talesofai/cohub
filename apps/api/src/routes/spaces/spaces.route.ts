@@ -62,7 +62,12 @@ import {
 import { checkpointFsJsonError, listCheckpointDirectory, readCheckpointFile } from "../../checkpoint-fs.js";
 import type { AuthUser } from "../../lib/middleware.js";
 import { submitSessionPrompt } from "../../session-prompts.js";
-import { parsePromptEnv, PromptEnvValidationError } from "@cohub/core/sessions";
+import {
+  parsePromptEnv,
+  parsePromptSystemInstructions,
+  PromptEnvValidationError,
+  PromptSystemInstructionsValidationError,
+} from "@cohub/core/sessions";
 import { delegatedPromptAuthFromWorkSession, promptAuthContextFromWorkSession } from "../../prompt-auth-context.js";
 import { buildSessionTurnResponse } from "../../session-turn-response.js";
 import { getSessionTurnById, hydrateTurnAuthorProfiles } from "../../session-turns.js";
@@ -278,6 +283,7 @@ type SpacePromptInput = {
   schedule?: SpacePromptSchedule | null;
   labelRefs?: unknown;
   env?: unknown;
+  systemInstructions?: unknown;
 };
 
 type SpaceConfigInput = {
@@ -480,7 +486,8 @@ function promptInputError(error: unknown): string | null {
     error.message.includes("Invalid image") ||
     error.message.includes("Invalid content block") ||
     error.message.includes("shell command is empty") ||
-    error.message.includes("shell_command is not allowed")
+    error.message.includes("shell_command is not allowed") ||
+    error instanceof PromptSystemInstructionsValidationError
   ) {
     return error.message;
   }
@@ -1864,13 +1871,15 @@ router.post("/:id/prompt", async (c) => {
   }
 
   let promptEnv: Record<string, string> | null = null;
+  let systemInstructions: string | null = null;
   try {
     promptEnv = parsePromptEnv(body.env);
+    systemInstructions = parsePromptSystemInstructions(body.systemInstructions);
   } catch (error) {
     if (error instanceof PromptEnvValidationError) return c.json({ message: error.message }, 400);
+    if (error instanceof PromptSystemInstructionsValidationError) return c.json({ message: error.message }, 400);
     throw error;
   }
-
   const content = body.content;
   const clientMessageId = body.clientMessageId?.trim() || crypto.randomUUID();
   const source = resolveSessionSourceFromRequest(c, typeof body.source === "string" ? body.source : null);
@@ -1883,6 +1892,7 @@ router.post("/:id/prompt", async (c) => {
     ...(promptIntent !== "followup" ? { intent: promptIntent } : {}),
     ...(accessMode !== "full_access" ? { accessMode } : {}),
     ...(promptEnv ? { env: promptEnv } : {}),
+    ...(systemInstructions ? { systemInstructions } : {}),
     ...(source !== "scheduled_task" ? { source } : {}),
     ...(sessionId ? { sessionId } : {}),
     ...(body.title ? { title: body.title } : {}),
@@ -1934,6 +1944,7 @@ router.post("/:id/prompt", async (c) => {
         intent: promptIntent,
         accessMode,
         env: promptEnv,
+        systemInstructions,
         context: { kind: "public_api", auth: getPromptAuthContext(c, spaceId) },
       });
       const response = await buildSpacePromptTurnResponse(await getSpaceSessionById(sessionId), turnId);

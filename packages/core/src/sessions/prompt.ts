@@ -4,6 +4,7 @@ import type { GenerationPolicy } from "@cohub/protocol/generation";
 import type { SessionTurnIntent } from "@cohub/protocol/model";
 import { normalizeContentBlocks } from "../content/normalize.js";
 import type { PromptEnv } from "./prompt-env.js";
+import { parsePromptSystemInstructions } from "./system-instructions.js";
 
 export type PromptSource =
   | "web_app"
@@ -143,6 +144,7 @@ export type SubmitSessionPromptInput = {
   generationPolicy?: GenerationPolicy | null;
   accessMode?: PromptAccessMode | null;
   env?: PromptEnv | null;
+  systemInstructions?: string | null;
   intent?: SessionTurnIntent | null;
   context?: SubmitSessionPromptContext | null;
 };
@@ -333,6 +335,7 @@ export const submitSessionPrompt = async (
   const clientMessageId = input.clientMessageId.trim();
   if (!clientMessageId) throw new Error("clientMessageId is required");
   if (!Array.isArray(input.content) || input.content.length === 0) throw new Error("content is required");
+  const systemInstructions = parsePromptSystemInstructions(input.systemInstructions);
 
   if (deps.sandboxRecovery) {
     void Promise.resolve(deps.sandboxRecovery.maybeRecoverForPrompt({
@@ -395,6 +398,7 @@ const VALID_THINKING_LEVELS = new Set(["off", "minimal", "low", "medium", "high"
     generationPolicy: input.generationPolicy ?? null,
     accessMode,
     env: input.env ?? null,
+    systemInstructions,
     billing: billingDecision?.status === "allowed_with_debt" ? billingDecision : null,
     context: input.context ?? null,
   };

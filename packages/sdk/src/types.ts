@@ -1041,6 +1041,7 @@ export type CreateSpacePromptInput = {
   intent?: "followup" | "steer" | "compact" | null;
   accessMode?: PromptAccessMode | null;
   env?: Record<string, string> | null;
+  systemInstructions?: string | null;
   labelRefs?: string[];
   schedule?:
     | { mode?: "immediate" }
