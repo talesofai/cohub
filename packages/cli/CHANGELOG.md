@@ -1,5 +1,13 @@
 # @neta-art/cohub-cli
 
+## 3.1.6
+
+### Patch Changes
+
+- 651476c: Expose mounted Mod provenance in skill catalog entries and show the source slug in CLI listings.
+- Updated dependencies [651476c]
+  - @neta-art/cohub@4.3.0
+
 ## 3.1.5
 
 ### Patch Changes
