@@ -1,32 +1,6 @@
-const USERNAME_PATTERN = /^(?!-)(?!.*--)[a-z0-9-]{1,39}(?<!-)$/;
+import { validatePublicIdentifierAssignment } from "@cohub/protocol/public-identifiers";
+
 const PUBLIC_SLUG_PATTERN = /^[a-z0-9](?:[a-z0-9_-]{0,78}[a-z0-9])?$/;
-const RESERVED_USERNAMES = new Set([
-	"api",
-	"auth",
-	"admin",
-	"assets",
-	"callback",
-	"docs",
-	"explore",
-	"favicon.ico",
-	"invite",
-	"login",
-	"logout",
-	"new",
-	"org",
-	"pricing",
-	"referrals",
-	"settings",
-	"sessions",
-	"spaces",
-	"static",
-	"trending",
-	"u",
-	"user",
-	"users",
-	"teams",
-	"work-auth",
-]);
 
 export const USERNAME_RULE_HINT =
 	"Use 1-39 lowercase letters, numbers, or hyphens. No leading, trailing, or repeated hyphens.";
@@ -62,16 +36,17 @@ export function validateUsernameInput(
 			? { value: null, error: "Username is required." }
 			: { value: null, error: null };
 	}
-	if (!USERNAME_PATTERN.test(username)) {
+	const validation = validatePublicIdentifierAssignment("username", username);
+	if (validation.reason === "format") {
 		return { value: null, error: USERNAME_RULE_HINT };
 	}
-	if (RESERVED_USERNAMES.has(username)) {
+	if (validation.reason === "reserved") {
 		return { value: null, error: "This username is reserved." };
 	}
-	return { value: username, error: null };
+	return { value: validation.value, error: null };
 }
 
-export function validatePublicSlugInput(
+function validatePublicSlugInput(
 	value: string,
 	options?: { required?: boolean; label?: string },
 ) {
@@ -86,4 +61,38 @@ export function validatePublicSlugInput(
 		return { value: null, error: PUBLIC_SLUG_RULE_HINT };
 	}
 	return { value: slug, error: null };
+}
+
+export function validateSpaceSlugInput(
+	value: string,
+	options?: {
+		required?: boolean;
+		label?: string;
+		currentValue?: string | null;
+	},
+) {
+	const result = validatePublicSlugInput(value, options);
+	if (
+		options &&
+		"currentValue" in options &&
+		result.value === options.currentValue
+	) {
+		return result;
+	}
+	if (!result.value || result.error) return result;
+	const validation = validatePublicIdentifierAssignment(
+		"spaceSlug",
+		result.value,
+	);
+	if (validation.reason === "reserved") {
+		return { value: null, error: "This Space slug is reserved." };
+	}
+	return result;
+}
+
+export function validateWorkSlugInput(
+	value: string,
+	options?: { required?: boolean; label?: string },
+) {
+	return validatePublicSlugInput(value, options);
 }

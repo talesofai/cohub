@@ -26,6 +26,7 @@ const PACKAGE_SOURCES = [
 	["@neta-art/cohub/board/render", `${packagesRoot}/sdk/src/board/render/index.ts`],
 	["@neta-art/cohub/board/export", `${packagesRoot}/sdk/src/board/export/index.ts`],
 	["@neta-art/cohub/board", `${packagesRoot}/sdk/src/board/index.ts`],
+	["@cohub/protocol/public-identifiers", `${packagesRoot}/protocol/src/public-identifiers.ts`],
 	["@cohub/protocol/board-document", `${packagesRoot}/protocol/src/board-document.ts`],
 	["@cohub/protocol/board-constants", `${packagesRoot}/protocol/src/board-constants.ts`],
 ];

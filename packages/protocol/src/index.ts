@@ -21,4 +21,5 @@ export * from "./space-hooks.js";
 export * from "./system-jobs.js";
 export * from "./system-instructions.js";
 export * from "./provenance.js";
+export * from "./public-identifiers.js";
 export * from "./work.js";

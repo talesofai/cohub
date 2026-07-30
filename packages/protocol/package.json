@@ -85,6 +85,10 @@
     "./provenance": {
       "types": "./dist/provenance.d.ts",
       "default": "./dist/provenance.js"
+    },
+    "./public-identifiers": {
+      "types": "./dist/public-identifiers.d.ts",
+      "default": "./dist/public-identifiers.js"
     }
   },
   "types": "./dist/index.d.ts",

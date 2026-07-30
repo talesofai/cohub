@@ -4,6 +4,10 @@ import { createLogger } from "@cohub/infra/logging";
 import { Hono, type Context } from "hono";
 import type { ContentBlock } from "@cohub/protocol/core";
 import { getDefaultSpaceModsForEnv } from "@cohub/protocol";
+import {
+  parseSpaceSlug,
+  validatePublicIdentifierAssignment,
+} from "@cohub/protocol/public-identifiers";
 import { normalizeGenerationPolicy } from "@cohub/protocol/generation";
 import * as cronParser from "cron-parser";
 import { db } from "../../db/index.js";
@@ -304,17 +308,16 @@ const MAX_SPACE_SANDBOX_AUTO_DESTROY_TTL_SECONDS = 30 * 24 * 60 * 60;
 const MAX_SPACE_DESCRIPTION_LENGTH = 10_000;
 const HOME_SPACE_SLUG = "home";
 const HOME_SPACE_NAME = "Home";
-const SPACE_SLUG_PATTERN = /^[a-z0-9](?:[a-z0-9_-]{0,78}[a-z0-9])?$/;
-
 const isRecord = (value: unknown): value is Record<string, unknown> =>
   typeof value === "object" && value !== null && !Array.isArray(value);
 
 const normalizeSpaceSlug = (value: unknown): { slug: string | null; error?: string } => {
   if (value === undefined || value === null) return { slug: null };
   if (typeof value !== "string") return { slug: null, error: "slug must be a string or null" };
-  const slug = value.trim();
-  if (!slug) return { slug: null };
-  if (!SPACE_SLUG_PATTERN.test(slug)) {
+  const rawSlug = value.trim();
+  if (!rawSlug) return { slug: null };
+  const slug = parseSpaceSlug(rawSlug);
+  if (!slug) {
     return {
       slug: null,
       error: "slug must be 1-80 characters, lowercase letters, numbers, hyphens, or underscores, and cannot start or end with a separator",
@@ -322,6 +325,12 @@ const normalizeSpaceSlug = (value: unknown): { slug: string | null; error?: stri
   }
   return { slug };
 };
+
+const reservedSpaceSlugResponse = (c: Context) => c.json({
+  code: "public_identifier_reserved",
+  field: "slug",
+  message: "This Space slug is reserved.",
+}, 400);
 
 const uniqueViolationConstraint = (error: unknown): string | null => {
   const record = error as { code?: string; constraint_name?: string; constraint?: string };
@@ -827,6 +836,9 @@ router.post("/", async (c) => {
 
   const { slug, error: slugError } = normalizeSpaceSlug(body.slug);
   if (slugError) return c.json({ message: slugError }, 400);
+  if (slug && validatePublicIdentifierAssignment("spaceSlug", slug).reason === "reserved") {
+    return reservedSpaceSlugResponse(c);
+  }
 
   const existingSpace = await db
     .select({ id: spaces.id })
@@ -1200,6 +1212,13 @@ router.patch("/:id", async (c) => {
     const { slug, error: slugError } = normalizeSpaceSlug(body.slug);
     if (slugError) return c.json({ message: slugError }, 400);
     if (!slug && space.slug) return c.json({ message: "space slug cannot be cleared once set" }, 400);
+    if (
+      slug &&
+      slug !== space.slug &&
+      validatePublicIdentifierAssignment("spaceSlug", slug).reason === "reserved"
+    ) {
+      return reservedSpaceSlugResponse(c);
+    }
     if (slug !== space.slug) updates.slug = slug;
   }
 

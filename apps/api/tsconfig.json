@@ -46,6 +46,9 @@
       "@cohub/protocol/provenance": [
         "../../packages/protocol/src/provenance.ts"
       ],
+      "@cohub/protocol/public-identifiers": [
+        "../../packages/protocol/src/public-identifiers.ts"
+      ],
       "@cohub/identity": [
         "../../packages/identity/src/index.ts"
       ],

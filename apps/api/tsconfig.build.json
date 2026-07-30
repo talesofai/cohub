@@ -28,6 +28,9 @@
       "@cohub/protocol/provenance": [
         "../../packages/protocol/dist/provenance.d.ts"
       ],
+      "@cohub/protocol/public-identifiers": [
+        "../../packages/protocol/dist/public-identifiers.d.ts"
+      ],
       "@cohub/infra/tracing": [
         "../../packages/infra/dist/tracing/index.d.ts"
       ],

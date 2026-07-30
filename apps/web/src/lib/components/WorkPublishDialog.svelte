@@ -15,8 +15,9 @@ import { sdk } from "$lib/sdk";
 import {
 	normalizePublicSlugInput,
 	normalizeUsernameInput,
-	validatePublicSlugInput,
+	validateSpaceSlugInput,
 	validateUsernameInput,
+	validateWorkSlugInput,
 } from "$lib/slug-rules";
 import { authStore } from "$lib/stores/auth.svelte";
 
@@ -75,13 +76,13 @@ const usernameValidation = $derived(
 	validateUsernameInput(usernameDraft, { required: missingUsername }),
 );
 const spaceSlugValidation = $derived(
-	validatePublicSlugInput(spaceSlugDraft, {
+	validateSpaceSlugInput(spaceSlugDraft, {
 		required: missingSpaceSlug,
 		label: "Space slug",
 	}),
 );
 const workSlugValidation = $derived(
-	validatePublicSlugInput(slug, { required: true, label: "Work slug" }),
+	validateWorkSlugInput(slug, { required: true, label: "Work slug" }),
 );
 const currentUsername = $derived(
 	ownerUsername?.trim() || usernameValidation.value || "",
@@ -189,7 +190,7 @@ async function ensurePublicAddress() {
 		usernameDraft = nextUsername;
 	}
 	if (missingSpaceSlug) {
-		const { value: nextSpaceSlug, error } = validatePublicSlugInput(
+		const { value: nextSpaceSlug, error } = validateSpaceSlugInput(
 			spaceSlugDraft,
 			{ required: true, label: "Space slug" },
 		);

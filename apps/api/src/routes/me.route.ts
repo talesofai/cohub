@@ -6,7 +6,7 @@ import * as schema from "@cohub/db";
 import { db } from "../db/index.js";
 import { config } from "../config.js";
 import { requireValidId, useAuth, authzDenied } from "../lib/middleware.js";
-import { ensureCurrentUserProfile, resolveCurrentUserEmail, updateCurrentUserProfile, LogtoUserRequiredError, UsernameClearError, UsernameConflictError, validateUsername } from "../user-profiles.js";
+import { ensureCurrentUserProfile, resolveCurrentUserEmail, updateCurrentUserProfile, LogtoUserRequiredError, UsernameClearError, UsernameConflictError, UsernameReservedError, validateUsername } from "../user-profiles.js";
 import {
   filterSessionsByPermission,
   getSpaceMemberRole,
@@ -148,6 +148,13 @@ router.patch("/profile", async (c) => {
     }
     if (error instanceof UsernameClearError) {
       return c.json({ message: error.message }, 400);
+    }
+    if (error instanceof UsernameReservedError) {
+      return c.json({
+        code: "public_identifier_reserved",
+        field: "username",
+        message: error.message,
+      }, 400);
     }
     if (error instanceof LogtoUserRequiredError) {
       return c.json({ message: error.message }, 403);

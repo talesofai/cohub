@@ -3,6 +3,7 @@ import { describe, it } from "node:test";
 import {
   buildDefaultUsernameCandidates,
   normalizeUsername,
+  resolveSyncedUsername,
   resolveTrustedLogtoUserId,
   slugifyUsernameBase,
   usernameBaseFromEmail,
@@ -47,6 +48,25 @@ describe("usernameBaseFromEmail", () => {
     assert.equal(usernameBaseFromEmail("@example.com"), null);
     assert.equal(usernameBaseFromEmail("你好@example.com"), null);
     assert.equal(usernameBaseFromEmail("123@example.com"), null);
+  });
+});
+
+describe("normalizeUsername", () => {
+  it("keeps reserved historical values readable", () => {
+    assert.equal(normalizeUsername(" Changelog "), "changelog");
+    assert.equal(normalizeUsername("bad--name"), null);
+  });
+});
+
+describe("resolveSyncedUsername", () => {
+  it("accepts ordinary synced usernames", () => {
+    assert.equal(resolveSyncedUsername("alice", null), "alice");
+  });
+
+  it("keeps only the same stored reserved username", () => {
+    assert.equal(resolveSyncedUsername("docs", "docs"), "docs");
+    assert.equal(resolveSyncedUsername("docs", null), null);
+    assert.equal(resolveSyncedUsername("docs", "admin"), null);
   });
 });
 

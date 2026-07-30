@@ -32,6 +32,7 @@ const config = {
 			"@cohub/protocol/task": `${protocolDir}/task/index.ts`,
 			"@cohub/protocol/generation": `${protocolDir}/generation/index.ts`,
 			"@cohub/protocol/provenance": `${protocolDir}/provenance.ts`,
+			"@cohub/protocol/public-identifiers": `${protocolDir}/public-identifiers.ts`,
 			// catch-all for flat protocol modules (board-constants, space-style, …);
 			// it also makes the bare alias below match exactly instead of by prefix
 			"@cohub/protocol/*": `${protocolDir}/*`,

@@ -58,7 +58,7 @@ import UserAvatar from "$lib/components/UserAvatar.svelte";
 import { isComposingKeyboardEvent } from "$lib/keyboard";
 import { uploadSpaceAvatarImage } from "$lib/public-asset-images";
 import { sdk } from "$lib/sdk";
-import { validatePublicSlugInput } from "$lib/slug-rules";
+import { validateSpaceSlugInput } from "$lib/slug-rules";
 import { buildSpaceLandingRoute } from "$lib/space-routes";
 import { billingConversion } from "$lib/stores/billing-conversion.svelte";
 import { invalidateCachedSpaceMembers } from "$lib/stores/space-profile-cache";
@@ -575,7 +575,9 @@ function handleSpaceSlugKeydown(event: KeyboardEvent) {
 async function saveSpaceSlug() {
 	if (!space || spaceSlugSaving) return;
 	spaceSlugError = "";
-	const result = validatePublicSlugInput(spaceSlugDraft);
+	const result = validateSpaceSlugInput(spaceSlugDraft, {
+		currentValue: space.slug,
+	});
 	if (result.error) {
 		spaceSlugError = result.error;
 		return;
