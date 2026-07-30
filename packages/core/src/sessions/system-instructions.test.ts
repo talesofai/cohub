@@ -12,6 +12,11 @@ test("prompt system instructions are trimmed and optional", () => {
 });
 
 test("prompt system instructions reject invalid or oversized values", () => {
+  const maximumLengthValue = "x".repeat(16_000);
+  assert.equal(
+    parsePromptSystemInstructions(` ${maximumLengthValue}\n`),
+    maximumLengthValue,
+  );
   assert.throws(
     () => parsePromptSystemInstructions({}),
     PromptSystemInstructionsValidationError,
