@@ -9,6 +9,36 @@ type TaskRunPricingView = {
   result: unknown;
 };
 
+type ScheduledPromptView = {
+  taskType: string;
+  payload: unknown;
+};
+
+function sanitizeScheduledPromptPayload(payload: unknown) {
+  if (!isRecord(payload)) return payload;
+
+  let sanitized = payload;
+  if (Object.hasOwn(sanitized, "systemInstructions")) {
+    sanitized = { ...sanitized };
+    delete sanitized.systemInstructions;
+  }
+  if (isRecord(sanitized.data) && Object.hasOwn(sanitized.data, "systemInstructions")) {
+    const data = { ...sanitized.data };
+    delete data.systemInstructions;
+    sanitized = { ...sanitized, data };
+  }
+  return sanitized;
+}
+
+/** Keep scheduled prompt instructions in the execution payload, never client projections. */
+export function sanitizeScheduledPromptForClient<T extends ScheduledPromptView>(
+  value: T,
+): T {
+  if (value.taskType !== "send_message") return value;
+  const payload = sanitizeScheduledPromptPayload(value.payload);
+  return payload === value.payload ? value : { ...value, payload };
+}
+
 /**
  * Generation pricing reveals the creator's subscription tier. Keep the
  * server-side snapshot intact while removing it from collaborator-visible

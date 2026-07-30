@@ -8,7 +8,7 @@ import { getOptionalAuth, useAuth, requireValidId, authzDenied } from "../lib/mi
 import { hasPermission } from "../permissions.js";
 import { disableCronJob, enableCronJob, removeCronJob, updateCronJob } from "../tasks.js";
 import { fallbackPublicUserProfile, getProfilesByUuids } from "../user-profiles.js";
-import { sanitizeTaskRunPricingForViewer } from "../task-run-privacy.js";
+import { sanitizeScheduledPromptForClient, sanitizeTaskRunPricingForViewer } from "../task-run-privacy.js";
 
 const router = new Hono();
 const { CronExpressionParser } = cronParser;
@@ -22,12 +22,19 @@ type CronJobAuthSubject = {
   sessionId: string | null;
 };
 
-async function hydrateCronJobUserProfiles<T extends { userUuid: string }>(jobs: T[]) {
+async function hydrateCronJobUserProfiles<T extends {
+  userUuid: string;
+  taskType: string;
+  payload: unknown;
+}>(jobs: T[]) {
   const profiles = await getProfilesByUuids(jobs.map((job) => job.userUuid));
-  return jobs.map((job) => ({
-    ...job,
-    userProfile: profiles.get(job.userUuid) ?? fallbackPublicUserProfile(job.userUuid),
-  }));
+  return jobs.map((job) => {
+    const sanitized = sanitizeScheduledPromptForClient(job);
+    return {
+      ...sanitized,
+      userProfile: profiles.get(job.userUuid) ?? fallbackPublicUserProfile(job.userUuid),
+    };
+  });
 }
 
 function validateTimezone(timezone: string) {
@@ -179,7 +186,10 @@ router.get("/:id/runs", async (c) => {
     .limit(limit + 1);
   const runs = rows
     .slice(0, limit)
-    .map((run) => sanitizeTaskRunPricingForViewer(run, user?.uuid));
+    .map((run) => sanitizeTaskRunPricingForViewer(
+      sanitizeScheduledPromptForClient(run),
+      user?.uuid,
+    ));
 
   return c.json({
     runs,
