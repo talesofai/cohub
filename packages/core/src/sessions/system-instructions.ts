@@ -1,4 +1,4 @@
-const MAX_PROMPT_SYSTEM_INSTRUCTIONS_LENGTH = 16_000;
+import { MAX_PROMPT_SYSTEM_INSTRUCTIONS_LENGTH } from "@cohub/protocol";
 
 export class PromptSystemInstructionsValidationError extends Error {
   constructor(message: string) {

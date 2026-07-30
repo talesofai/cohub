@@ -20,6 +20,7 @@ import { ensureSessionTurnSegments, findSegmentForTurn } from "./session-forks.j
 import { fallbackPublicUserProfile, getProfilesByUuids } from "./user-profiles.js";
 import { buildTurnObjectPrefix, assertTurnObjectKeyForTurn, createTurnObjectCdnUrl, writeTurnObjectJson } from "./turn-object-storage.js";
 import { deriveMessagePreviewText } from "./session-content.js";
+import { sanitizeSessionTurnMetaForClient } from "./session-turn-public.js";
 
 
 const logger = createLogger({ serviceName: "cohub-api" });
@@ -193,7 +194,7 @@ const toTurnRecord = (row: typeof sessionTurns.$inferSelect): SessionTurnRecord 
   summary: row.summary ?? null,
   intermediateIndex: row.intermediateIndex ?? null,
   intermediateSummary: row.intermediateSummary ?? null,
-  meta: normalizeRecord(row.meta),
+  meta: sanitizeSessionTurnMetaForClient(row.meta),
   thinkingLevel: extractThinkingLevel(row.meta),
   startedAt: row.startedAt ? toIso(row.startedAt) : null,
   completedAt: row.completedAt ? toIso(row.completedAt) : null,

@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
+import { MAX_PROMPT_SYSTEM_INSTRUCTIONS_LENGTH } from "@cohub/protocol";
 import {
   parsePromptSystemInstructions,
   PromptSystemInstructionsValidationError,
@@ -12,7 +13,7 @@ test("prompt system instructions are trimmed and optional", () => {
 });
 
 test("prompt system instructions reject invalid or oversized values", () => {
-  const maximumLengthValue = "x".repeat(16_000);
+  const maximumLengthValue = "x".repeat(MAX_PROMPT_SYSTEM_INSTRUCTIONS_LENGTH);
   assert.equal(
     parsePromptSystemInstructions(` ${maximumLengthValue}\n`),
     maximumLengthValue,
@@ -22,7 +23,7 @@ test("prompt system instructions reject invalid or oversized values", () => {
     PromptSystemInstructionsValidationError,
   );
   assert.throws(
-    () => parsePromptSystemInstructions("x".repeat(16_001)),
+    () => parsePromptSystemInstructions("x".repeat(MAX_PROMPT_SYSTEM_INSTRUCTIONS_LENGTH + 1)),
     /cannot exceed 16000 characters/,
   );
 });

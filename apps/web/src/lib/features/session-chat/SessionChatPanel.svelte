@@ -61,6 +61,7 @@ let chatTimelineRef = $state<unknown>(null);
 let composerHostEl = $state<HTMLDivElement | null>(null);
 let chatChromeEl = $state<HTMLDivElement | null>(null);
 let composerInput = $state("");
+let composerSystemInstructions = $state("");
 let shouldAutoFollow = $state(true);
 let showTurnBottomSheet = $state(false);
 let showModelSelector = $state(false);
@@ -117,6 +118,18 @@ $effect(() => {
 	const value = composerInput;
 	untrack(() => {
 		if (value !== host.input) host.input = value;
+	});
+});
+$effect(() => {
+	const next = host.systemInstructions;
+	untrack(() => {
+		if (next !== composerSystemInstructions) composerSystemInstructions = next;
+	});
+});
+$effect(() => {
+	const value = composerSystemInstructions;
+	untrack(() => {
+		if (value !== host.systemInstructions) host.systemInstructions = value;
 	});
 });
 $effect(() => {
@@ -380,6 +393,7 @@ async function handleDraftDrop(event: DragEvent) {
 			>
 				<SessionComposer
 					bind:value={composerInput}
+					bind:systemInstructions={composerSystemInstructions}
 					disabled={!activeSessionState && !isNewSessionRoute}
 					sending={host.sending}
 					isRunning={host.activeSessionIsRunning}

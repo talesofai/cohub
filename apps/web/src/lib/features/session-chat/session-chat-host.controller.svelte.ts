@@ -305,6 +305,7 @@ export function createSessionChatHost(options: SessionChatHostOptions) {
 	let composerDraftSaveTimer: ReturnType<typeof setTimeout> | null = null;
 	let preserveComposerInputOnNextDraftKeyChange = false;
 	const input = $derived(composer.input);
+	const systemInstructions = $derived(composer.systemInstructions);
 	const attachments = $derived(composer.attachments);
 	const sending = $derived(composer.sending);
 	const aborting = $derived(composer.aborting);
@@ -671,6 +672,7 @@ export function createSessionChatHost(options: SessionChatHostOptions) {
 				return;
 			}
 			composer.input = key ? readSessionComposerDraftText(key) : "";
+			composer.systemInstructions = "";
 		});
 	});
 	$effect(() => {
@@ -2863,6 +2865,7 @@ export function createSessionChatHost(options: SessionChatHostOptions) {
 		let targetSessionState = activeSessionState;
 		const isNewChat = !sessionId;
 		const pendingInput = input;
+		const pendingSystemInstructions = systemInstructions.trim();
 		const pendingAttachments = attachments;
 		const optimisticTurnId = crypto.randomUUID();
 		const clientMessageId = crypto.randomUUID();
@@ -3108,6 +3111,9 @@ export function createSessionChatHost(options: SessionChatHostOptions) {
 				...(activeSessionThinkingLevel
 					? { thinkingLevel: activeSessionThinkingLevel }
 					: {}),
+				...(pendingSystemInstructions
+					? { systemInstructions: pendingSystemInstructions }
+					: {}),
 				clientMessageId,
 				generationPolicy: buildTurnGenerationPolicy(),
 				accessMode: "full_access",
@@ -3230,9 +3236,14 @@ export function createSessionChatHost(options: SessionChatHostOptions) {
 									}
 								: attachment,
 						),
+					pendingSystemInstructions,
 				);
 			} else {
-				composer.restoreDraft(pendingInput, pendingAttachments);
+				composer.restoreDraft(
+					pendingInput,
+					pendingAttachments,
+					pendingSystemInstructions,
+				);
 			}
 			preserveComposerInputOnNextDraftKeyChange = true;
 			if ((hadFileUpload || hadImageUpload) && !uploadCompleted) {
@@ -4194,6 +4205,12 @@ export function createSessionChatHost(options: SessionChatHostOptions) {
 		},
 		set input(v: string) {
 			composer.input = v;
+		},
+		get systemInstructions() {
+			return composer.systemInstructions;
+		},
+		set systemInstructions(v: string) {
+			composer.systemInstructions = v;
 		},
 		get attachments() {
 			return attachments;

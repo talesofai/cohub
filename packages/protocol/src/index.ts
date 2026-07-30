@@ -19,5 +19,6 @@ export * from "./space-style.js";
 export * from "./space-config.js";
 export * from "./space-hooks.js";
 export * from "./system-jobs.js";
+export * from "./system-instructions.js";
 export * from "./provenance.js";
 export * from "./work.js";

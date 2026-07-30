@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { wsClientEventSchema } from "./src/realtime/schema.js";
+import { MAX_PROMPT_SYSTEM_INSTRUCTIONS_LENGTH } from "./src/system-instructions.js";
 
 const baseEvent = {
   type: "session.message.create" as const,
@@ -12,7 +13,7 @@ const baseEvent = {
 };
 
 test("realtime system instructions validate their normalized value", () => {
-  const instructions = "x".repeat(16_000);
+  const instructions = "x".repeat(MAX_PROMPT_SYSTEM_INSTRUCTIONS_LENGTH);
   const parsed = wsClientEventSchema.parse({
     ...baseEvent,
     payload: {

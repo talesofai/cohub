@@ -1,5 +1,8 @@
 <script lang="ts">
-import type { ViewportContext } from "@cohub/protocol";
+import {
+	MAX_PROMPT_SYSTEM_INSTRUCTIONS_LENGTH,
+	type ViewportContext,
+} from "@cohub/protocol";
 import type {
 	PromptTemplateCatalogEntry,
 	SkillCatalogEntry,
@@ -12,6 +15,7 @@ import {
 	Mic,
 	Minimize2,
 	Plus,
+	Settings2,
 	Square,
 	X,
 } from "lucide-svelte";
@@ -64,6 +68,7 @@ type SelectedModel = {
 
 type Props = {
 	value: string;
+	systemInstructions?: string;
 	disabled?: boolean;
 	sending?: boolean;
 	isRunning?: boolean;
@@ -96,6 +101,7 @@ type Props = {
 
 let {
 	value = $bindable(""),
+	systemInstructions = $bindable(""),
 	disabled = false,
 	sending = false,
 	isRunning = false,
@@ -150,6 +156,7 @@ let caretSyncFrame: number | null = null;
 let blurCloseTimer: number | null = null;
 let selectionChangeBound = false;
 let isComposerExpanded = $state(false);
+let showSystemInstructions = $state(false);
 let hasTextareaOverflow = $state(false);
 let voiceClient: VoiceInputClient | null = null;
 let voicePrefix = "";
@@ -1154,6 +1161,40 @@ $effect(() => {
 				</div>
 			{/if}
 
+			{#if showSystemInstructions}
+				<div class="mx-3 mb-2 border-b border-border-subtle pb-2" data-drawer-swipe-ignore>
+					<div class="mb-1 flex items-center justify-between gap-2">
+						<label for="turn-system-instructions" class="text-[11px] font-medium text-text-secondary">
+							Turn instructions
+						</label>
+						<button
+							type="button"
+							class="flex h-6 w-6 shrink-0 items-center justify-center rounded-full text-text-placeholder transition-colors hover:bg-bg-hover hover:text-text-primary"
+							onclick={() => {
+								showSystemInstructions = false;
+							}}
+							title="Close turn instructions"
+							aria-label="Close turn instructions"
+						>
+							<X class="h-3.5 w-3.5" />
+						</button>
+					</div>
+					<textarea
+						id="turn-system-instructions"
+						bind:value={systemInstructions}
+						maxlength={MAX_PROMPT_SYSTEM_INSTRUCTIONS_LENGTH}
+						rows="2"
+						placeholder="Instructions for this turn"
+						class="block max-h-28 min-h-12 w-full resize-y bg-transparent text-[12px] leading-5 text-text-primary outline-none placeholder:text-text-placeholder"
+					></textarea>
+					{#if systemInstructions.length >= MAX_PROMPT_SYSTEM_INSTRUCTIONS_LENGTH - 1_000}
+						<div class="mt-1 text-right text-[10px] tabular-nums text-text-placeholder">
+							{systemInstructions.length.toLocaleString()} / {MAX_PROMPT_SYSTEM_INSTRUCTIONS_LENGTH.toLocaleString()}
+						</div>
+					{/if}
+				</div>
+			{/if}
+
 			<div class="flex items-end gap-2">
 				<div class="relative min-w-0 flex-1 rounded-[22px] bg-transparent px-3 py-1.5 ring-1 ring-transparent transition-colors focus-within:bg-transparent focus-within:ring-transparent">
 					<input
@@ -1369,6 +1410,23 @@ $effect(() => {
 									<Plus class="h-[17px] w-[17px]" />
 								</button>
 							{/if}
+
+							<button
+								type="button"
+								class={`relative flex h-8.5 w-8.5 shrink-0 items-center justify-center rounded-full transition-colors hover:bg-bg-hover hover:text-text-primary disabled:cursor-not-allowed disabled:opacity-50 ${showSystemInstructions || systemInstructions.trim() ? 'text-text-primary' : 'text-text-tertiary'}`}
+								onclick={() => {
+									showSystemInstructions = !showSystemInstructions;
+								}}
+								disabled={disabled || sending}
+								title="Turn instructions"
+								aria-label="Turn instructions"
+								aria-pressed={showSystemInstructions}
+							>
+								<Settings2 class="h-4 w-4" />
+								{#if systemInstructions.trim()}
+									<span class="absolute right-1.5 top-1.5 h-1.5 w-1.5 rounded-full bg-brand" aria-hidden="true"></span>
+								{/if}
+							</button>
 
 							{#if onModelSelect}
 								<button

@@ -20,6 +20,7 @@ export function revokeComposerAttachmentPreview(
 
 export function createSessionComposerController() {
 	let input = $state("");
+	let systemInstructions = $state("");
 	let attachments = $state<ComposerAttachment[]>([]);
 	let sending = $state(false);
 	let aborting = $state(false);
@@ -62,14 +63,17 @@ export function createSessionComposerController() {
 
 	function clearDraft() {
 		input = "";
+		systemInstructions = "";
 		attachments = [];
 	}
 
 	function restoreDraft(
 		nextInput: string,
 		nextAttachments: ComposerAttachment[],
+		nextSystemInstructions = "",
 	) {
 		input = nextInput;
+		systemInstructions = nextSystemInstructions;
 		attachments = nextAttachments;
 	}
 
@@ -188,6 +192,12 @@ export function createSessionComposerController() {
 		},
 		set input(value: string) {
 			input = value;
+		},
+		get systemInstructions() {
+			return systemInstructions;
+		},
+		set systemInstructions(value: string) {
+			systemInstructions = value;
 		},
 		get attachments() {
 			return attachments;

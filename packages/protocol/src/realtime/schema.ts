@@ -1,5 +1,6 @@
 import { z } from "zod";
 import type { ContentBlock } from "../core/content.js";
+import { MAX_PROMPT_SYSTEM_INSTRUCTIONS_LENGTH } from "../system-instructions.js";
 import type { RealtimeCompactFrame, RealtimeEnvelope, RealtimeRoom } from "./types.js";
 import { BoardAwarenessClientPayloadSchema } from "./board-awareness.js";
 export type * from "./types.js";
@@ -89,7 +90,7 @@ export const wsClientEventSchema = z.discriminatedUnion("type", [
       model: z.string().optional(),
       provider: z.string().optional(),
       thinkingLevel: z.enum(["off", "minimal", "low", "medium", "high", "xhigh", "max"]).optional(),
-      systemInstructions: z.string().transform((value) => value.trim()).pipe(z.string().max(16_000)).optional(),
+      systemInstructions: z.string().transform((value) => value.trim()).pipe(z.string().max(MAX_PROMPT_SYSTEM_INSTRUCTIONS_LENGTH)).optional(),
     }),
   }),
   z.object({
