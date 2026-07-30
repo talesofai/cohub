@@ -14,6 +14,7 @@ import {
 import { modelsCatalogStore } from "$lib/stores/models-catalog.svelte";
 import { mergeCachedCronJobTaskRuns } from "$lib/stores/task-runs-cache";
 import {
+	applySystemInstructionsUpdate,
 	buildSendMessagePayload,
 	defaultTimezone,
 	promptTextFromPayload,
@@ -77,6 +78,8 @@ export function createCronjobDetailController(options: {
 	let formPrompt = $state("");
 	let formModel = $state<SelectedModel | null>(null);
 	let formStructuredPrompt = $state(false);
+	let formSystemInstructions = $state("");
+	let formClearSystemInstructions = $state(false);
 	let formSubmitting = $state(false);
 	let formError = $state("");
 	let copiedId = $state(false);
@@ -159,6 +162,8 @@ export function createCronjobDetailController(options: {
 		formTimezone = detail.timezone || defaultTimezone();
 		formPrompt = prompt.text;
 		formStructuredPrompt = prompt.structured;
+		formSystemInstructions = "";
+		formClearSystemInstructions = false;
 		formModel = modelFromPayload(detail.payload);
 		formError = "";
 	}
@@ -348,11 +353,16 @@ export function createCronjobDetailController(options: {
 		formSubmitting = true;
 		formError = "";
 		try {
+			const payload = applySystemInstructionsUpdate(
+				buildSendMessagePayload(detail.payload, formPrompt, formModel),
+				formSystemInstructions,
+				formClearSystemInstructions,
+			);
 			const { job } = await sdk.cronJobs.update(detail.id, {
 				title: formTitle.trim(),
 				cronExpression: formExpression.trim(),
 				timezone: formTimezone.trim(),
-				payload: buildSendMessagePayload(detail.payload, formPrompt, formModel),
+				payload,
 			});
 			detail = job;
 			notify(job);
@@ -571,6 +581,18 @@ export function createCronjobDetailController(options: {
 		},
 		get formStructuredPrompt() {
 			return formStructuredPrompt;
+		},
+		get formSystemInstructions() {
+			return formSystemInstructions;
+		},
+		set formSystemInstructions(value: string) {
+			formSystemInstructions = value;
+		},
+		get formClearSystemInstructions() {
+			return formClearSystemInstructions;
+		},
+		set formClearSystemInstructions(value: boolean) {
+			formClearSystemInstructions = value;
 		},
 		get formSubmitting() {
 			return formSubmitting;

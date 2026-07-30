@@ -52,6 +52,7 @@ export function registerCronJobs(program: Command): void {
           { key: "taskType", label: "Type" },
           { key: "cronExpression", label: "Schedule" },
           { key: "timezone", label: "Timezone" },
+          { key: "hasSystemInstructions", label: "Turn Instructions" },
           { key: "enabled", label: "Enabled" },
           { key: "spaceId", label: "Space" },
         ]);

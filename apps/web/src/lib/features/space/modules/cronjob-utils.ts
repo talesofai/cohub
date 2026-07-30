@@ -104,6 +104,22 @@ export function buildSendMessagePayload(
 	return next;
 }
 
+export function applySystemInstructionsUpdate(
+	payload: Record<string, unknown>,
+	replacement: string,
+	clear: boolean,
+) {
+	const next = { ...payload };
+	if (clear) {
+		next.systemInstructions = null;
+		return next;
+	}
+	const normalized = replacement.trim();
+	if (normalized) next.systemInstructions = normalized;
+	else delete next.systemInstructions;
+	return next;
+}
+
 export function cronjobModelLabel(model: CronjobSelectedModel | null) {
 	if (!model) return "Default model";
 	return model.name?.trim() || model.id;

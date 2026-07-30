@@ -398,7 +398,7 @@ const VALID_THINKING_LEVELS = new Set(["off", "minimal", "low", "medium", "high"
     generationPolicy: input.generationPolicy ?? null,
     accessMode,
     env: input.env ?? null,
-    systemInstructions,
+    ...(systemInstructions ? { systemInstructions } : {}),
     billing: billingDecision?.status === "allowed_with_debt" ? billingDecision : null,
     context: input.context ?? null,
   };
