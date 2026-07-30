@@ -20,7 +20,11 @@ await mkdir(join(userConfig, ".agents", "skills", "owner-skill"), { recursive: t
 await writeFile(join(userConfig, ".agents", "skills", "owner-skill", "SKILL.md"), "---\nname: owner-skill\ndescription: Owner-only skill\n---\nOwner skill body.");
 await writeFile(join(workspace, "AGENTS.md"), "Project rule: run typecheck.");
 
-const { buildCohubSystemPrompt } = await import("../runtime/system-prompt-builder.js");
+const {
+  appendCohubRequestInstructions,
+  buildCohubSystemPrompt,
+  createCohubSystemPromptState,
+} = await import("../runtime/system-prompt-builder.js");
 
 const prompt = await buildCohubSystemPrompt({
   cwd: workspace,
@@ -37,6 +41,21 @@ assert.ok(
   prompt.indexOf("# User Context") < prompt.indexOf("# Project Context"),
   "user context should be rendered before project context",
 );
+
+const basePrompt = "Stable base prompt";
+const promptA = appendCohubRequestInstructions(basePrompt, "Instruction A");
+const promptB = appendCohubRequestInstructions(basePrompt, "Instruction B");
+assert.ok(promptA.includes("Instruction A") && !promptA.includes("Instruction B"));
+assert.ok(promptB.includes("Instruction B") && !promptB.includes("Instruction A"));
+assert.equal(appendCohubRequestInstructions(basePrompt, null), basePrompt);
+
+const promptState = createCohubSystemPromptState(basePrompt);
+assert.ok(promptState.setRequestInstructions("Instruction A").includes("Instruction A"));
+assert.ok(!promptState.setRequestInstructions("Instruction B").includes("Instruction A"));
+assert.ok(promptState.value.includes("Instruction B"));
+assert.ok(promptState.setBasePrompt("Rebuilt base prompt").includes("Instruction B"));
+assert.equal(promptState.value.match(/Instruction B/g)?.length, 1);
+assert.equal(promptState.setRequestInstructions(null), "Rebuilt base prompt");
 
 const promptWithoutUser = await buildCohubSystemPrompt({
   cwd: workspace,

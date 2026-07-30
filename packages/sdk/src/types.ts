@@ -1087,6 +1087,7 @@ export type SendMessageCronJobPayload = CronJobPayload & {
   intent?: "followup" | "steer" | string;
   accessMode?: "read_only" | "full_access";
   env?: Record<string, string> | null;
+  systemInstructions?: string | null;
   source?: string;
   sessionId?: string;
   title?: string;

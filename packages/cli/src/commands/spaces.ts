@@ -38,6 +38,7 @@ type PromptOptions = {
   timezone?: string;
   label?: string[];
   env?: string[];
+  systemInstructions?: string;
   image?: string[];
   json?: boolean;
 };
@@ -300,6 +301,7 @@ async function sendPrompt(command: Command, words: string[], opts: PromptOptions
       accessMode: opts.readOnly ? "read_only" : "full_access",
       intent: opts.steer ? "steer" : undefined,
       env: parseEnvOptions(opts.env),
+      systemInstructions: opts.systemInstructions,
       schedule,
       labelRefs: opts.label?.length ? opts.label : undefined,
     });
@@ -409,6 +411,7 @@ export function registerPrompt(program: Command): void {
     .option("--timezone <tz>", "IANA timezone for --cron, e.g. Asia/Shanghai")
     .option("--label <ref>", "Attach a label, e.g. Bug or Area/Frontend", collectOption, [])
     .option("--env <key=value>", "Set an environment variable for this turn", collectOption, [])
+    .option("--system-instructions <text>", "Apply system instructions to this turn only")
     .option("--image <path>", "Attach an image", collectOption, [])
     .option("--json", "Output as JSON")
     .action((words: string[], opts: PromptOptions) => sendPrompt(program, words, opts));
@@ -635,6 +638,7 @@ export function registerSpaces(program: Command): void {
     .option("--timezone <tz>", "IANA timezone for --cron, e.g. Asia/Shanghai")
     .option("--label <ref>", "Attach a label, e.g. Bug or Area/Frontend", collectOption, [])
     .option("--env <key=value>", "Set an environment variable for this turn", collectOption, [])
+    .option("--system-instructions <text>", "Apply system instructions to this turn only")
     .option("--image <path>", "Attach an image", collectOption, [])
     .option("--json", "Output as JSON")
     .action((words: string[], opts: PromptOptions) => sendPrompt(spacesCmd, words, opts));

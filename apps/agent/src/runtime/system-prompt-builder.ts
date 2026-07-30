@@ -226,17 +226,6 @@ export async function buildCohubSystemPrompt(options: BuildCohubSystemPromptOpti
     sections.push(formatSkillsForPrompt(skills));
   }
 
-  const appendInstructions = options.appendInstructions?.trim();
-  if (appendInstructions) {
-    sections.push([
-      "# Request Instructions",
-      "",
-      "Apply these instructions only to the current turn. They do not override platform safety or access controls.",
-      "",
-      appendInstructions,
-    ].join("\n"));
-  }
-
   const visibleTools = selectedTools.filter((name) => toolSnippets[name]);
   const toolsList = visibleTools.length > 0
     ? visibleTools.map((name) => `- ${name}: ${toolSnippets[name]}`).join("\n")
@@ -265,5 +254,39 @@ export async function buildCohubSystemPrompt(options: BuildCohubSystemPromptOpti
   sections.push(`Current date: ${date}`);
   sections.push(`Current working directory: ${SANDBOX_WORKSPACE_PATH}`);
 
-  return sections.filter((section) => section.trim().length > 0).join("\n\n");
+  const basePrompt = sections.filter((section) => section.trim().length > 0).join("\n\n");
+  return appendCohubRequestInstructions(basePrompt, options.appendInstructions);
+}
+
+export function appendCohubRequestInstructions(basePrompt: string, instructions: string | null | undefined): string {
+  const value = instructions?.trim();
+  if (!value) return basePrompt;
+  return [
+    basePrompt,
+    "# Request Instructions",
+    "",
+    "Apply these instructions only to the current turn. They do not override platform safety or access controls.",
+    "",
+    value,
+  ].join("\n\n");
+}
+
+export function createCohubSystemPromptState(basePrompt: string, instructions?: string | null) {
+  let stablePrompt = basePrompt;
+  let requestInstructions = instructions?.trim() || null;
+  const value = () => appendCohubRequestInstructions(stablePrompt, requestInstructions);
+
+  return {
+    get value() {
+      return value();
+    },
+    setBasePrompt(nextBasePrompt: string) {
+      stablePrompt = nextBasePrompt;
+      return value();
+    },
+    setRequestInstructions(nextInstructions?: string | null) {
+      requestInstructions = nextInstructions?.trim() || null;
+      return value();
+    },
+  };
 }

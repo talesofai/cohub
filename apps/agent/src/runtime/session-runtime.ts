@@ -7,7 +7,7 @@ import { sendOutput } from "../redis.js";
 import type { SessionManager } from "./local-session-manager.js";
 import type { CohubModel, CohubModelRegistry } from "./model-registry.js";
 import { createModelsFromRegistry, streamSimpleWithModels } from "./pi-models-adapter.js";
-import { buildCohubSystemPrompt } from "./system-prompt-builder.js";
+import { buildCohubSystemPrompt, createCohubSystemPromptState } from "./system-prompt-builder.js";
 import { recordLlmUsage, startLlmRoundSpan, getAgentTracer } from "@cohub/infra/tracing/agent";
 import { getCurrentToolExecutionContext, runWithToolExecutionContext, type ToolExecutionContext } from "../tool-context.js";
 import { isToolFailureDetails } from "./tools/index.js";
@@ -672,8 +672,8 @@ export async function createCohubAgentSession(options: CreateCohubAgentSessionOp
   let runtimeSpaceOwnerUserId = normalizeUserId(options.spaceOwnerUserId);
   let runtimeModelRegistry = options.modelRegistry;
   let runtimeTools = options.tools;
-  let runtimeSystemInstructions: string | null = null;
   let systemPromptStateKey: string | null = null;
+  const systemPromptState = createCohubSystemPromptState("");
   const sessionAffinity = options.sessionManager.getSessionAffinity();
   const getRuntime = () => ({
     modelRegistry: runtimeModelRegistry,
@@ -699,8 +699,7 @@ export async function createCohubAgentSession(options: CreateCohubAgentSessionOp
     userId: string | null,
     spaceOwnerUserId: string | null,
     tools: ToolLike[],
-    instructions: string | null,
-  ) => `${userId ?? ""}\0${shouldIncludeUserSkills(userId, spaceOwnerUserId) ? "user-skills" : "no-user-skills"}\0${toolsStateKey(tools)}\0${instructions ?? ""}`;
+  ) => `${userId ?? ""}\0${shouldIncludeUserSkills(userId, spaceOwnerUserId) ? "user-skills" : "no-user-skills"}\0${toolsStateKey(tools)}`;
 
   const buildSystemPromptForTools = (tools: ToolLike[], input?: { userId?: string | null; spaceOwnerUserId?: string | null }) => {
     const userId = input && "userId" in input ? normalizeUserId(input.userId) : runtimeUserId;
@@ -712,16 +711,14 @@ export async function createCohubAgentSession(options: CreateCohubAgentSessionOp
       toolSnippets: Object.fromEntries(tools.map((tool) => [tool.name, toolSnippets(tool.name)]).filter((entry): entry is [string, string] => Boolean(entry[1]))),
       spaceMods: options.spaceMods ?? [],
       includeUserSkills: shouldIncludeUserSkills(userId, spaceOwnerUserId),
-      appendInstructions: runtimeSystemInstructions,
     });
   };
 
-  const systemPrompt = await buildSystemPromptForTools(runtimeTools);
+  const systemPrompt = systemPromptState.setBasePrompt(await buildSystemPromptForTools(runtimeTools));
   systemPromptStateKey = systemPromptStateKeyFor(
     runtimeUserId,
     runtimeSpaceOwnerUserId,
     runtimeTools,
-    runtimeSystemInstructions,
   );
 
   const agent = new PiAgent({
@@ -751,14 +748,13 @@ export async function createCohubAgentSession(options: CreateCohubAgentSessionOp
       runtimeUserId,
       runtimeSpaceOwnerUserId,
       tools,
-      runtimeSystemInstructions,
     );
     if (!options?.force && systemPromptStateKey === nextKey) {
       runtimeTools = tools;
       agent.state.tools = tools as never;
       return;
     }
-    const nextSystemPrompt = await buildSystemPromptForTools(tools);
+    const nextSystemPrompt = systemPromptState.setBasePrompt(await buildSystemPromptForTools(tools));
     runtimeTools = tools;
     agent.state.systemPrompt = nextSystemPrompt;
     systemPromptStateKey = nextKey;
@@ -966,10 +962,9 @@ export async function createCohubAgentSession(options: CreateCohubAgentSessionOp
         nextUserId,
         nextSpaceOwnerUserId,
         runtimeTools,
-        runtimeSystemInstructions,
       );
       const nextSystemPrompt = systemPromptStateKey === nextKey
-        ? agent.state.systemPrompt
+        ? systemPromptState.value
         : await buildSystemPromptForTools(runtimeTools, { userId: nextUserId, spaceOwnerUserId: nextSpaceOwnerUserId });
       const shouldChangeModel = target.provider !== currentModel.provider || target.id !== currentModel.id;
       const hasRequestedThinkingLevel = input.requestedThinkingLevel !== undefined && input.requestedThinkingLevel !== null;
@@ -982,7 +977,9 @@ export async function createCohubAgentSession(options: CreateCohubAgentSessionOp
       runtimeUserId = nextUserId;
       runtimeSpaceOwnerUserId = nextSpaceOwnerUserId;
       runtimeModelRegistry = input.modelRegistry;
-      agent.state.systemPrompt = nextSystemPrompt;
+      agent.state.systemPrompt = systemPromptStateKey === nextKey
+        ? nextSystemPrompt
+        : systemPromptState.setBasePrompt(nextSystemPrompt);
       systemPromptStateKey = nextKey;
       const shouldChangeThinkingLevel = nextThinkingLevel !== agent.state.thinkingLevel;
       if (shouldChangeModel) {
@@ -999,10 +996,7 @@ export async function createCohubAgentSession(options: CreateCohubAgentSessionOp
       await configureToolsState(tools);
     },
     async configureSystemInstructions(instructions) {
-      const nextInstructions = instructions?.trim() || null;
-      if (nextInstructions === runtimeSystemInstructions) return;
-      runtimeSystemInstructions = nextInstructions;
-      await configureToolsState(runtimeTools, { force: true });
+      agent.state.systemPrompt = systemPromptState.setRequestInstructions(instructions);
     },
     async reload() {
       await configureToolsState(options.tools, { force: true });

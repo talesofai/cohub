@@ -2,6 +2,7 @@ import { sql } from "drizzle-orm";
 import type { ContentBlock } from "@cohub/protocol/core";
 import { db } from "./db.js";
 import { env } from "./env.js";
+import { getMergeableFollowupPrefix } from "./followup-batch.js";
 import type { AgentTurnJobData } from "./queue.js";
 
 type TurnRow = {
@@ -73,18 +74,6 @@ const getMetaString = (turn: TurnRow, key: string): string | null => {
   const value = asRecord(turn.meta)[key];
   return typeof value === "string" && value.trim() ? value.trim() : null;
 };
-
-function getSystemInstructions(turn: TurnRow): string | null {
-  return getMetaString(turn, "systemInstructions");
-}
-
-function getMergeableFollowupPrefix(turns: TurnRow[]) {
-  const [firstTurn] = turns;
-  if (!firstTurn) return [];
-  const first = getSystemInstructions(firstTurn);
-  const boundary = turns.findIndex((turn) => getSystemInstructions(turn) !== first);
-  return boundary === -1 ? turns : turns.slice(0, boundary);
-}
 
 function getUserMessageId(turn: TurnRow): string {
   return getMetaString(turn, "userMessageId") ?? getMetaString(turn, "messageId") ?? turn.id;
