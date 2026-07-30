@@ -1,6 +1,10 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { sanitizeScheduledPromptForClient } from "./task-run-privacy.js";
+import { MAX_PROMPT_SYSTEM_INSTRUCTIONS_LENGTH } from "@cohub/protocol";
+import {
+  prepareScheduledPromptPayloadUpdate,
+  sanitizeScheduledPromptForClient,
+} from "./task-run-privacy.js";
 
 test("scheduled prompt client projections omit private system instructions", () => {
   const cronJob = {
@@ -21,13 +25,17 @@ test("scheduled prompt client projections omit private system instructions", () 
     },
   };
 
-  assert.deepEqual(sanitizeScheduledPromptForClient(cronJob).payload, {
+  const sanitizedCronJob = sanitizeScheduledPromptForClient(cronJob);
+  const sanitizedTaskRun = sanitizeScheduledPromptForClient(taskRun);
+  assert.deepEqual(sanitizedCronJob.payload, {
     content: [{ type: "text", text: "Create a prompt" }],
   });
-  assert.deepEqual(sanitizeScheduledPromptForClient(taskRun).payload, {
+  assert.equal(sanitizedCronJob.hasSystemInstructions, true);
+  assert.deepEqual(sanitizedTaskRun.payload, {
     type: "send_message",
     data: { content: [{ type: "text", text: "Create a prompt" }] },
   });
+  assert.equal(sanitizedTaskRun.hasSystemInstructions, true);
   assert.equal(cronJob.payload.systemInstructions, "Private cron instructions");
   assert.equal(taskRun.payload.data.systemInstructions, "Private task instructions");
 });
@@ -38,4 +46,48 @@ test("unrelated task payloads are unchanged", () => {
     payload: { systemInstructions: "Not a scheduled prompt field" },
   };
   assert.equal(sanitizeScheduledPromptForClient(task), task);
+});
+
+test("scheduled prompt updates preserve omitted private instructions", () => {
+  const payload = prepareScheduledPromptPayloadUpdate({
+    taskType: "send_message",
+    currentPayload: {
+      content: [{ type: "text", text: "Before" }],
+      systemInstructions: "Private cron instructions",
+    },
+    nextPayload: { content: [{ type: "text", text: "After" }] },
+  });
+
+  assert.deepEqual(payload, {
+    content: [{ type: "text", text: "After" }],
+    systemInstructions: "Private cron instructions",
+  });
+});
+
+test("scheduled prompt updates normalize replacements and allow explicit clearing", () => {
+  const input = {
+    taskType: "send_message",
+    currentPayload: { systemInstructions: "Before" },
+  };
+  assert.deepEqual(prepareScheduledPromptPayloadUpdate({
+    ...input,
+    nextPayload: { systemInstructions: "  After  " },
+  }), { systemInstructions: "After" });
+  assert.deepEqual(prepareScheduledPromptPayloadUpdate({
+    ...input,
+    nextPayload: { systemInstructions: null },
+  }), {});
+});
+
+test("scheduled prompt updates reject invalid private instructions before persistence", () => {
+  assert.throws(() => prepareScheduledPromptPayloadUpdate({
+    taskType: "send_message",
+    currentPayload: {},
+    nextPayload: { systemInstructions: { invalid: true } },
+  }), /must be a string/);
+  assert.throws(() => prepareScheduledPromptPayloadUpdate({
+    taskType: "send_message",
+    currentPayload: {},
+    nextPayload: { systemInstructions: "x".repeat(MAX_PROMPT_SYSTEM_INSTRUCTIONS_LENGTH + 1) },
+  }), /cannot exceed/);
 });

@@ -1,3 +1,5 @@
+import { parsePromptSystemInstructions } from "@cohub/core/sessions";
+
 function isRecord(value: unknown): value is Record<string, unknown> {
   return !!value && typeof value === "object" && !Array.isArray(value);
 }
@@ -15,28 +17,53 @@ type ScheduledPromptView = {
 };
 
 function sanitizeScheduledPromptPayload(payload: unknown) {
-  if (!isRecord(payload)) return payload;
+  if (!isRecord(payload)) return { payload, hasSystemInstructions: false };
 
   let sanitized = payload;
+  let hasSystemInstructions = false;
   if (Object.hasOwn(sanitized, "systemInstructions")) {
+    hasSystemInstructions = true;
     sanitized = { ...sanitized };
     delete sanitized.systemInstructions;
   }
   if (isRecord(sanitized.data) && Object.hasOwn(sanitized.data, "systemInstructions")) {
+    hasSystemInstructions = true;
     const data = { ...sanitized.data };
     delete data.systemInstructions;
     sanitized = { ...sanitized, data };
   }
-  return sanitized;
+  return { payload: sanitized, hasSystemInstructions };
 }
 
 /** Keep scheduled prompt instructions in the execution payload, never client projections. */
 export function sanitizeScheduledPromptForClient<T extends ScheduledPromptView>(
   value: T,
-): T {
+): T & { hasSystemInstructions?: boolean } {
   if (value.taskType !== "send_message") return value;
-  const payload = sanitizeScheduledPromptPayload(value.payload);
-  return payload === value.payload ? value : { ...value, payload };
+  const { payload, hasSystemInstructions } = sanitizeScheduledPromptPayload(value.payload);
+  return { ...value, payload, hasSystemInstructions };
+}
+
+/** Preserve hidden instructions on ordinary cron edits; explicit values replace or clear them. */
+export function prepareScheduledPromptPayloadUpdate(input: {
+  taskType: string;
+  currentPayload: unknown;
+  nextPayload: Record<string, unknown>;
+}) {
+  if (input.taskType !== "send_message") return input.nextPayload;
+
+  const next = { ...input.nextPayload };
+  if (Object.hasOwn(next, "systemInstructions")) {
+    const systemInstructions = parsePromptSystemInstructions(next.systemInstructions);
+    if (systemInstructions) next.systemInstructions = systemInstructions;
+    else delete next.systemInstructions;
+    return next;
+  }
+
+  if (isRecord(input.currentPayload) && Object.hasOwn(input.currentPayload, "systemInstructions")) {
+    next.systemInstructions = input.currentPayload.systemInstructions;
+  }
+  return next;
 }
 
 /**

@@ -1124,6 +1124,7 @@ export type CronJobRecord<TPayload extends CronJobPayload = CronJobPayload> = {
   title: string;
   taskType: string;
   payload: TPayload;
+  hasSystemInstructions?: boolean;
   cronExpression: string;
   timezone: string;
   bullJobKey: string;
@@ -1146,6 +1147,7 @@ export type TaskRunRecord = {
   taskType: string;
   status: "pending" | "running" | "completed" | "failed";
   payload: unknown;
+  hasSystemInstructions?: boolean;
   result: unknown;
   errorMessage: string | null;
   attemptCount: number;

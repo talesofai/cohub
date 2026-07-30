@@ -4,11 +4,16 @@ import { db } from "../db/index.js";
 import { cronJobs, taskRuns } from "@cohub/db";
 import { eq, and, isNull, desc, lt, or } from "drizzle-orm";
 import { sanitizePostgresJsonValue } from "@cohub/core/content/sanitize";
+import { PromptSystemInstructionsValidationError } from "@cohub/core/sessions";
 import { getOptionalAuth, useAuth, requireValidId, authzDenied } from "../lib/middleware.js";
 import { hasPermission } from "../permissions.js";
 import { disableCronJob, enableCronJob, removeCronJob, updateCronJob } from "../tasks.js";
 import { fallbackPublicUserProfile, getProfilesByUuids } from "../user-profiles.js";
-import { sanitizeScheduledPromptForClient, sanitizeTaskRunPricingForViewer } from "../task-run-privacy.js";
+import {
+  prepareScheduledPromptPayloadUpdate,
+  sanitizeScheduledPromptForClient,
+  sanitizeTaskRunPricingForViewer,
+} from "../task-run-privacy.js";
 
 const router = new Hono();
 const { CronExpressionParser } = cronParser;
@@ -260,7 +265,18 @@ router.patch("/:id", async (c) => {
 
   if ("payload" in body) {
     if (!isRecord(body.payload)) return c.json({ message: "payload must be an object" }, 400);
-    patch.payload = sanitizePostgresJsonValue(body.payload) as Record<string, unknown>;
+    try {
+      patch.payload = prepareScheduledPromptPayloadUpdate({
+        taskType: job.taskType,
+        currentPayload: job.payload,
+        nextPayload: sanitizePostgresJsonValue(body.payload) as Record<string, unknown>,
+      });
+    } catch (error) {
+      if (error instanceof PromptSystemInstructionsValidationError) {
+        return c.json({ message: error.message }, 400);
+      }
+      throw error;
+    }
   }
 
   const nextCronExpression = "cronExpression" in body ? body.cronExpression : undefined;
