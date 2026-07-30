@@ -264,12 +264,14 @@ const filteredPromptTemplates = $derived.by<SlashCommandMenuItem[]>(() => {
 		const name = item.name.toLowerCase();
 		const labelLower = label.toLowerCase();
 		const description = item.description.toLowerCase();
+		const mountSlug = item.source?.mountSlug.toLowerCase() ?? "";
 		let matchScore = 0;
 		if (!query) matchScore = 9;
 		else if (labelLower.startsWith(query) || name.startsWith(query))
 			matchScore = 100;
 		else if (labelLower.includes(query) || name.includes(query))
 			matchScore = 80;
+		else if (mountSlug.includes(query)) matchScore = 64;
 		else if (description.includes(query)) matchScore = 48;
 		else continue;
 		scored.push({
@@ -277,6 +279,7 @@ const filteredPromptTemplates = $derived.by<SlashCommandMenuItem[]>(() => {
 			name: item.name,
 			description: item.description,
 			scope: item.scope,
+			source: item.source,
 			matchScore,
 		});
 	}

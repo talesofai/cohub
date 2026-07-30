@@ -7,14 +7,18 @@ import type {
 } from "@cohub/protocol/model/status";
 import { config } from "../config.js";
 import { useAuth } from "../lib/middleware.js";
+import {
+  type RawOnlineHeartbeat,
+  resampleModelStatusHeartbeats,
+} from "../model-status-heartbeats.js";
 import { redisCommandClient } from "../redis.js";
 
 const logger = createLogger({ serviceName: "cohub-api" });
 
 /**
  * Redis-cached, slimmed view of per-model availability derived from the
- * router-status probe service. The upstream payload (~870KB) carries raw
- * per-probe samples we don't need; we cache only the aggregated fields the
+ * router-status probe service. The multi-megabyte upstream payload carries
+ * raw per-probe samples we don't need; we cache only the aggregated fields the
  * UI consumes (~10–15KB). TTL matches the probe cadence so freshness is
  * never worse than fetching directly.
  */
@@ -51,12 +55,6 @@ type RawCheck = {
 		sample_count?: number;
 		operational_samples?: number;
 	}>;
-};
-
-type RawOnlineHeartbeat = {
-	start?: string;
-	success_rate?: number;
-	sample_count?: number;
 };
 
 type RawOnlineMetric = {
@@ -181,54 +179,36 @@ async function fetchUpstream(): Promise<ModelStatusResponse> {
 		}
 	}
 
-	// 8h online heartbeats arrive as 2-min buckets (~240) — too dense for the
-	// 288px hover card (gaps alone would overflow). Resample to 5-min buckets
-	// (96 bars over 8h), matching the validated bar density. Each 5-min bucket
-	// is the sample-weighted mean success rate of the 2-min buckets it covers;
-	// empty buckets stay null (rendered gray).
-	const HEARTBEAT_BUCKET_MS = 5 * 60 * 1000;
-	const windowStartMs = raw.online?.window?.start
-		? Date.parse(raw.online.window.start)
-		: Number.NaN;
-	const windowMinutes = raw.online?.window?.minutes ?? 480;
-	const heartbeatBucketCount = Math.max(1, Math.round(windowMinutes / 5));
+	const rawWindowMinutes = raw.online?.window?.minutes;
+	const onlineWindowMinutes =
+		typeof rawWindowMinutes === "number" &&
+		Number.isFinite(rawWindowMinutes) &&
+		rawWindowMinutes > 0
+			? rawWindowMinutes
+			: 480;
 
-	function resampleHeartbeats(heartbeats: RawOnlineHeartbeat[]): Array<number | null> | null {
-		if (!Number.isFinite(windowStartMs) || !heartbeats.length) return null;
-		const acc = new Map<number, { sum: number; weight: number }>();
-		for (const hb of heartbeats) {
-			const t = hb.start ? Date.parse(hb.start) : Number.NaN;
-			if (!Number.isFinite(t) || typeof hb.success_rate !== "number") continue;
-			const idx = Math.floor((t - windowStartMs) / HEARTBEAT_BUCKET_MS);
-			if (idx < 0 || idx >= heartbeatBucketCount) continue;
-			const w = hb.sample_count && hb.sample_count > 0 ? hb.sample_count : 1;
-			const slot = acc.get(idx) ?? { sum: 0, weight: 0 };
-			slot.sum += hb.success_rate * w;
-			slot.weight += w;
-			acc.set(idx, slot);
-		}
-		const out: Array<number | null> = [];
-		for (let i = 0; i < heartbeatBucketCount; i++) {
-			const slot = acc.get(i);
-			out.push(slot && slot.weight > 0 ? Math.round((slot.sum / slot.weight) * 10) / 10 : null);
-		}
-		return out;
-	}
-
+	// Upstream can change both its window and heartbeat cadence. Collapse the
+	// reported window to the fixed 96-bar UI contract instead of assuming 8h.
 	const onlineModels = raw.online?.models ?? [];
 	const onlineHeartbeatsByModel = new Map<string, Array<number | null> | null>();
 	const onlineWindowsByModel = new Map<string, RawOnlineWindow[] | null>();
 	for (const m of onlineModels) {
-		onlineHeartbeatsByModel.set(m.model, m.heartbeats ? resampleHeartbeats(m.heartbeats) : null);
+		onlineHeartbeatsByModel.set(
+			m.model,
+			resampleModelStatusHeartbeats(
+				m.heartbeats ?? [],
+				raw.online?.window?.start,
+				onlineWindowMinutes,
+			),
+		);
 		onlineWindowsByModel.set(m.model, m.windows ?? null);
 	}
-	const onlineWindowMinutes = windowMinutes;
 	const HISTORY_WINDOW_MINUTES = 24 * 60;
 
 	// Per-model bar series: real observed traffic (online) first; fall back to
 	// the probe self-test history for models not yet covered by online (new
 	// models, or a stale/missing online snapshot). Each branch yields 96
-	// buckets; windowMinutes tags the source so the axis label stays honest.
+	// buckets; heartbeatsWindowMinutes tags the source so the axis stays honest.
 	function historyRates(c: RawCheck): Array<number | null> {
 		return (c.history ?? []).map((b) =>
 			b.sample_count ? Math.round(((b.operational_samples ?? 0) / b.sample_count) * 100) : null,

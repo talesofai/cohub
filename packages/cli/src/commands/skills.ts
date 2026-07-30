@@ -21,13 +21,12 @@ export function registerSkills(program: Command): void {
         table(
           result.skills.map((skill) => ({
             command: `/skill:${skill.name}`,
-            name: skill.name,
-            scope: skill.scope,
+            source: skill.source?.type === "mod" ? `mod:${skill.source.mountSlug}` : skill.scope,
             description: skill.description,
           })),
           [
             { key: "command", label: "Command" },
-            { key: "scope", label: "Scope" },
+            { key: "source", label: "Source" },
             { key: "description", label: "Description" },
           ],
         );

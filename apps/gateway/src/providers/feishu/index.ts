@@ -200,8 +200,8 @@ export class FeishuProvider implements GatewayProvider {
         method: "GET",
         url: "/open-apis/bot/v3/info",
       });
-      if (res.code === 0 && res.data?.bot?.open_id) {
-        this.botOpenId = res.data.bot.open_id;
+      if (res.code === 0 && res.bot?.open_id) {
+        this.botOpenId = res.bot.open_id;
         logger.info(`[Feishu:${this.channelId}] ✓ Bot open_id: ${this.botOpenId}`);
         void markChannelReady(this.channelId, {
           meta: {

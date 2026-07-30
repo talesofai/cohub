@@ -811,7 +811,7 @@ const hoveredLevel = $derived(
 
 /** Bar-chart series (96 buckets): online traffic first, probe history fallback. */
 const hoveredHeartbeats = $derived(hoveredEntry?.heartbeats8h ?? []);
-/** Total minutes the bar series spans (online 480 / history fallback 1440). */
+/** Total minutes the bar series spans (reported online window / history fallback 1440). */
 const hoveredHeartbeatWindowMin = $derived(
 	hoveredEntry?.heartbeatsWindowMinutes ?? 480,
 );

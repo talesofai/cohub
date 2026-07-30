@@ -912,10 +912,17 @@ export type PromptTemplateCatalogResponse = {
   prompts: PromptTemplateCatalogEntry[];
 };
 
+export type SkillCatalogSource = {
+  type: "mod";
+  modSpaceId: string;
+  mountSlug: string;
+};
+
 export type SkillCatalogEntry = {
   name: string;
   description: string;
   scope: "platform" | "mod" | "user" | "project";
+  source?: SkillCatalogSource;
 };
 
 export type SkillCatalogResponse = {

@@ -7,6 +7,7 @@ export type SlashCommandMenuItem = {
 	name: string;
 	description: string;
 	scope: SkillCatalogEntry["scope"];
+	source?: SkillCatalogEntry["source"];
 	argumentHint?: string;
 	category?: string;
 	matchScore?: number;
@@ -50,7 +51,7 @@ const groupedCommands = $derived.by<GroupedCommand[]>(() => {
 	items.forEach((item, index) => {
 		const label =
 			item.kind === "skill"
-				? item.category || `Skill · ${item.scope}`
+				? commandSourceLabel(item)
 				: item.category || item.scope || "Commands";
 		const group = groups.get(label) ?? [];
 		group.push({ item, index });
@@ -82,9 +83,15 @@ function commandLabel(item: SlashCommandMenuItem) {
 	return item.kind === "skill" ? `skill:${item.name}` : item.name;
 }
 
+function commandSourceLabel(item: SlashCommandMenuItem) {
+	if (item.kind !== "skill") return item.category ?? item.scope;
+	if (item.category) return item.category;
+	if (item.source?.type === "mod") return `Mod · ${item.source.mountSlug}`;
+	return `Skill · ${item.scope}`;
+}
+
 function commandScopeLabel(item: SlashCommandMenuItem) {
-	if (item.kind === "skill") return item.category ?? `Skill · ${item.scope}`;
-	return item.category ?? item.scope;
+	return commandSourceLabel(item);
 }
 
 function itemKey(item: SlashCommandMenuItem) {

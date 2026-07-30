@@ -28,16 +28,17 @@ export type ModelStatusEntry = {
 	}> | null;
 	/**
 	 * Bar-chart series (oldest → newest), always 96 buckets. Source is real
-	 * observed traffic (`online` heartbeats resampled to 5-min buckets) when
-	 * available, else the probe self-test `history` (15-min buckets) as a
-	 * fallback for models not yet covered by online. Drives the hover card
-	 * bar chart; color each bucket via the 6-tier success-rate scale.
+	 * observed traffic (`online` heartbeats resampled across its reported
+	 * window) when available, else the probe self-test `history` (15-min
+	 * buckets) as a fallback for models not yet covered by online. Drives the
+	 * hover card bar chart; color each bucket via the 6-tier success-rate scale.
 	 */
 	heartbeats8h: Array<number | null> | null;
 	/**
-	 * Total minutes spanned by `heartbeats8h` (online → 480, history fallback
-	 * → 1440). The frontend divides by bucket count for the per-bar age and
-	 * the axis label, so the window reads honestly regardless of source.
+	 * Total minutes spanned by `heartbeats8h` (the upstream-reported online
+	 * window, or 1440 for history fallback). The frontend divides by bucket
+	 * count for the per-bar age and the axis label, so the window reads
+	 * honestly regardless of source.
 	 */
 	heartbeatsWindowMinutes: number | null;
 };

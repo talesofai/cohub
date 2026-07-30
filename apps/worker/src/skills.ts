@@ -1,4 +1,6 @@
 import {
+  bindModSkillsConfig,
+  bindSpaceModSkillsConfig,
   createCachedSkillsConfig,
   formatSkillExpansion,
   getDirectoryRevision,
@@ -15,14 +17,18 @@ import {
   type CachedSkillsConfig,
   type Skill,
   type SkillCatalogEntry,
+  type ModSkillBinding,
   type SkillsConfig,
   type SkillScope,
 } from "@cohub/infra/config-runtime/skills";
 import { getSpaceModMountSignature, listEnabledSpaceMods } from "@cohub/core/space-mods";
+import { createLogger } from "@cohub/infra/logging";
 import { join, resolve } from "node:path";
 import { config } from "./config.js";
 import { db } from "./db.js";
 import { redisCommandClient } from "./redis.js";
+
+const logger = createLogger({ serviceName: "cohub-worker" });
 
 export type { SkillCatalogEntry } from "@cohub/infra/config-runtime/skills";
 
@@ -119,41 +125,93 @@ async function loadCachedSkills(input: {
   }
 }
 
+type SpaceModSkillSource = ModSkillBinding & {
+  revision: string;
+};
+
+function getModSkillsLoadInput(source: SpaceModSkillSource) {
+  return {
+    redisKey: getModSkillsRedisKey(source.modSpaceId, source.revision),
+    dir: source.skillsDir,
+    sandboxDir: source.sandboxDir,
+    scope: "mod" as const,
+    allowMissing: true,
+  };
+}
+
+async function loadBoundModSkills(spaceId: string, source: SpaceModSkillSource): Promise<{
+  config: SkillsConfig | null;
+  cacheable: boolean;
+}> {
+  const loadInput = getModSkillsLoadInput(source);
+  try {
+    const cached = await loadCachedSkills(loadInput);
+    if (!cached) return { config: null, cacheable: true };
+    try {
+      return { config: bindModSkillsConfig(cached, source), cacheable: true };
+    } catch (error) {
+      logger.warn("[skills] invalid Mod skill cache; reloading from disk", {
+        spaceId,
+        modSpaceId: source.modSpaceId,
+        error: error instanceof Error ? error.message : String(error),
+      });
+      await redisCommandClient.del(loadInput.redisKey).catch(() => undefined);
+      const refreshed = (await loadSkillsFromDir(loadInput)).content;
+      return { config: refreshed ? bindModSkillsConfig(refreshed, source) : null, cacheable: true };
+    }
+  } catch (error) {
+    await redisCommandClient.del(loadInput.redisKey).catch(() => undefined);
+    logger.warn("[skills] failed to load Mod skills; skipping source", {
+      spaceId,
+      modSpaceId: source.modSpaceId,
+      error: error instanceof Error ? error.message : String(error),
+    });
+    return { config: null, cacheable: false };
+  }
+}
+
 async function loadSpaceModSkills(spaceId: string): Promise<SkillsConfig | null> {
   const mods = await listEnabledSpaceMods(db, spaceId);
   if (mods.length === 0) return null;
 
   const signature = getSpaceModMountSignature(mods);
-  const sources = await Promise.all(mods.map(async (mod) => {
+  const sources: SpaceModSkillSource[] = await Promise.all(mods.map(async (mod) => {
     const latestDir = getModLatestDir(mod.modSpaceId);
     return {
-      mod,
       skillsDir: getModSkillsDir(mod.modSpaceId),
       sandboxDir: `${mod.mountPath}/.agents/skills`,
+      modSpaceId: mod.modSpaceId,
+      mountSlug: mod.mountSlug,
       revision: await getDirectoryRevision(latestDir, join(latestDir, CHECKPOINT_META_PATH)),
     };
   }));
   const aggregateKey = getSpaceModSkillsRedisKey(
     spaceId,
-    JSON.stringify({ signature, revisions: sources.map((source) => [source.mod.modSpaceId, source.revision]) }),
+    JSON.stringify({ signature, revisions: sources.map((source) => [source.modSpaceId, source.revision]) }),
   );
 
   const cached = await redisCommandClient.get(aggregateKey).catch(() => null);
   if (cached) {
     const parsed = parseCachedSkillsConfig(cached);
-    if (parsed) return parsed.content;
+    if (parsed?.content) {
+      try {
+        return bindSpaceModSkillsConfig(parsed.content, sources);
+      } catch (error) {
+        logger.warn("[skills] invalid aggregate Mod skill cache; rebuilding", {
+          spaceId,
+          error: error instanceof Error ? error.message : String(error),
+        });
+      }
+    }
+    await redisCommandClient.del(aggregateKey).catch(() => undefined);
   }
 
-  const configs = await Promise.all(sources.map((source) => loadCachedSkills({
-    redisKey: getModSkillsRedisKey(source.mod.modSpaceId, source.revision),
-    dir: source.skillsDir,
-    sandboxDir: source.sandboxDir,
-    scope: "mod",
-    allowMissing: true,
-  })));
-  const content = mergeSkillsConfigs(...configs);
-  const aggregate = createCachedSkillsConfig({ rawText: aggregateKey, content });
-  await redisCommandClient.set(aggregateKey, JSON.stringify(aggregate), "EX", SKILLS_CACHE_TTL_SEC).catch(() => undefined);
+  const results = await Promise.all(sources.map((source) => loadBoundModSkills(spaceId, source)));
+  const content = mergeSkillsConfigs(...results.map((result) => result.config));
+  if (results.every((result) => result.cacheable)) {
+    const aggregate = createCachedSkillsConfig({ rawText: aggregateKey, content });
+    await redisCommandClient.set(aggregateKey, JSON.stringify(aggregate), "EX", SKILLS_CACHE_TTL_SEC).catch(() => undefined);
+  }
   return content;
 }
 
@@ -227,6 +285,7 @@ export async function expandSkillCommand(text: string, options: LoadSkillsOption
       name: skill.name,
       description: skill.description,
       scope: skill.scope,
+      source: skill.source,
       sandboxFilePath: skill.sandboxFilePath,
       sandboxBaseDir: skill.sandboxBaseDir,
     },

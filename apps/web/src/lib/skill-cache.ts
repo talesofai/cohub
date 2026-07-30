@@ -1,21 +1,36 @@
 import type { SkillCatalogEntry } from "@neta-art/cohub";
 
-const CACHE_VERSION = 1;
+const CACHE_VERSION = 2;
 
 function getCacheKey(spaceId: string) {
 	return `cohub:space-skills:${spaceId}:v${CACHE_VERSION}`;
 }
 
-function isSkillCatalogEntry(value: unknown): value is SkillCatalogEntry {
+function isModSkillSource(value: unknown) {
 	if (!value || typeof value !== "object") return false;
 	const record = value as Record<string, unknown>;
 	return (
+		record.type === "mod" &&
+		typeof record.modSpaceId === "string" &&
+		typeof record.mountSlug === "string"
+	);
+}
+
+function isSkillCatalogEntry(value: unknown): value is SkillCatalogEntry {
+	if (!value || typeof value !== "object") return false;
+	const record = value as Record<string, unknown>;
+	const validScope =
+		record.scope === "platform" ||
+		record.scope === "mod" ||
+		record.scope === "user" ||
+		record.scope === "project";
+	return (
 		typeof record.name === "string" &&
 		typeof record.description === "string" &&
-		(record.scope === "platform" ||
-			record.scope === "mod" ||
-			record.scope === "user" ||
-			record.scope === "project")
+		validScope &&
+		(record.scope === "mod"
+			? isModSkillSource(record.source)
+			: record.source === undefined)
 	);
 }
 
