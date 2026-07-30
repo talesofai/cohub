@@ -4,6 +4,7 @@ import { MAX_PROMPT_SYSTEM_INSTRUCTIONS_LENGTH } from "@cohub/protocol";
 import {
   parsePromptSystemInstructions,
   PromptSystemInstructionsValidationError,
+  sanitizePromptMetaForClient,
 } from "./system-instructions.js";
 
 test("prompt system instructions are trimmed and optional", () => {
@@ -26,4 +27,21 @@ test("prompt system instructions reject invalid or oversized values", () => {
     () => parsePromptSystemInstructions("x".repeat(MAX_PROMPT_SYSTEM_INSTRUCTIONS_LENGTH + 1)),
     /cannot exceed 16000 characters/,
   );
+});
+
+test("client prompt metadata omits system instructions without mutating stored metadata", () => {
+  const stored = {
+    systemInstructions: "Do not expose this instruction",
+    clientMessageId: "message_1",
+    billing: { status: "allowed_with_debt" },
+  };
+
+  assert.deepEqual(sanitizePromptMetaForClient(stored), {
+    clientMessageId: "message_1",
+    billing: { status: "allowed_with_debt" },
+  });
+  assert.equal(stored.systemInstructions, "Do not expose this instruction");
+  assert.equal(sanitizePromptMetaForClient({ systemInstructions: "private" }), null);
+  assert.equal(sanitizePromptMetaForClient(null), null);
+  assert.equal(sanitizePromptMetaForClient([]), null);
 });

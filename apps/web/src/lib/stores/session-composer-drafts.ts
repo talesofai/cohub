@@ -1,16 +1,15 @@
-import { encodeKeyPart, getCacheUserKey } from "$lib/cache/keys";
-
-const STORAGE_PREFIX = "cohub:session-composer-draft:v1";
 const DRAFT_TTL_MS = 30 * 24 * 60 * 60 * 1000;
 
 type ComposerDraftRecord = {
 	text: string;
+	systemInstructions: string;
 	updatedAt: number;
 };
 
-type ComposerDraftScope =
-	| { kind: "new" }
-	| { kind: "session"; sessionId: string };
+export type SessionComposerDraft = Pick<
+	ComposerDraftRecord,
+	"text" | "systemInstructions"
+>;
 
 function canUseLocalStorage() {
 	return typeof window !== "undefined" && typeof localStorage !== "undefined";
@@ -32,42 +31,47 @@ function isExpired(updatedAt: unknown) {
 	);
 }
 
-export function sessionComposerDraftKey(
-	spaceId: string,
-	scope: ComposerDraftScope,
-) {
-	const scopeKey = scope.kind === "new" ? "new" : `session:${scope.sessionId}`;
-	return [STORAGE_PREFIX, getCacheUserKey(), spaceId, scopeKey]
-		.map(encodeKeyPart)
-		.join(":");
-}
+const emptyDraft = (): SessionComposerDraft => ({
+	text: "",
+	systemInstructions: "",
+});
 
-export function readSessionComposerDraftText(key: string) {
-	if (!canUseLocalStorage()) return "";
+export function readSessionComposerDraft(key: string): SessionComposerDraft {
+	if (!canUseLocalStorage()) return emptyDraft();
 	try {
 		const raw = localStorage.getItem(key);
-		if (!raw) return "";
+		if (!raw) return emptyDraft();
 		const record = JSON.parse(raw) as Partial<ComposerDraftRecord>;
 		if (isExpired(record.updatedAt)) {
 			safeRemoveItem(key);
-			return "";
+			return emptyDraft();
 		}
-		return typeof record.text === "string" ? record.text : "";
+		return {
+			text: typeof record.text === "string" ? record.text : "",
+			systemInstructions:
+				typeof record.systemInstructions === "string"
+					? record.systemInstructions
+					: "",
+		};
 	} catch {
 		safeRemoveItem(key);
-		return "";
+		return emptyDraft();
 	}
 }
 
-export function writeSessionComposerDraftText(key: string, text: string) {
+export function writeSessionComposerDraft(
+	key: string,
+	draft: SessionComposerDraft,
+) {
 	if (!canUseLocalStorage()) return;
 	try {
-		if (!text.trim()) {
+		if (!draft.text.trim() && !draft.systemInstructions.trim()) {
 			safeRemoveItem(key);
 			return;
 		}
 		const record: ComposerDraftRecord = {
-			text,
+			text: draft.text,
+			systemInstructions: draft.systemInstructions,
 			updatedAt: Date.now(),
 		};
 		localStorage.setItem(key, JSON.stringify(record));
@@ -76,7 +80,7 @@ export function writeSessionComposerDraftText(key: string, text: string) {
 	}
 }
 
-export function removeSessionComposerDraftText(key: string | null) {
+export function removeSessionComposerDraft(key: string | null) {
 	if (!key || !canUseLocalStorage()) return;
 	safeRemoveItem(key);
 }

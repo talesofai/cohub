@@ -19,7 +19,7 @@ import type { ChannelProvider, GatewayOutboundCommand } from "@cohub/protocol/ga
 import { getRealtimeUserRoom } from "@cohub/protocol/realtime";
 import { sessionMessages, sessionTurns, spaceChannels, spaceSessionBindings, spaceSessions, providerMessageRefs, userChannels, userProfiles } from "@cohub/db";
 import { sanitizeContentBlocksForPostgresJson, sanitizePostgresJsonValue } from "@cohub/core/content/sanitize";
-import { countToolCallsInContent, deriveMessagePreviewText, extractPlainText, resolveMessageTurnId, summarizeSessionTurnCompactions } from "@cohub/core/sessions";
+import { countToolCallsInContent, deriveMessagePreviewText, extractPlainText, resolveMessageTurnId, sanitizePromptMetaForClient, summarizeSessionTurnCompactions } from "@cohub/core/sessions";
 import { buildTraceHeaders, getCurrentRequestId } from "@cohub/infra/tracing";
 import { enqueueSessionMessagePostprocess } from "./session-message-postprocess-queue.js";
 import { normalizeAssistantTurn } from "./assistant-message-normalizer.js";
@@ -30,6 +30,7 @@ import { logger } from "./logger.js";
 import { redis, publishRealtimeEnvelope, clearPersistedSessionStreamSnapshot, getGatewayNodeOutboundStreamKey, xaddWithMaxlen } from "./redis.js";
 import { buildTurnObjectPrefix, writeTurnObjectJson } from "./turn-object-storage.js";
 import { pickRealtimeMessageMeta } from "./realtime-message-meta.js";
+import { toPublicSessionTurnRecord } from "./session-turn-public.js";
 
 
 const INTERNAL_API_BASE_URL =
@@ -211,7 +212,7 @@ async function publishMessagePersisted(spaceId: string, message: MessageRecord) 
 
 async function publishTurnCreated(spaceId: string, turn: SessionTurnRecord) {
   const hydratedTurn = await hydrateTurnAuthorProfile(turn);
-  await publishRealtimeEnvelope({ domain: "session", type: "session.turn.created", spaceId, sessionId: hydratedTurn.sessionId, payload: { turn: hydratedTurn } });
+  await publishRealtimeEnvelope({ domain: "session", type: "session.turn.created", spaceId, sessionId: hydratedTurn.sessionId, payload: { turn: toPublicSessionTurnRecord(hydratedTurn) } });
 }
 
 const truncateTurnPreview = (text: string | null | undefined) => {
@@ -222,7 +223,7 @@ const truncateTurnPreview = (text: string | null | undefined) => {
 
 async function publishTurnFinalized(spaceId: string, turn: SessionTurnRecord) {
   await clearPersistedSessionStreamSnapshot(spaceId, turn.sessionId);
-  await publishRealtimeEnvelope({ domain: "session", type: "session.turn.finalized", spaceId, sessionId: turn.sessionId, payload: { turn } });
+  await publishRealtimeEnvelope({ domain: "session", type: "session.turn.finalized", spaceId, sessionId: turn.sessionId, payload: { turn: toPublicSessionTurnRecord(turn) } });
   if (!turn.userUuid) return;
   await publishRealtimeEnvelope({
     domain: "session",
@@ -288,7 +289,7 @@ async function persistMessageNode(input: PersistMessageInput & { message: Persis
     role: messageRole,
     content,
     text,
-    meta: sanitizePostgresJsonValue({ ...input.message.meta, messageKind, anchorUserMessageId, actorUserId: input.userId ?? null, providerResponseId: input.message.meta?.responseId ?? null }),
+    meta: sanitizePostgresJsonValue(sanitizePromptMetaForClient({ ...input.message.meta, messageKind, anchorUserMessageId, actorUserId: input.userId ?? null, providerResponseId: input.message.meta?.responseId ?? null })),
     idempotencyKey: input.idempotencyKey,
     sequence,
     provider: input.message.provider ?? null,
@@ -495,7 +496,7 @@ const buildIntermediateObjectsForTurn = async (input: { spaceId: string; session
       usage: row.usage as Usage | null,
       durationMs: row.durationMs ?? null,
       toolCallsObjectKey,
-      meta: normalizeRecord(row.meta),
+      meta: sanitizePromptMetaForClient(row.meta),
       createdAt: toIso(row.createdAt),
     });
   }
@@ -1002,7 +1003,7 @@ export async function persistCompactionEvent(
       type: "session.turn.updated",
       spaceId: input.spaceId,
       sessionId: input.sessionId,
-      payload: { turn },
+      payload: { turn: toPublicSessionTurnRecord(turn) },
     }).catch((error) => logger.warn("[Compaction] failed to publish owner turn update", error));
   }
   if (state.messageRow) {

@@ -22,3 +22,16 @@ export function parsePromptSystemInstructions(input: unknown): string | null {
   }
   return value;
 }
+
+export function sanitizePromptMetaForClient(
+  value: unknown,
+): Record<string, unknown> | null {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return null;
+
+  const meta = value as Record<string, unknown>;
+  if (!Object.hasOwn(meta, "systemInstructions")) return meta;
+
+  const publicMeta = { ...meta };
+  delete publicMeta.systemInstructions;
+  return Object.keys(publicMeta).length > 0 ? publicMeta : null;
+}

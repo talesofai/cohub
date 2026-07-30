@@ -1,3 +1,4 @@
+import { sanitizePromptMetaForClient } from "@cohub/core/sessions";
 import type { ContentBlock } from "@cohub/protocol/core";
 
 const imagePreviewLabel = (count: number) => (count === 1 ? "Image" : `${count} images`);
@@ -139,9 +140,7 @@ export const summarizeMessageForHistory = <T extends { content: ContentBlock[]; 
   message: T,
   options?: { placeholderIntermediate?: boolean },
 ): T => {
-  const meta = (message.meta && typeof message.meta === "object" && !Array.isArray(message.meta))
-    ? (message.meta as Record<string, unknown>)
-    : {};
+  const meta = sanitizePromptMetaForClient(message.meta) ?? {};
   const isIntermediate = meta.messageKind === "assistant_intermediate" && options?.placeholderIntermediate !== false;
   const historySummary = getHistorySummary(message.content);
   const summaryMeta = isIntermediate
@@ -164,9 +163,7 @@ export const summarizeMessageForHistory = <T extends { content: ContentBlock[]; 
 };
 
 export const markMessageAsFull = <T extends { meta: unknown }>(message: T): T => {
-  const meta = (message.meta && typeof message.meta === "object" && !Array.isArray(message.meta))
-    ? (message.meta as Record<string, unknown>)
-    : {};
+  const meta = sanitizePromptMetaForClient(message.meta) ?? {};
   return {
     ...message,
     meta: {

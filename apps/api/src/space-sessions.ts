@@ -9,7 +9,7 @@ import { SPACE_ENV_REDIS_KEY } from "@cohub/protocol/sandbox";
 import { isSandboxUsableStatus } from "@cohub/sandbox-controller";
 import { sanitizeContentBlocksForPostgresJson, sanitizePostgresJsonValue } from "@cohub/core/content/sanitize";
 import { assignSessionParticipantSystemLabels } from "@cohub/core/labels/session-user";
-import { initializeSessionParticipantsMeta, readSessionParticipantUserUuids, resolveMessageTurnId } from "@cohub/core/sessions";
+import { initializeSessionParticipantsMeta, readSessionParticipantUserUuids, resolveMessageTurnId, sanitizePromptMetaForClient } from "@cohub/core/sessions";
 import { db } from "./db/index.js";
 import {
   sessionMessages,
@@ -529,14 +529,14 @@ export const persistMessageNode = async (input: PersistMessageInput & { message:
     role: messageRole,
     content,
     text,
-    meta: sanitizePostgresJsonValue({
+    meta: sanitizePostgresJsonValue(sanitizePromptMetaForClient({
       ...((input.message.meta as Record<string, unknown> | null) ?? {}),
       ...(rawMessageTurnId != null ? { turnId: messageTurnId } : {}),
       messageKind,
       anchorUserMessageId,
       actorUserId: userId,
       providerResponseId: ((input.message.meta as Record<string, unknown> | null)?.responseId as string | undefined) ?? null,
-    }),
+    })),
     idempotencyKey: input.idempotencyKey,
     sequence,
     provider: input.message.provider ?? null,
@@ -649,7 +649,7 @@ export const persistMessageNode = async (input: PersistMessageInput & { message:
   const realtimeMessage = {
     ...messageNode,
     role: messageNode.role as "user" | "assistant" | "system",
-    meta: (messageNode.meta as Record<string, unknown> | null) ?? null,
+    meta: sanitizePromptMetaForClient(messageNode.meta),
     startedAt: messageNode.startedAt instanceof Date ? messageNode.startedAt.toISOString() : null,
     completedAt: messageNode.completedAt instanceof Date ? messageNode.completedAt.toISOString() : null,
     durationMs: messageNode.durationMs ?? null,

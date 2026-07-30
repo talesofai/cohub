@@ -72,11 +72,11 @@ import {
 	saveDraftSessionModel,
 } from "$lib/stores/draft-session-model";
 import { modelsCatalogStore } from "$lib/stores/models-catalog.svelte";
+import { sessionComposerDraftKey } from "$lib/stores/session-composer-draft-key";
 import {
-	readSessionComposerDraftText,
-	removeSessionComposerDraftText,
-	sessionComposerDraftKey,
-	writeSessionComposerDraftText,
+	readSessionComposerDraft,
+	removeSessionComposerDraft,
+	writeSessionComposerDraft,
 } from "$lib/stores/session-composer-drafts";
 import { sessionGenerationStore } from "$lib/stores/session-generation.svelte";
 import {
@@ -303,7 +303,7 @@ export function createSessionChatHost(options: SessionChatHostOptions) {
 
 	let activeComposerDraftKey = $state<string | null>(null);
 	let composerDraftSaveTimer: ReturnType<typeof setTimeout> | null = null;
-	let preserveComposerInputOnNextDraftKeyChange = false;
+	let preserveComposerDraftOnNextKeyChange = false;
 	const input = $derived(composer.input);
 	const systemInstructions = $derived(composer.systemInstructions);
 	const attachments = $derived(composer.attachments);
@@ -662,26 +662,37 @@ export function createSessionChatHost(options: SessionChatHostOptions) {
 		if (key === activeComposerDraftKey) return;
 		untrack(() => {
 			const previousKey = activeComposerDraftKey;
-			const preserveInput = preserveComposerInputOnNextDraftKeyChange;
-			preserveComposerInputOnNextDraftKeyChange = false;
+			const preserveDraft = preserveComposerDraftOnNextKeyChange;
+			preserveComposerDraftOnNextKeyChange = false;
 			flushActiveComposerDraft();
 			activeComposerDraftKey = key;
-			if (preserveInput) {
-				if (key) writeSessionComposerDraftText(key, composer.input);
-				if (previousKey !== key) removeSessionComposerDraftText(previousKey);
+			if (preserveDraft) {
+				if (key)
+					writeSessionComposerDraft(key, {
+						text: composer.input,
+						systemInstructions: composer.systemInstructions,
+					});
+				if (previousKey !== key) removeSessionComposerDraft(previousKey);
 				return;
 			}
-			composer.input = key ? readSessionComposerDraftText(key) : "";
-			composer.systemInstructions = "";
+			const draft = key
+				? readSessionComposerDraft(key)
+				: { text: "", systemInstructions: "" };
+			composer.input = draft.text;
+			composer.systemInstructions = draft.systemInstructions;
 		});
 	});
 	$effect(() => {
 		const key = activeComposerDraftKey;
 		const text = input;
+		const instructions = systemInstructions;
 		if (!key) return;
 		clearComposerDraftSaveTimer();
 		composerDraftSaveTimer = setTimeout(() => {
-			writeSessionComposerDraftText(key, text);
+			writeSessionComposerDraft(key, {
+				text,
+				systemInstructions: instructions,
+			});
 			composerDraftSaveTimer = null;
 		}, 400);
 		return clearComposerDraftSaveTimer;
@@ -1070,12 +1081,15 @@ export function createSessionChatHost(options: SessionChatHostOptions) {
 	function flushActiveComposerDraft() {
 		clearComposerDraftSaveTimer();
 		if (!activeComposerDraftKey) return;
-		writeSessionComposerDraftText(activeComposerDraftKey, composer.input);
+		writeSessionComposerDraft(activeComposerDraftKey, {
+			text: composer.input,
+			systemInstructions: composer.systemInstructions,
+		});
 	}
 
 	function clearActiveComposerDraft() {
 		clearComposerDraftSaveTimer();
-		removeSessionComposerDraftText(activeComposerDraftKey);
+		removeSessionComposerDraft(activeComposerDraftKey);
 	}
 
 	function getHttpErrorCode(error: unknown): string | null {
@@ -3209,9 +3223,10 @@ export function createSessionChatHost(options: SessionChatHostOptions) {
 				opSpaceId,
 				failedDraftScope,
 			);
-			if (failedDraftText.trim()) {
-				writeSessionComposerDraftText(failedDraftKey, failedDraftText);
-			}
+			writeSessionComposerDraft(failedDraftKey, {
+				text: failedDraftText,
+				systemInstructions: pendingSystemInstructions,
+			});
 			// Restore UI only if we still own the originating space/session context.
 			if (disposed || spaceId !== opSpaceId) {
 				return;
@@ -3245,7 +3260,7 @@ export function createSessionChatHost(options: SessionChatHostOptions) {
 					pendingSystemInstructions,
 				);
 			}
-			preserveComposerInputOnNextDraftKeyChange = true;
+			preserveComposerDraftOnNextKeyChange = isNewChat && sessionId != null;
 			if ((hadFileUpload || hadImageUpload) && !uploadCompleted) {
 				composer.markAttachmentUploadsFailed();
 			}

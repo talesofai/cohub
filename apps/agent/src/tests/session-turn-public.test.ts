@@ -1,11 +1,11 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import type { SessionTurnRecord } from "@cohub/protocol/model";
-import { toRealtimeTurnRecord } from "./session-turn-public.js";
+import { toPublicSessionTurnRecord } from "../session-turn-public.js";
 
-test("realtime turn records cannot expose stored system instructions", () => {
+test("published agent turns omit private system instructions", () => {
   const timestamp = "2026-07-30T00:00:00.000Z";
-  const turn: SessionTurnRecord = {
+  const turn = {
     id: "turn_1",
     sessionId: "session_1",
     userUuid: "user_1",
@@ -34,9 +34,10 @@ test("realtime turn records cannot expose stored system instructions", () => {
     durationMs: null,
     createdAt: timestamp,
     updatedAt: timestamp,
-  };
+  } satisfies SessionTurnRecord;
 
-  assert.deepEqual(toRealtimeTurnRecord(turn).meta, {
+  assert.deepEqual(toPublicSessionTurnRecord(turn).meta, {
     clientMessageId: "message_1",
   });
+  assert.equal(turn.meta.systemInstructions, "Do not expose this instruction");
 });

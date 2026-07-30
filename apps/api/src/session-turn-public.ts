@@ -1,18 +1,6 @@
+import { sanitizePromptMetaForClient } from "@cohub/core/sessions";
 import type { SessionTurnRecord } from "@cohub/protocol/model";
 import type { RealtimeTurnRecord } from "@cohub/protocol/realtime";
-
-export function sanitizeSessionTurnMetaForClient(
-  value: unknown,
-): Record<string, unknown> | null {
-  if (!value || typeof value !== "object" || Array.isArray(value)) return null;
-
-  const meta = value as Record<string, unknown>;
-  if (!Object.hasOwn(meta, "systemInstructions")) return meta;
-
-  const publicMeta = { ...meta };
-  delete publicMeta.systemInstructions;
-  return Object.keys(publicMeta).length > 0 ? publicMeta : null;
-}
 
 export const toRealtimeTurnRecord = (
   turn: SessionTurnRecord,
@@ -37,7 +25,7 @@ export const toRealtimeTurnRecord = (
   summary: turn.summary,
   intermediateIndex: turn.intermediateIndex,
   intermediateSummary: turn.intermediateSummary,
-  meta: sanitizeSessionTurnMetaForClient(turn.meta),
+  meta: sanitizePromptMetaForClient(turn.meta),
   thinkingLevel: turn.thinkingLevel ?? null,
   startedAt: turn.startedAt,
   completedAt: turn.completedAt,

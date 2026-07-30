@@ -1,3 +1,4 @@
+import { sanitizePromptMetaForClient } from "@cohub/core/sessions";
 import type { ContentBlock } from "@cohub/protocol/core";
 import type { StoredIntermediateMessage } from "@cohub/protocol/model";
 import { and, asc, eq, sql } from "drizzle-orm";
@@ -113,7 +114,7 @@ const toSnapshotIntermediateMessage = (
     errorMessage: row.errorMessage ?? null,
     usage: row.usage as StoredIntermediateMessage["usage"],
     toolCallsObjectKey: null,
-    meta,
+    meta: sanitizePromptMetaForClient(meta),
     createdAt: toIso(row.createdAt),
   };
 };

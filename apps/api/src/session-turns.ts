@@ -14,13 +14,12 @@ import type {
 import type { ModelThinkingLevel } from "@cohub/protocol";
 import { db } from "./db/index.js";
 import { sessionMessages, sessionTurnSegments, sessionTurns, spaceSessions } from "@cohub/db";
-import { addSessionParticipantMeta, summarizeSessionTurnCompactions } from "@cohub/core/sessions";
+import { addSessionParticipantMeta, sanitizePromptMetaForClient, summarizeSessionTurnCompactions } from "@cohub/core/sessions";
 import { sanitizePostgresJsonValue, sanitizeContentBlocksForPostgresJson } from "@cohub/core/content/sanitize";
 import { ensureSessionTurnSegments, findSegmentForTurn } from "./session-forks.js";
 import { fallbackPublicUserProfile, getProfilesByUuids } from "./user-profiles.js";
 import { buildTurnObjectPrefix, assertTurnObjectKeyForTurn, createTurnObjectCdnUrl, writeTurnObjectJson } from "./turn-object-storage.js";
 import { deriveMessagePreviewText } from "./session-content.js";
-import { sanitizeSessionTurnMetaForClient } from "./session-turn-public.js";
 
 
 const logger = createLogger({ serviceName: "cohub-api" });
@@ -194,7 +193,7 @@ const toTurnRecord = (row: typeof sessionTurns.$inferSelect): SessionTurnRecord 
   summary: row.summary ?? null,
   intermediateIndex: row.intermediateIndex ?? null,
   intermediateSummary: row.intermediateSummary ?? null,
-  meta: sanitizeSessionTurnMetaForClient(row.meta),
+  meta: sanitizePromptMetaForClient(row.meta),
   thinkingLevel: extractThinkingLevel(row.meta),
   startedAt: row.startedAt ? toIso(row.startedAt) : null,
   completedAt: row.completedAt ? toIso(row.completedAt) : null,
@@ -495,7 +494,7 @@ export const buildIntermediateObjectsForTurn = async (input: { spaceId: string; 
       usage: row.usage as Usage | null,
       durationMs: row.durationMs ?? null,
       toolCallsObjectKey,
-      meta: normalizeRecord(row.meta),
+      meta: sanitizePromptMetaForClient(row.meta),
       createdAt: toIso(row.createdAt),
     });
   }

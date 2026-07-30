@@ -1,4 +1,5 @@
 import { sql } from "drizzle-orm";
+import { sanitizePromptMetaForClient } from "@cohub/core/sessions";
 import type { ContentBlock } from "@cohub/protocol/core";
 import { db } from "./db.js";
 import { env } from "./env.js";
@@ -220,7 +221,7 @@ export async function enqueueNextRunnableTurn(input: { spaceId: string; sessionI
 
 export function buildUserMessagesForBatch(batch: ClaimedTurnBatch) {
   return batch.turns.map((turn) => {
-    const meta = asRecord(turn.meta);
+    const meta = sanitizePromptMetaForClient(turn.meta) ?? {};
     const userMessageId = getUserMessageId(turn);
     return {
       turnId: turn.id,
