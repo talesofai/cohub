@@ -32,6 +32,12 @@ export type SessionTurnIntermediateIndex = {
 export type ContextCompactionScope = "between_turns" | "within_turn";
 export type ContextCompactionTriggerReason = "threshold" | "overflow_recovery";
 
+export type ContextCompactionProviderCalls = {
+  total: number;
+  succeeded: number;
+  failed: number;
+};
+
 export type ContextCompactionMeta = {
   version: 1;
   compactionId: string;
@@ -48,6 +54,8 @@ export type ContextCompactionMeta = {
   keepRecentTokens: number;
   summarizedMessageCount: number;
   attemptCount: number;
+  providerCalls?: ContextCompactionProviderCalls;
+  /** Legacy metadata written before per-call outcomes were tracked. */
   providerCallCount?: number;
   isSplitTurn: boolean;
   firstKeptEntryId: string;

@@ -33,6 +33,7 @@ const COMPACTION_META_KEYS = [
   "keepRecentTokens",
   "summarizedMessageCount",
   "attemptCount",
+  "providerCalls",
   "providerCallCount",
   "isSplitTurn",
   "compactedAt",
@@ -43,7 +44,21 @@ const pickRealtimeCompactionMeta = (value: unknown) => {
   if (!compaction) return undefined;
   const picked: Record<string, unknown> = {};
   for (const key of COMPACTION_META_KEYS) {
+    if (key === "providerCalls") continue;
     if (compaction[key] !== undefined) picked[key] = compaction[key];
+  }
+  const providerCalls = asRecord(compaction.providerCalls);
+  if (
+    providerCalls &&
+    typeof providerCalls.total === "number" &&
+    typeof providerCalls.succeeded === "number" &&
+    typeof providerCalls.failed === "number"
+  ) {
+    picked.providerCalls = {
+      total: providerCalls.total,
+      succeeded: providerCalls.succeeded,
+      failed: providerCalls.failed,
+    };
   }
   const placement = asRecord(compaction.placement);
   if (placement && (typeof placement.beforeMessageId === "string" || placement.beforeMessageId === null)) {

@@ -4,6 +4,19 @@ All notable changes to Cohub are documented in this file.
 
 <!-- Generated from apps/web/src/lib/changelog/entries.json. Do not edit. -->
 
+## v2.5 — 2026-07-31
+
+- **Recoverable context compaction**: compaction now runs at any LLM round boundary instead of only between turns, records structured metadata (scope, owner turn, trigger reason, token deltas, usage, duration), and rolls the session back to its pre-compaction archive when summarization fails, so a bad compaction no longer poisons the running turn. The web client renders it as an inline notice with expandable summary, token savings, and cost, streamed live through the SDK.
+- **Indexed turn IDs on messages**: session messages persist a dedicated `turn_id` column with a partial `(turn_id, sequence)` index, replacing JSON metadata lookups for turn-scoped reads, with a backfill script that keeps legacy `meta.turnId` rows readable during migration.
+- **Mod skill provenance**: skills mounted from mods carry a structured source (mod space and mount slug) through the config runtime, API, SDK, and CLI, so the slash command menu and `cohub skills` show which mod a skill comes from rather than a bare scope.
+- **Shared public identifier rules**: username and Space slug validation moved into a single `@cohub/protocol/public-identifiers` module with one reserved platform path list, so server and web enforce identical rules and new identities can no longer shadow platform routes. Existing stored values stay readable.
+
+### Bug Fixes
+
+- Compaction stats no longer inflate provider call counts when a summarization retry succeeds, and the turn ordinal shows the compaction's position within its turn instead of the global message sequence.
+- Model status heartbeats are resampled into a fixed 96-bucket window, so the hover chart stays legible regardless of upstream sample density.
+- Feishu bot identity is read from the correct response shape, restoring bot open_id resolution and channel readiness.
+
 ## v2.4 — 2026-07-29
 
 - **Agent-actionable board viewport context**: chat viewport context now carries the viewed board's `boardId` instead of raw camera coordinates, so the agent can inspect and render the exact board a user is looking at, while `visibleRect` and selected nodes still convey focus. `ViewportCamera` is removed from the protocol and from the `BoardViewState`/`BoardRuntimeViewState` report contract.

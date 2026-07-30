@@ -3,7 +3,9 @@ import test from "node:test";
 import type { ContextCompactionMeta } from "@cohub/protocol/model";
 import { summarizeSessionTurnCompactions } from "./compaction.js";
 
-type TestedCompactionMeta = ContextCompactionMeta & { providerCallCount: number };
+type TestedCompactionMeta = ContextCompactionMeta & {
+  providerCalls: NonNullable<ContextCompactionMeta["providerCalls"]>;
+};
 
 const compactionMeta = (
   input: Partial<TestedCompactionMeta> & Pick<TestedCompactionMeta, "compactionId">,
@@ -22,7 +24,7 @@ const compactionMeta = (
   keepRecentTokens: 20_000,
   summarizedMessageCount: 12,
   attemptCount: 1,
-  providerCallCount: 2,
+  providerCalls: { total: 2, succeeded: 2, failed: 0 },
   isSplitTurn: true,
   firstKeptEntryId: "entry-1",
   archivePath: "archives/session.1.jsonl",
@@ -106,13 +108,23 @@ test("summarizeSessionTurnCompactions sums only within-turn compaction work", ()
   });
 });
 
-test("summarizeSessionTurnCompactions accepts legacy metadata without provider call count", () => {
+test("summarizeSessionTurnCompactions accepts legacy provider call metadata", () => {
   const legacy = compactionMeta({ compactionId: "legacy" }) as unknown as Record<string, unknown>;
-  delete legacy.providerCallCount;
+  delete legacy.providerCalls;
+  legacy.providerCallCount = 2;
 
   assert.equal(summarizeSessionTurnCompactions([
     { meta: { messageKind: "compacted", compaction: legacy } },
   ])?.count, 1);
+});
+
+test("summarizeSessionTurnCompactions rejects inconsistent provider call outcomes", () => {
+  const malformed = compactionMeta({ compactionId: "malformed-provider-calls" });
+  malformed.providerCalls = { total: 2, succeeded: 2, failed: 1 };
+
+  assert.equal(summarizeSessionTurnCompactions([
+    { meta: { messageKind: "compacted", compaction: malformed } },
+  ]), null);
 });
 
 test("summarizeSessionTurnCompactions ignores malformed messages", () => {

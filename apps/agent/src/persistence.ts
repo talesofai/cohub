@@ -776,7 +776,11 @@ type PersistCompactionEventInput = {
   keepRecentTokens: number;
   summarizedMessageCount: number;
   attemptCount: number;
-  providerCallCount: number;
+  providerCalls: {
+    total: number;
+    succeeded: number;
+    failed: number;
+  };
   isSplitTurn: boolean;
   usage: Usage | null | undefined;
   durationMs: number;
@@ -861,7 +865,14 @@ export async function persistCompactionEvent(
           .limit(1);
         if (!ownerTurn) throw new Error("In-turn compaction owner turn not found");
         state.ownerTurnRow = ownerTurn;
-        ordinalInTurn = messageSequence;
+        const [ordinalRow] = await tx.select({
+          ordinal: sql<number>`count(*)::int + 1`,
+        }).from(sessionMessages).where(and(
+          eq(sessionMessages.sessionId, input.sessionId),
+          sql`${sessionMessages.meta}->>'messageKind' = 'compacted'`,
+          sql`coalesce(${sessionMessages.turnId}::text, ${sessionMessages.meta}->>'turnId') = ${input.ownerTurnId}`,
+        ));
+        ordinalInTurn = ordinalRow?.ordinal ?? 1;
       }
 
       const compaction: ContextCompactionMeta = {
@@ -880,7 +891,7 @@ export async function persistCompactionEvent(
         keepRecentTokens: input.keepRecentTokens,
         summarizedMessageCount: input.summarizedMessageCount,
         attemptCount: input.attemptCount,
-        providerCallCount: input.providerCallCount,
+        providerCalls: input.providerCalls,
         isSplitTurn: input.isSplitTurn,
         firstKeptEntryId: input.firstKeptEntryId,
         archivePath: input.archivePath ?? null,

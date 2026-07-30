@@ -31,6 +31,8 @@ export function getContextCompactionMeta(meta: unknown): ContextCompactionMeta |
   const messageMeta = asRecord(meta);
   const compaction = asRecord(messageMeta?.compaction);
   const placement = asRecord(compaction?.placement);
+  const providerCalls = asRecord(compaction?.providerCalls);
+  const hasProviderCalls = compaction?.providerCalls !== undefined;
   if (
     messageMeta?.messageKind !== "compacted" ||
     compaction?.version !== 1 ||
@@ -51,6 +53,13 @@ export function getContextCompactionMeta(meta: unknown): ContextCompactionMeta |
     !isNonNegativeInteger(compaction.keepRecentTokens) ||
     !isNonNegativeInteger(compaction.summarizedMessageCount) ||
     !isNonNegativeInteger(compaction.attemptCount) ||
+    (hasProviderCalls && (
+      !providerCalls ||
+      !isNonNegativeInteger(providerCalls.total) ||
+      !isNonNegativeInteger(providerCalls.succeeded) ||
+      !isNonNegativeInteger(providerCalls.failed) ||
+      providerCalls.succeeded + providerCalls.failed !== providerCalls.total
+    )) ||
     (compaction.providerCallCount !== undefined && !isNonNegativeInteger(compaction.providerCallCount)) ||
     typeof compaction.isSplitTurn !== "boolean" ||
     typeof compaction.firstKeptEntryId !== "string" ||

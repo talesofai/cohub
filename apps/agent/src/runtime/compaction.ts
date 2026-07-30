@@ -25,6 +25,12 @@ import {
   validateCompactionEffect,
 } from "./compaction-plan.js";
 
+type ProviderCallStats = {
+  total: number;
+  succeeded: number;
+  failed: number;
+};
+
 export type CompactionOutcome =
   | {
       compacted: true;
@@ -100,15 +106,26 @@ async function compactWithRetry(
 ): Promise<{
   result: Awaited<ReturnType<typeof compact>>;
   attemptCount: number;
-  providerCallCount: number;
+  providerCalls: ProviderCallStats;
 }> {
-  let providerCallCount = 0;
+  const providerCalls: ProviderCallStats = { total: 0, succeeded: 0, failed: 0 };
   const countedModels = new Proxy(models, {
     get(target, property, receiver) {
       if (property !== "completeSimple") return Reflect.get(target, property, receiver);
-      return (...args: Parameters<typeof target.completeSimple>) => {
-        providerCallCount += 1;
-        return target.completeSimple(...args);
+      return async (...args: Parameters<typeof target.completeSimple>) => {
+        providerCalls.total += 1;
+        try {
+          const response = await target.completeSimple(...args);
+          if (response.stopReason === "error" || response.stopReason === "aborted") {
+            providerCalls.failed += 1;
+          } else {
+            providerCalls.succeeded += 1;
+          }
+          return response;
+        } catch (error) {
+          providerCalls.failed += 1;
+          throw error;
+        }
       };
     },
   });
@@ -122,7 +139,7 @@ async function compactWithRetry(
     COMPACTION_RETRY_POLICY,
   );
 
-  return { result, attemptCount: 1, providerCallCount };
+  return { result, attemptCount: 1, providerCalls };
 }
 
 async function restorePreCompactionState(handle: SessionHandle, archivePath: string) {
@@ -252,7 +269,9 @@ export async function maybeAutoCompact(
       ]);
       span.setAttribute("agent.compaction.estimated_tokens_after", estimatedTokensAfter);
       span.setAttribute("agent.compaction.attempt_count", compactAttempt.attemptCount);
-      span.setAttribute("agent.compaction.provider_call_count", compactAttempt.providerCallCount);
+      span.setAttribute("agent.compaction.provider_call_count", compactAttempt.providerCalls.total);
+      span.setAttribute("agent.compaction.provider_success_count", compactAttempt.providerCalls.succeeded);
+      span.setAttribute("agent.compaction.provider_error_count", compactAttempt.providerCalls.failed);
       span.setAttribute("agent.compaction.duration_ms", compactDurationMs);
       const invalidEffect = validateCompactionEffect({
         estimatedTokensBefore: Math.max(thresholdTokens, result.tokensBefore),
@@ -346,7 +365,7 @@ export async function maybeAutoCompact(
         keepRecentTokens: settings.keepRecentTokens,
         summarizedMessageCount,
         attemptCount: compactAttempt.attemptCount,
-        providerCallCount: compactAttempt.providerCallCount,
+        providerCalls: compactAttempt.providerCalls,
         isSplitTurn: preparation.isSplitTurn,
         usage: result.usage,
         durationMs: compactDurationMs,

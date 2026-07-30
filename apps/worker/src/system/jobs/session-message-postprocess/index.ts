@@ -11,6 +11,7 @@ import { and, eq, isNull, sql } from "drizzle-orm";
 import { createLogger } from "@cohub/infra/logging";
 import { db } from "../../../db.js";
 import { registerSystemJob } from "../../registry.js";
+import { resolveLlmRequestStats } from "./request-stats.js";
 
 const logger = createLogger({ serviceName: "cohub-worker" });
 
@@ -85,16 +86,6 @@ const isLlmUsageMessage = (message: typeof sessionMessages.$inferSelect) => {
   return message.role === "system" && meta?.messageKind === "compacted";
 };
 
-const resolveRequestCount = (message: typeof sessionMessages.$inferSelect) => {
-  const meta = message.meta as Record<string, unknown> | null;
-  if (message.role !== "system" || meta?.messageKind !== "compacted") return 1;
-  const compaction = meta.compaction && typeof meta.compaction === "object" && !Array.isArray(meta.compaction)
-    ? meta.compaction as Record<string, unknown>
-    : null;
-  const count = compaction?.providerCallCount;
-  return typeof count === "number" && Number.isInteger(count) && count > 0 ? count : 1;
-};
-
 const aggregateUsage = async (
   message: typeof sessionMessages.$inferSelect,
   spaceId: string,
@@ -114,8 +105,7 @@ const aggregateUsage = async (
   const costCacheRead = finiteNumberOrZero(usage?.cost?.cacheRead);
   const costCacheWrite = finiteNumberOrZero(usage?.cost?.cacheWrite);
   const costTotal = finiteNumberOrZero(usage?.cost?.total);
-  const success = !message.errorMessage && message.stopReason !== "error";
-  const requestCount = resolveRequestCount(message);
+  const { requestCount, successCount, errorCount } = resolveLlmRequestStats(message);
 
   await db.transaction(async (tx) => {
     const [claimed] = await tx
@@ -133,8 +123,8 @@ const aggregateUsage = async (
       provider: message.provider,
       model: message.model,
       requestCount,
-      successCount: success ? requestCount : 0,
-      errorCount: success ? 0 : requestCount,
+      successCount,
+      errorCount,
       inputTokens,
       outputTokens,
       cacheReadTokens,
@@ -157,8 +147,8 @@ const aggregateUsage = async (
       ],
       set: {
         requestCount: sql`${tokenUsageStatsHourly.requestCount} + ${requestCount}`,
-        successCount: sql`${tokenUsageStatsHourly.successCount} + ${success ? requestCount : 0}`,
-        errorCount: sql`${tokenUsageStatsHourly.errorCount} + ${success ? 0 : requestCount}`,
+        successCount: sql`${tokenUsageStatsHourly.successCount} + ${successCount}`,
+        errorCount: sql`${tokenUsageStatsHourly.errorCount} + ${errorCount}`,
         inputTokens: sql`${tokenUsageStatsHourly.inputTokens} + ${inputTokens}`,
         outputTokens: sql`${tokenUsageStatsHourly.outputTokens} + ${outputTokens}`,
         cacheReadTokens: sql`${tokenUsageStatsHourly.cacheReadTokens} + ${cacheReadTokens}`,
