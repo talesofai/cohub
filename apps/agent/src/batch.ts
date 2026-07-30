@@ -74,6 +74,15 @@ const getMetaString = (turn: TurnRow, key: string): string | null => {
   return typeof value === "string" && value.trim() ? value.trim() : null;
 };
 
+function getSystemInstructions(turn: TurnRow): string | null {
+  return getMetaString(turn, "systemInstructions");
+}
+
+function canMergeFollowups(turns: TurnRow[]) {
+  const first = turns.length > 0 ? getSystemInstructions(turns[0]!) : null;
+  return turns.every((turn) => getSystemInstructions(turn) === first);
+}
+
 function getUserMessageId(turn: TurnRow): string {
   return getMetaString(turn, "userMessageId") ?? getMetaString(turn, "messageId") ?? turn.id;
 }
@@ -193,7 +202,10 @@ export async function claimNextTurnBatch(input: Pick<AgentTurnJobData, "sessionI
     const followups = followupRows.map((row) => normalizeTurn(row as Record<string, unknown>));
     if (followups.length === 0) return { kind: "noop" as const };
 
-    const batch = await claimQueuedTurns(tx, followups);
+    // A merged execution has one runtime system prompt. Keep turns with
+    // different per-turn instructions separate instead of silently applying
+    // the last queued turn's instructions to the whole batch.
+    const batch = await claimQueuedTurns(tx, canMergeFollowups(followups) ? followups : [followups[0]!]);
     return batch ? { kind: "claimed" as const, batch } : { kind: "noop" as const };
   });
 }

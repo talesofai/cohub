@@ -54,7 +54,7 @@ export type WsClientEvent =
   | { type: "auth"; requestId?: string; payload: { token: string; capabilities?: string[] } }
   | { type: "subscribe"; requestId?: string; payload: { rooms: string[] } }
   | { type: "unsubscribe"; requestId?: string; payload: { rooms: string[] } }
-  | { type: "session.message.create"; requestId?: string; payload: { spaceId: string; sessionId: string; clientMessageId?: string; content: ContentBlock[]; model?: string; provider?: string; thinkingLevel?: ModelThinkingLevel } }
+  | { type: "session.message.create"; requestId?: string; payload: { spaceId: string; sessionId: string; clientMessageId?: string; content: ContentBlock[]; model?: string; provider?: string; thinkingLevel?: ModelThinkingLevel; systemInstructions?: string } }
   | { type: "presence.update"; requestId?: string; payload: { spaceId: string; meta?: Record<string, unknown> | null } }
   | { type: "board.awareness.update"; requestId?: string; payload: BoardAwarenessClientPayload }
   | { type: "ping"; requestId?: string; payload?: Record<string, unknown> }

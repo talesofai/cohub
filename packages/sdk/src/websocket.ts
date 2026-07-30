@@ -448,6 +448,7 @@ export class WebsocketClient {
     model?: string;
     provider?: string;
     thinkingLevel?: ModelThinkingLevel;
+    systemInstructions?: string;
   }) {
     await this.ensureOpen();
     this.send({
@@ -461,6 +462,7 @@ export class WebsocketClient {
         model: input.model,
         provider: input.provider,
         thinkingLevel: input.thinkingLevel,
+        systemInstructions: input.systemInstructions,
       },
     });
   }

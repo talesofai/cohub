@@ -215,6 +215,7 @@ export const submitInternalSessionPrompt = async (input: {
   model?: string | null;
   provider?: string | null;
   thinkingLevel?: string | null;
+  systemInstructions?: string | null;
   context?: Record<string, unknown> | null;
 }): Promise<{ ok: true; turnId: string; userMessageId: string; trace: TraceIdentifiers }> => {
   const requestId = typeof input.context?.requestId === "string" ? input.context.requestId : null;
@@ -234,6 +235,7 @@ export const submitInternalSessionPrompt = async (input: {
       model: input.model ?? null,
       provider: input.provider ?? null,
       thinkingLevel: input.thinkingLevel ?? null,
+      systemInstructions: input.systemInstructions ?? null,
       context: input.context ?? null,
     }),
   });

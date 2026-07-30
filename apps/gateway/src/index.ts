@@ -622,6 +622,9 @@ const submitWebsocketSessionMessage = async (ctx: WsConnectionContext, requestId
   const thinkingLevel = typeof payload.thinkingLevel === "string" && payload.thinkingLevel.trim()
     ? payload.thinkingLevel.trim()
     : null;
+  const systemInstructions = typeof payload.systemInstructions === "string" && payload.systemInstructions.trim()
+    ? payload.systemInstructions.trim()
+    : null;
   // WS schema already validates enum; reject if non-empty but invalid
   if (thinkingLevel && !new Set(["off", "minimal", "low", "medium", "high", "xhigh", "max"]).has(thinkingLevel)) {
     throw new WsClientInputError("thinkingLevel must be one of: off, minimal, low, medium, high, xhigh, max");
@@ -643,6 +646,7 @@ const submitWebsocketSessionMessage = async (ctx: WsConnectionContext, requestId
     model,
     provider,
     thinkingLevel,
+    systemInstructions,
     context: {
       kind: "websocket",
       requestId: effectiveRequestId,
