@@ -789,6 +789,7 @@ export const sessionMessages = v2.table(
   {
     id: uuid("id").primaryKey().defaultRandom(),
     sessionId: uuid("session_id").notNull(),
+    turnId: uuid("turn_id"),
     role: varchar("role", { length: 20 }).notNull(),
     content: jsonb("content").notNull().$type<ContentBlock[]>(),
     text: text("text"),
@@ -808,6 +809,9 @@ export const sessionMessages = v2.table(
   },
   (table) => ({
     sessionIdx: index("v2_idx_session_messages_session_id").on(table.sessionId),
+    turnSequenceIdx: index("v2_idx_session_messages_turn_sequence")
+      .on(table.turnId, table.sequence)
+      .where(sql`${table.turnId} is not null`),
     sessionSequenceUniqueIdx: uniqueIndex("v2_uq_session_messages_session_sequence").on(
       table.sessionId,
       table.sequence,

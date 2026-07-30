@@ -6,10 +6,10 @@ import {
   prepareCompaction,
   shouldCompact,
 } from "@earendil-works/pi-agent-core";
-import type { AssistantMessage } from "@earendil-works/pi-ai";
+import type { AssistantMessage, Usage } from "@earendil-works/pi-ai";
 import { logger } from "../logger.js";
 import type { SessionHandle } from "../session.js";
-import { persistCompactionTurn } from "../persistence.js";
+import { persistCompactionEvent } from "../persistence.js";
 import { refreshSessionHandleFileSignature } from "../session.js";
 import { getAgentTracer } from "@cohub/infra/tracing/agent";
 import { db } from "../db.js";
@@ -19,11 +19,34 @@ import { getCurrentToolExecutionContext } from "../tool-context.js";
 import type { AgentMessage } from "@earendil-works/pi-agent-core";
 import { createModelsFromCohubRegistry } from "./pi-models-adapter.js";
 import { estimateProxyContextTokens, resolveReserveTokens } from "./compaction-policy.js";
-import { isRetryableProviderErrorMessage } from "./session-runtime.js";
+import {
+  getCompactionSummaryMessageCount,
+  resolveCompactionScope,
+  validateCompactionEffect,
+} from "./compaction-plan.js";
 
 export type CompactionOutcome =
-  | { compacted: true; summary: string; tokensBefore: number; firstKeptEntryId: string; archivePath: string | undefined; compactSequence: number }
+  | {
+      compacted: true;
+      summary: string;
+      tokensBefore: number;
+      estimatedTokensAfter: number;
+      firstKeptEntryId: string;
+      archivePath: string | undefined;
+      compactSequence: number | null;
+      usage: Usage | undefined;
+      durationMs: number;
+      attemptCount: number;
+    }
   | { compacted: false; reason: string };
+
+/** Thrown when archive restoration fails and the active handle is no longer safe to use. */
+export class CompactionStateRecoveryError extends Error {
+  constructor(sessionId: string) {
+    super(`Compaction state recovery failed for session ${sessionId}`);
+    this.name = "CompactionStateRecoveryError";
+  }
+}
 
 /** Thrown when overflow recovery cannot free enough context (no empty LLM retry). */
 export class OverflowRecoveryError extends Error {
@@ -41,13 +64,6 @@ function resolveCompactionSettings(contextWindow: number) {
     enabled: true,
     reserveTokens: resolveReserveTokens(contextWindow),
   };
-}
-
-function getAgentMessageTurnId(message: AgentMessage): string | null {
-  const meta = (message as unknown as { meta?: unknown }).meta;
-  if (!meta || typeof meta !== "object" || Array.isArray(meta)) return null;
-  const turnId = (meta as Record<string, unknown>).turnId;
-  return typeof turnId === "string" && turnId.trim() ? turnId.trim() : null;
 }
 
 function getContextTokenBudget(messages: AgentMessage[]): { accurateTokens: number; estimatedTokens: number } | null {
@@ -69,53 +85,55 @@ function getContextTokenBudget(messages: AgentMessage[]): { accurateTokens: numb
   return null;
 }
 
-function getCompactableBranchEntries(handle: SessionHandle) {
-  const branchEntries = handle.sessionManager.getBranchEntries() as Parameters<typeof prepareCompaction>[0];
-  const currentTurnId = handle.currentTurnId?.trim();
-  if (!currentTurnId) return branchEntries;
+const COMPACTION_RETRY_POLICY: NonNullable<Parameters<typeof compact>[6]> = {
+  enabled: true,
+  maxRetries: 1,
+  baseDelayMs: 1_000,
+};
 
-  const currentTurnStartIndex = branchEntries.findIndex((entry) => {
-    if (entry.type !== "message") return false;
-    return getAgentMessageTurnId(entry.message as AgentMessage) === currentTurnId;
-  });
-
-  return currentTurnStartIndex >= 0 ? branchEntries.slice(0, currentTurnStartIndex) : branchEntries;
-}
-
-const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
-
-const SUMMARIZE_MAX_ATTEMPTS = 2;
-const SUMMARIZE_RETRY_DELAY_MS = 1_000;
-
-/**
- * Summarize with a small retry budget of its own.
- *
- * The summarize call is a plain LLM request and hits the same transient upstream
- * failures (timeouts, 5xx) as any other. Without a retry here a single blip fails
- * the whole compaction, and for overflow recovery that fails the turn. Retry
- * eligibility reuses the assistant-retry classification so quota / content-filter
- * style errors still fail fast.
- */
+/** Run compaction once while retrying only the individual failed provider call. */
 async function compactWithRetry(
-  handle: SessionHandle,
   preparation: Parameters<typeof compact>[0],
   models: Parameters<typeof compact>[1],
   model: Parameters<typeof compact>[2],
   abortSignal?: AbortSignal,
-): Promise<Awaited<ReturnType<typeof compact>>> {
-  let result = await compact(preparation, models, model, undefined, abortSignal);
+): Promise<{
+  result: Awaited<ReturnType<typeof compact>>;
+  attemptCount: number;
+  providerCallCount: number;
+}> {
+  let providerCallCount = 0;
+  const countedModels = new Proxy(models, {
+    get(target, property, receiver) {
+      if (property !== "completeSimple") return Reflect.get(target, property, receiver);
+      return (...args: Parameters<typeof target.completeSimple>) => {
+        providerCallCount += 1;
+        return target.completeSimple(...args);
+      };
+    },
+  });
+  const result = await compact(
+    preparation,
+    countedModels,
+    model,
+    undefined,
+    abortSignal,
+    undefined,
+    COMPACTION_RETRY_POLICY,
+  );
 
-  for (let attempt = 1; attempt < SUMMARIZE_MAX_ATTEMPTS && !result.ok; attempt++) {
-    const error = result.error.message;
-    if (abortSignal?.aborted || !isRetryableProviderErrorMessage(error)) break;
-    logger.warn(
-      `[Compaction] summarization attempt ${attempt}/${SUMMARIZE_MAX_ATTEMPTS} failed sessionId=${handle.sessionId}, retrying: ${error}`,
-    );
-    await sleep(SUMMARIZE_RETRY_DELAY_MS);
-    result = await compact(preparation, models, model, undefined, abortSignal);
-  }
+  return { result, attemptCount: 1, providerCallCount };
+}
 
-  return result;
+async function restorePreCompactionState(handle: SessionHandle, archivePath: string) {
+  const restored = await handle.sessionManager.restoreFromArchive(archivePath).catch((error) => {
+    logger.error(`[Compaction] restoreFromArchive failed sessionId=${handle.sessionId}:`, error);
+    return false;
+  });
+  if (!restored) return false;
+  handle.session.agent.state.messages = handle.sessionManager.buildSessionContext().messages;
+  await refreshSessionHandleFileSignature(handle);
+  return true;
 }
 
 /**
@@ -163,6 +181,10 @@ export async function maybeAutoCompact(
     `[Compaction] ${force ? "overflow-compact" : "auto-compact"} triggered sessionId=${handle.sessionId} contextWindow=${contextWindow} reserve=${settings.reserveTokens} tokens=${tokensLabel} proxyTokens=${proxyTokens}`,
   );
 
+  let compactionEntryAppended = false;
+  let archivePathForRecovery: string | undefined;
+  let dbPersisted = false;
+
   const tracer = getAgentTracer();
   const outcome = await tracer.startActiveSpan("agent.compaction", async (span): Promise<CompactionOutcome> => {
     span.setAttribute("cohub.session_id", handle.sessionId);
@@ -171,7 +193,10 @@ export async function maybeAutoCompact(
 
     try {
       // ── 1. Prepare & summarize ──
-      const branchEntries = getCompactableBranchEntries(handle);
+      // The transform hook runs between LLM rounds, so every branch entry here
+      // is settled and the completed prefix of the active turn is safe to compact.
+      await handle.persistenceChain;
+      const branchEntries = handle.sessionManager.getBranchEntries() as Parameters<typeof prepareCompaction>[0];
       const preparationResult = prepareCompaction(branchEntries, settings);
       if (!preparationResult.ok) {
         span.setAttribute("agent.compaction.error", preparationResult.error.message);
@@ -185,42 +210,61 @@ export async function maybeAutoCompact(
         ...preparationValue,
         tokensBefore: tokenBudget?.accurateTokens ?? preparationValue.tokensBefore,
       };
-      if (preparation.messagesToSummarize.length === 0) {
-        // Nothing to summarize — the session is too small to benefit from compaction.
+      const summarizedMessageCount = getCompactionSummaryMessageCount(preparation);
+      if (summarizedMessageCount === 0) {
         return { compacted: false, reason: "nothing_to_summarize" };
       }
 
       span.setAttribute("agent.compaction.tokens_before", preparation.tokensBefore);
       span.setAttribute("agent.compaction.proxy_tokens", proxyTokens);
       span.setAttribute("agent.compaction.messages_to_summarize", preparation.messagesToSummarize.length);
+      span.setAttribute("agent.compaction.turn_prefix_messages", preparation.turnPrefixMessages.length);
+      span.setAttribute("agent.compaction.is_split_turn", preparation.isSplitTurn);
 
       const apiKey = handle.session.modelRegistry.getApiKey(model.provider);
       if (!apiKey) return { compacted: false, reason: "no_api_key" };
 
       const models = createModelsFromCohubRegistry(handle.session.modelRegistry, model);
-      const compactResult = await compactWithRetry(handle, preparation, models, model, input.abortSignal);
-      if (!compactResult.ok) {
-        span.setAttribute("agent.compaction.error", compactResult.error.message);
-        logger.warn(`[Compaction] summarization failed sessionId=${handle.sessionId}: ${compactResult.error.message}`);
-        return { compacted: false, reason: `compact_failed: ${compactResult.error.message}` };
+      const compactStartedAt = Date.now();
+      const compactAttempt = await compactWithRetry(preparation, models, model, input.abortSignal);
+      const compactDurationMs = Math.max(0, Date.now() - compactStartedAt);
+      if (!compactAttempt.result.ok) {
+        span.setAttribute("agent.compaction.error", compactAttempt.result.error.message);
+        logger.warn(`[Compaction] summarization failed sessionId=${handle.sessionId}: ${compactAttempt.result.error.message}`);
+        return { compacted: false, reason: `compact_failed: ${compactAttempt.result.error.message}` };
       }
-      const result = compactResult.value;
+      const result = compactAttempt.result.value;
       if (!result.firstKeptEntryId) {
         span.setAttribute("agent.compaction.error", "missing_first_kept_entry_id");
         logger.warn(`[Compaction] missing firstKeptEntryId sessionId=${handle.sessionId}`);
         return { compacted: false, reason: "missing_first_kept_entry_id" };
       }
 
-      // ── Adjust cut point to turn boundary ──
-      // Pi's findCutPoint may split a turn (firstKeptEntryId = mid-turn message).
-      // We snap to the user message that starts the containing turn, so we always
-      // keep complete turns. The split-turn prefix is already included in the
-      // summary via pi's turnPrefixMessages mechanism.
-      let firstKeptEntryId = result.firstKeptEntryId;
-      const turnStartEntryId = handle.sessionManager.findTurnStartEntryId(firstKeptEntryId);
-      if (turnStartEntryId && turnStartEntryId !== firstKeptEntryId) {
-        logger.debug(`[Compaction] snapping cut from ${firstKeptEntryId} to turn start ${turnStartEntryId}`);
-        firstKeptEntryId = turnStartEntryId;
+      const firstKeptEntryId = result.firstKeptEntryId;
+      const estimatedTokensAfter = estimateProxyContextTokens([
+        {
+          role: "compactionSummary",
+          summary: result.summary,
+          tokensBefore: result.tokensBefore,
+          timestamp: Date.now(),
+        } as AgentMessage,
+        ...(result.retainedTail ?? []),
+      ]);
+      span.setAttribute("agent.compaction.estimated_tokens_after", estimatedTokensAfter);
+      span.setAttribute("agent.compaction.attempt_count", compactAttempt.attemptCount);
+      span.setAttribute("agent.compaction.provider_call_count", compactAttempt.providerCallCount);
+      span.setAttribute("agent.compaction.duration_ms", compactDurationMs);
+      const invalidEffect = validateCompactionEffect({
+        estimatedTokensBefore: Math.max(thresholdTokens, result.tokensBefore),
+        estimatedTokensAfter,
+        inputBudget: Math.max(1, contextWindow - settings.reserveTokens),
+      });
+      if (invalidEffect) {
+        span.setAttribute("agent.compaction.error", invalidEffect);
+        logger.warn(
+          `[Compaction] rejected ineffective result sessionId=${handle.sessionId} reason=${invalidEffect} tokensBefore=${result.tokensBefore} estimatedTokensAfter=${estimatedTokensAfter}`,
+        );
+        return { compacted: false, reason: invalidEffect };
       }
 
       // ── 2. Session file: append compaction entry, archive, rewrite ──
@@ -230,6 +274,7 @@ export async function maybeAutoCompact(
         result.tokensBefore,
         result.details,
       );
+      compactionEntryAppended = true;
 
       const archivePath = await handle.sessionManager.archiveAndRewrite(
         compactionEntryId,
@@ -243,55 +288,70 @@ export async function maybeAutoCompact(
         logger.error(`[Compaction] archiveAndRewrite failed sessionId=${handle.sessionId}, aborting compaction`);
         span.setAttribute("agent.compaction.error", "archive_rewrite_failed");
         handle.sessionManager.removeLastEntry();
+        compactionEntryAppended = false;
         return { compacted: false, reason: "archive_rewrite_failed" };
       }
+      archivePathForRecovery = archivePath;
 
       // ── 3. Rebuild agent state ──
-      // tokensAfter is not computed here — it would be a rough estimate (char/4)
-      // that misleads users. The precise value arrives on the next LLM call's
-      // usage. We store null and let the UI show only tokensBefore (accurate).
       const sessionContext = handle.sessionManager.buildSessionContext();
       handle.session.agent.state.messages = sessionContext.messages;
       await refreshSessionHandleFileSignature(handle);
 
       span.setAttribute("agent.compaction.archive_path", archivePath);
 
-      // ── 4. Resolve DB sequence for the first kept turn ──
-      // Try the firstKeptEntryId first, then scan forward through kept entries
-      // until we find one with a turnId.
-      const firstKeptTurnId = handle.sessionManager.getFirstKeptTurnId(firstKeptEntryId);
-      let insertBeforeSequence: number | null = null;
-      if (firstKeptTurnId) {
-        const [turnRow] = await db.select({ sequence: sessionTurns.sequence })
-          .from(sessionTurns)
-          .where(and(eq(sessionTurns.id, firstKeptTurnId), eq(sessionTurns.sessionId, handle.sessionId)))
-          .limit(1);
-        insertBeforeSequence = turnRow?.sequence ?? null;
-      }
-      if (insertBeforeSequence == null) {
-        // Cannot resolve the first kept turn's sequence. Append at the end
-        // rather than shifting all existing turns.
-        logger.warn(`[Compaction] could not resolve firstKeptTurnId sequence; appending compact turn at end`);
-        const [maxRow] = await db.select({ max: sql<number>`coalesce(max(${sessionTurns.sequence}), 0)::int` })
-          .from(sessionTurns).where(eq(sessionTurns.sessionId, handle.sessionId));
-        insertBeforeSequence = (maxRow?.max ?? 0) + 1;
+      // ── 4. Resolve whether the cut is between turns or inside its containing turn ──
+      const firstKeptTurnStartEntryId = handle.sessionManager.findTurnStartEntryId(firstKeptEntryId);
+      const firstKeptTurnId =
+        (firstKeptTurnStartEntryId
+          ? handle.sessionManager.getEntryTurnId(firstKeptTurnStartEntryId)
+          : null) ?? handle.sessionManager.getFirstKeptTurnId(firstKeptEntryId);
+      const { scope, ownerTurnId } = resolveCompactionScope(preparation, firstKeptTurnId);
+
+      let insertBeforeTurnSequence: number | null = null;
+      if (scope === "between_turns") {
+        if (firstKeptTurnId) {
+          const [turnRow] = await db.select({ sequence: sessionTurns.sequence })
+            .from(sessionTurns)
+            .where(and(eq(sessionTurns.id, firstKeptTurnId), eq(sessionTurns.sessionId, handle.sessionId)))
+            .limit(1);
+          insertBeforeTurnSequence = turnRow?.sequence ?? null;
+        }
+        if (insertBeforeTurnSequence == null) {
+          logger.warn(`[Compaction] could not resolve firstKeptTurnId sequence; appending compact turn at end`);
+          const [maxRow] = await db.select({ max: sql<number>`coalesce(max(${sessionTurns.sequence}), 0)::int` })
+            .from(sessionTurns).where(eq(sessionTurns.sessionId, handle.sessionId));
+          insertBeforeTurnSequence = (maxRow?.max ?? 0) + 1;
+        }
       }
 
       // ── 5. DB persistence ──
-      const dbResult = await persistCompactionTurn({
+      const toolContext = getCurrentToolExecutionContext();
+      const dbResult = await persistCompactionEvent({
         spaceId: handle.spaceId,
         sessionId: handle.sessionId,
         actorUserId: input.actorUserId,
+        compactionId: compactionEntryId,
+        scope,
+        ownerTurnId,
+        firstKeptTurnId,
+        llmRound: handle.currentLlmRound ?? toolContext?.llmRound ?? null,
+        triggerReason: force ? "overflow_recovery" : "threshold",
         summary: result.summary,
         tokensBefore: result.tokensBefore,
-        tokensAfter: null,
+        estimatedTokensAfter,
         firstKeptEntryId,
         model: { provider: model.provider, id: model.id },
         contextWindow,
         keepRecentTokens: settings.keepRecentTokens,
-        summarizedMessageCount: preparation.messagesToSummarize.length,
+        summarizedMessageCount,
+        attemptCount: compactAttempt.attemptCount,
+        providerCallCount: compactAttempt.providerCallCount,
+        isSplitTurn: preparation.isSplitTurn,
+        usage: result.usage,
+        durationMs: compactDurationMs,
         archivePath,
-        insertBeforeSequence,
+        insertBeforeTurnSequence,
       });
 
       if (!dbResult) {
@@ -302,51 +362,64 @@ export async function maybeAutoCompact(
           `[Compaction] DB persistence failed; restoring session file from archive sessionId=${handle.sessionId}`,
         );
         span.setAttribute("agent.compaction.error", "db_persistence_failed");
-        const restored = await handle.sessionManager.restoreFromArchive(archivePath).catch((restoreError) => {
-          logger.error(`[Compaction] restoreFromArchive failed sessionId=${handle.sessionId}:`, restoreError);
-          return false;
-        });
-        if (restored) {
-          const restoredContext = handle.sessionManager.buildSessionContext();
-          handle.session.agent.state.messages = restoredContext.messages;
-          await refreshSessionHandleFileSignature(handle);
-        }
+        const restored = await restorePreCompactionState(handle, archivePath);
+        archivePathForRecovery = undefined;
+        compactionEntryAppended = false;
+        if (!restored) throw new CompactionStateRecoveryError(handle.sessionId);
         return { compacted: false, reason: "db_persistence_failed" };
       }
+      dbPersisted = true;
+      archivePathForRecovery = undefined;
+      compactionEntryAppended = false;
 
-      if (handle.currentTurnSeq != null && dbResult.compactSequence <= handle.currentTurnSeq) {
+      if (
+        dbResult.compactSequence != null &&
+        handle.currentTurnSeq != null &&
+        dbResult.compactSequence <= handle.currentTurnSeq
+      ) {
         handle.currentTurnSeq += 1;
         if (handle.activeAssistantContext?.turnSeq != null) {
           handle.activeAssistantContext.turnSeq += 1;
         }
       }
-      const toolContext = getCurrentToolExecutionContext();
-      if (toolContext?.sessionId === handle.sessionId && toolContext.turnSeq != null && dbResult.compactSequence <= toolContext.turnSeq) {
+      if (
+        dbResult.compactSequence != null &&
+        toolContext?.sessionId === handle.sessionId &&
+        toolContext.turnSeq != null &&
+        dbResult.compactSequence <= toolContext.turnSeq
+      ) {
         toolContext.turnSeq += 1;
       }
 
       logger.info(
-        `[Compaction] done sessionId=${handle.sessionId} tokensBefore=${result.tokensBefore} archive=${archivePath}`,
+        `[Compaction] done sessionId=${handle.sessionId} scope=${scope} tokensBefore=${result.tokensBefore} estimatedTokensAfter=${estimatedTokensAfter} archive=${archivePath}`,
       );
 
       return {
         compacted: true,
         summary: result.summary,
         tokensBefore: result.tokensBefore,
+        estimatedTokensAfter,
         firstKeptEntryId,
         archivePath,
         compactSequence: dbResult.compactSequence,
+        usage: result.usage,
+        durationMs: compactDurationMs,
+        attemptCount: compactAttempt.attemptCount,
       };
     } catch (error) {
       span.recordException(error as Error);
       logger.error(`[Compaction] unexpected error sessionId=${handle.sessionId}:`, error);
-      // If archiveAndRewrite threw after appending compaction entry but before
-      // completing the rewrite, its internal rollback restored savedEntries
-      // which still contains the compaction entry at the end. Clean it up.
-      try {
-        handle.sessionManager.removeLastEntry();
-      } catch (cleanupError) {
-        logger.error(`[Compaction] cleanup removeLastEntry failed sessionId=${handle.sessionId}:`, cleanupError);
+      if (error instanceof CompactionStateRecoveryError) throw error;
+      if (!dbPersisted && archivePathForRecovery) {
+        const restored = await restorePreCompactionState(handle, archivePathForRecovery);
+        if (!restored) throw new CompactionStateRecoveryError(handle.sessionId);
+      } else if (!dbPersisted && compactionEntryAppended) {
+        try {
+          handle.sessionManager.removeLastEntry();
+        } catch (cleanupError) {
+          logger.error(`[Compaction] cleanup removeLastEntry failed sessionId=${handle.sessionId}:`, cleanupError);
+        }
       }
       return { compacted: false, reason: `error: ${error instanceof Error ? error.message : String(error)}` };
     }

@@ -29,6 +29,50 @@ export type SessionTurnIntermediateIndex = {
   toolCallsBaseObjectKey?: string | null;
 };
 
+export type ContextCompactionScope = "between_turns" | "within_turn";
+export type ContextCompactionTriggerReason = "threshold" | "overflow_recovery";
+
+export type ContextCompactionMeta = {
+  version: 1;
+  compactionId: string;
+  scope: ContextCompactionScope;
+  ownerTurnId: string | null;
+  ordinalInTurn: number | null;
+  llmRound: number | null;
+  triggerReason: ContextCompactionTriggerReason;
+  contextWindow: number;
+  tokensBefore: number;
+  estimatedTokensAfter: number | null;
+  provider: string;
+  model: string;
+  keepRecentTokens: number;
+  summarizedMessageCount: number;
+  attemptCount: number;
+  providerCallCount?: number;
+  isSplitTurn: boolean;
+  firstKeptEntryId: string;
+  archivePath: string | null;
+  compactedAt: string;
+  placement: {
+    beforeSessionEntryId: string;
+    beforeMessageId: string | null;
+  };
+};
+
+export type SessionTurnCompactionSummary = {
+  count: number;
+  summarizedMessageCountTotal: number;
+  attemptCountTotal: number;
+  usage: Usage | null;
+  durationMsTotal: number | null;
+  last: {
+    compactionId: string;
+    tokensBefore: number;
+    estimatedTokensAfter: number | null;
+    compactedAt: string;
+  } | null;
+};
+
 export type SessionTurnIntermediateSummary = {
   messageCount: number;
   toolCallCount: number;
@@ -36,11 +80,13 @@ export type SessionTurnIntermediateSummary = {
   durationMs?: number | null;
   lastMessageText?: string | null;
   hasError?: boolean;
+  compaction?: SessionTurnCompactionSummary | null;
 };
 
 export type StoredIntermediateMessage = {
   id: string;
   sessionId: string;
+  sequence?: number | null;
   role: "user" | "assistant" | "system";
   content: ContentBlock[];
   text: string | null;

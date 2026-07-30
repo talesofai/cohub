@@ -21,7 +21,12 @@ export function buildStreamingStoredIntermediateMessages(input: {
 					message.id ??
 					message.messageId ??
 					`stream:${input.sessionId}:${input.turnId ?? "turn"}:intermediate:${index}`,
-				messageOrdinal: message.messageOrdinal ?? index,
+				messageOrdinal:
+					message.meta?.messageKind === "compacted"
+						? null
+						: (message.messageOrdinal ?? index),
+				sequence: message.sequence,
+				role: message.role,
 				contentBlocks: message.content,
 				text: message.text,
 				provider: message.provider,

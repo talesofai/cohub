@@ -12,6 +12,46 @@
  * `each_key_duplicate` — the streaming UI freezes and only recovers once the
  * turn finalizes and reloads from the single-source messages.json.
  */
+const asRecord = (value: unknown): Record<string, unknown> | null =>
+  value && typeof value === "object" && !Array.isArray(value)
+    ? value as Record<string, unknown>
+    : null;
+
+const COMPACTION_META_KEYS = [
+  "version",
+  "compactionId",
+  "scope",
+  "ownerTurnId",
+  "ordinalInTurn",
+  "llmRound",
+  "triggerReason",
+  "contextWindow",
+  "tokensBefore",
+  "estimatedTokensAfter",
+  "provider",
+  "model",
+  "keepRecentTokens",
+  "summarizedMessageCount",
+  "attemptCount",
+  "providerCallCount",
+  "isSplitTurn",
+  "compactedAt",
+] as const;
+
+const pickRealtimeCompactionMeta = (value: unknown) => {
+  const compaction = asRecord(value);
+  if (!compaction) return undefined;
+  const picked: Record<string, unknown> = {};
+  for (const key of COMPACTION_META_KEYS) {
+    if (compaction[key] !== undefined) picked[key] = compaction[key];
+  }
+  const placement = asRecord(compaction.placement);
+  if (placement && (typeof placement.beforeMessageId === "string" || placement.beforeMessageId === null)) {
+    picked.placement = { beforeMessageId: placement.beforeMessageId };
+  }
+  return Object.keys(picked).length > 0 ? picked : undefined;
+};
+
 export const REALTIME_MESSAGE_META_KEYS = [
   "messageKind",
   "clientMessageId",
@@ -23,6 +63,7 @@ export const REALTIME_MESSAGE_META_KEYS = [
   "turnId",
   "messageId",
   "messageOrdinal",
+  "compaction",
 ] as const;
 
 export const pickRealtimeMessageMeta = (
@@ -31,7 +72,8 @@ export const pickRealtimeMessageMeta = (
   if (!meta) return null;
   const picked: Record<string, unknown> = {};
   for (const key of REALTIME_MESSAGE_META_KEYS) {
-    if (meta[key] !== undefined) picked[key] = meta[key];
+    const value = key === "compaction" ? pickRealtimeCompactionMeta(meta[key]) : meta[key];
+    if (value !== undefined) picked[key] = value;
   }
   return Object.keys(picked).length > 0 ? picked : null;
 };

@@ -1,0 +1,2 @@
+ALTER TABLE "v2"."session_messages" ADD COLUMN "turn_id" uuid;--> statement-breakpoint
+CREATE INDEX "v2_idx_session_messages_turn_sequence" ON "v2"."session_messages" USING btree ("turn_id","sequence") WHERE "v2"."session_messages"."turn_id" is not null;

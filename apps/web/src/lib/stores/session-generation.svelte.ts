@@ -25,6 +25,7 @@ export type StreamingIntermediateMessage = {
 	content: ContentBlock[];
 	id?: string;
 	sessionId?: string;
+	sequence?: number | null;
 	role?: "user" | "assistant" | "system";
 	text?: string | null;
 	provider?: string | null;

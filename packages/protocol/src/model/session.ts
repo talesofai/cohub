@@ -28,8 +28,12 @@ export type SessionTurnSegmentRecord = {
 };
 
 export type {
+  ContextCompactionMeta,
+  ContextCompactionScope,
+  ContextCompactionTriggerReason,
   MessageToolCallsFile,
   SessionTurnAuthorProfile,
+  SessionTurnCompactionSummary,
   SessionTurnIntent,
   SessionTurnIntermediateIndex,
   SessionTurnIntermediateSummary,

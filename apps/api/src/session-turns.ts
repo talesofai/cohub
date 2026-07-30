@@ -14,7 +14,7 @@ import type {
 import type { ModelThinkingLevel } from "@cohub/protocol";
 import { db } from "./db/index.js";
 import { sessionMessages, sessionTurnSegments, sessionTurns, spaceSessions } from "@cohub/db";
-import { addSessionParticipantMeta } from "@cohub/core/sessions";
+import { addSessionParticipantMeta, summarizeSessionTurnCompactions } from "@cohub/core/sessions";
 import { sanitizePostgresJsonValue, sanitizeContentBlocksForPostgresJson } from "@cohub/core/content/sanitize";
 import { ensureSessionTurnSegments, findSegmentForTurn } from "./session-forks.js";
 import { fallbackPublicUserProfile, getProfilesByUuids } from "./user-profiles.js";
@@ -483,6 +483,7 @@ export const buildIntermediateObjectsForTurn = async (input: { spaceId: string; 
     messages.push({
       id: row.id,
       sessionId: row.sessionId,
+      sequence: row.sequence,
       role: row.role as "user" | "assistant" | "system",
       content: summarizeIntermediateContent(content, details),
       text: row.text ?? null,
@@ -505,6 +506,7 @@ export const buildIntermediateObjectsForTurn = async (input: { spaceId: string; 
     durationMs: totalDurationMs,
     lastMessageText: messages.at(-1)?.text ?? null,
     hasError,
+    compaction: summarizeSessionTurnCompactions(messages),
   };
   if (messages.length === 0) {
     return {

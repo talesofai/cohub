@@ -177,13 +177,60 @@ async function toggle() {
 }
 
 const toolCallCount = $derived(summary?.toolCallCount ?? 0);
+const useLiveMetrics = $derived(streaming && effectiveMessages.length > 0);
 const messageCount = $derived(
-	Math.max(summary?.messageCount ?? 0, effectiveMessages.length),
+	useLiveMetrics
+		? effectiveMessages.length
+		: Math.max(summary?.messageCount ?? 0, effectiveMessages.length),
 );
-// Intermediate-only usage: prefer persisted intermediate summary, fall back to
-// summing live intermediate messages while streaming. Never use turn.totalUsage
-// / finalUsage here — those include the final assistant message.
+const liveCompactionMessages = $derived(
+	effectiveMessages.filter(
+		(message) => message.meta?.messageKind === "compacted",
+	),
+);
+const compactionCount = $derived(
+	useLiveMetrics
+		? liveCompactionMessages.length
+		: Math.max(summary?.compaction?.count ?? 0, liveCompactionMessages.length),
+);
+const stepCount = $derived(Math.max(0, messageCount - compactionCount));
+const compactionUsage = $derived.by(() => {
+	if (useLiveMetrics)
+		return liveCompactionMessages.length > 0
+			? sumUsages(liveCompactionMessages.map((message) => message.usage))
+			: null;
+	if (summary?.compaction?.usage) return summary.compaction.usage;
+	if (liveCompactionMessages.length === 0) return null;
+	return sumUsages(liveCompactionMessages.map((message) => message.usage));
+});
+const compactionDurationMs = $derived.by(() => {
+	if (!useLiveMetrics && summary?.compaction?.durationMsTotal != null)
+		return summary.compaction.durationMsTotal;
+	const durations = liveCompactionMessages
+		.map((message) => message.durationMs)
+		.filter((duration): duration is number => typeof duration === "number");
+	return durations.length > 0
+		? durations.reduce((total, duration) => total + duration, 0)
+		: null;
+});
+const compactionDetailLabel = $derived.by(() => {
+	if (compactionCount === 0) return "";
+	const tokens = getUsageTotalTokens(compactionUsage);
+	const cost = getUsageCostTotal(compactionUsage);
+	const parts = [
+		tokens > 0 ? `${formatTokenCount(tokens)} tokens` : "",
+		cost != null ? formatUsageCost(cost) : "",
+		isDisplayableDurationMs(compactionDurationMs)
+			? formatDurationDetail(compactionDurationMs ?? 0)
+			: "",
+	].filter(Boolean);
+	return parts.length > 0 ? `Compaction: ${parts.join(" · ")}` : "";
+});
+// Intermediate-only usage. While streaming, live messages are authoritative;
+// persisted summaries may lag behind the current turn.
 const intermediateUsage = $derived.by(() => {
+	if (useLiveMetrics)
+		return sumUsages(effectiveMessages.map((message) => message.usage));
 	if (summary?.usage) return summary.usage;
 	if (effectiveMessages.length === 0) return null;
 	return sumUsages(effectiveMessages.map((message) => message.usage));
@@ -208,18 +255,27 @@ const usageBreakdownLabel = $derived.by(() => {
 		usageOutputTokens > 0 ? `↓${formatTokenCount(usageOutputTokens)}` : "";
 	return [inputLabel, cachedLabel, outputLabel].filter(Boolean).join(" ");
 });
+const intermediateDurationMs = $derived.by(() => {
+	if (!useLiveMetrics) return summary?.durationMs ?? null;
+	const durations = effectiveMessages
+		.map((message) => message.durationMs)
+		.filter((duration): duration is number => typeof duration === "number");
+	return durations.length > 0
+		? durations.reduce((total, duration) => total + duration, 0)
+		: null;
+});
 const durationLabel = $derived(
-	isDisplayableDurationMs(summary?.durationMs)
-		? formatDurationMs(summary.durationMs)
+	isDisplayableDurationMs(intermediateDurationMs)
+		? formatDurationMs(intermediateDurationMs ?? 0)
 		: "",
 );
 const durationTitle = $derived(
-	isDisplayableDurationMs(summary?.durationMs)
-		? formatDurationDetail(summary.durationMs)
+	isDisplayableDurationMs(intermediateDurationMs)
+		? formatDurationDetail(intermediateDurationMs ?? 0)
 		: "",
 );
 const usageTitle = $derived.by(() => {
-	if (!intermediateUsage && !durationTitle) return "";
+	if (!intermediateUsage && !durationTitle && !compactionDetailLabel) return "";
 	const parts: string[] = [];
 	if (usageInputTokens > 0) {
 		parts.push(
@@ -237,17 +293,21 @@ const usageTitle = $derived.by(() => {
 	if (usageTokens > 0) parts.push(`Total: ${formatTokenCount(usageTokens)}`);
 	if (usageCostLabel) parts.push(`Cost: ${usageCostLabel}`);
 	if (durationTitle) parts.push(durationTitle);
+	if (compactionDetailLabel) parts.push(compactionDetailLabel);
 	return parts.join(" · ");
 });
 const labelParts = $derived(
 	[
-		messageCount > 0
-			? `${messageCount} step${messageCount > 1 ? "s" : ""}`
+		stepCount > 0
+			? `${stepCount} step${stepCount > 1 ? "s" : ""}`
 			: streaming
 				? "Running…"
 				: "",
 		toolCallCount > 0
 			? `${toolCallCount} tool${toolCallCount > 1 ? "s" : ""}`
+			: "",
+		compactionCount > 0
+			? `${compactionCount} compaction${compactionCount > 1 ? "s" : ""}`
 			: "",
 		usageBreakdownLabel ||
 			(usageTokens > 0 ? `${formatTokenCount(usageTokens)} tokens` : ""),

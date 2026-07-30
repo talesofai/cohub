@@ -7,6 +7,40 @@ export type SnapshotIntermediateMessage = {
   id?: string | null;
 };
 
+const asRecord = (value: unknown): Record<string, unknown> | null =>
+  value && typeof value === "object" && !Array.isArray(value)
+    ? value as Record<string, unknown>
+    : null;
+
+export const resolvePersistedIntermediateOrdinals = (
+  rows: ReadonlyArray<{ role: string; meta: unknown }>,
+): Array<number | null> => {
+  const reserved = new Set<number>();
+  for (const row of rows) {
+    if (row.role !== "assistant") continue;
+    const persisted = asRecord(row.meta)?.messageOrdinal;
+    if (typeof persisted === "number" && Number.isInteger(persisted) && persisted >= 0) {
+      reserved.add(persisted);
+    }
+  }
+  const used = new Set<number>();
+  let nextOrdinal = 0;
+  return rows.map((row) => {
+    if (row.role !== "assistant") return null;
+    const persisted = asRecord(row.meta)?.messageOrdinal;
+    let ordinal = typeof persisted === "number" && Number.isInteger(persisted) && persisted >= 0
+      ? persisted
+      : null;
+    if (ordinal == null || used.has(ordinal)) {
+      while (reserved.has(nextOrdinal) || used.has(nextOrdinal)) nextOrdinal += 1;
+      ordinal = nextOrdinal;
+    }
+    used.add(ordinal);
+    nextOrdinal = Math.max(nextOrdinal, ordinal + 1);
+    return ordinal;
+  });
+};
+
 export const resolveSnapshotStreamMessageId = (input: {
   sessionId: string;
   turnId?: string | null;

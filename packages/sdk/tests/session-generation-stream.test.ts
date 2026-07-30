@@ -2,7 +2,11 @@ import assert from "node:assert/strict";
 import { setTimeout as delay } from "node:timers/promises";
 import { test } from "node:test";
 import type { ChannelEnvelope } from "@cohub/protocol/realtime";
-import { SessionGenerationStreamClient } from "../src/session-generation-stream.js";
+import type { MessageRecord } from "@cohub/protocol/model";
+import {
+	parseAssistantMessageCommit,
+	SessionGenerationStreamClient,
+} from "../src/session-generation-stream.js";
 import { WebsocketClient } from "../src/websocket.js";
 
 function createPatchEnvelope(input: {
@@ -188,6 +192,71 @@ test("generation subscriptions compact snapshot intermediates by ordinal", async
 	assert.deepEqual(intermediateMessages[0]?.content, [
 		{ type: "text", text: "db" },
 	]);
+});
+
+test("compacted system messages are intermediate generation commits", () => {
+	const message = {
+		id: "compact-message",
+		sessionId: "session-1",
+		role: "system",
+		content: [{ type: "system_note", note_type: "compacted", text: "Summary" }],
+		meta: { messageKind: "compacted", turnId: "turn-1" },
+	} as MessageRecord;
+
+	const commit = parseAssistantMessageCommit(message);
+	assert.equal(commit.kind, "intermediate");
+	assert.equal(commit.isFinal, false);
+});
+
+test("snapshot compaction messages are placed before their retained message", async () => {
+	const websocket = new WebsocketClient({
+		url: "ws://localhost",
+		getAccessToken: () => "token",
+	});
+	websocket.state = "open";
+	const generation = new SessionGenerationStreamClient(
+		websocket,
+		"space-1",
+		"session-1",
+	);
+	const snapshot = {
+		...createSnapshot().snapshot,
+		intermediateMessages: [
+			{
+				id: "retained-message",
+				sequence: 10,
+				messageId: "retained-message",
+				messageOrdinal: 1,
+				content: [{ type: "text", text: "retained" }],
+			},
+			{
+				id: "compact-message",
+				sequence: 10,
+				role: "system" as const,
+				messageId: "compact-message",
+				messageOrdinal: null,
+				content: [{ type: "system_note" as const, note_type: "compacted" as const, text: "summary" }],
+				meta: {
+					messageKind: "compacted",
+					compaction: { placement: { beforeMessageId: "retained-message" } },
+				},
+			},
+		],
+	};
+
+	let messageIds: Array<string | null> = [];
+	const stop = generation.subscribe(
+		{
+			state: (event) => {
+				messageIds = event.intermediateMessages.map((message) => message.messageId);
+			},
+		},
+		{ initialSnapshot: snapshot },
+	);
+	await delay(0);
+	stop();
+
+	assert.deepEqual(messageIds, ["compact-message", "retained-message"]);
 });
 
 test("generation subscriptions can seed from a snapshot and replay buffered patches", async () => {

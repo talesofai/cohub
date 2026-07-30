@@ -16,7 +16,7 @@ import { ensureSandboxConnection } from "./sandbox-pool.js";
 import { createSandboxCodingTools } from "./sandbox/tools.js";
 import { CohubModelRegistry } from "./runtime/model-registry.js";
 import { loadRuntimeModelsConfigs } from "./runtime/models-loader.js";
-import { maybeAutoCompact, OverflowRecoveryError, type CompactionOutcome } from "./runtime/compaction.js";
+import { CompactionStateRecoveryError, maybeAutoCompact, OverflowRecoveryError, type CompactionOutcome } from "./runtime/compaction.js";
 import { clearCurrentSessionExecutionAuth, setCurrentSessionExecutionAuth } from "./runtime/session-execution-auth.js";
 import { resolveSpaceFileVisibility } from "./runtime/cross-space-query-access.js";
 import { normalizeGenerationPolicy } from "@cohub/protocol/generation";
@@ -294,8 +294,8 @@ async function runWithRoundAutoCompaction<T>(
           abortSignal: signal ?? input.abortSignal,
           force,
         }).catch((error) => {
-          // Force path must surface failure so we don't empty-retry the same overflow.
-          if (force) throw error;
+          // Recovery failures are fatal for both threshold and forced compaction.
+          if (force || error instanceof CompactionStateRecoveryError) throw error;
           logger.warn(`[Agent] auto-compact check failed sessionId=${handle.sessionId}:`, error);
           return { compacted: false, reason: "error" } as const;
         });
@@ -343,6 +343,7 @@ async function appendAndPersistUserMessage(input: {
     sessionId: input.sessionId,
     userMessageId: input.user.userMessageId,
     turnId: input.user.turnId,
+    agentSessionEntryId: entryId,
     content,
     meta: input.meta,
     startedAt,
@@ -1068,8 +1069,13 @@ export async function processAgentTurnJob(job: Job<AgentTurnJobData>) {
               onCompacted: (compactOutcome) => {
                 turnSpan.addEvent("agent.auto_compact", {
                   "agent.compaction.tokens_before": compactOutcome.tokensBefore,
+                  "agent.compaction.estimated_tokens_after": compactOutcome.estimatedTokensAfter,
                   "agent.compaction.summary_length": compactOutcome.summary.length,
-                  "agent.compaction.compact_sequence": compactOutcome.compactSequence,
+                  "agent.compaction.duration_ms": compactOutcome.durationMs,
+                  "agent.compaction.attempt_count": compactOutcome.attemptCount,
+                  ...(compactOutcome.compactSequence != null
+                    ? { "agent.compaction.compact_sequence": compactOutcome.compactSequence }
+                    : {}),
                 });
               },
             }, async () => {
@@ -1178,7 +1184,15 @@ export async function processAgentTurnJob(job: Job<AgentTurnJobData>) {
             removePendingUserMessage(handle, userMessageId);
           }
         }
-        await settleSessionHandle(handle, terminalHandled ? "strict" : "best_effort");
+        if (caughtError instanceof CompactionStateRecoveryError) {
+          sessionHandles.delete(handle.sessionKey);
+          clearCurrentSessionExecutionAuth(handle.sessionId);
+          await handle.persistenceChain.catch(() => undefined);
+          await handle.sessionManager.close().catch(() => undefined);
+          handle.session.dispose();
+        } else {
+          await settleSessionHandle(handle, terminalHandled ? "strict" : "best_effort");
+        }
       }
       if (claimedBatch) clearRetryState(data);
       await lock.release();

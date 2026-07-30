@@ -79,13 +79,29 @@ const maybeQualifyReferral = async (message: typeof sessionMessages.$inferSelect
   });
 };
 
+const isLlmUsageMessage = (message: typeof sessionMessages.$inferSelect) => {
+  if (message.role === "assistant") return true;
+  const meta = message.meta as Record<string, unknown> | null;
+  return message.role === "system" && meta?.messageKind === "compacted";
+};
+
+const resolveRequestCount = (message: typeof sessionMessages.$inferSelect) => {
+  const meta = message.meta as Record<string, unknown> | null;
+  if (message.role !== "system" || meta?.messageKind !== "compacted") return 1;
+  const compaction = meta.compaction && typeof meta.compaction === "object" && !Array.isArray(meta.compaction)
+    ? meta.compaction as Record<string, unknown>
+    : null;
+  const count = compaction?.providerCallCount;
+  return typeof count === "number" && Number.isInteger(count) && count > 0 ? count : 1;
+};
+
 const aggregateUsage = async (
   message: typeof sessionMessages.$inferSelect,
   spaceId: string,
   userId: string | null,
   usage: Usage | null,
 ) => {
-  if (message.role !== "assistant" || message.usageAggregatedAt) return;
+  if (!isLlmUsageMessage(message) || message.usageAggregatedAt) return;
   const bucketStartAt = new Date(message.createdAt ?? new Date());
   bucketStartAt.setUTCMinutes(0, 0, 0);
   const inputTokens = finiteNumberOrZero(usage?.input);
@@ -99,6 +115,7 @@ const aggregateUsage = async (
   const costCacheWrite = finiteNumberOrZero(usage?.cost?.cacheWrite);
   const costTotal = finiteNumberOrZero(usage?.cost?.total);
   const success = !message.errorMessage && message.stopReason !== "error";
+  const requestCount = resolveRequestCount(message);
 
   await db.transaction(async (tx) => {
     const [claimed] = await tx
@@ -115,9 +132,9 @@ const aggregateUsage = async (
       sessionId: message.sessionId,
       provider: message.provider,
       model: message.model,
-      requestCount: 1,
-      successCount: success ? 1 : 0,
-      errorCount: success ? 0 : 1,
+      requestCount,
+      successCount: success ? requestCount : 0,
+      errorCount: success ? 0 : requestCount,
       inputTokens,
       outputTokens,
       cacheReadTokens,
@@ -139,9 +156,9 @@ const aggregateUsage = async (
         tokenUsageStatsHourly.model,
       ],
       set: {
-        requestCount: sql`${tokenUsageStatsHourly.requestCount} + 1`,
-        successCount: sql`${tokenUsageStatsHourly.successCount} + ${success ? 1 : 0}`,
-        errorCount: sql`${tokenUsageStatsHourly.errorCount} + ${success ? 0 : 1}`,
+        requestCount: sql`${tokenUsageStatsHourly.requestCount} + ${requestCount}`,
+        successCount: sql`${tokenUsageStatsHourly.successCount} + ${success ? requestCount : 0}`,
+        errorCount: sql`${tokenUsageStatsHourly.errorCount} + ${success ? 0 : requestCount}`,
         inputTokens: sql`${tokenUsageStatsHourly.inputTokens} + ${inputTokens}`,
         outputTokens: sql`${tokenUsageStatsHourly.outputTokens} + ${outputTokens}`,
         cacheReadTokens: sql`${tokenUsageStatsHourly.cacheReadTokens} + ${cacheReadTokens}`,
@@ -168,7 +185,7 @@ registerSystemJob(SESSION_MESSAGE_POSTPROCESS_JOB, async (job: Job) => {
     .limit(1);
   if (!context) throw new Error(`Session message not found: ${messageId}`);
   const { message, spaceId } = context;
-  if (message.role !== "assistant") return { ok: true, skipped: "non_assistant" };
+  if (!isLlmUsageMessage(message)) return { ok: true, skipped: "non_llm_usage" };
 
   const usage = normalizeUsage(message.usage);
   const userId = await resolveActorUserId(message);

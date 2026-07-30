@@ -40,7 +40,9 @@ export function estimateProxyContextTokens(messages: AgentMessage[]): number {
   let base64Chars = 0;
 
   for (const message of messages) {
-    const content = (message as unknown as { content?: unknown }).content;
+    const recordMessage = message as unknown as { content?: unknown; summary?: unknown };
+    const content = recordMessage.content;
+    if (typeof recordMessage.summary === "string") textChars += recordMessage.summary.length;
     if (typeof content === "string") {
       textChars += content.length;
       continue;

@@ -20,6 +20,8 @@ export function createStreamingIntermediateMessage(input: {
 	turnId?: string | null;
 	streamMessageId?: string | null;
 	messageOrdinal?: number | null;
+	sequence?: number | null;
+	role?: StoredIntermediateMessage["role"];
 	contentBlocks: ContentBlock[];
 	text?: string | null;
 	provider?: string | null;
@@ -45,7 +47,8 @@ export function createStreamingIntermediateMessage(input: {
 	return {
 		id,
 		sessionId: input.sessionId,
-		role: "assistant",
+		sequence: input.sequence ?? null,
+		role: input.role ?? "assistant",
 		content: input.contentBlocks,
 		text,
 		provider: input.provider ?? null,
@@ -59,7 +62,10 @@ export function createStreamingIntermediateMessage(input: {
 		toolCallsObjectKey: input.toolCallsObjectKey ?? null,
 		meta: {
 			...(input.meta ?? {}),
-			messageKind: "assistant_intermediate",
+			messageKind:
+				typeof input.meta?.messageKind === "string"
+					? input.meta.messageKind
+					: "assistant_intermediate",
 			streaming: true,
 			turnId: input.turnId ?? null,
 			spaceId: input.spaceId ?? null,

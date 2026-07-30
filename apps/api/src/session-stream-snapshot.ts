@@ -4,7 +4,11 @@ import { and, asc, eq, sql } from "drizzle-orm";
 import { redisCommandClient } from "./redis.js";
 import { db } from "./db/index.js";
 import { sessionMessages } from "@cohub/db";
-import { mergeSessionStreamSnapshotIntermediates, resolveSnapshotStreamMessageId } from "./session-stream-snapshot-merge.js";
+import {
+  mergeSessionStreamSnapshotIntermediates,
+  resolvePersistedIntermediateOrdinals,
+  resolveSnapshotStreamMessageId,
+} from "./session-stream-snapshot-merge.js";
 
 export const getSessionStreamSnapshotKey = (spaceId: string, sessionId: string) =>
   `session:stream:snapshot:${spaceId}:${sessionId}`;
@@ -85,37 +89,47 @@ const normalizeRecord = (value: unknown): Record<string, unknown> | null =>
 
 const toSnapshotIntermediateMessage = (
   row: typeof sessionMessages.$inferSelect,
-  input: { messageOrdinal: number; turnId: string },
-): EnrichedSessionStreamSnapshotMessage => ({
-  messageId: resolveSnapshotStreamMessageId({
+  input: { messageOrdinal: number | null; turnId: string },
+): EnrichedSessionStreamSnapshotMessage => {
+  const meta = normalizeRecord(row.meta);
+  const isCompaction = meta?.messageKind === "compacted";
+  const messageOrdinal = row.role === "assistant" ? input.messageOrdinal : null;
+  return {
+    messageId: isCompaction || messageOrdinal == null ? row.id : resolveSnapshotStreamMessageId({
+      sessionId: row.sessionId,
+      turnId: input.turnId,
+      messageOrdinal,
+    }),
+    messageOrdinal,
+    id: row.id,
     sessionId: row.sessionId,
-    turnId: input.turnId,
-    messageOrdinal: input.messageOrdinal,
-  }),
-  messageOrdinal: input.messageOrdinal,
-  id: row.id,
-  sessionId: row.sessionId,
-  role: row.role as "user" | "assistant" | "system",
-  content: row.content as ContentBlock[],
-  text: row.text ?? null,
-  provider: row.provider ?? null,
-  model: row.model ?? null,
-  stopReason: row.stopReason ?? null,
-  errorMessage: row.errorMessage ?? null,
-  usage: row.usage as StoredIntermediateMessage["usage"],
-  toolCallsObjectKey: null,
-  meta: normalizeRecord(row.meta),
-  createdAt: toIso(row.createdAt),
-});
+    sequence: row.sequence,
+    role: row.role as "user" | "assistant" | "system",
+    content: row.content as ContentBlock[],
+    text: row.text ?? null,
+    provider: row.provider ?? null,
+    model: row.model ?? null,
+    stopReason: row.stopReason ?? null,
+    errorMessage: row.errorMessage ?? null,
+    usage: row.usage as StoredIntermediateMessage["usage"],
+    toolCallsObjectKey: null,
+    meta,
+    createdAt: toIso(row.createdAt),
+  };
+};
 
 const listPersistedIntermediateMessages = async (input: { sessionId: string; turnId: string }) => {
   const rows = await db.select().from(sessionMessages).where(and(
     eq(sessionMessages.sessionId, input.sessionId),
-    eq(sessionMessages.role, "assistant"),
+    sql`${sessionMessages.role} <> 'user'`,
     sql`${sessionMessages.meta}->>'turnId' = ${input.turnId}`,
     sql`coalesce(${sessionMessages.meta}->>'messageKind', '') not in ('assistant_final', 'assistant_error')`,
   )).orderBy(asc(sessionMessages.sequence), asc(sessionMessages.createdAt));
-  return rows.map((row, index) => toSnapshotIntermediateMessage(row, { messageOrdinal: index, turnId: input.turnId }));
+  const ordinals = resolvePersistedIntermediateOrdinals(rows);
+  return rows.map((row, index) => toSnapshotIntermediateMessage(row, {
+    messageOrdinal: ordinals[index] ?? null,
+    turnId: input.turnId,
+  }));
 };
 
 const enrichSessionStreamSnapshot = async (snapshot: SessionStreamSnapshot): Promise<SessionStreamSnapshot> => {

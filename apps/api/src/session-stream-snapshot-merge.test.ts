@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import {
   getSnapshotMessageKey,
   mergeSessionStreamSnapshotIntermediates,
+  resolvePersistedIntermediateOrdinals,
   resolveSnapshotStreamMessageId,
   type SnapshotIntermediateMessage,
 } from "./session-stream-snapshot-merge.js";
@@ -62,3 +63,39 @@ const compacted = mergeSessionStreamSnapshotIntermediates(
 assert.equal(compacted.length, 1);
 assert.equal(compacted[0]?.messageId, "turn:turn-1:assistant:0");
 assert.deepEqual(compacted[0]?.content, [{ type: "text", text: "db" }]);
+
+assert.deepEqual(
+  resolvePersistedIntermediateOrdinals([
+    { role: "assistant", meta: {} },
+    { role: "system", meta: { messageKind: "compacted" } },
+    { role: "assistant", meta: {} },
+  ]),
+  [0, null, 1],
+);
+
+assert.deepEqual(
+  resolvePersistedIntermediateOrdinals([
+    { role: "assistant", meta: { messageOrdinal: 4 } },
+    { role: "system", meta: { messageKind: "compacted" } },
+    { role: "assistant", meta: { messageOrdinal: 7 } },
+    { role: "assistant", meta: {} },
+  ]),
+  [4, null, 7, 8],
+);
+
+assert.deepEqual(
+  resolvePersistedIntermediateOrdinals([
+    { role: "assistant", meta: { messageOrdinal: 0 } },
+    { role: "assistant", meta: { messageOrdinal: 0 } },
+    { role: "assistant", meta: {} },
+  ]),
+  [0, 1, 2],
+);
+
+assert.deepEqual(
+  resolvePersistedIntermediateOrdinals([
+    { role: "assistant", meta: {} },
+    { role: "assistant", meta: { messageOrdinal: 0 } },
+  ]),
+  [1, 0],
+);

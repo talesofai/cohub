@@ -53,7 +53,48 @@ function testUndefinedOrdinalOmitted() {
   assert.deepEqual(picked, { messageKind: "assistant_final" });
 }
 
+function testCompactionMetaIsSanitized() {
+  assert.ok(
+    REALTIME_MESSAGE_META_KEYS.includes("compaction"),
+    "compaction metadata must be whitelisted for realtime placement",
+  );
+
+  const picked = pickRealtimeMessageMeta({
+    messageKind: "compacted",
+    compaction: {
+      version: 1,
+      compactionId: "compact-1",
+      scope: "within_turn",
+      tokensBefore: 120_000,
+      estimatedTokensAfter: 18_000,
+      model: "model-1",
+      providerCallCount: 3,
+      archivePath: "/private/archive.jsonl",
+      firstKeptEntryId: "session-entry-1",
+      placement: {
+        beforeSessionEntryId: "session-entry-2",
+        beforeMessageId: "message-2",
+      },
+    },
+  });
+
+  assert.deepEqual(picked, {
+    messageKind: "compacted",
+    compaction: {
+      version: 1,
+      compactionId: "compact-1",
+      scope: "within_turn",
+      tokensBefore: 120_000,
+      estimatedTokensAfter: 18_000,
+      model: "model-1",
+      providerCallCount: 3,
+      placement: { beforeMessageId: "message-2" },
+    },
+  });
+}
+
 testOrdinalWhitelisted();
 testZeroOrdinalSurvives();
 testEmptyReturnsNull();
 testUndefinedOrdinalOmitted();
+testCompactionMetaIsSanitized();

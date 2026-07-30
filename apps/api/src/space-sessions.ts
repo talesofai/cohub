@@ -9,7 +9,7 @@ import { SPACE_ENV_REDIS_KEY } from "@cohub/protocol/sandbox";
 import { isSandboxUsableStatus } from "@cohub/sandbox-controller";
 import { sanitizeContentBlocksForPostgresJson, sanitizePostgresJsonValue } from "@cohub/core/content/sanitize";
 import { assignSessionParticipantSystemLabels } from "@cohub/core/labels/session-user";
-import { initializeSessionParticipantsMeta, readSessionParticipantUserUuids } from "@cohub/core/sessions";
+import { initializeSessionParticipantsMeta, readSessionParticipantUserUuids, resolveMessageTurnId } from "@cohub/core/sessions";
 import { db } from "./db/index.js";
 import {
   sessionMessages,
@@ -479,6 +479,18 @@ export const persistMessageNode = async (input: PersistMessageInput & { message:
   const session = await getSpaceSessionById(input.sessionId);
   if (!session || session.spaceId !== input.spaceId) throw new Error("Space session not found");
 
+  const messageMeta = normalizeRecord(input.message.meta);
+  const rawMessageTurnId = messageMeta?.turnId;
+  const messageTurnId = resolveMessageTurnId(messageMeta);
+  if (rawMessageTurnId != null && !messageTurnId) throw new Error("Invalid message turn id");
+  if (messageTurnId) {
+    const [turn] = await db.select({ id: sessionTurns.id }).from(sessionTurns).where(and(
+      eq(sessionTurns.id, messageTurnId),
+      eq(sessionTurns.sessionId, input.sessionId),
+    )).limit(1);
+    if (!turn) throw new Error("Message turn not found in session");
+  }
+
   if (input.previousMessageId) {
     const [previous] = await db.select().from(sessionMessages).where(and(eq(sessionMessages.id, input.previousMessageId), eq(sessionMessages.sessionId, input.sessionId))).limit(1);
     if (!previous) throw new Error("Previous message not found");
@@ -513,11 +525,13 @@ export const persistMessageNode = async (input: PersistMessageInput & { message:
   const [messageNode] = await db.insert(sessionMessages).values({
     id: input.message.id?.trim() || undefined,
     sessionId: input.sessionId,
+    turnId: messageTurnId,
     role: messageRole,
     content,
     text,
     meta: sanitizePostgresJsonValue({
       ...((input.message.meta as Record<string, unknown> | null) ?? {}),
+      ...(rawMessageTurnId != null ? { turnId: messageTurnId } : {}),
       messageKind,
       anchorUserMessageId,
       actorUserId: userId,

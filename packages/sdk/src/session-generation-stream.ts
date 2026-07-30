@@ -39,6 +39,7 @@ export type AssistantMessageCommit =
 export type GenerationStreamIntermediateMessage = {
   id?: string;
   sessionId?: string;
+  sequence?: number | null;
   role?: "user" | "assistant" | "system";
   messageId: string | null;
   messageOrdinal: number | null;
@@ -156,11 +157,14 @@ const getMessageKind = (message: MessageRecord) => {
 export function parseAssistantMessageCommit(
   message: MessageRecord,
 ): AssistantMessageCommit {
+  const kind = getMessageKind(message);
+  if (message.role === "system" && kind === "compacted") {
+    return { kind: "intermediate", message, isFinal: false };
+  }
   if (message.role !== "assistant") {
     return { kind: "ignored", message, isFinal: false };
   }
 
-  const kind = getMessageKind(message);
   if (kind === "assistant_intermediate") {
     return { kind: "intermediate", message, isFinal: false };
   }
@@ -184,6 +188,7 @@ function messageRecordToIntermediate(
   return {
     id: message.id,
     sessionId: message.sessionId,
+    sequence: message.sequence,
     role: message.role,
     messageId:
       typeof meta.streamMessageId === "string"
@@ -339,6 +344,39 @@ function mergeMessagesSharingToolUseId(
   return merged;
 }
 
+function getCompactionPlacement(message: GenerationStreamIntermediateMessage) {
+  const meta = isRecord(message.meta) ? message.meta : null;
+  const compaction = isRecord(meta?.compaction) ? meta.compaction : null;
+  const placement = isRecord(compaction?.placement) ? compaction.placement : null;
+  return meta?.messageKind === "compacted"
+    ? {
+        beforeMessageId:
+          typeof placement?.beforeMessageId === "string" ? placement.beforeMessageId : null,
+        sequence: typeof message.sequence === "number" ? message.sequence : null,
+      }
+    : null;
+}
+
+function placeCompactionMessages(messages: GenerationStreamIntermediateMessage[]) {
+  const result = messages.filter((message) => !getCompactionPlacement(message));
+  const compactions = messages.filter((message) => getCompactionPlacement(message));
+  for (const message of compactions) {
+    const placement = getCompactionPlacement(message);
+    let index = placement?.beforeMessageId
+      ? result.findIndex((candidate) =>
+          candidate.id === placement.beforeMessageId || candidate.messageId === placement.beforeMessageId)
+      : -1;
+    const sequence = placement?.sequence;
+    if (index < 0 && sequence != null) {
+      index = result.findIndex(
+        (candidate) => typeof candidate.sequence === "number" && candidate.sequence >= sequence,
+      );
+    }
+    result.splice(index < 0 ? result.length : index, 0, message);
+  }
+  return result;
+}
+
 function compactIntermediateMessages(messages: GenerationStreamIntermediateMessage[]) {
   const merged: GenerationStreamIntermediateMessage[] = [];
   const indexByKey = new Map<string, number>();
@@ -356,7 +394,7 @@ function compactIntermediateMessages(messages: GenerationStreamIntermediateMessa
     }
     merged[index] = { ...merged[index], ...message };
   }
-  return mergeMessagesSharingToolUseId(merged);
+  return placeCompactionMessages(mergeMessagesSharingToolUseId(merged));
 }
 
 function normalizeSnapshotIntermediateMessages(
