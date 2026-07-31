@@ -331,11 +331,16 @@ export async function reconcilePendingCronJobQueues(limit = 100) {
     .where(ne(cronJobs.queueSyncedVersion, cronJobs.scheduleVersion))
     .orderBy(cronJobs.updatedAt, cronJobs.id)
     .limit(limit);
+  const queueIndex = indexCronJobQueueEntries(
+    pending.length > 0
+      ? await taskQueue.getRepeatableJobs(0, -1, true)
+      : [],
+  );
 
   let failed = 0;
   for (const candidate of pending) {
     try {
-      await reconcileCronJobQueue(candidate.id);
+      await reconcileCronJobQueue(candidate.id, { queueIndex });
     } catch (error) {
       failed += 1;
       logCronJobQueueSyncFailure(candidate.id)(error);
@@ -347,6 +352,21 @@ export async function reconcilePendingCronJobQueues(limit = 100) {
 const CRON_JOB_DRIFT_LEASE_KEY = "cohub:cron-jobs:drift-scan:lease";
 const CRON_JOB_DRIFT_CURSOR_KEY = "cohub:cron-jobs:drift-scan:cursor";
 const CRON_JOB_DRIFT_LEASE_MS = 4 * 60_000;
+
+async function markCronJobQueuePending(
+  candidate: Pick<CronJobRow, "id" | "scheduleVersion">,
+) {
+  const [pending] = await db
+    .update(cronJobs)
+    .set({ queueSyncedVersion: Math.max(0, candidate.scheduleVersion - 1) })
+    .where(and(
+      eq(cronJobs.id, candidate.id),
+      eq(cronJobs.scheduleVersion, candidate.scheduleVersion),
+      eq(cronJobs.queueSyncedVersion, candidate.scheduleVersion),
+    ))
+    .returning();
+  return pending ?? null;
+}
 
 export async function reconcileCronJobQueueDrift(limit = 100) {
   const acquired = await redisCommandClient.set(
@@ -360,7 +380,6 @@ export async function reconcileCronJobQueueDrift(limit = 100) {
 
   const cursor = await redisCommandClient.get(CRON_JOB_DRIFT_CURSOR_KEY);
   const conditions = [
-    isNull(cronJobs.deletedAt),
     eq(cronJobs.queueSyncedVersion, cronJobs.scheduleVersion),
   ];
   if (cursor) conditions.push(gt(cronJobs.id, cursor));
@@ -382,7 +401,9 @@ export async function reconcileCronJobQueueDrift(limit = 100) {
   let failed = 0;
   for (const candidate of drifted) {
     try {
-      await reconcileCronJobQueue(candidate.id, {
+      const pending = await markCronJobQueuePending(candidate);
+      if (!pending) continue;
+      await reconcileCronJobQueue(pending.id, {
         verifyQueueState: true,
         queueIndex,
       });

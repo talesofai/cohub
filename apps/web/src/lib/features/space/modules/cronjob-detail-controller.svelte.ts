@@ -91,6 +91,7 @@ export function createCronjobDetailController(options: {
 	let copiedId = $state(false);
 	let copiedTimer: ReturnType<typeof setTimeout> | null = null;
 	let queueSyncPollTimer: ReturnType<typeof setTimeout> | null = null;
+	let queueSyncPollGeneration = 0;
 	let routeStateKey = "";
 	let modelSelectorOpen = $state(false);
 	let modelSelectorTarget = $state<"new" | "edit">("new");
@@ -114,6 +115,7 @@ export function createCronjobDetailController(options: {
 	}
 
 	function clearQueueSyncPoll() {
+		queueSyncPollGeneration += 1;
 		if (queueSyncPollTimer) clearTimeout(queueSyncPollTimer);
 		queueSyncPollTimer = null;
 	}
@@ -121,21 +123,27 @@ export function createCronjobDetailController(options: {
 	function scheduleQueueSyncPoll(job: CronJobRecord) {
 		clearQueueSyncPoll();
 		if (job.queueSyncStatus !== "pending") return;
+		const generation = queueSyncPollGeneration;
 		queueSyncPollTimer = setTimeout(
-			() => void refreshQueueSyncStatus(job.id),
+			() => void refreshQueueSyncStatus(job.id, generation),
 			5_000,
 		);
 	}
 
-	async function refreshQueueSyncStatus(cronjobId: string) {
+	async function refreshQueueSyncStatus(cronjobId: string, generation: number) {
 		try {
 			const { job } = await sdk.cronJobs.get(cronjobId);
-			if (!isCurrentDetailRequest(cronjobId)) return;
+			if (
+				generation !== queueSyncPollGeneration ||
+				!isCurrentDetailRequest(cronjobId)
+			)
+				return;
 			detail = job;
 			notify(job);
 			scheduleQueueSyncPoll(job);
 		} catch {
 			if (
+				generation === queueSyncPollGeneration &&
 				isCurrentDetailRequest(cronjobId) &&
 				detail?.queueSyncStatus === "pending"
 			) {
@@ -338,6 +346,7 @@ export function createCronjobDetailController(options: {
 
 	async function toggle(enabled: boolean) {
 		if (!detail || actionInProgress) return;
+		clearQueueSyncPoll();
 		actionInProgress = true;
 		try {
 			const { job } = await sdk.cronJobs.toggle(
@@ -367,6 +376,7 @@ export function createCronjobDetailController(options: {
 		)
 			return;
 		const deletedCronjobId = detail.id;
+		clearQueueSyncPoll();
 		actionInProgress = true;
 		deleteInProgress = true;
 		detailError = null;
@@ -388,6 +398,9 @@ export function createCronjobDetailController(options: {
 			};
 			actionInProgress = false;
 			deleteInProgress = false;
+			if (detail?.queueSyncStatus === "pending") {
+				scheduleQueueSyncPoll(detail);
+			}
 		}
 	}
 
@@ -408,6 +421,7 @@ export function createCronjobDetailController(options: {
 		}
 		formSubmitting = true;
 		formError = "";
+		clearQueueSyncPoll();
 		try {
 			const payload = applySystemInstructionsUpdate(
 				buildSendMessagePayload(detail.payload, formPrompt, formModel),

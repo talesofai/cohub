@@ -1963,14 +1963,17 @@ router.post("/:id/prompt", async (c) => {
   }
 
   if (promptSchedule.mode === "delay") {
-    const { delayMs, scheduledAt } = promptSchedule;
+    const { scheduledAt } = promptSchedule;
     const { taskRunId } = await enqueueTask({
       type: "send_message",
       spaceId,
       sessionId: sessionId ?? undefined,
       userId: user.uuid,
       data: taskData,
-    }, { delay: delayMs, scheduledAt });
+    }, {
+      delay: Math.max(0, scheduledAt.getTime() - Date.now()),
+      scheduledAt,
+    });
     return c.json({ mode: "delay", taskRunId, scheduledAt: scheduledAt.toISOString(), sessionId });
   }
 
@@ -1982,7 +1985,10 @@ router.post("/:id/prompt", async (c) => {
       sessionId: sessionId ?? undefined,
       userId: user.uuid,
       data: taskData,
-    }, { delay: scheduledAt.getTime() - Date.now(), scheduledAt });
+    }, {
+      delay: Math.max(0, scheduledAt.getTime() - Date.now()),
+      scheduledAt,
+    });
     return c.json({ mode: "at", taskRunId, scheduledAt: scheduledAt.toISOString(), sessionId });
   }
 
@@ -1995,12 +2001,20 @@ router.post("/:id/prompt", async (c) => {
     spaceId,
     sessionId,
   });
+  const repeatSchedule = validatePromptSchedule({
+    mode: "repeat",
+    cronExpression: promptSchedule.cronExpression,
+    timezone: promptSchedule.timezone,
+  });
+  if (repeatSchedule.mode !== "repeat") {
+    throw new Error("Failed to refresh repeat schedule");
+  }
 
   const queueSyncStatus = cronJobQueueSyncStatus(cronJob);
   return c.json({
     mode: "repeat",
     cronJobId: cronJob.id,
-    nextRunAt: promptSchedule.nextRun.toISOString(),
+    nextRunAt: repeatSchedule.nextRun.toISOString(),
     timezone: promptSchedule.timezone,
     sessionId,
     queueSyncStatus,
