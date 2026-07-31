@@ -150,6 +150,9 @@ export type MeResponse = {
   uuid: string;
   profile: UserProfile;
   email: string | null;
+  principalType?: "user" | "work_session";
+  /** Space bound into a Work token; null for a normal account token. */
+  spaceId?: string | null;
 };
 
 export type BillingPluginStatus = {
@@ -749,6 +752,17 @@ export type SpaceRecord = {
   isPinned?: boolean;
 };
 
+export type MinimalSpaceRecord = {
+  id: string;
+  name: string | null;
+  accessLevel: "minimal";
+  title?: never;
+  slug?: never;
+  publicProfile?: never;
+};
+
+export type SessionSpaceRecord = SpaceRecord | MinimalSpaceRecord;
+
 export type SpaceBootstrapSource =
   | { type: "blank" }
   | { type: "git_repo"; repoUrl?: string; ref?: string | null }
@@ -1025,8 +1039,18 @@ export type UserSessionSpaceSummary = {
   publicProfile?: SpacePublicProfile | null;
 };
 
+export type UserSessionSummary = SessionRecord & {
+  accessLevel: "summary";
+  externalSessionId: null;
+  meta: null;
+  latestMessageText: null;
+  lastMessageId: null;
+  space?: UserSessionSpaceSummary | null;
+};
+
 /** Cross-space session list item returned by `GET /api/me/sessions`. */
 export type UserSessionListItem = SessionRecord & {
+  accessLevel?: "summary";
   space?: UserSessionSpaceSummary | null;
 };
 

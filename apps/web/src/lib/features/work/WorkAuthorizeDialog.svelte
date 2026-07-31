@@ -40,15 +40,15 @@ const OPERATION_GROUPS: OperationGroup[] = [
 		scopes: ["generation.create"],
 	},
 	{
-		title: "Send instructions in sessions",
+		title: "Use your sessions",
 		description:
-			"Send prompts and run agent actions in the current space as you.",
+			"Send prompts and read replies from sessions you own in the current space.",
 		scopes: ["session.prompt.fullaccess"],
 	},
 	{
 		title: "Read data",
 		description:
-			"Read files in the current space and list your sessions there.",
+			"Run read-only prompts, list session summaries, or read other account data you approve.",
 		scopes: [
 			"session.prompt.readonly",
 			"user.session.list",

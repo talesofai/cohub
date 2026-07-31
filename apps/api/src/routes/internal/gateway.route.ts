@@ -9,7 +9,7 @@ import { getSpacePresenceSnapshot } from "../../space-presence.js";
 import { Hono } from "hono";
 import { bindAllActiveSpaceChannelsToGateway, handleInboundEvent, resolveChannelInboundForEventWithLock } from "../../channels.js";
 import { hasPermission } from "../../permissions.js";
-import { ensureInternalRequest, getOptionalAuth, requireValidId } from "../../lib/middleware.js";
+import { ensureInternalRequest, getOptionalAuth, getRequestPrincipal, requireValidId } from "../../lib/middleware.js";
 import { getSpaceById } from "../../space-sessions.js";
 import { getSpaceSandboxBySpaceId, updateSpaceSandbox } from "../../space-sandboxes.js";
 import { normalizeSandboxLifecycleStatus, normalizeSandboxRuntimeStatus } from "@cohub/sandbox-controller";
@@ -112,6 +112,7 @@ router.post("/authorize-realtime-rooms", async (c) => {
 
   const user = getOptionalAuth(c);
   if (!user) return c.json({ ok: false, message: "authentication is required" }, 401);
+  const principal = getRequestPrincipal(c);
 
   const body = await c.req.json<{ rooms?: string[] }>().catch(() => null);
   const requestedRooms = Array.isArray(body?.rooms) ? Array.from(new Set(body.rooms.filter((room): room is string => typeof room === "string").map((room) => room.trim()).filter(Boolean))) : [];
@@ -129,7 +130,7 @@ router.post("/authorize-realtime-rooms", async (c) => {
     const normalizedRoom = `${parsed.kind}:${parsed.id}`;
 
     if (parsed.kind === "user") {
-      if (parsed.id === user.uuid) {
+      if (principal?.type === "user" && parsed.id === user.uuid) {
         accepted.push(normalizedRoom);
       } else {
         rejected.push({ room, code: "FORBIDDEN", message: "Cannot subscribe to another user" });

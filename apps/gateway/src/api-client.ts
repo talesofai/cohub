@@ -15,6 +15,7 @@ export type RealtimeAuthResult =
   | {
       ok: true;
       user: GatewayAuthUser & { uuid: string };
+      principalType: "user" | "work_session";
     }
   | {
       ok: false;
@@ -48,6 +49,7 @@ export const authenticateRealtimeToken = async (input: { token: string }): Promi
     return {
       ok: true,
       user,
+      principalType: "user",
     };
   } catch (error) {
     const status = error instanceof AuthorizationError ? error.status : 401;
@@ -79,8 +81,12 @@ export const authenticateRealtimeToken = async (input: { token: string }): Promi
       },
     };
   }
-  const data = await parseJson<{ uuid?: string; profile?: { displayName?: string | null; avatarUrl?: string | null } }>(response);
-  if (!data?.uuid) {
+  const data = await parseJson<{
+    uuid?: string;
+    principalType?: "user" | "work_session";
+    profile?: { displayName?: string | null; avatarUrl?: string | null };
+  }>(response);
+  if (!data?.uuid || (data.principalType !== "user" && data.principalType !== "work_session")) {
     return {
       ok: false,
       status: 401,
@@ -97,6 +103,7 @@ export const authenticateRealtimeToken = async (input: { token: string }): Promi
       nick_name: data.profile?.displayName ?? undefined,
       avatar_url: data.profile?.avatarUrl ?? undefined,
     },
+    principalType: data.principalType,
   };
 };
 

@@ -410,7 +410,7 @@ export const attachSessionSpaceSummaries = async <T extends { spaceId: string }>
  */
 export const listUserSessions = async (
   userUuid: string,
-  options?: { limit?: number; cursor?: string | null },
+  options?: { limit?: number; cursor?: string | null; creatorOnly?: boolean },
 ) => {
   const limit = resolveSessionListLimit(options?.limit);
   const cursor = decodeSessionListCursor(options?.cursor);
@@ -420,6 +420,16 @@ export const listUserSessions = async (
   const creatorWhere = activityCursor
     ? and(eq(spaceSessions.userUuid, userUuid), activityCursor)
     : eq(spaceSessions.userUuid, userUuid);
+
+  if (options?.creatorOnly) {
+    const rows = await db
+      .select()
+      .from(spaceSessions)
+      .where(creatorWhere)
+      .orderBy(...sessionListOrderBy)
+      .limit(branchLimit);
+    return paginateSessionRows(rows, limit);
+  }
 
   const participantOnly = and(
     userSessionParticipantCondition(userUuid),

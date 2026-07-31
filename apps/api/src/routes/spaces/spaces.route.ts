@@ -22,7 +22,7 @@ import {
   sessionTurns,
 } from "@cohub/db";
 import { eq, and, inArray, desc, lt, or, sql } from "drizzle-orm";
-import { useAuth, getOptionalAuth, getWorkSessionPrincipal, getPreviewSessionPrincipal, getExecutionPrincipal, requireValidId, buildSpaceListItems, authzDenied, getSpacePublicProfile, normalizePublicAvatarUrl } from "../../lib/middleware.js";
+import { useAccountAuth, useAuth, getOptionalAuth, getRequestPrincipal, getWorkSessionPrincipal, getPreviewSessionPrincipal, getExecutionPrincipal, requireValidId, buildSpaceListItems, authzDenied, getSpacePublicProfile, normalizePublicAvatarUrl } from "../../lib/middleware.js";
 import { config } from "../../config.js";
 import { scheduleSandboxAutoDestroy } from "../../sandbox-idle-scheduler.js";
 import { attachSandboxPublicEndpoints } from "../../sandbox-public-network.js";
@@ -84,6 +84,7 @@ import { redisCommandClient } from "../../redis.js";
 import { featureGateResponse } from "../../lib/feature-gate.js";
 import { billingBlockedResponse } from "../../lib/billing-blocked.js";
 import { applyRequestSourceToMeta, getRequestSource, resolveSessionSourceFromRequest } from "../../lib/request-source.js";
+import { canWriteSessionResource } from "../../owner-resource-access.js";
 
 
 const logger = createLogger({ serviceName: "cohub-api" });
@@ -785,7 +786,7 @@ router.get("/default", async (c) => {
 // ── POST /api/spaces ─────────────────────────────────────────────────────────
 
 router.post("/", async (c) => {
-  const user = useAuth(c);
+  const user = useAccountAuth(c);
   if (user instanceof Response) return user;
 
   const body = (await c.req
@@ -1682,7 +1683,7 @@ router.get("/:id/config", async (c) => {
   if (!space) return c.json({ message: "space not found" }, 404);
 
   const [allowedSpec, sandbox] = await Promise.all([
-    user?.uuid ? getAllowedSandboxSpecId(user.uuid) : Promise.resolve(DEFAULT_SANDBOX_SPEC_ID),
+    getAllowedSandboxSpecId(space.userUuid),
     getSpaceSandboxBySpaceId(spaceId),
   ]);
   return c.json({
@@ -1850,7 +1851,12 @@ router.post("/:id/prompt", async (c) => {
   if (sessionId) {
     const session = await getSpaceSessionById(sessionId);
     if (!session || session.spaceId !== spaceId) return c.json({ message: "session not found" }, 404);
-    if (!(await hasPermission(user, promptPermission, { spaceId, sessionId }))) {
+    if (!(await canWriteSessionResource(
+      getRequestPrincipal(c),
+      session,
+      promptPermission,
+      (permission, context) => hasPermission(user, permission, context),
+    ))) {
       return authzDenied(c);
     }
     promptSession = session;
@@ -2060,7 +2066,14 @@ router.post("/:id/sessions/:sessionId/turns/:turnId/steer", async (c) => {
   const sessionId = c.req.param("sessionId");
   const turnId = c.req.param("turnId");
   if (!requireValidId(spaceId) || !requireValidId(sessionId) || !requireValidId(turnId)) return c.json({ message: "not found" }, 404);
-  if (!(await hasPermission(user, "session.prompt.fullaccess", { spaceId, sessionId }))) return authzDenied(c);
+  const session = await getSpaceSessionById(sessionId);
+  if (!session || session.spaceId !== spaceId) return c.json({ message: "session not found" }, 404);
+  if (!(await canWriteSessionResource(
+    getRequestPrincipal(c),
+    session,
+    "session.prompt.fullaccess",
+    (permission, context) => hasPermission(user, permission, context),
+  ))) return authzDenied(c);
 
   try {
     const result = await promoteQueuedTurnToSteer({ spaceId, sessionId, turnId, actorUserId: user.uuid });
@@ -2082,7 +2095,14 @@ router.post("/:id/sessions/:sessionId/turns/:turnId/cancel", async (c) => {
   const sessionId = c.req.param("sessionId");
   const turnId = c.req.param("turnId");
   if (!requireValidId(spaceId) || !requireValidId(sessionId) || !requireValidId(turnId)) return c.json({ message: "not found" }, 404);
-  if (!(await hasPermission(user, "session.prompt.fullaccess", { spaceId, sessionId }))) return authzDenied(c);
+  const session = await getSpaceSessionById(sessionId);
+  if (!session || session.spaceId !== spaceId) return c.json({ message: "session not found" }, 404);
+  if (!(await canWriteSessionResource(
+    getRequestPrincipal(c),
+    session,
+    "session.prompt.fullaccess",
+    (permission, context) => hasPermission(user, permission, context),
+  ))) return authzDenied(c);
 
   try {
     const turn = await cancelQueuedTurn({ spaceId, sessionId, turnId, actorUserId: user.uuid });

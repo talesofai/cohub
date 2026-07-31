@@ -253,11 +253,13 @@ Work permissions come in **two disjoint sets**:
   `generation.create`, `user.space.list`, `user.session.list`,
   `user.usage.read` — approved per-viewer via `auth.request()`.
 
-> **Read operations need work scopes. Action operations need viewer scopes.
-They never substitute for each other.** For example, `session.prompt.fullaccess`
-lets you send a prompt but does NOT let you read the reply — that needs
-`session.view` (a work scope). Similarly, `generation.create` lets you create
-a generation task, but polling its result needs `taskrun.view` (a work scope).
+> **Space-wide reads need work scopes. Viewer actions and their owner-bound
+results need viewer scopes.** A matching `session.prompt.*` grant can poll the
+viewer's own session in the current Work Space, while `session.view` is still
+required for another user's session. Likewise, `generation.create` can list and
+poll only the viewer's own generation tasks; it never exposes other task types.
+`taskrun.view` remains required for broader task access. `user.session.list`
+lists summaries only and does not grant turn content.
 
 For the complete API-to-scope mapping, initialization recipe, capability
 recipes, a full working example, and a pitfalls checklist, see the

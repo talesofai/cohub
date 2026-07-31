@@ -1,0 +1,162 @@
+import type { Permission } from "@cohub/core/permissions";
+import { GENERATION_TASK_TYPE } from "@cohub/protocol/generation";
+
+export type OwnerResourcePrincipal =
+  | { type: "user"; user: { uuid: string } }
+  | { type: "work_session"; workSession: { userUuid: string; spaceId: string } }
+  | { type: "preview_session"; previewSession: { userUuid: string; spaceId: string } }
+  | { type: "execution"; execution: { actorUserId: string | null; spaceId: string } }
+  | null;
+type SessionResource = { id: string; spaceId: string; userUuid: string | null };
+type TaskResource = {
+  taskType: string;
+  spaceId: string | null;
+  sessionId: string | null;
+  userUuid: string | null;
+};
+type PermissionCheck = (
+  permission: Permission,
+  context: { spaceId: string; sessionId?: string },
+) => Promise<boolean>;
+
+function ownsResource(
+  principal: OwnerResourcePrincipal,
+  resource: { spaceId: string | null; userUuid: string | null },
+): boolean {
+  if (!resource.userUuid) return false;
+  if (principal?.type === "user") return principal.user.uuid === resource.userUuid;
+  return Boolean(
+    principal?.type === "work_session"
+    && resource.spaceId
+    && principal.workSession.userUuid === resource.userUuid
+    && principal.workSession.spaceId === resource.spaceId
+  );
+}
+
+export function ownerTaskListScope(principal: OwnerResourcePrincipal): {
+  userUuid: string;
+  spaceId: string | null;
+  requiresGenerationGrant: boolean;
+} | null {
+  if (principal?.type === "user") {
+    return { userUuid: principal.user.uuid, spaceId: null, requiresGenerationGrant: false };
+  }
+  if (principal?.type === "work_session") {
+    return {
+      userUuid: principal.workSession.userUuid,
+      spaceId: principal.workSession.spaceId,
+      requiresGenerationGrant: true,
+    };
+  }
+  return null;
+}
+
+export function ownerTaskListTaskType(
+  scope: NonNullable<ReturnType<typeof ownerTaskListScope>>,
+  requestedTaskType: string | null | undefined,
+): string | undefined | null {
+  const requested = requestedTaskType?.trim() || undefined;
+  if (!scope.requiresGenerationGrant) return requested;
+  if (requested && requested !== GENERATION_TASK_TYPE) return null;
+  return GENERATION_TASK_TYPE;
+}
+
+export function minimalOwnerSessionSpace<T extends { id: string; name: string }>(space: T) {
+  return {
+    id: space.id,
+    name: space.name,
+    accessLevel: "minimal" as const,
+  };
+}
+
+export function ownerSessionSummary<T extends {
+  id: string;
+  spaceId: string;
+  userUuid: string | null;
+  userProfile?: unknown;
+  title: string | null;
+  source: string | null;
+  status: string | null;
+  lastMessageAt: Date | string | null;
+  createdAt: Date | string | null;
+  updatedAt: Date | string | null;
+  space?: unknown;
+}>(session: T) {
+  return {
+    accessLevel: "summary" as const,
+    id: session.id,
+    spaceId: session.spaceId,
+    userUuid: session.userUuid,
+    userProfile: session.userProfile,
+    participantUserUuids: [],
+    participantProfiles: [],
+    title: session.title,
+    source: session.source,
+    status: session.status,
+    externalSessionId: null,
+    meta: null,
+    latestMessageText: null,
+    lastMessageAt: session.lastMessageAt,
+    lastMessageId: null,
+    createdAt: session.createdAt,
+    updatedAt: session.updatedAt,
+    space: session.space,
+  };
+}
+
+export async function canReadSessionResource(
+  principal: OwnerResourcePrincipal,
+  session: SessionResource,
+  checkPermission: PermissionCheck,
+): Promise<boolean> {
+  if (await checkPermission("session.view", { spaceId: session.spaceId, sessionId: session.id })) return true;
+  if (!ownsResource(principal, session)) return false;
+  if (principal?.type === "user") return true;
+  return await checkPermission("session.prompt.readonly", {
+    spaceId: session.spaceId,
+    sessionId: session.id,
+  }) || await checkPermission("session.prompt.fullaccess", {
+    spaceId: session.spaceId,
+    sessionId: session.id,
+  });
+}
+
+export async function canBindGenerationToSession(
+  principal: OwnerResourcePrincipal,
+  session: SessionResource,
+  checkPermission: PermissionCheck,
+): Promise<boolean> {
+  if (ownsResource(principal, session)) return true;
+  return checkPermission("session.view", { spaceId: session.spaceId, sessionId: session.id });
+}
+
+export async function canWriteSessionResource(
+  principal: OwnerResourcePrincipal,
+  session: SessionResource,
+  permission: Permission,
+  checkPermission: PermissionCheck,
+): Promise<boolean> {
+  if (!(await checkPermission(permission, { spaceId: session.spaceId, sessionId: session.id }))) {
+    return false;
+  }
+  if (principal?.type !== "work_session" || ownsResource(principal, session)) return true;
+  return checkPermission("session.view", { spaceId: session.spaceId, sessionId: session.id });
+}
+
+export async function canReadTaskResource(
+  principal: OwnerResourcePrincipal,
+  task: TaskResource,
+  checkPermission: PermissionCheck,
+): Promise<boolean> {
+  if (ownsResource(principal, task)) {
+    if (principal?.type === "user") return true;
+    if (task.taskType === "generation" && task.spaceId) {
+      return checkPermission("generation.create", { spaceId: task.spaceId });
+    }
+  }
+  if (!task.spaceId) return false;
+  return checkPermission("taskrun.view", {
+    spaceId: task.spaceId,
+    sessionId: task.sessionId ?? undefined,
+  });
+}

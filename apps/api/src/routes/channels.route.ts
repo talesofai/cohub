@@ -3,7 +3,7 @@ import { Hono } from "hono";
 import { db } from "../db/index.js";
 import { userChannels, spaceChannels, spaces } from "@cohub/db";
 import { eq, and, desc, inArray } from "drizzle-orm";
-import { useAuth, requireValidId } from "../lib/middleware.js";
+import { useAccountAuth, requireValidId } from "../lib/middleware.js";
 import { redisCommandClient } from "../redis.js";
 import { deleteChannelResponse, type DeleteChannelResult } from "./channel-delete.js";
 import { fallbackBoundChannelHealth, getChannelHealthMap } from "../channel-health.js";
@@ -144,7 +144,7 @@ async function pollWeChatQrStatus(qrcode: string, baseUrl = WECHAT_LOGIN_BASE_UR
 }
 
 router.post("/wechat/login/start", async (c) => {
-  const user = useAuth(c);
+  const user = useAccountAuth(c);
   if (user instanceof Response) return user;
   const body = (await c.req.json<{ name?: string }>().catch(() => ({}))) as { name?: string };
   const name = body.name?.trim() || "WeChat";
@@ -179,7 +179,7 @@ router.post("/wechat/login/start", async (c) => {
 });
 
 router.post("/wechat/login/wait", async (c) => {
-  const user = useAuth(c);
+  const user = useAccountAuth(c);
   if (user instanceof Response) return user;
   const body = (await c.req.json<{ sessionKey?: string; verifyCode?: string }>().catch(() => ({}))) as { sessionKey?: string; verifyCode?: string };
   const sessionKey = body.sessionKey?.trim();
@@ -273,7 +273,7 @@ router.post("/wechat/login/wait", async (c) => {
   }
 });
 router.get("/", async (c) => {
-  const user = useAuth(c);
+  const user = useAccountAuth(c);
   if (user instanceof Response) return user;
 
   const channels = await db
@@ -315,7 +315,7 @@ router.get("/", async (c) => {
 });
 
 router.post("/", async (c) => {
-  const user = useAuth(c);
+  const user = useAccountAuth(c);
   if (user instanceof Response) return user;
 
   const body = (await c.req
@@ -349,7 +349,7 @@ router.post("/", async (c) => {
 });
 
 router.delete("/:id", async (c) => {
-  const user = useAuth(c);
+  const user = useAccountAuth(c);
   if (user instanceof Response) return user;
   const channelId = c.req.param("id");
   if (!requireValidId(channelId)) return c.json({ message: "channel not found" }, 404);

@@ -2,11 +2,12 @@ import { Hono } from "hono";
 import { db } from "../db/index.js";
 import { taskRuns } from "@cohub/db";
 import { eq, and, desc, inArray, lt, or } from "drizzle-orm";
-import { getOptionalAuth, useAuth, requireValidId, authzDenied } from "../lib/middleware.js";
+import { getOptionalAuth, getRequestPrincipal, useAuth, requireValidId, authzDenied } from "../lib/middleware.js";
 import { hasPermission } from "../permissions.js";
 import { taskQueue } from "../tasks.js";
 import { fallbackPublicUserProfile, getProfilesByUuids } from "../user-profiles.js";
 import { sanitizeTaskRunPricingForViewer } from "../task-run-privacy.js";
+import { canReadTaskResource, ownerTaskListScope, ownerTaskListTaskType } from "../owner-resource-access.js";
 
 const router = new Hono();
 
@@ -122,6 +123,7 @@ router.get("/", async (c) => {
   const cursor = c.req.query("cursor");
   const limitParam = Number(c.req.query("limit") ?? 50);
   const limit = Number.isFinite(limitParam) ? Math.min(Math.max(Math.floor(limitParam), 1), 100) : 50;
+  const principal = getRequestPrincipal(c);
   const user = spaceId ? getOptionalAuth(c) : useAuth(c);
   if (user instanceof Response) return user;
   const userId = user?.uuid;
@@ -154,8 +156,28 @@ router.get("/", async (c) => {
 
   if (!userId) return c.json({ message: "unauthorized" }, 401);
 
+  const ownerScope = ownerTaskListScope(principal);
+  if (!ownerScope || ownerScope.userUuid !== userId) return authzDenied(c);
+  if (
+    ownerScope.requiresGenerationGrant
+    && ownerScope.spaceId
+    && !(await hasPermission(user, "generation.create", { spaceId: ownerScope.spaceId }))
+  ) return authzDenied(c);
+
   const conditions = [eq(taskRuns.userUuid, userId)];
-  applyTaskFilters({ conditions, sessionId, cronJobId, taskType, status, cursor: cursorValue });
+  if (ownerScope.spaceId) conditions.push(eq(taskRuns.spaceId, ownerScope.spaceId));
+  const ownerTaskType = ownerTaskListTaskType(ownerScope, taskType);
+  if (ownerTaskType === null) {
+    return c.json({ runs: [], pageInfo: { hasMore: false, nextCursor: null } });
+  }
+  applyTaskFilters({
+    conditions,
+    sessionId,
+    cronJobId,
+    taskType: ownerTaskType,
+    status,
+    cursor: cursorValue,
+  });
   const rows = await db
     .select()
     .from(taskRuns)
@@ -172,6 +194,7 @@ router.get("/", async (c) => {
 
 router.get("/:taskId", async (c) => {
   const user = getOptionalAuth(c);
+  const principal = getRequestPrincipal(c);
 
   const taskId = c.req.param("taskId");
   if (!taskId?.trim()) return c.json({ message: "task run not found" }, 404);
@@ -179,11 +202,11 @@ router.get("/:taskId", async (c) => {
   const [run] = await db.select().from(taskRuns).where(eq(taskRuns.id, taskId)).limit(1);
   if (!run) return c.json({ message: "task run not found" }, 404);
 
-  if (run.spaceId) {
-    if (!(await hasPermission(user, "taskrun.view", { spaceId: run.spaceId, sessionId: run.sessionId ?? undefined }))) {
-      return authzDenied(c);
-    }
-  } else if (!user || run.userUuid !== user.uuid) {
+  if (!(await canReadTaskResource(
+    principal,
+    run,
+    (permission, context) => hasPermission(user, permission, context),
+  ))) {
     return authzDenied(c);
   }
 

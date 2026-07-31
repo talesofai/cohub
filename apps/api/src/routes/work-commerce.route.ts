@@ -1,6 +1,6 @@
-import { Hono } from "hono";
+import { Hono, type Context } from "hono";
 import { isBillingApiError } from "../lib/billing-api-error.js";
-import { authzDenied, getOptionalAuth, requireValidId, useAuth } from "../lib/middleware.js";
+import { authzDenied, getOptionalAuth, getRequestPrincipal, requireValidId, useAccountAuth } from "../lib/middleware.js";
 import { handleWorkCommerceRouteError } from "../lib/commerce-http.js";
 import { hasPermission } from "../permissions.js";
 import {
@@ -19,6 +19,20 @@ import { eq } from "drizzle-orm";
 import { config } from "../config.js";
 
 const router = new Hono();
+
+function useBoundWorkCommerceViewer(c: Context, workId: string) {
+  const principal = getRequestPrincipal(c);
+  const user = getOptionalAuth(c);
+  if (principal?.type === "user" && user) return { user, workSession: null };
+  if (
+    principal?.type === "work_session"
+    && principal.workSession.workId === workId
+    && user
+  ) {
+    return { user, workSession: principal.workSession };
+  }
+  return authzDenied(c);
+}
 
 async function getPublishedWorkOrDeny(workId: string, userUuid?: string | null) {
   const work = await getWorkCommerceContextById(workId);
@@ -92,12 +106,14 @@ router.post("/works/:id/commerce/products/resolve", async (c) => {
 });
 
 router.get("/works/:id/commerce/entitlements", async (c) => {
-  const user = useAuth(c);
-  if (user instanceof Response) return user;
   const workId = c.req.param("id");
   if (!requireValidId(workId)) return c.json({ message: "work not found" }, 404);
+  const viewer = useBoundWorkCommerceViewer(c, workId);
+  if (viewer instanceof Response) return viewer;
+  const { user } = viewer;
   const resolved = await getPublishedWorkOrDeny(workId, user.uuid);
   if ("error" in resolved) return c.json({ message: resolved.error }, 404);
+  if (viewer.workSession && viewer.workSession.spaceId !== resolved.work.spaceId) return authzDenied(c);
   if ((resolved.work.workVisibility ?? "public") === "space" && !(await hasPermission(user, "space.view", { spaceId: resolved.work.spaceId }))) return authzDenied(c);
   try {
     const businessKey = await requireSpaceCommerceBusinessKey(resolved.work.spaceId);
@@ -124,12 +140,14 @@ router.get("/works/:id/commerce/entitlements", async (c) => {
 });
 
 router.post("/works/:id/commerce/credits/consume", async (c) => {
-  const user = useAuth(c);
-  if (user instanceof Response) return user;
   const workId = c.req.param("id");
   if (!requireValidId(workId)) return c.json({ message: "work not found" }, 404);
+  const viewer = useBoundWorkCommerceViewer(c, workId);
+  if (viewer instanceof Response) return viewer;
+  const { user } = viewer;
   const resolved = await getPublishedWorkOrDeny(workId, user.uuid);
   if ("error" in resolved) return c.json({ message: resolved.error }, 404);
+  if (viewer.workSession && viewer.workSession.spaceId !== resolved.work.spaceId) return authzDenied(c);
   if ((resolved.work.workVisibility ?? "public") === "space" && !(await hasPermission(user, "space.view", { spaceId: resolved.work.spaceId }))) return authzDenied(c);
   const body = await c.req.json().catch(() => null) as {
     amount?: unknown;
@@ -177,7 +195,7 @@ router.post("/works/:id/commerce/credits/consume", async (c) => {
 });
 
 router.post("/works/:id/commerce/purchase", async (c) => {
-  const user = useAuth(c);
+  const user = useAccountAuth(c);
   if (user instanceof Response) return user;
   const workId = c.req.param("id");
   if (!requireValidId(workId)) return c.json({ message: "work not found" }, 404);
@@ -232,14 +250,16 @@ router.post("/works/:id/commerce/purchase", async (c) => {
 });
 
 router.get("/works/:id/commerce/orders/:orderId", async (c) => {
-  const user = useAuth(c);
-  if (user instanceof Response) return user;
   const workId = c.req.param("id");
   const orderId = c.req.param("orderId");
   if (!requireValidId(workId)) return c.json({ message: "work not found" }, 404);
   if (!requireValidId(orderId)) return c.json({ message: "order not found" }, 404);
+  const viewer = useBoundWorkCommerceViewer(c, workId);
+  if (viewer instanceof Response) return viewer;
+  const { user } = viewer;
   const resolved = await getPublishedWorkOrDeny(workId, user.uuid);
   if ("error" in resolved) return c.json({ message: resolved.error }, 404);
+  if (viewer.workSession && viewer.workSession.spaceId !== resolved.work.spaceId) return authzDenied(c);
   if ((resolved.work.workVisibility ?? "public") === "space" && !(await hasPermission(user, "space.view", { spaceId: resolved.work.spaceId }))) return authzDenied(c);
   try {
     const businessKey = await requireSpaceCommerceBusinessKey(resolved.work.spaceId);

@@ -1,6 +1,6 @@
 import { Hono } from "hono";
 import { redisCommandClient } from "../../redis.js";
-import { requireValidId, useAuth } from "../../lib/middleware.js";
+import { requireValidId, useAccountAuth, useAuth } from "../../lib/middleware.js";
 import { getSpaceById } from "../../space-sessions.js";
 import { hasPermission, getRoleForSpaceUser } from "../../permissions.js";
 import type { SpaceRole } from "@cohub/db";
@@ -24,7 +24,7 @@ const router = new Hono();
 // Create a new invitation link
 
 router.post("/", async (c) => {
-  const user = useAuth(c);
+  const user = useAccountAuth(c);
   if (user instanceof Response) return user;
   const spaceId = c.req.param("id");
   if (!spaceId || !requireValidId(spaceId)) return c.json({ message: "space not found" }, 404);
@@ -129,7 +129,7 @@ router.get("/", async (c) => {
 // Revoke an invitation
 
 router.delete("/:token", async (c) => {
-  const user = useAuth(c);
+  const user = useAccountAuth(c);
   if (user instanceof Response) return user;
   const spaceId = c.req.param("id");
   const token = c.req.param("token");

@@ -3,7 +3,7 @@ import { ApiError, isBillingApiError } from "../lib/billing-api-error.js";
 import { billingOperations, COHUB_BILLING_FEATURES, COHUB_BILLING_TOKEN_TYPES, type CohubBillingFeatureKey } from "@cohub/billing";
 import { config } from "../config.js";
 import { jsonError } from "../lib/json-error.js";
-import { getOptionalAuth, useAuth } from "../lib/middleware.js";
+import { getOptionalAccountAuth, useAccountAuth } from "../lib/middleware.js";
 
 const router = new Hono();
 const BILLING_PAGE_SIZE = 10;
@@ -74,7 +74,7 @@ function resolveBillingFeatureKey(value: string): CohubBillingFeatureKey | null 
 }
 
 router.get("/credits", async (c) => {
-  const user = useAuth(c);
+  const user = useAccountAuth(c);
   if (user instanceof Response) return user;
   const resolved = resolveTokenType(c.req.query("tokenType"));
   if ("error" in resolved) return c.json({ message: resolved.error }, 400);
@@ -86,7 +86,7 @@ router.get("/credits", async (c) => {
 });
 
 router.get("/balance-activities", async (c) => {
-  const user = useAuth(c);
+  const user = useAccountAuth(c);
   if (user instanceof Response) return user;
   const resolved = resolveTokenType(c.req.query("tokenType"));
   if ("error" in resolved) return c.json({ message: resolved.error }, 400);
@@ -100,7 +100,7 @@ router.get("/balance-activities", async (c) => {
 });
 
 router.get("/catalog", async (c) => {
-  const user = getOptionalAuth(c);
+  const user = getOptionalAccountAuth(c);
   try {
     const catalog = await billingOperations.getCatalog(
       user?.uuid ? { userId: user.uuid } : undefined,
@@ -113,7 +113,7 @@ router.get("/catalog", async (c) => {
 });
 
 router.get("/features/:featureKey", async (c) => {
-  const user = useAuth(c);
+  const user = useAccountAuth(c);
   if (user instanceof Response) return user;
   const featureKey = resolveBillingFeatureKey(c.req.param("featureKey"));
   if (!featureKey) return c.json({ message: "unsupported billing feature" }, 400);
@@ -130,7 +130,7 @@ router.get("/features/:featureKey", async (c) => {
 });
 
 router.get("/subscriptions", async (c) => {
-  const user = useAuth(c);
+  const user = useAccountAuth(c);
   if (user instanceof Response) return user;
   try {
     const subscriptions = await billingOperations.listSubscriptions({
@@ -146,7 +146,7 @@ router.get("/subscriptions", async (c) => {
 });
 
 router.post("/orders", async (c) => {
-  const user = useAuth(c);
+  const user = useAccountAuth(c);
   if (user instanceof Response) return user;
   try {
     const body = await readCheckoutBody(c);
@@ -168,7 +168,7 @@ router.post("/orders", async (c) => {
 });
 
 router.post("/subscriptions", async (c) => {
-  const user = useAuth(c);
+  const user = useAccountAuth(c);
   if (user instanceof Response) return user;
   try {
     const body = await readCheckoutBody(c);
@@ -190,7 +190,7 @@ router.post("/subscriptions", async (c) => {
 });
 
 router.delete("/subscriptions/:subscriptionId/checkout", async (c) => {
-  const user = useAuth(c);
+  const user = useAccountAuth(c);
   if (user instanceof Response) return user;
   try {
     const subscription = await billingOperations.cancelSubscriptionCheckout({
@@ -205,7 +205,7 @@ router.delete("/subscriptions/:subscriptionId/checkout", async (c) => {
 });
 
 router.patch("/subscriptions/:subscriptionId", async (c) => {
-  const user = useAuth(c);
+  const user = useAccountAuth(c);
   if (user instanceof Response) return user;
   try {
     const body = await readCheckoutBody(c);
@@ -224,7 +224,7 @@ router.patch("/subscriptions/:subscriptionId", async (c) => {
 });
 
 router.post("/redemptions", async (c) => {
-  const user = useAuth(c);
+  const user = useAccountAuth(c);
   if (user instanceof Response) return user;
   try {
     const body = await readCheckoutBody(c);

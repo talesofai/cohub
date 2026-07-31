@@ -6,7 +6,7 @@ import type { Permission, AccessPolicy, PermissionAccess } from "@cohub/core/per
 import type { PreviewSessionPrincipal } from "./preview-sessions.js";
 import { hasPreviewSessionPermission } from "./preview-sessions.js";
 import type { WorkSessionPrincipal } from "./work-sessions.js";
-import { eq } from "drizzle-orm";
+import { and, eq } from "drizzle-orm";
 
 type CachedWorkSessionPrincipal = WorkSessionPrincipal & {
   activeViewerGrantScopes?: Promise<Permission[]>;
@@ -58,7 +58,12 @@ const loadActiveViewerGrantScopes = async (workSession: CachedWorkSessionPrincip
   const [grant] = await db
     .select({ scopes: workViewerGrants.scopes, expiresAt: workViewerGrants.expiresAt, revokedAt: workViewerGrants.revokedAt })
     .from(workViewerGrants)
-    .where(eq(workViewerGrants.id, workSession.workViewerGrantId))
+    .where(and(
+      eq(workViewerGrants.id, workSession.workViewerGrantId),
+      eq(workViewerGrants.workId, workSession.workId),
+      eq(workViewerGrants.spaceId, workSession.spaceId),
+      eq(workViewerGrants.viewerUserUuid, workSession.userUuid),
+    ))
     .limit(1);
   if (!grant || grant.revokedAt) return [];
   if (grant.expiresAt && grant.expiresAt.getTime() <= Date.now()) return [];
@@ -99,6 +104,7 @@ export async function hasPermission(
   if (isUserLevelPermission(permission)) {
     const workSession = getUserWorkSession(user);
     if (workSession) return hasActiveViewerGrantPermission(workSession, permission);
+    if (getUserPreviewSession(user) || getUserExecution(user)) return false;
     return Boolean(user?.uuid);
   }
 

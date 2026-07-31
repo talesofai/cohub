@@ -923,7 +923,9 @@ async function main() {
               ? message.payload.capabilities.filter((value) => typeof value === "string" && value.trim())
               : [],
           );
-          subscribeConnectionToRoom(ctx, getRealtimeUserRoom(result.user.uuid));
+          if (result.principalType === "user") {
+            subscribeConnectionToRoom(ctx, getRealtimeUserRoom(result.user.uuid));
+          }
           await persistWsConnection(ctx);
           sendWsEnvelope(socket, buildRealtimeEnvelope({
             domain: "system",

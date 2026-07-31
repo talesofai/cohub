@@ -11,6 +11,7 @@ import {
   getOptionalAuth,
   getSpacePublicProfile,
   requireValidId,
+  useAccountAuth,
   useAuth,
   type AuthUser,
 } from "../lib/middleware.js";
@@ -767,7 +768,7 @@ router.delete("/:id", async (c) => {
 });
 
 router.post("/:id/session", async (c) => {
-  const user = useAuth(c);
+  const user = useAccountAuth(c);
   if (user instanceof Response) return user;
   const id = c.req.param("id");
   if (!requireValidId(id)) return c.json({ message: "work not found" }, 404);
@@ -784,7 +785,7 @@ router.post("/:id/session", async (c) => {
 });
 
 router.post("/:id/authorize", async (c) => {
-  const user = useAuth(c);
+  const user = useAccountAuth(c);
   if (user instanceof Response) return user;
   const id = c.req.param("id");
   if (!requireValidId(id)) return c.json({ message: "work not found" }, 404);

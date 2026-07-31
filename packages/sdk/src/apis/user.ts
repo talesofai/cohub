@@ -1,5 +1,5 @@
 import { HttpError, type HttpTransport, type Fetch } from "../transport.js";
-import type { LabelAssignmentRecord, LabelResourceType, MeResponse, SessionRecord, SpaceRecord, UserProfile, UserRulesResponse, UserSessionsResponse, SpaceUsageResponse } from "../types.js";
+import type { LabelAssignmentRecord, LabelResourceType, MeResponse, SessionRecord, SessionSpaceRecord, UserProfile, UserRulesResponse, UserSessionsResponse, SpaceUsageResponse } from "../types.js";
 
 export class UserApi {
   readonly labels: UserLabelsApi;
@@ -50,7 +50,7 @@ export class UserApi {
   }
 
   getSession(sessionId: string, customFetch?: Fetch) {
-    return this.transport.request<{ space: SpaceRecord; session: SessionRecord }>(
+    return this.transport.request<{ space: SessionSpaceRecord; session: SessionRecord }>(
       `/api/sessions/${sessionId}`,
       { fetch: customFetch },
     );

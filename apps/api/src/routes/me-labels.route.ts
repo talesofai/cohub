@@ -1,6 +1,6 @@
 import { Hono } from "hono";
 import { db } from "../db/index.js";
-import { useAuth, requireValidId } from "../lib/middleware.js";
+import { useAccountAuth, requireValidId } from "../lib/middleware.js";
 import {
   getUserResourceLabelAssignments,
   patchUserResourceLabels,
@@ -36,7 +36,7 @@ function parseLabelRefs(value: unknown): string[] | null {
  * to is harmless (it just won't appear in the space list).
  */
 router.get("/resources/:resourceType/labels", async (c) => {
-  const user = useAuth(c);
+  const user = useAccountAuth(c);
   if (user instanceof Response) return user;
   const resourceType = parseResourceType(c.req.param("resourceType") ?? "");
   const resourceRef = c.req.query("resourceRef")?.trim() ?? "";
@@ -55,7 +55,7 @@ router.get("/resources/:resourceType/labels", async (c) => {
  * cannot see.
  */
 router.patch("/resources/:resourceType/labels", async (c) => {
-  const user = useAuth(c);
+  const user = useAccountAuth(c);
   if (user instanceof Response) return user;
   const resourceType = parseResourceType(c.req.param("resourceType") ?? "");
   const resourceRef = c.req.query("resourceRef")?.trim() ?? "";

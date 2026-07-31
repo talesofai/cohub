@@ -2,7 +2,7 @@ import { sql } from "drizzle-orm";
 import { Hono } from "hono";
 import { db } from "../db/index.js";
 import { fallbackPublicUserProfile, getProfilesByUuids } from "../user-profiles.js";
-import { normalizePublicAvatarUrl, useAuth } from "../lib/middleware.js";
+import { normalizePublicAvatarUrl, useAccountAuth } from "../lib/middleware.js";
 import { createLogger } from "@cohub/infra/logging";
 
 
@@ -149,7 +149,7 @@ function mapRow(row: SearchResultRow, profiles?: Awaited<ReturnType<typeof getPr
 }
 
 router.get("/", async (c) => {
-  const user = useAuth(c);
+  const user = useAccountAuth(c);
   if (user instanceof Response) return user;
   const q = normalizeQuery(c.req.query("q"));
   const escapedQ = escapeLikePattern(q);

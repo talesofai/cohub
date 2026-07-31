@@ -35,12 +35,14 @@ export const WORK_VIEWER_SCOPE_OPTIONS: {
 	{
 		scope: "session.prompt.readonly",
 		label: "Prompt read-only",
-		description: "Allow viewer-authorized read access to prompts.",
+		description:
+			"Allow read-only prompts and polling replies from viewer-owned sessions in this space.",
 	},
 	{
 		scope: "session.prompt.fullaccess",
 		label: "Prompt full access",
-		description: "Allow viewer-authorized prompt writes.",
+		description:
+			"Allow prompt writes and reading replies from viewer-owned sessions in this space.",
 	},
 	{
 		scope: "generation.create",

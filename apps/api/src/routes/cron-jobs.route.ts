@@ -4,7 +4,7 @@ import { db } from "../db/index.js";
 import { cronJobs, taskRuns } from "@cohub/db";
 import { eq, and, isNull, desc, lt, or } from "drizzle-orm";
 import { sanitizePostgresJsonValue } from "@cohub/core/content/sanitize";
-import { getOptionalAuth, useAuth, requireValidId, authzDenied } from "../lib/middleware.js";
+import { getOptionalAuth, getRequestPrincipal, useAccountAuth, useAuth, requireValidId, authzDenied } from "../lib/middleware.js";
 import { hasPermission } from "../permissions.js";
 import { disableCronJob, enableCronJob, removeCronJob, updateCronJob } from "../tasks.js";
 import { fallbackPublicUserProfile, getProfilesByUuids } from "../user-profiles.js";
@@ -59,19 +59,31 @@ function isRecord(value: unknown): value is Record<string, unknown> {
   return !!value && typeof value === "object" && !Array.isArray(value);
 }
 
-async function authorizeCronJobView(user: ReturnType<typeof getOptionalAuth>, job: CronJobAuthSubject) {
+async function authorizeCronJobView(
+  user: ReturnType<typeof getOptionalAuth>,
+  job: CronJobAuthSubject,
+  principal: ReturnType<typeof getRequestPrincipal>,
+) {
   if (job.spaceId) return hasPermission(user, "cronjob.view", { spaceId: job.spaceId, sessionId: job.sessionId ?? undefined });
-  return !!user && job.userUuid === user.uuid;
+  return principal?.type === "user" && job.userUuid === principal.user.uuid;
 }
 
-async function authorizeCronJobManage(user: Exclude<ReturnType<typeof useAuth>, Response>, job: CronJobAuthSubject) {
+async function authorizeCronJobManage(
+  user: Exclude<ReturnType<typeof useAuth>, Response>,
+  job: CronJobAuthSubject,
+  principal: ReturnType<typeof getRequestPrincipal>,
+) {
   if (job.spaceId) return hasPermission(user, "cronjob.manage", { spaceId: job.spaceId, sessionId: job.sessionId ?? undefined });
-  return job.userUuid === user.uuid;
+  return principal?.type === "user" && job.userUuid === principal.user.uuid;
 }
 
-async function authorizeTaskRunView(user: ReturnType<typeof getOptionalAuth>, job: CronJobAuthSubject) {
+async function authorizeTaskRunView(
+  user: ReturnType<typeof getOptionalAuth>,
+  job: CronJobAuthSubject,
+  principal: ReturnType<typeof getRequestPrincipal>,
+) {
   if (job.spaceId) return hasPermission(user, "taskrun.view", { spaceId: job.spaceId, sessionId: job.sessionId ?? undefined });
-  return !!user && job.userUuid === user.uuid;
+  return principal?.type === "user" && job.userUuid === principal.user.uuid;
 }
 
 async function loadCronJobAuthSubject(cronJobId: string): Promise<CronJobAuthSubject | null> {
@@ -104,7 +116,7 @@ function buildTaskCursor(run: { createdAt: Date | string | null; id: string } | 
 
 router.get("/", async (c) => {
   const spaceId = c.req.query("spaceId") ?? null;
-  const user = spaceId ? getOptionalAuth(c) : useAuth(c);
+  const user = spaceId ? getOptionalAuth(c) : useAccountAuth(c);
   if (user instanceof Response) return user;
   const userId = user?.uuid;
 
@@ -133,6 +145,7 @@ router.get("/", async (c) => {
 
 router.get("/:id", async (c) => {
   const user = getOptionalAuth(c);
+  const principal = getRequestPrincipal(c);
   const cronJobId = c.req.param("id");
   if (!requireValidId(cronJobId)) return c.json({ message: "not found" }, 404);
 
@@ -142,7 +155,7 @@ router.get("/:id", async (c) => {
     .where(and(eq(cronJobs.id, cronJobId), isNull(cronJobs.deletedAt)))
     .limit(1);
   if (!job) return c.json({ message: "not found" }, 404);
-  if (!(await authorizeCronJobView(user, job))) return authzDenied(c);
+  if (!(await authorizeCronJobView(user, job, principal))) return authzDenied(c);
 
   const [hydrated] = await hydrateCronJobUserProfiles([job]);
   return c.json({ job: hydrated });
@@ -150,13 +163,14 @@ router.get("/:id", async (c) => {
 
 router.get("/:id/runs", async (c) => {
   const user = getOptionalAuth(c);
+  const principal = getRequestPrincipal(c);
 
   const cronJobId = c.req.param("id");
   if (!requireValidId(cronJobId)) return c.json({ message: "not found" }, 404);
 
   const job = await loadCronJobAuthSubject(cronJobId);
   if (!job) return c.json({ message: "not found" }, 404);
-  if (!(await authorizeTaskRunView(user, job))) return authzDenied(c);
+  if (!(await authorizeTaskRunView(user, job, principal))) return authzDenied(c);
 
   const limitParam = Number(c.req.query("limit") ?? 20);
   const limit = Number.isFinite(limitParam) ? Math.min(Math.max(Math.floor(limitParam), 1), MAX_RUNS_LIMIT) : 20;
@@ -193,6 +207,7 @@ router.get("/:id/runs", async (c) => {
 router.delete("/:id", async (c) => {
   const user = useAuth(c);
   if (user instanceof Response) return user;
+  const principal = getRequestPrincipal(c);
 
   const cronJobId = c.req.param("id");
   if (!requireValidId(cronJobId)) return c.json({ message: "not found" }, 404);
@@ -209,7 +224,7 @@ router.delete("/:id", async (c) => {
     .where(and(eq(cronJobs.id, cronJobId), isNull(cronJobs.deletedAt)))
     .limit(1);
   if (!job) return c.json({ message: "not found" }, 404);
-  if (!(await authorizeCronJobManage(user, job))) return authzDenied(c);
+  if (!(await authorizeCronJobManage(user, job, principal))) return authzDenied(c);
 
   await removeCronJob(cronJobId, job.bullJobKey);
   return c.json({ ok: true });
@@ -218,6 +233,7 @@ router.delete("/:id", async (c) => {
 router.patch("/:id", async (c) => {
   const user = useAuth(c);
   if (user instanceof Response) return user;
+  const principal = getRequestPrincipal(c);
 
   const cronJobId = c.req.param("id");
   if (!requireValidId(cronJobId)) return c.json({ message: "not found" }, 404);
@@ -228,7 +244,7 @@ router.patch("/:id", async (c) => {
     .where(and(eq(cronJobs.id, cronJobId), isNull(cronJobs.deletedAt)))
     .limit(1);
   if (!job) return c.json({ message: "not found" }, 404);
-  if (!(await authorizeCronJobManage(user, job))) return authzDenied(c);
+  if (!(await authorizeCronJobManage(user, job, principal))) return authzDenied(c);
 
   const body = await c.req.json<Record<string, unknown>>().catch(() => null);
   if (!body || typeof body !== "object" || Array.isArray(body)) return c.json({ message: "invalid json body" }, 400);

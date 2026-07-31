@@ -1,7 +1,13 @@
 import { createLogger } from "@cohub/infra/logging";
 import { Hono } from "hono";
 import { hasPermission } from "../permissions.js";
-import { authzDenied, requireValidId, useAuth } from "../lib/middleware.js";
+import {
+  authzDenied,
+  getRequestPrincipal,
+  requireValidId,
+  useAuth,
+} from "../lib/middleware.js";
+import { resolvePublicAssetUploadActor } from "../public-asset-access.js";
 import {
   consumePublicAssetUploadQuota,
   createPublicAssetUploadPlan,
@@ -27,25 +33,34 @@ router.post("/uploads", async (c) => {
     return c.json({ message: "invalid upload protocol" }, 400);
   }
 
+  const actor = resolvePublicAssetUploadActor(getRequestPrincipal(c), body);
+  if (!actor) return authzDenied(c);
+  if (
+    actor.workSpaceId
+    && !(await hasPermission(user, "generation.create", { spaceId: actor.workSpaceId }))
+  ) {
+    return authzDenied(c);
+  }
+
   if (body.purpose === "space_avatar") {
     if (!body.spaceId || !requireValidId(body.spaceId)) return c.json({ message: "space not found" }, 404);
     if (!(await hasPermission(user, "space.edit", { spaceId: body.spaceId }))) return authzDenied(c);
   }
 
-  // chat_attachment is user-scoped: authenticated is enough.
-  // Optional spaceId/sessionId are association hints only and do not gate upload.
+  // Account spaceId/sessionId fields are association hints. Work uploads are
+  // restricted to their bound Space and an active generation viewer grant.
   // Rate limits: avatar 60/h; chat image specialization 300/h (demotes to file on failure).
 
   try {
     const plan = createPublicAssetUploadPlan({
       purpose: body.purpose,
       uploadProtocol: body.uploadProtocol,
-      userUuid: user.uuid,
+      userUuid: actor.userUuid,
       spaceId: body.spaceId,
       sessionId: body.sessionId,
       file: body.file,
     });
-    await consumePublicAssetUploadQuota(user.uuid, body.purpose);
+    await consumePublicAssetUploadQuota(actor.userUuid, body.purpose);
     return c.json(plan);
   } catch (error) {
     if (error instanceof PublicAssetValidationError) {

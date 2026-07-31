@@ -36,6 +36,7 @@ import type {
   SessionTurnsPaginatedResponse,
   SessionTurnSignedUrlsResponse,
   SessionRecord,
+  SessionSpaceRecord,
   SpaceAccessPolicy,
   SpaceCheckpointDetailResponse,
   SpaceCreateResponse,
@@ -702,7 +703,7 @@ export class SessionClient {
   }
 
   get(customFetch?: Fetch) {
-    return this.transport.request<{ space: SpaceRecord; session: SessionRecord }>(
+    return this.transport.request<{ space: SessionSpaceRecord; session: SessionRecord }>(
       `/api/sessions/${this.id}`,
       {
         fetch: customFetch,

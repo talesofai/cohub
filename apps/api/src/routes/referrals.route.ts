@@ -1,6 +1,6 @@
 import { Hono } from "hono";
 import { claimReferral, getPublicReferral, REFERRAL_REWARD_USD } from "../referrals.js";
-import { useAuth } from "../lib/middleware.js";
+import { useAccountAuth } from "../lib/middleware.js";
 
 const router = new Hono();
 const CODE_PATTERN = /^[A-Za-z0-9_-]{8,32}$/;
@@ -27,7 +27,7 @@ router.get("/:code", async (c) => {
 });
 
 router.post("/:code/claim", async (c) => {
-  const user = useAuth(c);
+  const user = useAccountAuth(c);
   if (user instanceof Response) return user;
   const code = c.req.param("code");
   if (!CODE_PATTERN.test(code)) return c.json({ message: "referral not found" }, 404);

@@ -5,8 +5,8 @@ import { and, eq, gte, lte, desc } from "drizzle-orm";
 import * as schema from "@cohub/db";
 import { db } from "../db/index.js";
 import { config } from "../config.js";
-import { requireValidId, useAuth, authzDenied } from "../lib/middleware.js";
-import { ensureCurrentUserProfile, resolveCurrentUserEmail, updateCurrentUserProfile, LogtoUserRequiredError, UsernameClearError, UsernameConflictError, UsernameReservedError, validateUsername } from "../user-profiles.js";
+import { getRequestPrincipal, getWorkSessionPrincipal, requireValidId, useAccountAuth, useAuth, authzDenied, type AuthUser } from "../lib/middleware.js";
+import { ensureCurrentUserProfile, publicUserProfile, resolveCurrentUserEmail, updateCurrentUserProfile, LogtoUserRequiredError, UsernameClearError, UsernameConflictError, UsernameReservedError, validateUsername } from "../user-profiles.js";
 import {
   filterSessionsByPermission,
   getSpaceMemberRole,
@@ -33,6 +33,7 @@ import {
 } from "../usage-aggregation.js";
 import { createLogger } from "@cohub/infra/logging";
 import { getReferralDashboard, rotateReferralCode } from "../referrals.js";
+import { ownerSessionSummary } from "../owner-resource-access.js";
 
 const logger = createLogger({ serviceName: "cohub-api" });
 
@@ -87,13 +88,29 @@ async function readUserRules(userId: string) {
 router.get("/", async (c) => {
   const user = useAuth(c);
   if (user instanceof Response) return user;
+  const principal = getRequestPrincipal(c);
+  if (principal?.type !== "user" && principal?.type !== "work_session") return authzDenied(c);
   const profile = await ensureCurrentUserProfile(user);
-  const email = await resolveCurrentUserEmail(user);
-  return c.json({ uuid: user.uuid, profile, email });
+  if (principal.type === "work_session") {
+    return c.json({
+      uuid: user.uuid,
+      profile: publicUserProfile(profile),
+      email: null,
+      principalType: principal.type,
+      spaceId: principal.workSession.spaceId,
+    });
+  }
+  return c.json({
+    uuid: user.uuid,
+    profile,
+    email: await resolveCurrentUserEmail(user),
+    principalType: principal.type,
+    spaceId: null,
+  });
 });
 
 router.patch("/profile", async (c) => {
-  const user = useAuth(c);
+  const user = useAccountAuth(c);
   if (user instanceof Response) return user;
   const body = await c.req.json<{ displayName?: unknown; avatarUrl?: unknown; username?: unknown }>().catch(() => ({} as { displayName?: unknown; avatarUrl?: unknown; username?: unknown }));
   const input: { displayName?: string; avatarUrl?: string | null; username?: string | null } = {};
@@ -164,20 +181,20 @@ router.patch("/profile", async (c) => {
 });
 
 router.get("/referrals", async (c) => {
-  const user = useAuth(c);
+  const user = useAccountAuth(c);
   if (user instanceof Response) return user;
   return c.json(await getReferralDashboard(user.uuid));
 });
 
 router.post("/referrals/code/rotate", async (c) => {
-  const user = useAuth(c);
+  const user = useAccountAuth(c);
   if (user instanceof Response) return user;
   const code = await rotateReferralCode(user.uuid);
   return c.json({ code: code.code });
 });
 
 router.get("/rules", async (c) => {
-  const user = useAuth(c);
+  const user = useAccountAuth(c);
   if (user instanceof Response) return user;
   try {
     return c.json(await readUserRules(user.uuid));
@@ -188,12 +205,13 @@ router.get("/rules", async (c) => {
 
 /**
  * Cross-space recent sessions for the account identity.
- * Gate: `user.session.list`. Visibility: viewer's own membership / access policy
- * (not work-scoped session.view). Over-fetches after filtering for pagination.
+ * Gate: `user.session.list`. Work sessions always include their own sessions;
+ * participant sessions still require the original Work's `session.view` scope.
+ * Ordinary account tokens retain membership / access-policy visibility.
  */
 async function listVisibleUserSessions(
-  user: { uuid: string },
-  options: { limit: number; cursor: string | null },
+  user: AuthUser,
+  options: { limit: number; cursor: string | null; ownerOnly?: boolean },
 ) {
   const identity = asAccountIdentity(user);
   if (!identity) {
@@ -214,7 +232,7 @@ async function listVisibleUserSessions(
     if (cached !== undefined) return cached;
     const isMember = (await getSpaceMemberRole(spaceId, identity.uuid)) !== null;
     const allowed = isMember
-      ? await hasPermission(identity, "session.view", { spaceId })
+      ? await hasPermission(user, "session.view", { spaceId })
       : false;
     memberViewBySpace.set(spaceId, allowed);
     return allowed;
@@ -223,11 +241,21 @@ async function listVisibleUserSessions(
   while (visible.length < limit && hasMore && guard < 8) {
     guard += 1;
     const batchLimit = Math.min(100, Math.max(limit * 2, limit - visible.length + 4));
-    const batch = await listUserSessions(identity.uuid, { limit: batchLimit, cursor });
+    const batch = await listUserSessions(identity.uuid, {
+      limit: batchLimit,
+      cursor,
+      creatorOnly: options.ownerOnly,
+    });
     hasMore = Boolean(batch.pageInfo.hasMore);
     cursor = batch.pageInfo.nextCursor;
 
     if (batch.sessions.length === 0) break;
+
+    if (options.ownerOnly) {
+      visible.push(...batch.sessions);
+      if (!hasMore) break;
+      continue;
+    }
 
     // Group by space only for permission checks. Re-emit in batch activity order
     // so cross-space recency is not scrambled by Map iteration / space buckets.
@@ -240,15 +268,21 @@ async function listVisibleUserSessions(
 
     const visibleIds = new Set<string>();
     for (const [spaceId, sessions] of bySpace) {
+      const participantSessions = sessions.filter((session) => {
+        if (session.userUuid !== identity.uuid) return true;
+        visibleIds.add(session.id);
+        return false;
+      });
+      if (participantSessions.length === 0) continue;
       if (await canViewAllInSpace(spaceId)) {
-        for (const session of sessions) visibleIds.add(session.id);
+        for (const session of participantSessions) visibleIds.add(session.id);
         continue;
       }
       const filtered = await filterSessionsByPermission(
-        identity,
+        user,
         "session.view",
         spaceId,
-        sessions,
+        participantSessions,
       );
       for (const session of filtered) visibleIds.add(session.id);
     }
@@ -284,11 +318,19 @@ router.get("/sessions", async (c) => {
   const limitParam = Number(c.req.query("limit") ?? 20);
   const limit = Number.isFinite(limitParam) ? limitParam : 20;
   const cursor = c.req.query("cursor") ?? null;
+  const workSession = getWorkSessionPrincipal(c);
+  const ownerOnly = Boolean(
+    workSession
+    && !(await hasPermission(user, "session.view", { spaceId: workSession.spaceId })),
+  );
   try {
-    const { sessions, pageInfo } = await listVisibleUserSessions(user, { limit, cursor });
+    const { sessions, pageInfo } = await listVisibleUserSessions(user, { limit, cursor, ownerOnly });
     const hydratedSessions = await hydrateSessionParticipantProfiles(sessions);
     const withSpaces = await attachSessionSpaceSummaries(hydratedSessions);
-    return c.json({ sessions: withSpaces, pageInfo });
+    return c.json({
+      sessions: workSession ? withSpaces.map(ownerSessionSummary) : withSpaces,
+      pageInfo,
+    });
   } catch (error) {
     if (error instanceof InvalidSessionListCursorError) {
       return c.json({ message: "invalid cursor" }, 400);

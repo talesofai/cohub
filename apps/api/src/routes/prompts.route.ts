@@ -1,6 +1,6 @@
 import { Hono } from "hono";
 import { hasPermission } from "../permissions.js";
-import { getOptionalAuth, authzDenied } from "../lib/middleware.js";
+import { getOptionalAccountAuth, getOptionalAuth, authzDenied } from "../lib/middleware.js";
 import { listPromptTemplates } from "../prompt-templates.js";
 import { createLogger } from "@cohub/infra/logging";
 
@@ -9,21 +9,22 @@ const logger = createLogger({ serviceName: "cohub-api" });
 const router = new Hono();
 
 router.get("/", async (c) => {
-  const user = getOptionalAuth(c);
+  const actor = getOptionalAuth(c);
+  const accountUser = getOptionalAccountAuth(c);
   const spaceId = c.req.query("spaceId")?.trim() || null;
 
-  if (!user && !spaceId) {
+  if (!accountUser && !spaceId) {
     return c.json({ prompts: [] });
   }
 
-  if (spaceId && !(await hasPermission(user, "space.view", { spaceId }))) {
+  if (spaceId && !(await hasPermission(actor, "space.view", { spaceId }))) {
     return authzDenied(c);
   }
 
   try {
     return c.json({
       prompts: await listPromptTemplates({
-        userId: user?.uuid ?? null,
+        userId: accountUser?.uuid ?? null,
         spaceId,
       }),
     });

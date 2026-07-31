@@ -24,6 +24,15 @@ export type UserProfile = PublicUserProfile & {
   syncedAt: string;
 };
 
+export const publicUserProfile = (
+  profile: Pick<UserProfile, "userUuid" | "username" | "displayName" | "avatarUrl">,
+): PublicUserProfile => ({
+  userUuid: profile.userUuid,
+  username: profile.username,
+  displayName: profile.displayName,
+  avatarUrl: profile.avatarUrl,
+});
+
 export class UsernameConflictError extends Error {
   override name = "UsernameConflictError";
 }

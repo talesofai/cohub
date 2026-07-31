@@ -15,7 +15,7 @@ import {
   type CreateGenerationTaskResponse,
   type GenerationModelDiscountSnapshot,
 } from "@cohub/protocol/generation";
-import { useAuth, authzDenied } from "../lib/middleware.js";
+import { useAuth, authzDenied, getRequestPrincipal } from "../lib/middleware.js";
 import { billingBlockedResponse } from "../lib/billing-blocked.js";
 import { hasPermission } from "../permissions.js";
 import { loadGenerationDeclaration } from "../generations/declarations.js";
@@ -26,6 +26,7 @@ import { enqueueTask } from "../tasks.js";
 import { defaultJobRetention } from "@cohub/infra/bullmq";
 import { createLogger } from "@cohub/infra/logging";
 import { applyRequestSourceToMeta } from "../lib/request-source.js";
+import { canBindGenerationToSession } from "../owner-resource-access.js";
 
 
 const logger = createLogger({ serviceName: "cohub-api" });
@@ -69,7 +70,11 @@ router.post("/", async (c) => {
     if (!session || session.spaceId !== request.spaceId) {
       return generationError(c, 404, "generation_session_not_found", "Generation session not found in this space.");
     }
-    if (!(await hasPermission(user, "session.view", { spaceId: request.spaceId, sessionId }))) return authzDenied(c);
+    if (!(await canBindGenerationToSession(
+      getRequestPrincipal(c),
+      session,
+      (permission, context) => hasPermission(user, permission, context),
+    ))) return authzDenied(c);
   }
   if (turnId) {
     if (!sessionId) {

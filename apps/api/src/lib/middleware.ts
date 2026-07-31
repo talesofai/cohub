@@ -84,6 +84,22 @@ export const requireAuth = (c: Context): AuthUser | Response => {
  */
 export const useAuth = (c: Context): AuthUser | Response => requireAuth(c);
 
+export const accountUserFromPrincipal = (
+  principal: RequestPrincipal | null | undefined,
+): AuthUser | null => principal?.type === "user" ? principal.user : null;
+
+export const getOptionalAccountAuth = (c: Context): AuthUser | null => (
+  accountUserFromPrincipal(getRequestPrincipal(c))
+);
+
+/** Account APIs must never treat scoped principals as the user's login session. */
+export const useAccountAuth = (c: Context): AuthUser | Response => {
+  const principal = getRequestPrincipal(c);
+  const user = accountUserFromPrincipal(principal);
+  if (user) return user;
+  return principal ? c.json({ message: "forbidden" }, 403) : c.json({ message: "unauthorized" }, 401);
+};
+
 /**
  * Returns the authenticated user when present, otherwise null.
  * Use this for routes whose authorization is fully determined by RBAC
@@ -91,6 +107,10 @@ export const useAuth = (c: Context): AuthUser | Response => requireAuth(c);
  */
 export const getOptionalAuth = (c: Context): AuthUser | null => {
   return principalToAuthUser(c.get("principal") as RequestPrincipal | null | undefined);
+};
+
+export const getRequestPrincipal = (c: Context): RequestPrincipal | null => {
+  return c.get("principal") as RequestPrincipal | null | undefined ?? null;
 };
 
 export const authzDenied = (c: Context) => {
