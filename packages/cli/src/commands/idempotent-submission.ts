@@ -1,6 +1,6 @@
 import { HttpError } from "@neta-art/cohub";
 
-const RETRYABLE_SUBMISSION_STATUSES = new Set([408, 502, 503, 504]);
+const RETRYABLE_SUBMISSION_STATUSES = new Set([408, 500, 502, 503, 504]);
 
 function isAmbiguousSubmissionError(error: unknown) {
   if (error instanceof TypeError || error instanceof SyntaxError) return true;

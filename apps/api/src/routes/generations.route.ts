@@ -104,6 +104,7 @@ router.post("/", async (c) => {
   }
 
   const clientRequestId = request.clientRequestId?.trim() || null;
+  const meta = applyRequestSourceToMeta(c, request.meta) ?? undefined;
   const requestFingerprint = clientRequestId
     ? createRequestFingerprint({
         spaceId: request.spaceId,
@@ -112,7 +113,7 @@ router.post("/", async (c) => {
         model: request.model,
         content: request.content,
         parameters: request.parameters,
-        meta: request.meta,
+        meta,
       })
     : null;
   const generationJobId = createGenerationTaskJobId({
@@ -160,7 +161,6 @@ router.post("/", async (c) => {
   }
 
   let parameters: Record<string, unknown> | undefined;
-  const meta = applyRequestSourceToMeta(c, request.meta) ?? undefined;
   try {
     const resolved = createGenerationClient({
       models: [declaration],

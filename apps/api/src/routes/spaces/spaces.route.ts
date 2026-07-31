@@ -62,7 +62,7 @@ import {
 import { RUN_COMMAND_TASK_TYPE } from "@cohub/core/commands";
 import { TaskIdempotencyConflictError } from "@cohub/core/tasks";
 import { sanitizePostgresJsonValue } from "@cohub/core/content/sanitize";
-import { assignLabelsToSession, getPinnedSpaceIds, parseLabelRefs, resolveLabelPaths, resolveOrCreateLabelPaths } from "@cohub/core/labels";
+import { assertLabelPathsAllowed, assignLabelsToSession, getPinnedSpaceIds, parseLabelRefs, resolveLabelPaths, resolveOrCreateLabelPaths } from "@cohub/core/labels";
 import { assignSessionSourceSystemLabel } from "@cohub/core/labels/session-source";
 import { hasPermission, getSpaceMemberRole, filterSessionsByPermission, resolvePermissionAccess, asAccountIdentity } from "../../permissions.js";
 import { checkpoints } from "@cohub/db";
@@ -1887,19 +1887,20 @@ router.post("/:id/prompt", async (c) => {
     }, 400);
   }
 
-  let promptLabelIds: string[] = [];
+  let promptLabelPaths: ReturnType<typeof parseLabelRefs> = [];
   try {
-    const labelPaths = parseLabelRefs(body.labelRefs);
-    if (labelPaths.length > 0) {
+    promptLabelPaths = parseLabelRefs(body.labelRefs);
+    if (promptLabelPaths.length > 0) {
       const labelPermissionScope = sessionId ? { spaceId, sessionId } : { spaceId };
       if (!(await hasPermission(user, "space.label.assign", labelPermissionScope))) return authzDenied(c);
-      const resolved = await resolveLabelPaths({ db, spaceId, paths: labelPaths });
+      const resolved = await resolveLabelPaths({ db, spaceId, paths: promptLabelPaths });
       if (resolved.missingPaths.length > 0 && !(await hasPermission(user, "space.label.manage", { spaceId }))) return authzDenied(c);
-      promptLabelIds = (await resolveOrCreateLabelPaths({ db, spaceId, paths: labelPaths, userId: user.uuid })).labelIds;
+      assertLabelPathsAllowed(promptLabelPaths);
     }
   } catch (error) {
     return c.json({ message: error instanceof Error ? error.message : String(error) }, 400);
   }
+  const promptLabelRefs = promptLabelPaths.map((path) => path.join("/"));
 
   const content = body.content;
   const source = resolveSessionSourceFromRequest(c, typeof body.source === "string" ? body.source : null);
@@ -1919,7 +1920,7 @@ router.post("/:id/prompt", async (c) => {
     ...(body.model ? { model: body.model } : {}),
     ...(body.provider ? { provider: body.provider } : {}),
     ...(promptThinkingLevel ? { thinkingLevel: promptThinkingLevel } : {}),
-    ...(promptLabelIds.length > 0 ? { labelIds: promptLabelIds } : {}),
+    ...(promptLabelRefs.length > 0 ? { labelRefs: promptLabelRefs } : {}),
     ...(scheduledAuth ? { auth: scheduledAuth } : {}),
   };
 
@@ -1944,9 +1945,6 @@ router.post("/:id/prompt", async (c) => {
     }
 
     try {
-      if (promptLabelIds.length > 0) {
-        await assignLabelsToSession({ db, spaceId, sessionId, labelIds: promptLabelIds, userId: user.uuid });
-      }
       if (createdPromptSession) {
         const createdPromptSessionId = createdPromptSession.id;
         await assignSessionSourceSystemLabel({ db, spaceId, sessionId: createdPromptSessionId, source: createdPromptSession.source }).then(() =>
@@ -1972,6 +1970,15 @@ router.post("/:id/prompt", async (c) => {
         systemInstructions,
         context: { kind: "public_api", auth: getPromptAuthContext(c, spaceId) },
       });
+      if (promptLabelPaths.length > 0) {
+        const { labelIds } = await resolveOrCreateLabelPaths({
+          db,
+          spaceId,
+          paths: promptLabelPaths,
+          userId: user.uuid,
+        });
+        await assignLabelsToSession({ db, spaceId, sessionId, labelIds, userId: user.uuid });
+      }
       const response = await buildSpacePromptTurnResponse(await getSpaceSessionById(sessionId), turnId);
       if (!response) return c.json({ message: "turn not found" }, 500);
       return c.json(response);
@@ -2031,7 +2038,7 @@ router.post("/:id/prompt", async (c) => {
           model: body.model ?? null,
           provider: body.provider ?? null,
           thinkingLevel: promptThinkingLevel ?? null,
-          labelIds: promptLabelIds,
+          labelRefs: promptLabelRefs,
           schedule: createScheduledPromptScheduleIdentity(promptSchedule),
         })
       : null;
@@ -2076,10 +2083,11 @@ router.post("/:id/prompt", async (c) => {
         accessMode,
         env: promptEnv,
         systemInstructions,
+        source,
         model: body.model ?? null,
         provider: body.provider ?? null,
         thinkingLevel: promptThinkingLevel ?? null,
-        labelIds: promptLabelIds,
+        labelRefs: promptLabelRefs,
         cronExpression: promptSchedule.cronExpression,
         timezone: promptSchedule.timezone,
       })

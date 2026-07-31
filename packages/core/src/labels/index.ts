@@ -17,6 +17,12 @@ const hasControlCharacter = (value: string) => [...value].some((char) => {
   return code <= 0x1f || code === 0x7f;
 });
 
+export function assertLabelPathsAllowed(paths: readonly LabelPath[], source: LabelSource = "user") {
+  if (source !== "user") return;
+  const reserved = paths.find((path) => RESERVED_SYSTEM_ROOT_LABELS.has(path[0].toLowerCase()));
+  if (reserved) throw new Error(`label path "${reserved[0]}" is reserved`);
+}
+
 export function normalizeLabelName(value: unknown): string {
   if (typeof value !== "string") throw new Error("label name must be a string");
   if (hasControlCharacter(value)) throw new Error("label name cannot contain control characters");
@@ -137,11 +143,9 @@ export async function resolveOrCreateLabelPaths(input: {
   source?: LabelSource;
 }) {
   const source = input.source ?? "user";
+  assertLabelPathsAllowed(input.paths, source);
   const labelIds: string[] = [];
   for (const path of input.paths) {
-    if (source === "user" && RESERVED_SYSTEM_ROOT_LABELS.has(path[0].toLowerCase())) {
-      throw new Error(`label path "${path[0]}" is reserved`);
-    }
     const parent = await getOrCreateLabel(input.db, {
       spaceId: input.spaceId,
       name: path[0],

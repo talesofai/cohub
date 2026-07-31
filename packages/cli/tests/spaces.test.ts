@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { Command } from "commander";
+import { HttpError } from "@neta-art/cohub";
 import { registerPrompt, registerSpaces } from "../src/commands/spaces.js";
 import { submitWithIdempotentRetry } from "../src/commands/idempotent-submission.js";
 
@@ -34,4 +35,16 @@ test("ambiguous prompt submission retries the same request once", async () => {
   assert.deepEqual(result, { mode: "immediate" });
   assert.equal(seen.length, 2);
   assert.equal(seen[0], seen[1]);
+});
+
+test("prompt submission retries an internal handoff failure once", async () => {
+  let attempts = 0;
+  const result = await submitWithIdempotentRetry(async () => {
+    attempts += 1;
+    if (attempts === 1) throw new HttpError("queue handoff failed", 500, null);
+    return { mode: "immediate" };
+  }, async () => undefined);
+
+  assert.deepEqual(result, { mode: "immediate" });
+  assert.equal(attempts, 2);
 });

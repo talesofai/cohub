@@ -2,7 +2,7 @@ import type { ContentBlock } from "@cohub/protocol/core";
 import type { GenerationPolicy } from "@cohub/protocol/generation";
 import type { TaskPayload } from "@cohub/protocol/task";
 import { registerTask } from "./registry.js";
-import { assignLabelsToSession } from "@cohub/core/labels";
+import { assignLabelsToSession, parseLabelRefs, resolveOrCreateLabelPaths } from "@cohub/core/labels";
 import { assignSessionSourceSystemLabel } from "@cohub/core/labels/session-source";
 import {
   getPromptAuthScopes,
@@ -50,7 +50,7 @@ function sanitizeTaskPromptAuth(auth: PromptAuthContext | null | undefined, inpu
 const sendMessageHandler = async (job: import("bullmq").Job, context?: { taskRunId: string }) => {
   const payload = job.data as TaskPayload;
   const spaceId = payload.spaceId;
-  const { content, sessionId, title, source: payloadSource, model, provider, thinkingLevel, clientMessageId, generationPolicy, accessMode, intent, labelIds, auth, env, systemInstructions } = (payload.data ?? {}) as {
+  const { content, sessionId, title, source: payloadSource, model, provider, thinkingLevel, clientMessageId, generationPolicy, accessMode, intent, labelIds, labelRefs, auth, env, systemInstructions } = (payload.data ?? {}) as {
     content?: ContentBlock[];
     sessionId?: string;
     title?: string;
@@ -63,6 +63,7 @@ const sendMessageHandler = async (job: import("bullmq").Job, context?: { taskRun
     accessMode?: PromptAccessMode | null;
     intent?: SessionTurnIntent | null;
     labelIds?: string[];
+    labelRefs?: string[];
     auth?: PromptAuthContext | null;
     env?: PromptEnv | null;
     systemInstructions?: string | null;
@@ -95,8 +96,24 @@ const sendMessageHandler = async (job: import("bullmq").Job, context?: { taskRun
   const promptSessionId = targetSessionId ?? createdSession?.id;
   if (!promptSessionId) throw new Error("sessionId is required for send_message task");
 
-  if (labelIds && labelIds.length > 0) {
-    await assignLabelsToSession({ db, spaceId, sessionId: promptSessionId, labelIds, userId });
+  const scheduledLabelIds = [...new Set(labelIds ?? [])];
+  if (labelRefs && labelRefs.length > 0) {
+    const resolved = await resolveOrCreateLabelPaths({
+      db,
+      spaceId,
+      paths: parseLabelRefs(labelRefs),
+      userId,
+    });
+    scheduledLabelIds.push(...resolved.labelIds);
+  }
+  if (scheduledLabelIds.length > 0) {
+    await assignLabelsToSession({
+      db,
+      spaceId,
+      sessionId: promptSessionId,
+      labelIds: [...new Set(scheduledLabelIds)],
+      userId,
+    });
   }
   if (createdSession) {
     await assignSessionSourceSystemLabel({ db, spaceId, sessionId: promptSessionId, source }).then(() =>
