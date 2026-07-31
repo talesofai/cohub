@@ -5,4 +5,5 @@
 
 Add authorized per-turn system instructions to Space prompts. Expose scheduled
 prompt queue synchronization status so clients can distinguish saved schedules
-from schedules that are active in the worker queue.
+from schedules that are active in the worker queue. Add caller-scoped idempotency
+keys for sessionless prompts and media generation submissions.

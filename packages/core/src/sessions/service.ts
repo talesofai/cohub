@@ -162,10 +162,19 @@ export function createSessionServices(input: {
     const userText = deriveMessagePreviewText({ content: userContent }) || null;
     const model = typeof meta.model === "string" && meta.model.trim() ? meta.model.trim() : null;
     const provider = typeof meta.provider === "string" && meta.provider.trim() ? meta.provider.trim() : null;
+    const clientMessageId = typeof meta.clientMessageId === "string" ? meta.clientMessageId.trim() : "";
     const touchedAt = new Date();
-    const { row, spaceId } = await input.db.transaction(async (tx) => {
+    const { row, spaceId, idempotent } = await input.db.transaction(async (tx) => {
       const [sessionRow] = await tx.select({ meta: spaceSessions.meta, spaceId: spaceSessions.spaceId }).from(spaceSessions).where(eq(spaceSessions.id, turnInput.sessionId)).for("update").limit(1);
       if (!sessionRow) throw new Error("session not found");
+      if (clientMessageId) {
+        const [existing] = await tx.select().from(sessionTurns).where(and(
+          eq(sessionTurns.sessionId, turnInput.sessionId),
+          eq(sessionTurns.userUuid, turnInput.userUuid),
+          sql`${sessionTurns.meta} ->> 'clientMessageId' = ${clientMessageId}`,
+        )).limit(1);
+        if (existing) return { row: existing, spaceId: sessionRow.spaceId, idempotent: true };
+      }
       const [seqRow] = await tx.select({ max: sql<number>`coalesce(max(${sessionTurns.sequence}), 0)::int` }).from(sessionTurns).where(eq(sessionTurns.sessionId, turnInput.sessionId));
       const [localSegment] = await tx.select({ fromSequence: sessionTurnSegments.fromSequence }).from(sessionTurnSegments).where(and(
         eq(sessionTurnSegments.sessionId, turnInput.sessionId),
@@ -191,9 +200,19 @@ export function createSessionServices(input: {
         model,
         meta,
       }).returning();
-      return { row, spaceId: sessionRow.spaceId };
+      return { row, spaceId: sessionRow.spaceId, idempotent: false };
     });
     if (!row) throw new Error("failed to create session turn");
+    if (idempotent) {
+      const existingMeta = row.meta && typeof row.meta === "object" && !Array.isArray(row.meta)
+        ? row.meta as Record<string, unknown>
+        : {};
+      return {
+        id: row.id,
+        idempotent: true,
+        userMessageId: typeof existingMeta.userMessageId === "string" ? existingMeta.userMessageId : undefined,
+      };
+    }
     await Promise.resolve(input.onSessionActivityUpdated?.({
       sessionId: turnInput.sessionId,
       changed: ["latestMessageText", "lastMessageAt", "updatedAt"],

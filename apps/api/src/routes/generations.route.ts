@@ -22,10 +22,11 @@ import { loadGenerationDeclaration } from "../generations/declarations.js";
 import { createGenerationTaskRequestSchema } from "../generations/schema.js";
 import { getSpaceSessionById } from "../space-sessions.js";
 import { getSessionTurnById } from "../session-turns.js";
-import { enqueueTask } from "../tasks.js";
+import { enqueueTask, getTaskRunByJobId } from "../tasks.js";
 import { defaultJobRetention } from "@cohub/infra/bullmq";
 import { createLogger } from "@cohub/infra/logging";
 import { applyRequestSourceToMeta } from "../lib/request-source.js";
+import { createGenerationTaskJobId } from "../request-idempotency.js";
 
 
 const logger = createLogger({ serviceName: "cohub-api" });
@@ -105,6 +106,50 @@ router.post("/", async (c) => {
     throw error;
   }
 
+  const clientRequestId = request.clientRequestId?.trim() || null;
+  const generationJobId = createGenerationTaskJobId({
+    userId: user.uuid,
+    clientRequestId,
+    request: {
+      spaceId: request.spaceId,
+      sessionId,
+      turnId,
+      model: request.model,
+      content: request.content,
+      parameters,
+      meta,
+    },
+  });
+  if (generationJobId) {
+    const existingTaskRun = await getTaskRunByJobId(generationJobId);
+    if (existingTaskRun) {
+      if (existingTaskRun.taskType !== GENERATION_TASK_TYPE || existingTaskRun.userUuid !== user.uuid) {
+        return generationError(c, 409, "generation_idempotency_conflict", "Generation idempotency key conflict.");
+      }
+      try {
+        const resumed = await enqueueTask(existingTaskRun.payload, {
+          jobId: generationJobId,
+          attempts: 1,
+          ...defaultJobRetention,
+        });
+        return c.json({
+          taskRunId: resumed.taskRunId,
+          taskType: GENERATION_TASK_TYPE,
+          status: "pending",
+          billing: null,
+        } satisfies CreateGenerationTaskResponse, 202);
+      } catch (error) {
+        logger.error("[generations] failed to recover idempotent generation task", {
+          userId: user.uuid,
+          spaceId: request.spaceId,
+          taskRunId: existingTaskRun.id,
+          error,
+        });
+        return generationError(c, 503, "generation_queue_unavailable", "Generation queue is temporarily unavailable. Please try again later.");
+      }
+    }
+  }
+
   const usageType = resolveGenerationUsageType({
     adapterType: declaration.adapter?.type,
     contentTypes: contentTypesFromBlocks(request.content),
@@ -174,6 +219,7 @@ router.post("/", async (c) => {
         modelDiscount,
       },
     }, {
+      jobId: generationJobId,
       attempts: 1,
       ...defaultJobRetention,
     });

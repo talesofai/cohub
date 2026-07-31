@@ -36,6 +36,7 @@ import {
 import { getSpaceSandboxBySpaceId, markSandboxSpecPendingRestart, recoverSpaceSandbox, resizeSpaceSandboxToSpec } from "../../space-sandboxes.js";
 import {
   createInitialSpaceSession,
+  ensureInitialSpaceSession,
   getSpaceById,
   getSpaceSessionById,
   hydrateSessionParticipantProfiles,
@@ -51,6 +52,7 @@ import { syncSpaceChannelConfigCache, getSpaceChannelsBySpaceId, bindSpaceChanne
 import { fallbackBoundChannelHealth, getChannelHealthMap } from "../../channel-health.js";
 import { createCronJob, enqueueTask } from "../../tasks.js";
 import { cronJobQueueSyncStatus } from "../../cron-job-queue-state.js";
+import { createSessionlessPromptSessionId } from "../../request-idempotency.js";
 import { RUN_COMMAND_TASK_TYPE } from "@cohub/core/commands";
 import { sanitizePostgresJsonValue } from "@cohub/core/content/sanitize";
 import { assignLabelsToSession, getPinnedSpaceIds, parseLabelRefs, resolveLabelPaths, resolveOrCreateLabelPaths } from "@cohub/core/labels";
@@ -1863,7 +1865,14 @@ router.post("/:id/prompt", async (c) => {
   }
 
   const content = body.content;
-  const clientMessageId = body.clientMessageId?.trim() || crypto.randomUUID();
+  if (body.clientMessageId != null && typeof body.clientMessageId !== "string") {
+    return c.json({ message: "clientMessageId must be a string" }, 400);
+  }
+  const requestedClientMessageId = body.clientMessageId?.trim() || null;
+  if (requestedClientMessageId && requestedClientMessageId.length > 255) {
+    return c.json({ message: "clientMessageId must not exceed 255 characters" }, 400);
+  }
+  const clientMessageId = requestedClientMessageId ?? crypto.randomUUID();
   const source = resolveSessionSourceFromRequest(c, typeof body.source === "string" ? body.source : null);
 
   const scheduledAuth = getScheduledPromptAuthContext(c, spaceId, user.uuid);
@@ -1887,16 +1896,21 @@ router.post("/:id/prompt", async (c) => {
 
   if (promptSchedule.mode === "immediate") {
     if (!sessionId) {
-      promptSession = await createInitialSpaceSession({
+      const ensured = await ensureInitialSpaceSession({
         spaceId,
-        sessionId: crypto.randomUUID(),
+        sessionId: createSessionlessPromptSessionId({
+          spaceId,
+          userId: user.uuid,
+          clientMessageId,
+        }),
         userUuid: user.uuid,
         title: body.title ?? null,
         source,
         externalSessionId: null,
         meta: { createdBy: "api_space_prompt" },
       });
-      createdPromptSession = promptSession;
+      promptSession = ensured.session;
+      createdPromptSession = ensured.created ? promptSession : null;
       sessionId = promptSession.id;
     }
 

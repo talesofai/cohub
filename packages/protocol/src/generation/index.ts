@@ -18,6 +18,7 @@ export const GENERATION_BILLING_RETRY_TASK_TYPE = "generation.billing_retry" as 
 
 export type CreateGenerationTaskRequest = {
   spaceId: string;
+  clientRequestId?: string | null;
   sessionId?: string | null;
   turnId?: string | null;
   model: string;

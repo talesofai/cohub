@@ -216,7 +216,11 @@ export type SessionPromptDependencies = {
     userContent: ContentBlock[];
     intent: SessionTurnIntent;
     meta: Record<string, unknown>;
-  }): Promise<{ id: string }>;
+  }): Promise<{
+    id: string;
+    idempotent?: boolean;
+    userMessageId?: string;
+  }>;
   enqueueSpacePrompt(input: {
     spaceId: string;
     sessionId: string;
@@ -412,6 +416,13 @@ const VALID_THINKING_LEVELS = new Set(["off", "minimal", "low", "medium", "high"
   }).catch((error: unknown) => {
     throw new SubmitSessionPromptError("failed to create session turn", error);
   });
+
+  if (turn.idempotent) {
+    if (!turn.userMessageId) {
+      throw new SubmitSessionPromptError("idempotent session turn is missing userMessageId", undefined);
+    }
+    return { turnId: turn.id, userMessageId: turn.userMessageId };
+  }
 
   const turnId = turn.id;
   const meta = {

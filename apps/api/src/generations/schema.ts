@@ -17,6 +17,7 @@ export const generationContentBlockSchema = z.discriminatedUnion("type", [
 
 export const createGenerationTaskRequestSchema = z.object({
   spaceId: z.string().uuid(),
+  clientRequestId: z.string().trim().min(1).max(255).optional().nullable(),
   sessionId: z.string().uuid().optional().nullable(),
   turnId: z.string().uuid().optional().nullable(),
   model: z.string().min(1),

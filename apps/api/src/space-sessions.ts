@@ -221,15 +221,47 @@ export const createInitialSpaceSession = async (input: RegisterSessionInput) => 
     lastMessageId: null,
   }).returning();
   if (!session) throw new Error("Failed to create initial space session");
-  await ensureRootSessionTurnSegment(input.sessionId);
+  await publishCreatedInitialSession(session);
+  return session;
+};
+
+export const ensureInitialSpaceSession = async (input: RegisterSessionInput) => {
+  const userUuid = normalizeRequiredUserUuid(input.userUuid);
+  const [inserted] = await db.insert(spaceSessions).values({
+    id: input.sessionId,
+    spaceId: input.spaceId,
+    userUuid,
+    title: input.title ?? null,
+    source: input.source ?? null,
+    status: "active",
+    externalSessionId: input.externalSessionId ?? null,
+    meta: sanitizePostgresJsonValue(initializeSessionParticipantsMeta(input.meta, userUuid)),
+    lastMessageAt: new Date(),
+    lastMessageId: null,
+  }).onConflictDoNothing({ target: spaceSessions.id }).returning();
+  if (inserted) {
+    await publishCreatedInitialSession(inserted);
+    return { session: inserted, created: true as const };
+  }
+
+  const session = await getSpaceSessionById(input.sessionId);
+  if (!session || session.spaceId !== input.spaceId || session.userUuid !== userUuid) {
+    throw new Error("Initial space session identity conflict");
+  }
+  await ensureRootSessionTurnSegment(session.id);
+  return { session, created: false as const };
+};
+
+async function publishCreatedInitialSession(session: typeof spaceSessions.$inferSelect) {
+  await ensureRootSessionTurnSegment(session.id);
   await dispatchSessionCreated(session).catch((error) => {
     logger.warn("[Realtime] failed to dispatch session.created", error);
   });
-  await assignSessionUserLabelsAndDispatch({ spaceId: input.spaceId, sessionId: session.id, userUuids: [userUuid] }).catch((error) => {
+  if (!session.userUuid) throw new Error("Created initial space session is missing userUuid");
+  await assignSessionUserLabelsAndDispatch({ spaceId: session.spaceId, sessionId: session.id, userUuids: [session.userUuid] }).catch((error) => {
     logger.warn("[SessionUserLabel] failed to assign participant label", error);
   });
-  return session;
-};
+}
 
 export const registerSpaceSession = async (input: RegisterSessionInput) => {
   const space = await getSpaceById(input.spaceId);

@@ -4,7 +4,7 @@ import { enqueueTaskRun } from "@cohub/core/tasks";
 import { and, eq, gt, gte, isNotNull, isNull, lt, ne, or, sql } from "drizzle-orm";
 import { config } from "./config.js";
 import { db } from "./db/index.js";
-import { cronJobs } from "@cohub/db";
+import { cronJobs, taskRuns } from "@cohub/db";
 import type { TaskPayload, TaskScheduleConfig } from "@cohub/protocol/task";
 import { GENERATION_TASK_TYPE } from "@cohub/protocol/generation";
 import { dispatchTaskCreated } from "./realtime-events.js";
@@ -48,6 +48,11 @@ export const enqueueTask = async (
     logger.warn("[Realtime] failed to dispatch task.created", error);
   }),
 });
+
+export const getTaskRunByJobId = async (jobId: string) => {
+  const [taskRun] = await db.select().from(taskRuns).where(eq(taskRuns.jobId, jobId)).limit(1);
+  return taskRun ?? null;
+};
 
 export const createCronJob = async (params: {
   userId: string;
