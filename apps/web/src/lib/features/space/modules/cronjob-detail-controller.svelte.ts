@@ -15,6 +15,7 @@ import { modelsCatalogStore } from "$lib/stores/models-catalog.svelte";
 import { mergeCachedCronJobTaskRuns } from "$lib/stores/task-runs-cache";
 import {
 	applySystemInstructionsUpdate,
+	buildPromptSystemInstructionsInput,
 	buildSendMessagePayload,
 	defaultTimezone,
 	promptTextFromPayload,
@@ -91,6 +92,7 @@ export function createCronjobDetailController(options: {
 	let newExpression = $state("");
 	let newTimezone = $state(defaultTimezone());
 	let newPrompt = $state("");
+	let newSystemInstructions = $state("");
 	let newModel = $state<SelectedModel | null>(null);
 	let newSubmitting = $state(false);
 	let newError = $state("");
@@ -150,6 +152,7 @@ export function createCronjobDetailController(options: {
 		newExpression = "";
 		newTimezone = defaultTimezone();
 		newPrompt = "";
+		newSystemInstructions = "";
 		newModel = firstCatalogModel;
 		newError = "";
 	}
@@ -345,6 +348,7 @@ export function createCronjobDetailController(options: {
 			cronExpression: formExpression,
 			timezone: formTimezone,
 			prompt: formPrompt,
+			systemInstructions: formSystemInstructions,
 		});
 		if (error) {
 			formError = error;
@@ -384,6 +388,7 @@ export function createCronjobDetailController(options: {
 			cronExpression: newExpression,
 			timezone: newTimezone,
 			prompt: newPrompt,
+			systemInstructions: newSystemInstructions,
 		});
 		if (error) {
 			newError = error;
@@ -400,6 +405,7 @@ export function createCronjobDetailController(options: {
 				...(newModel?.thinkingLevel
 					? { thinkingLevel: newModel.thinkingLevel }
 					: {}),
+				...buildPromptSystemInstructionsInput(newSystemInstructions),
 				schedule: {
 					mode: "repeat",
 					cronExpression: newExpression.trim(),
@@ -632,6 +638,12 @@ export function createCronjobDetailController(options: {
 		},
 		set newPrompt(value: string) {
 			newPrompt = value;
+		},
+		get newSystemInstructions() {
+			return newSystemInstructions;
+		},
+		set newSystemInstructions(value: string) {
+			newSystemInstructions = value;
 		},
 		get newModel() {
 			return newModel;

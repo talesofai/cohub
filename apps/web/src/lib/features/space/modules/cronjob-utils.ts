@@ -1,3 +1,4 @@
+import { MAX_PROMPT_SYSTEM_INSTRUCTIONS_LENGTH } from "@cohub/protocol";
 import type { ModelThinkingLevel } from "$lib/model-catalog";
 import { asRecord } from "../space-utils";
 
@@ -120,6 +121,11 @@ export function applySystemInstructionsUpdate(
 	return next;
 }
 
+export function buildPromptSystemInstructionsInput(value: string) {
+	const systemInstructions = value.trim();
+	return systemInstructions ? { systemInstructions } : {};
+}
+
 export function cronjobModelLabel(model: CronjobSelectedModel | null) {
 	if (!model) return "Default model";
 	return model.name?.trim() || model.id;
@@ -134,11 +140,18 @@ export function validateCronjobForm(input: {
 	cronExpression: string;
 	timezone: string;
 	prompt: string;
+	systemInstructions?: string;
 }) {
 	if (!input.title.trim()) return "Title is required";
 	if (!input.cronExpression.trim()) return "Cron expression is required";
 	if (!input.timezone.trim()) return "Timezone is required";
 	if (!input.prompt.trim()) return "Prompt message is required";
+	if (
+		(input.systemInstructions?.trim().length ?? 0) >
+		MAX_PROMPT_SYSTEM_INSTRUCTIONS_LENGTH
+	) {
+		return `Turn instructions must be ${MAX_PROMPT_SYSTEM_INSTRUCTIONS_LENGTH.toLocaleString()} characters or fewer`;
+	}
 	const cronParts = input.cronExpression.trim().split(/\s+/);
 	if (cronParts.length !== 5) {
 		return "Invalid cron expression format. Expected 5 fields, e.g. 0 9 * * *.";

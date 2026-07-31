@@ -172,6 +172,13 @@ function payloadProviderLabel(payload: unknown) {
 								<label class="block text-[10px] font-medium uppercase tracking-wider text-text-tertiary" for="cronjob-prompt">Prompt</label>
 								<textarea id="cronjob-prompt" bind:value={cronjob.newPrompt} rows="8" placeholder="Message content to send on every run…" class="w-full resize-y rounded-[6px] border border-border-subtle bg-bg-input px-3 py-2 text-[13px] leading-6 text-text-primary placeholder:text-text-placeholder transition-colors focus:border-brand/50 focus:outline-none"></textarea>
 							</div>
+							<div class="space-y-1.5">
+								<label class="block text-[10px] font-medium uppercase tracking-wider text-text-tertiary" for="cronjob-system-instructions">Turn instructions</label>
+								<textarea id="cronjob-system-instructions" bind:value={cronjob.newSystemInstructions} rows="4" maxlength={MAX_PROMPT_SYSTEM_INSTRUCTIONS_LENGTH} placeholder="Optional" class="w-full resize-y rounded-[6px] border border-border-subtle bg-bg-input px-3 py-2 text-[13px] leading-6 text-text-primary placeholder:text-text-placeholder transition-colors focus:border-brand/50 focus:outline-none"></textarea>
+								{#if cronjob.newSystemInstructions.length >= MAX_PROMPT_SYSTEM_INSTRUCTIONS_LENGTH - 1_000}
+									<div class="text-right text-[11px] tabular-nums text-text-placeholder">{cronjob.newSystemInstructions.length.toLocaleString()} / {MAX_PROMPT_SYSTEM_INSTRUCTIONS_LENGTH.toLocaleString()}</div>
+								{/if}
+							</div>
 						</div>
 						<aside class="space-y-5 text-[13px]">
 							<div class="space-y-1.5">
