@@ -1041,7 +1041,7 @@ async function main() {
           } catch (error) {
             if (error instanceof WsClientInputError) throw error;
             const payload = message.payload ?? {};
-            const isBillingError = error instanceof InternalPromptError;
+            const isPromptError = error instanceof InternalPromptError;
             sendWsEnvelope(socket, buildRealtimeEnvelope({
               domain: "session",
               type: "session.request.error",
@@ -1049,10 +1049,10 @@ async function main() {
               spaceId: typeof payload.spaceId === "string" ? payload.spaceId : null,
               sessionId: typeof payload.sessionId === "string" ? payload.sessionId : null,
               payload: {
-                code: isBillingError ? error.code : "SUBMIT_FAILED",
+                code: isPromptError ? error.code : "SUBMIT_FAILED",
                 message: error instanceof Error ? error.message : String(error),
                 clientMessageId: typeof payload.clientMessageId === "string" ? payload.clientMessageId : null,
-                billing: isBillingError ? error.billing : null,
+                billing: isPromptError ? error.billing : null,
               },
             }));
           }

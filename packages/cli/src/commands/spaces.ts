@@ -3,7 +3,7 @@ import { createReadStream } from "node:fs";
 import { readdir, stat } from "node:fs/promises";
 import { basename, dirname, relative, resolve, sep } from "node:path";
 import { resolveCohubEnvironment } from "@neta-art/cohub";
-import type { ContentBlock, LabelListItem, LabelResourceType } from "@neta-art/cohub";
+import type { ContentBlock, CreateSpacePromptInput, LabelListItem, LabelResourceType } from "@neta-art/cohub";
 import type { Command } from "commander";
 import { uploadAvatarAsset, uploadChatImageAsset } from "../avatar.js";
 import { createClient } from "../client.js";
@@ -11,6 +11,7 @@ import { table, json as outJson, jsonRequested, ok, warn, error, handleHttp } fr
 import { resolveSpace } from "../space.js";
 import { registerSpaceCommerce } from "./space-commerce.js";
 import { registerSpaceTurns } from "./space-turns.js";
+import { submitWithIdempotentRetry } from "./idempotent-submission.js";
 
 type ModOptions = {
   json?: boolean;
@@ -40,6 +41,7 @@ type PromptOptions = {
   label?: string[];
   env?: string[];
   systemInstructions?: string;
+  clientMessageId?: string;
   image?: string[];
   json?: boolean;
 };
@@ -292,7 +294,11 @@ async function sendPrompt(command: Command, words: string[], opts: PromptOptions
       ...(content ? [{ type: "text" as const, text: content }] : []),
       ...imageBlocks,
     ];
-    const result = await client.space(spaceId).prompt({
+    const clientMessageId = opts.clientMessageId?.trim() || randomUUID();
+    if (clientMessageId.length > 255) {
+      return error("Invalid client message ID", "--client-message-id must not exceed 255 characters");
+    }
+    const request = {
       sessionId,
       title: sessionId === opts.session ? opts.title : undefined,
       content: promptContent,
@@ -303,9 +309,11 @@ async function sendPrompt(command: Command, words: string[], opts: PromptOptions
       intent: opts.steer ? "steer" : undefined,
       env: parseEnvOptions(opts.env),
       systemInstructions: opts.systemInstructions,
+      clientMessageId,
       schedule,
       labelRefs: opts.label?.length ? opts.label : undefined,
-    });
+    } satisfies CreateSpacePromptInput;
+    const result = await submitWithIdempotentRetry(() => client.space(spaceId).prompt(request));
     if (jsonRequested(opts)) return outJson(result);
     if (result.mode === "immediate") return ok(`Prompt sent — sessionId: ${result.session.id}, turnId: ${result.turn.id}`);
     if (result.mode === "repeat") {
@@ -418,6 +426,7 @@ export function registerPrompt(program: Command): void {
     .option("--label <ref>", "Attach a label, e.g. Bug or Area/Frontend", collectOption, [])
     .option("--env <key=value>", "Set an environment variable for this turn", collectOption, [])
     .option("--system-instructions <text>", "Apply system instructions to this turn only")
+    .option("--client-message-id <id>", "Reuse an idempotency key when safely retrying this exact prompt")
     .option("--image <path>", "Attach an image", collectOption, [])
     .option("--json", "Output as JSON")
     .action((words: string[], opts: PromptOptions) => sendPrompt(program, words, opts));
@@ -645,6 +654,7 @@ export function registerSpaces(program: Command): void {
     .option("--label <ref>", "Attach a label, e.g. Bug or Area/Frontend", collectOption, [])
     .option("--env <key=value>", "Set an environment variable for this turn", collectOption, [])
     .option("--system-instructions <text>", "Apply system instructions to this turn only")
+    .option("--client-message-id <id>", "Reuse an idempotency key when safely retrying this exact prompt")
     .option("--image <path>", "Attach an image", collectOption, [])
     .option("--json", "Output as JSON")
     .action((words: string[], opts: PromptOptions) => sendPrompt(spacesCmd, words, opts));

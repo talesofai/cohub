@@ -41,6 +41,14 @@ test("invalid schedules fail before callers perform writes", () => {
   );
   assert.throws(() => validatePromptSchedule({ mode: "at", sendAt: "2026-07-30T00:02:00" }, now), /timezone/);
   assert.throws(() => validatePromptSchedule({ mode: "at", sendAt: "2026-07-29T23:59:00Z" }, now), /future/);
+  assert.deepEqual(
+    validatePromptSchedule(
+      { mode: "at", sendAt: "2026-07-29T23:59:00Z" },
+      now,
+      { allowPastAt: true },
+    ),
+    { mode: "at", scheduledAt: new Date("2026-07-29T23:59:00Z") },
+  );
   assert.throws(
     () => validatePromptSchedule({ mode: "repeat", cronExpression: "0 9 * *", timezone: "Asia/Shanghai" }, now),
     /5 fields/,

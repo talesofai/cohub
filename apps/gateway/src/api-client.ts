@@ -183,7 +183,7 @@ export const authorizeRealtimeRooms = async (input: {
   };
 };
 
-/** Carries a standard billing error body from the internal prompt API. */
+/** Carries a structured error body from the internal prompt API. */
 export class InternalPromptError extends Error {
   constructor(
     message: string,
@@ -199,9 +199,18 @@ function isRecord(value: unknown): value is Record<string, unknown> {
   return !!value && typeof value === "object" && !Array.isArray(value);
 }
 
-function isBillingErrorBody(value: unknown): value is { code: string; message?: string; billing: BillingPayload } {
+function isInternalPromptErrorBody(value: unknown): value is { code: string; message?: string; billing?: BillingPayload } {
   if (!isRecord(value)) return false;
-  return typeof value.code === "string" && isRecord(value.billing);
+  return typeof value.code === "string" && (value.billing === undefined || isRecord(value.billing));
+}
+
+export function internalPromptErrorFromBody(value: unknown): InternalPromptError | null {
+  if (!isInternalPromptErrorBody(value)) return null;
+  return new InternalPromptError(
+    value.message ?? "prompt blocked",
+    value.code,
+    value.billing ?? null,
+  );
 }
 
 export const submitInternalSessionPrompt = async (input: {
@@ -242,9 +251,8 @@ export const submitInternalSessionPrompt = async (input: {
 
   if (!response.ok) {
     const body = await parseJson<unknown>(response);
-    if (isBillingErrorBody(body)) {
-      throw new InternalPromptError(body.message ?? "prompt blocked", body.code, body.billing);
-    }
+    const promptError = internalPromptErrorFromBody(body);
+    if (promptError) throw promptError;
     const message = isRecord(body) && typeof body.message === "string" ? body.message : null;
     throw new Error(message ?? `Internal prompt submit failed ${response.status}`);
   }

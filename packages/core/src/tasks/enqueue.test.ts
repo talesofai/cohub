@@ -213,3 +213,44 @@ test("stable task retries return the scheduled time that won the database insert
   assert.equal(first.scheduledAt?.toISOString(), firstScheduledAt.toISOString());
   assert.equal(retry.scheduledAt?.toISOString(), firstScheduledAt.toISOString());
 });
+
+test("failed stable task recovery uses the persisted schedule instead of restarting a relative delay", async () => {
+  const taskDb = createTaskDb();
+  const firstScheduledAt = new Date(Date.now() + 60_000);
+  const queuedDelays: number[] = [];
+  let attempts = 0;
+  const enqueue = async (_name: string, _payload: TaskPayload, options: { delay?: number }) => {
+    attempts += 1;
+    queuedDelays.push(options.delay ?? 0);
+    if (attempts === 1) throw new Error("queue unavailable");
+    return { id: "scheduled-prompt-recovery" };
+  };
+
+  await assert.rejects(enqueueTaskRun({
+    db: taskDb.db,
+    payload,
+    options: {
+      jobId: "scheduled-prompt-recovery",
+      idempotencyFingerprint: "fingerprint-a",
+      scheduledAt: firstScheduledAt,
+      delay: 60_000,
+    },
+    enqueue,
+  }), /queue unavailable/);
+
+  await enqueueTaskRun({
+    db: taskDb.db,
+    payload,
+    options: {
+      jobId: "scheduled-prompt-recovery",
+      idempotencyFingerprint: "fingerprint-a",
+      scheduledAt: new Date(Date.now() + 120_000),
+      delay: 120_000,
+    },
+    enqueue,
+  });
+
+  assert.equal(queuedDelays.length, 2);
+  assert.ok((queuedDelays[1] ?? 0) <= 60_000);
+  assert.ok((queuedDelays[1] ?? 0) > 0);
+});

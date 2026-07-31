@@ -537,12 +537,12 @@ export function createCronjobDetailController(options: {
 			});
 			if (response.mode !== "repeat")
 				throw new Error("Failed to create scheduled prompt");
-			newRequestFingerprint = null;
-			newClientMessageId = null;
 			notifyCronjobsUpdated();
 			await goto(
 				buildSpaceCronjobRoute(options.getSpaceId(), response.cronJobId),
 			);
+			newRequestFingerprint = null;
+			newClientMessageId = null;
 		} catch (error) {
 			newError =
 				error instanceof Error

@@ -13,6 +13,7 @@ test("scheduled prompt client projections omit private system instructions", () 
       content: [{ type: "text", text: "Create a prompt" }],
       systemInstructions: "Private cron instructions",
       auth: { type: "delegated_prompt", scopes: ["session.prompt.fullaccess"] },
+      env: { API_KEY: "cron-secret" },
     },
   };
   const taskRun = {
@@ -23,6 +24,7 @@ test("scheduled prompt client projections omit private system instructions", () 
         content: [{ type: "text", text: "Create a prompt" }],
         systemInstructions: "Private task instructions",
         auth: { type: "delegated_prompt", scopes: ["session.prompt.fullaccess"] },
+        env: { API_KEY: "task-secret" },
       },
     },
   };
@@ -57,6 +59,7 @@ test("scheduled prompt updates preserve omitted private instructions", () => {
       content: [{ type: "text", text: "Before" }],
       systemInstructions: "Private cron instructions",
       auth: { type: "delegated_prompt", scopes: ["session.prompt.fullaccess"] },
+      env: { API_KEY: "cron-secret" },
     },
     nextPayload: { content: [{ type: "text", text: "After" }] },
   });
@@ -65,6 +68,7 @@ test("scheduled prompt updates preserve omitted private instructions", () => {
     content: [{ type: "text", text: "After" }],
     systemInstructions: "Private cron instructions",
     auth: { type: "delegated_prompt", scopes: ["session.prompt.fullaccess"] },
+    env: { API_KEY: "cron-secret" },
   });
 });
 

@@ -45,6 +45,7 @@ function getExecutionContextProfile(value: unknown) {
         workScopes: normalizedStringList(auth.workScopes),
         viewerScopes: normalizedStringList(auth.viewerScopes),
         workViewerGrantId: auth.workViewerGrantId ?? null,
+        exp: typeof auth.exp === "number" && Number.isFinite(auth.exp) ? auth.exp : null,
       };
   return {
     auth: authProfile,

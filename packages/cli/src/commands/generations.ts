@@ -3,7 +3,6 @@ import { basename, dirname, extname, join } from "node:path";
 import type { Command } from "commander";
 import {
   GenerationPolicyError,
-  HttpError,
   assertGenerationRequestAllowedByPolicy,
   parseGenerationPolicyFromEnv,
   type GenerationContentBlock,
@@ -11,6 +10,7 @@ import {
 import { createClient } from "../client.js";
 import { resolveSpace } from "../space.js";
 import { json as outJson, jsonRequested, ok, error, handleHttp, spinner } from "../output.js";
+import { submitWithIdempotentRetry } from "./idempotent-submission.js";
 
 type GenerationSource =
   | { type: "url"; url: string }
@@ -28,26 +28,7 @@ const rolesByMediaType: Record<MediaInputType, ReadonlySet<string>> = {
 };
 
 const mediaRoles = new Set([...frameMediaRoles, ...referenceMediaRoles]);
-const RETRYABLE_SUBMISSION_STATUSES = new Set([408, 502, 503, 504]);
-
-function isAmbiguousGenerationSubmissionError(error: unknown) {
-  if (error instanceof TypeError || error instanceof SyntaxError) return true;
-  return error instanceof HttpError && RETRYABLE_SUBMISSION_STATUSES.has(error.status);
-}
-
-export async function createGenerationWithRetry<T>(
-  create: () => Promise<T>,
-  wait: (delayMs: number) => Promise<void> = (delayMs) =>
-    new Promise((resolve) => setTimeout(resolve, delayMs)),
-) {
-  try {
-    return await create();
-  } catch (error) {
-    if (!isAmbiguousGenerationSubmissionError(error)) throw error;
-    await wait(150);
-    return create();
-  }
-}
+export const createGenerationWithRetry = submitWithIdempotentRetry;
 
 const mimeByExt: Record<string, string> = {
   ".png": "image/png",

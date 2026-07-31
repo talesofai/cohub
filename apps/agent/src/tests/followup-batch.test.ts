@@ -80,6 +80,29 @@ test("followup batches ignore websocket tracing identity", () => {
   assert.deepEqual(getMergeableFollowupPrefix(queued).map(({ id }) => id), ["1", "2"]);
 });
 
+test("followup batches never cross delegated authorization expiry boundaries", () => {
+  const context = (exp: number, delegatedAt: string) => ({
+    kind: "websocket",
+    auth: {
+      type: "delegated_prompt",
+      source: "work_session",
+      actorUserId: "user-1",
+      spaceId: "space-1",
+      scopes: ["space.read"],
+      exp,
+      delegatedAt,
+    },
+  });
+  const queued = [
+    turn("1", "A", { meta: { context: context(4_000_000_000, "first") } }),
+    turn("2", "A", { meta: { context: context(4_000_000_001, "second") } }),
+    turn("3", "A", { meta: { context: context(4_000_000_001, "third") } }),
+  ];
+
+  assert.deepEqual(getMergeableFollowupPrefix(queued).map(({ id }) => id), ["1"]);
+  assert.deepEqual(getMergeableFollowupPrefix(queued.slice(1)).map(({ id }) => id), ["2", "3"]);
+});
+
 test("followup batches keep space hook environments isolated", () => {
   const queued = [
     turn("1", "A", { meta: { context: { kind: "space_hook", env: { COHUB_HOOK_EVENT: "one" } } } }),

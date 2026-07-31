@@ -33,6 +33,13 @@ test("client prompt metadata omits private prompt fields without mutating stored
   const stored = {
     systemInstructions: "Do not expose this instruction",
     requestFingerprint: "internal-fingerprint",
+    env: { API_KEY: "secret" },
+    context: {
+      kind: "public_api",
+      requestId: "request_1",
+      auth: { scopes: ["session.prompt.fullaccess"] },
+      env: { HOOK_SECRET: "secret" },
+    },
     clientMessageId: "message_1",
     billing: { status: "allowed_with_debt" },
   };
@@ -40,10 +47,14 @@ test("client prompt metadata omits private prompt fields without mutating stored
   assert.deepEqual(sanitizePromptMetaForClient(stored), {
     clientMessageId: "message_1",
     billing: { status: "allowed_with_debt" },
+    context: { kind: "public_api", requestId: "request_1" },
   });
   assert.equal(stored.systemInstructions, "Do not expose this instruction");
   assert.equal(stored.requestFingerprint, "internal-fingerprint");
+  assert.deepEqual(stored.env, { API_KEY: "secret" });
+  assert.deepEqual(stored.context.auth, { scopes: ["session.prompt.fullaccess"] });
   assert.equal(sanitizePromptMetaForClient({ systemInstructions: "private" }), null);
+  assert.equal(sanitizePromptMetaForClient({ context: { auth: { scopes: [] } } }), null);
   assert.equal(sanitizePromptMetaForClient(null), null);
   assert.equal(sanitizePromptMetaForClient([]), null);
 });

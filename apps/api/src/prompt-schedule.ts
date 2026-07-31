@@ -33,7 +33,7 @@ const validateTimezone = (timezone: string) => {
   }
 };
 
-const parseScheduledAt = (sendAt: string, now: number) => {
+const parseScheduledAt = (sendAt: string, now: number, allowPast: boolean) => {
   const trimmed = sendAt.trim();
   if (!hasExplicitTimezone(trimmed)) {
     throw new Error("sendAt must include timezone, e.g. 2026-05-09T10:00:00+08:00 or 2026-05-09T02:00:00Z");
@@ -42,7 +42,7 @@ const parseScheduledAt = (sendAt: string, now: number) => {
   if (Number.isNaN(scheduledAt.getTime())) {
     throw new Error("sendAt must be a valid ISO 8601 datetime, e.g. 2026-05-09T10:00:00+08:00");
   }
-  if (scheduledAt.getTime() <= now) throw new Error("sendAt must be in the future");
+  if (!allowPast && scheduledAt.getTime() <= now) throw new Error("sendAt must be in the future");
   return scheduledAt;
 };
 
@@ -67,6 +67,7 @@ const validateRepeatSchedule = (input: { cronExpression: string; timezone: strin
 export function validatePromptSchedule(
   value: unknown,
   now = Date.now(),
+  options: { allowPastAt?: boolean } = {},
 ): ValidatedPromptSchedule {
   if (value === null || value === undefined) return { mode: "immediate" };
   if (!isRecord(value)) throw new Error("schedule must be an object");
@@ -97,7 +98,7 @@ export function validatePromptSchedule(
     if (typeof schedule.sendAt !== "string" || !schedule.sendAt.trim()) {
       throw new Error("sendAt is required, e.g. 2026-05-09T10:00:00+08:00");
     }
-    return { mode: "at", scheduledAt: parseScheduledAt(schedule.sendAt, now) };
+    return { mode: "at", scheduledAt: parseScheduledAt(schedule.sendAt, now, options.allowPastAt === true) };
   }
   if (schedule.mode !== "repeat") {
     throw new Error("schedule.mode must be one of: immediate, delay, at, repeat");

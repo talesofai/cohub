@@ -87,8 +87,12 @@ export async function enqueueTaskRun<Job = unknown>(input: EnqueueTaskRunInput<J
   try {
     // A conflicting stable job id always resumes the payload that won the DB insert.
     // Enqueuing the caller's payload here would let a reused idempotency key mutate work.
+    const persistedDelay = !insertedTaskRun && taskRun.scheduledAt
+      ? Math.max(0, taskRun.scheduledAt.getTime() - Date.now())
+      : null;
     const job = await input.enqueue(taskRun.payload.type, taskRun.payload, {
       ...jobOptions,
+      ...(persistedDelay === null ? {} : { delay: persistedDelay }),
       jobId: queueJobId,
     });
 

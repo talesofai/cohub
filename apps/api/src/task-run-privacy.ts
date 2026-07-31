@@ -21,25 +21,20 @@ function sanitizeScheduledPromptPayload(payload: unknown) {
 
   let sanitized = payload;
   let hasSystemInstructions = false;
-  if (Object.hasOwn(sanitized, "systemInstructions")) {
-    hasSystemInstructions = true;
-    sanitized = { ...sanitized };
-    delete sanitized.systemInstructions;
-  }
-  if (Object.hasOwn(sanitized, "auth")) {
+  const privateKeys = ["systemInstructions", "auth", "env"] as const;
+  for (const key of privateKeys) {
+    if (!Object.hasOwn(sanitized, key)) continue;
+    if (key === "systemInstructions") hasSystemInstructions = true;
     sanitized = sanitized === payload ? { ...sanitized } : sanitized;
-    delete sanitized.auth;
+    delete sanitized[key];
   }
   if (isRecord(sanitized.data)) {
     const data = { ...sanitized.data };
     let changed = false;
-    if (Object.hasOwn(data, "systemInstructions")) {
-      hasSystemInstructions = true;
-      delete data.systemInstructions;
-      changed = true;
-    }
-    if (Object.hasOwn(data, "auth")) {
-      delete data.auth;
+    for (const key of privateKeys) {
+      if (!Object.hasOwn(data, key)) continue;
+      if (key === "systemInstructions") hasSystemInstructions = true;
+      delete data[key];
       changed = true;
     }
     if (changed) sanitized = { ...sanitized, data };
@@ -75,6 +70,13 @@ export function prepareScheduledPromptPayloadUpdate(input: {
   }
   if (isRecord(input.currentPayload) && Object.hasOwn(input.currentPayload, "auth")) {
     next.auth = input.currentPayload.auth;
+  }
+  if (
+    !Object.hasOwn(next, "env")
+    && isRecord(input.currentPayload)
+    && Object.hasOwn(input.currentPayload, "env")
+  ) {
+    next.env = input.currentPayload.env;
   }
   return next;
 }

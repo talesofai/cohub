@@ -29,10 +29,28 @@ export function sanitizePromptMetaForClient(
   if (!value || typeof value !== "object" || Array.isArray(value)) return null;
 
   const meta = value as Record<string, unknown>;
-  if (!Object.hasOwn(meta, "systemInstructions") && !Object.hasOwn(meta, "requestFingerprint")) return meta;
-
-  const publicMeta = { ...meta };
+  let publicMeta = meta;
+  if (
+    Object.hasOwn(meta, "systemInstructions")
+    || Object.hasOwn(meta, "requestFingerprint")
+    || Object.hasOwn(meta, "env")
+  ) {
+    publicMeta = { ...meta };
+  }
   delete publicMeta.systemInstructions;
   delete publicMeta.requestFingerprint;
+  delete publicMeta.env;
+
+  if (publicMeta.context && typeof publicMeta.context === "object" && !Array.isArray(publicMeta.context)) {
+    const context = publicMeta.context as Record<string, unknown>;
+    if (Object.hasOwn(context, "auth") || Object.hasOwn(context, "env")) {
+      const publicContext = { ...context };
+      delete publicContext.auth;
+      delete publicContext.env;
+      if (publicMeta === meta) publicMeta = { ...meta };
+      if (Object.keys(publicContext).length > 0) publicMeta.context = publicContext;
+      else delete publicMeta.context;
+    }
+  }
   return Object.keys(publicMeta).length > 0 ? publicMeta : null;
 }

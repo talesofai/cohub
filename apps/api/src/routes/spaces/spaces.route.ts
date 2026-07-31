@@ -1847,9 +1847,38 @@ router.post("/:id/prompt", async (c) => {
     throw error;
   }
 
+  if (body.clientMessageId != null && typeof body.clientMessageId !== "string") {
+    return c.json({ message: "clientMessageId must be a string" }, 400);
+  }
+  const requestedClientMessageId = body.clientMessageId?.trim() || null;
+  if (requestedClientMessageId && requestedClientMessageId.length > 255) {
+    return c.json({ message: "clientMessageId must not exceed 255 characters" }, 400);
+  }
+  const clientMessageId = requestedClientMessageId ?? crypto.randomUUID();
+
+  const pastAtRecoveryJobId = body.schedule?.mode === "at" && requestedClientMessageId
+    ? createScheduledPromptTaskJobId({
+        userId: user.uuid,
+        spaceId,
+        sessionId,
+        clientMessageId: requestedClientMessageId,
+      })
+    : null;
+  const [pastAtRecoveryTask] = pastAtRecoveryJobId
+    ? await db
+        .select({ id: taskRuns.id })
+        .from(taskRuns)
+        .where(eq(taskRuns.jobId, pastAtRecoveryJobId))
+        .limit(1)
+    : [];
+
   let promptSchedule: ValidatedPromptSchedule;
   try {
-    promptSchedule = validatePromptSchedule(body.schedule);
+    promptSchedule = validatePromptSchedule(
+      body.schedule,
+      Date.now(),
+      { allowPastAt: Boolean(pastAtRecoveryTask) },
+    );
   } catch (error) {
     return c.json({
       message: error instanceof Error
@@ -1873,14 +1902,6 @@ router.post("/:id/prompt", async (c) => {
   }
 
   const content = body.content;
-  if (body.clientMessageId != null && typeof body.clientMessageId !== "string") {
-    return c.json({ message: "clientMessageId must be a string" }, 400);
-  }
-  const requestedClientMessageId = body.clientMessageId?.trim() || null;
-  if (requestedClientMessageId && requestedClientMessageId.length > 255) {
-    return c.json({ message: "clientMessageId must not exceed 255 characters" }, 400);
-  }
-  const clientMessageId = requestedClientMessageId ?? crypto.randomUUID();
   const source = resolveSessionSourceFromRequest(c, typeof body.source === "string" ? body.source : null);
 
   const scheduledAuth = getScheduledPromptAuthContext(c, spaceId, user.uuid);
