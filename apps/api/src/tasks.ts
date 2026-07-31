@@ -1,7 +1,7 @@
 import { COHUB_TASKS_QUEUE, createBullmqQueue, defaultJobRetention } from "@cohub/infra/bullmq";
 import type { JobsOptions } from "bullmq";
 import { enqueueTaskRun } from "@cohub/core/tasks";
-import { and, eq, gt, gte, isNull, lt, ne, sql } from "drizzle-orm";
+import { and, eq, gt, gte, isNotNull, isNull, lt, ne, or, sql } from "drizzle-orm";
 import { config } from "./config.js";
 import { db } from "./db/index.js";
 import { cronJobs } from "@cohub/db";
@@ -350,8 +350,10 @@ export async function reconcilePendingCronJobQueues(limit = 100) {
 }
 
 const CRON_JOB_DRIFT_LEASE_KEY = "cohub:cron-jobs:drift-scan:lease";
-const CRON_JOB_DRIFT_CURSOR_KEY = "cohub:cron-jobs:drift-scan:cursor";
+const CRON_JOB_ACTIVE_DRIFT_CURSOR_KEY = "cohub:cron-jobs:drift-scan:active-cursor";
+const CRON_JOB_INACTIVE_DRIFT_CURSOR_KEY = "cohub:cron-jobs:drift-scan:inactive-cursor";
 const CRON_JOB_DRIFT_LEASE_MS = 4 * 60_000;
+const CRON_JOB_ACTIVE_DRIFT_BUDGET_MS = 2 * 60_000;
 
 async function markCronJobQueuePending(
   candidate: Pick<CronJobRow, "id" | "scheduleVersion">,
@@ -368,33 +370,30 @@ async function markCronJobQueuePending(
   return pending ?? null;
 }
 
-export async function reconcileCronJobQueueDrift(limit = 100) {
-  const acquired = await redisCommandClient.set(
-    CRON_JOB_DRIFT_LEASE_KEY,
-    `${process.pid}:${Date.now()}`,
-    "PX",
-    CRON_JOB_DRIFT_LEASE_MS,
-    "NX",
-  );
-  if (acquired !== "OK") return { checked: 0, drifted: 0, failed: 0, skipped: true };
-
-  const cursor = await redisCommandClient.get(CRON_JOB_DRIFT_CURSOR_KEY);
-  const conditions = [
-    eq(cronJobs.queueSyncedVersion, cronJobs.scheduleVersion),
-  ];
-  if (cursor) conditions.push(gt(cronJobs.id, cursor));
-  const candidates = await db
+async function loadCronJobDriftCandidates(
+  scope: "active" | "inactive",
+  cursor: string | null,
+  limit: number,
+) {
+  const activityCondition = scope === "active"
+    ? and(eq(cronJobs.enabled, true), isNull(cronJobs.deletedAt))
+    : or(eq(cronJobs.enabled, false), isNotNull(cronJobs.deletedAt));
+  return await db
     .select()
     .from(cronJobs)
-    .where(and(...conditions))
+    .where(and(
+      activityCondition,
+      eq(cronJobs.queueSyncedVersion, cronJobs.scheduleVersion),
+      cursor ? gt(cronJobs.id, cursor) : undefined,
+    ))
     .orderBy(cronJobs.id)
     .limit(limit);
+}
 
-  const queueIndex = indexCronJobQueueEntries(
-    candidates.length > 0
-      ? await taskQueue.getRepeatableJobs(0, -1, true)
-      : [],
-  );
+async function reconcileCronJobDriftCandidates(
+  candidates: CronJobRow[],
+  queueIndex: CronJobQueueIndex,
+) {
   const drifted = candidates.filter(
     (job) => !isCronJobQueueStateCurrent(job, queueIndex),
   );
@@ -412,19 +411,89 @@ export async function reconcileCronJobQueueDrift(limit = 100) {
       logCronJobQueueSyncFailure(candidate.id)(error);
     }
   }
+  return { drifted: drifted.length, failed };
+}
 
+async function updateCronJobDriftCursor(
+  cursorKey: string,
+  candidates: CronJobRow[],
+  limit: number,
+) {
   const lastCandidate = candidates.at(-1);
   if (lastCandidate && candidates.length === limit) {
-    await redisCommandClient.set(CRON_JOB_DRIFT_CURSOR_KEY, lastCandidate.id);
-  } else {
-    await redisCommandClient.del(CRON_JOB_DRIFT_CURSOR_KEY);
+    await redisCommandClient.set(cursorKey, lastCandidate.id);
+    return lastCandidate.id;
   }
-  return {
-    checked: candidates.length,
-    drifted: drifted.length,
-    failed,
-    skipped: false,
+  await redisCommandClient.del(cursorKey);
+  return null;
+}
+
+export async function reconcileCronJobQueueDrift(limit = 100) {
+  const acquired = await redisCommandClient.set(
+    CRON_JOB_DRIFT_LEASE_KEY,
+    `${process.pid}:${Date.now()}`,
+    "PX",
+    CRON_JOB_DRIFT_LEASE_MS,
+    "NX",
+  );
+  if (acquired !== "OK") return { checked: 0, drifted: 0, failed: 0, skipped: true };
+  if (limit <= 0) return { checked: 0, drifted: 0, failed: 0, skipped: false };
+
+  let checked = 0;
+  let drifted = 0;
+  let failed = 0;
+  let queueIndex: CronJobQueueIndex | null = null;
+  const getQueueIndex = async () => {
+    queueIndex ??= indexCronJobQueueEntries(
+      await taskQueue.getRepeatableJobs(0, -1, true),
+    );
+    return queueIndex;
   };
+
+  let activeCursor = await redisCommandClient.get(CRON_JOB_ACTIVE_DRIFT_CURSOR_KEY);
+  const activeDeadline = Date.now() + CRON_JOB_ACTIVE_DRIFT_BUDGET_MS;
+  do {
+    const candidates = await loadCronJobDriftCandidates("active", activeCursor, limit);
+    checked += candidates.length;
+    if (candidates.length > 0) {
+      const result = await reconcileCronJobDriftCandidates(
+        candidates,
+        await getQueueIndex(),
+      );
+      drifted += result.drifted;
+      failed += result.failed;
+    }
+    activeCursor = await updateCronJobDriftCursor(
+      CRON_JOB_ACTIVE_DRIFT_CURSOR_KEY,
+      candidates,
+      limit,
+    );
+  } while (activeCursor && Date.now() < activeDeadline);
+
+  const inactiveCursor = await redisCommandClient.get(
+    CRON_JOB_INACTIVE_DRIFT_CURSOR_KEY,
+  );
+  const inactiveCandidates = await loadCronJobDriftCandidates(
+    "inactive",
+    inactiveCursor,
+    limit,
+  );
+  checked += inactiveCandidates.length;
+  if (inactiveCandidates.length > 0) {
+    const result = await reconcileCronJobDriftCandidates(
+      inactiveCandidates,
+      await getQueueIndex(),
+    );
+    drifted += result.drifted;
+    failed += result.failed;
+  }
+  await updateCronJobDriftCursor(
+    CRON_JOB_INACTIVE_DRIFT_CURSOR_KEY,
+    inactiveCandidates,
+    limit,
+  );
+
+  return { checked, drifted, failed, skipped: false };
 }
 
 export function startCronJobQueueReconciler(
