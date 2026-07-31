@@ -121,14 +121,19 @@ export function createSessionServices(input: {
     });
   }
 
-  async function registerCronjobSession(spaceId: string, options: { source: string; title?: string | null; userUuid: string }) {
+  async function registerCronjobSession(spaceId: string, options: {
+    sessionId?: string | null;
+    source: string;
+    title?: string | null;
+    userUuid: string;
+  }) {
     const userUuid = options.userUuid.trim();
     if (!userUuid) throw new Error("userUuid is required");
     const [space] = await input.db.select({ id: spaces.id }).from(spaces).where(eq(spaces.id, spaceId)).limit(1);
     if (!space) throw new Error("space not found");
 
-    const sessionId = randomUUID();
-    const [session] = await input.db.insert(spaceSessions).values({
+    const sessionId = options.sessionId?.trim() || randomUUID();
+    const [inserted] = await input.db.insert(spaceSessions).values({
       id: sessionId,
       spaceId,
       userUuid,
@@ -139,14 +144,22 @@ export function createSessionServices(input: {
       meta: sanitizePostgresJsonValue(initializeSessionParticipantsMeta({ createdBy: "cronjob" }, userUuid)),
       lastMessageAt: new Date(),
       lastMessageId: null,
-    }).returning();
-    if (!session) throw new Error("failed to register cronjob session");
+    }).onConflictDoNothing({ target: spaceSessions.id }).returning();
+    const [existing] = inserted
+      ? []
+      : await input.db.select().from(spaceSessions).where(eq(spaceSessions.id, sessionId)).limit(1);
+    const session = inserted ?? existing;
+    if (!session || session.spaceId !== spaceId || session.userUuid !== userUuid) {
+      throw new Error("cronjob session identity conflict");
+    }
     await ensureRootSessionTurnSegment(session.id);
-    await Promise.resolve(input.onSessionParticipantsUpdated?.({
-      spaceId,
-      sessionId: session.id,
-      userUuids: [userUuid],
-    })).catch((error) => logger.warn("[Session] failed to publish session participant labels", error));
+    if (inserted) {
+      await Promise.resolve(input.onSessionParticipantsUpdated?.({
+        spaceId,
+        sessionId: session.id,
+        userUuids: [userUuid],
+      })).catch((error) => logger.warn("[Session] failed to publish session participant labels", error));
+    }
     return session;
   }
 
@@ -211,6 +224,14 @@ export function createSessionServices(input: {
         id: row.id,
         idempotent: true,
         userMessageId: typeof existingMeta.userMessageId === "string" ? existingMeta.userMessageId : undefined,
+        ...(row.status === "failed" && typeof existingMeta.enqueueFailedAt === "string"
+          ? {
+              enqueueRecovery: {
+                content: row.userContent,
+                meta: { ...existingMeta, turnId: row.id },
+              },
+            }
+          : {}),
       };
     }
     await Promise.resolve(input.onSessionActivityUpdated?.({
@@ -225,11 +246,68 @@ export function createSessionServices(input: {
     return row;
   }
 
+  async function findSessionTurnByClientMessageId(turnInput: {
+    sessionId: string;
+    userUuid: string;
+    clientMessageId: string;
+  }) {
+    const [existing] = await input.db.select({
+      id: sessionTurns.id,
+      status: sessionTurns.status,
+      userContent: sessionTurns.userContent,
+      meta: sessionTurns.meta,
+    }).from(sessionTurns).where(and(
+      eq(sessionTurns.sessionId, turnInput.sessionId),
+      eq(sessionTurns.userUuid, turnInput.userUuid),
+      sql`${sessionTurns.meta} ->> 'clientMessageId' = ${turnInput.clientMessageId}`,
+    )).limit(1);
+    if (!existing) return null;
+    const meta = existing.meta && typeof existing.meta === "object" && !Array.isArray(existing.meta)
+      ? existing.meta as Record<string, unknown>
+      : {};
+    const userMessageId = typeof meta.userMessageId === "string" ? meta.userMessageId.trim() : "";
+    if (!userMessageId) throw new Error("idempotent session turn is missing userMessageId");
+    const enqueueFailed = existing.status === "failed" && typeof meta.enqueueFailedAt === "string";
+    return {
+      id: existing.id,
+      userMessageId,
+      ...(enqueueFailed
+        ? {
+            enqueueRecovery: {
+              content: existing.userContent,
+              meta: { ...meta, turnId: existing.id },
+            },
+          }
+        : {}),
+    };
+  }
+
+  async function recoverSessionTurnForEnqueue(turnInput: {
+    sessionId: string;
+    turnId: string;
+  }) {
+    const [recovered] = await input.db.update(sessionTurns).set({
+      status: "queued",
+      errorMessage: null,
+      summary: null,
+      completedAt: null,
+      updatedAt: new Date(),
+      meta: sql`coalesce(${sessionTurns.meta}, '{}'::jsonb) - 'enqueueFailedAt'`,
+    }).where(and(
+      eq(sessionTurns.id, turnInput.turnId),
+      eq(sessionTurns.sessionId, turnInput.sessionId),
+      eq(sessionTurns.status, "failed"),
+      sql`${sessionTurns.meta} ? 'enqueueFailedAt'`,
+    )).returning({ id: sessionTurns.id });
+    return Boolean(recovered);
+  }
+
   async function failSessionTurn(turnInput: { sessionId: string; turnId: string; errorMessage: string }) {
     const [row] = await input.db.update(sessionTurns).set({
       status: "failed",
       errorMessage: turnInput.errorMessage,
       summary: { finishReason: "failed", text: turnInput.errorMessage },
+      meta: sql`coalesce(${sessionTurns.meta}, '{}'::jsonb) || ${JSON.stringify({ enqueueFailedAt: new Date().toISOString() })}::jsonb`,
       completedAt: new Date(),
       updatedAt: new Date(),
     }).where(and(
@@ -323,6 +401,8 @@ export function createSessionServices(input: {
         ? ({ text, userId, spaceId }) => input.skillService!.expand(text, { userId, spaceId })
         : undefined,
       createSessionTurn,
+      findSessionTurnByClientMessageId,
+      recoverSessionTurnForEnqueue,
       enqueueSpacePrompt,
       failSessionTurn,
       billingUsageGate: input.billingUsageGate,

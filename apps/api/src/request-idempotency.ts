@@ -1,28 +1,45 @@
 import { createHash } from "node:crypto";
 
-const digest = (value: unknown) => createHash("sha256").update(stableStringify(value)).digest("hex");
+const createIdempotencyDigest = (value: unknown) =>
+  createHash("sha256").update(stableStringify(value)).digest("hex");
+
+export const createRequestFingerprint = createIdempotencyDigest;
+
+function createDeterministicUuid(value: unknown) {
+  const hex = createIdempotencyDigest(value);
+  const variant = ((Number.parseInt(hex[16] ?? "0", 16) & 0x3) | 0x8).toString(16);
+  return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-5${hex.slice(13, 16)}-${variant}${hex.slice(17, 20)}-${hex.slice(20, 32)}`;
+}
 
 export function createSessionlessPromptSessionId(input: {
   spaceId: string;
   userId: string;
   clientMessageId: string;
 }) {
-  const hex = digest(["space_prompt", input.spaceId, input.userId, input.clientMessageId]);
-  const variant = ((Number.parseInt(hex[16] ?? "0", 16) & 0x3) | 0x8).toString(16);
-  return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-5${hex.slice(13, 16)}-${variant}${hex.slice(17, 20)}-${hex.slice(20, 32)}`;
+  return createDeterministicUuid(["space_prompt", input.spaceId, input.userId, input.clientMessageId]);
 }
 
 export function createGenerationTaskJobId(input: {
   userId: string;
   clientRequestId: string | null;
-  request: unknown;
 }) {
   if (!input.clientRequestId) return undefined;
-  return `generation-${digest([
+  return `generation-${createIdempotencyDigest([input.userId, input.clientRequestId]).slice(0, 48)}`;
+}
+
+export function createRepeatPromptCronJobIdempotencyKey(input: {
+  userId: string;
+  spaceId: string;
+  sessionId: string | null;
+  clientMessageId: string;
+}) {
+  return createIdempotencyDigest([
+    "space_prompt_repeat",
     input.userId,
-    input.clientRequestId,
-    input.request,
-  ]).slice(0, 48)}`;
+    input.spaceId,
+    input.sessionId,
+    input.clientMessageId,
+  ]);
 }
 
 function stableStringify(value: unknown): string {

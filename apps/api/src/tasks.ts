@@ -25,7 +25,10 @@ import { reconcileCronJobQueueRecord } from "./cron-job-queue-reconciler.js";
 
 
 const logger = createLogger({ serviceName: "cohub-api" });
-type TaskEnqueueOptions = Omit<JobsOptions, "scheduledAt"> & { scheduledAt?: Date | null };
+type TaskEnqueueOptions = Omit<JobsOptions, "scheduledAt" | "idempotencyFingerprint"> & {
+  scheduledAt?: Date | null;
+  idempotencyFingerprint?: string | null;
+};
 
 const QUEUE_NAME = COHUB_TASKS_QUEUE;
 
@@ -54,6 +57,15 @@ export const getTaskRunByJobId = async (jobId: string) => {
   return taskRun ?? null;
 };
 
+export class CronJobIdempotencyConflictError extends Error {
+  readonly code = "cron_job_idempotency_conflict";
+
+  constructor() {
+    super("Cron job idempotency key conflict.");
+    this.name = "CronJobIdempotencyConflictError";
+  }
+}
+
 export const createCronJob = async (params: {
   userId: string;
   title: string;
@@ -62,8 +74,12 @@ export const createCronJob = async (params: {
   schedule: TaskScheduleConfig;
   spaceId?: string | null;
   sessionId?: string | null;
+  idempotency?: {
+    key: string;
+    requestFingerprint: string;
+  };
 }) => {
-  const cronJobResult = await db.insert(cronJobs).values({
+  const values = {
     userUuid: params.userId,
     title: params.title,
     taskType: params.taskType,
@@ -73,10 +89,31 @@ export const createCronJob = async (params: {
     bullJobKey: "",
     spaceId: params.spaceId ?? null,
     sessionId: params.sessionId ?? null,
-  }).returning();
+    idempotencyKey: params.idempotency?.key ?? null,
+    requestFingerprint: params.idempotency?.requestFingerprint ?? null,
+  };
+  const cronJobResult = params.idempotency
+    ? await db.insert(cronJobs).values(values).onConflictDoNothing({
+        target: cronJobs.idempotencyKey,
+      }).returning()
+    : await db.insert(cronJobs).values(values).returning();
 
-  const cronJob = cronJobResult[0];
+  const [existing] = cronJobResult[0] || !params.idempotency
+    ? []
+    : await db.select().from(cronJobs).where(and(
+        eq(cronJobs.idempotencyKey, params.idempotency.key),
+      )).limit(1);
+  const cronJob = cronJobResult[0] ?? existing;
   if (!cronJob) throw new Error("Failed to create cron job record");
+  if (
+    params.idempotency
+    && (
+      cronJob.requestFingerprint !== params.idempotency.requestFingerprint
+      || cronJob.deletedAt != null
+    )
+  ) {
+    throw new CronJobIdempotencyConflictError();
+  }
 
   return await reconcileCronJobQueue(cronJob.id).catch((error) => {
     logCronJobQueueSyncFailure(cronJob.id)(error);

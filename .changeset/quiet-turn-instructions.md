@@ -6,4 +6,7 @@
 Add authorized per-turn system instructions to Space prompts. Expose scheduled
 prompt queue synchronization status so clients can distinguish saved schedules
 from schedules that are active in the worker queue. Add caller-scoped idempotency
-keys for sessionless prompts and media generation submissions.
+keys and response-loss recovery for sessionless prompts, media generation
+submissions, and repeat schedules. Keep repeat-schedule billing bound to the
+creator while allowing other Space managers to rename, stop, or delete it
+without changing its paid payload, cadence, or activation state.

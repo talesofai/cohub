@@ -26,11 +26,23 @@ function sanitizeScheduledPromptPayload(payload: unknown) {
     sanitized = { ...sanitized };
     delete sanitized.systemInstructions;
   }
-  if (isRecord(sanitized.data) && Object.hasOwn(sanitized.data, "systemInstructions")) {
-    hasSystemInstructions = true;
+  if (Object.hasOwn(sanitized, "auth")) {
+    sanitized = sanitized === payload ? { ...sanitized } : sanitized;
+    delete sanitized.auth;
+  }
+  if (isRecord(sanitized.data)) {
     const data = { ...sanitized.data };
-    delete data.systemInstructions;
-    sanitized = { ...sanitized, data };
+    let changed = false;
+    if (Object.hasOwn(data, "systemInstructions")) {
+      hasSystemInstructions = true;
+      delete data.systemInstructions;
+      changed = true;
+    }
+    if (Object.hasOwn(data, "auth")) {
+      delete data.auth;
+      changed = true;
+    }
+    if (changed) sanitized = { ...sanitized, data };
   }
   return { payload: sanitized, hasSystemInstructions };
 }
@@ -53,15 +65,16 @@ export function prepareScheduledPromptPayloadUpdate(input: {
   if (input.taskType !== "send_message") return input.nextPayload;
 
   const next = { ...input.nextPayload };
+  delete next.auth;
   if (Object.hasOwn(next, "systemInstructions")) {
     const systemInstructions = parsePromptSystemInstructions(next.systemInstructions);
     if (systemInstructions) next.systemInstructions = systemInstructions;
     else delete next.systemInstructions;
-    return next;
-  }
-
-  if (isRecord(input.currentPayload) && Object.hasOwn(input.currentPayload, "systemInstructions")) {
+  } else if (isRecord(input.currentPayload) && Object.hasOwn(input.currentPayload, "systemInstructions")) {
     next.systemInstructions = input.currentPayload.systemInstructions;
+  }
+  if (isRecord(input.currentPayload) && Object.hasOwn(input.currentPayload, "auth")) {
+    next.auth = input.currentPayload.auth;
   }
   return next;
 }

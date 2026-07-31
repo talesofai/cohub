@@ -3,6 +3,7 @@ import { test } from "node:test";
 import {
   buildScheduledSendMessagePromptInput,
   parseScheduledSendMessagePromptOptions,
+  scheduledPromptSessionId,
 } from "../src/tasks/send-message-prompt.js";
 
 test("scheduled send_message validates private prompt options before dispatch", () => {
@@ -20,6 +21,16 @@ test("scheduled send_message validates private prompt options before dispatch", 
     () => parseScheduledSendMessagePromptOptions({ env: { "BAD-NAME": "x" } }),
     /env name/,
   );
+});
+
+test("sessionless scheduled retries reuse one task-scoped session identity", () => {
+  const input = { spaceId: "space-1", userId: "user-1", taskRunId: "run-1" };
+  const sessionId = scheduledPromptSessionId(input);
+
+  assert.equal(scheduledPromptSessionId(input), sessionId);
+  assert.match(sessionId, /^[0-9a-f]{8}-[0-9a-f]{4}-5[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/);
+  assert.notEqual(scheduledPromptSessionId({ ...input, taskRunId: "run-2" }), sessionId);
+  assert.notEqual(scheduledPromptSessionId({ ...input, userId: "user-2" }), sessionId);
 });
 
 test("scheduled send_message forwards validated turn instructions", () => {

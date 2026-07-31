@@ -3,13 +3,12 @@ const DRAFT_TTL_MS = 30 * 24 * 60 * 60 * 1000;
 type ComposerDraftRecord = {
 	text: string;
 	systemInstructions: string;
+	retryClientMessageId: string | null;
+	retryRequestFingerprint: string | null;
 	updatedAt: number;
 };
 
-export type SessionComposerDraft = Pick<
-	ComposerDraftRecord,
-	"text" | "systemInstructions"
->;
+export type SessionComposerDraft = Omit<ComposerDraftRecord, "updatedAt">;
 
 function canUseLocalStorage() {
 	return typeof window !== "undefined" && typeof localStorage !== "undefined";
@@ -34,6 +33,8 @@ function isExpired(updatedAt: unknown) {
 const emptyDraft = (): SessionComposerDraft => ({
 	text: "",
 	systemInstructions: "",
+	retryClientMessageId: null,
+	retryRequestFingerprint: null,
 });
 
 export function readSessionComposerDraft(key: string): SessionComposerDraft {
@@ -52,6 +53,16 @@ export function readSessionComposerDraft(key: string): SessionComposerDraft {
 				typeof record.systemInstructions === "string"
 					? record.systemInstructions
 					: "",
+			retryClientMessageId:
+				typeof record.retryClientMessageId === "string" &&
+				record.retryClientMessageId.trim()
+					? record.retryClientMessageId.trim()
+					: null,
+			retryRequestFingerprint:
+				typeof record.retryRequestFingerprint === "string" &&
+				record.retryRequestFingerprint.trim()
+					? record.retryRequestFingerprint.trim()
+					: null,
 		};
 	} catch {
 		safeRemoveItem(key);
@@ -65,13 +76,19 @@ export function writeSessionComposerDraft(
 ) {
 	if (!canUseLocalStorage()) return;
 	try {
-		if (!draft.text.trim() && !draft.systemInstructions.trim()) {
+		if (
+			!draft.text.trim() &&
+			!draft.systemInstructions.trim() &&
+			!draft.retryClientMessageId
+		) {
 			safeRemoveItem(key);
 			return;
 		}
 		const record: ComposerDraftRecord = {
 			text: draft.text,
 			systemInstructions: draft.systemInstructions,
+			retryClientMessageId: draft.retryClientMessageId,
+			retryRequestFingerprint: draft.retryRequestFingerprint,
 			updatedAt: Date.now(),
 		};
 		localStorage.setItem(key, JSON.stringify(record));

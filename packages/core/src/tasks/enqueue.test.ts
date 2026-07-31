@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import type { TaskPayload } from "@cohub/protocol/task";
-import { enqueueTaskRun } from "./enqueue.js";
+import { enqueueTaskRun, TaskIdempotencyConflictError } from "./enqueue.js";
 
 type StoredTaskRun = {
   id: string;
@@ -133,4 +133,54 @@ test("enqueueTaskRun recovers a task that failed before queueing and deduplicate
   assert.equal(duplicate.taskRunId, failedTaskRunId);
   assert.equal(duplicate.job, null);
   assert.equal(enqueueAttempts, 2);
+});
+
+test("stable task ids reject a different request fingerprint before queueing", async () => {
+  const taskDb = createTaskDb();
+  let enqueueAttempts = 0;
+  const enqueue = async () => {
+    enqueueAttempts += 1;
+    return { id: "generation-request-1" };
+  };
+  await enqueueTaskRun({
+    db: taskDb.db,
+    payload: { ...payload, data: { model: "model-a" } },
+    options: { jobId: "generation-request-1", idempotencyFingerprint: "fingerprint-a" },
+    enqueue,
+  });
+
+  await assert.rejects(
+    enqueueTaskRun({
+      db: taskDb.db,
+      payload: { ...payload, data: { model: "model-b" } },
+      options: { jobId: "generation-request-1", idempotencyFingerprint: "fingerprint-b" },
+      enqueue,
+    }),
+    TaskIdempotencyConflictError,
+  );
+  assert.equal(enqueueAttempts, 1);
+});
+
+test("stable task retries enqueue only the payload that won the database insert", async () => {
+  const taskDb = createTaskDb();
+  const queuedPayloads: TaskPayload[] = [];
+  const enqueue = async (_name: string, queuedPayload: TaskPayload) => {
+    queuedPayloads.push(queuedPayload);
+    return { id: "generation-request-2" };
+  };
+  const winner = { ...payload, data: { model: "model-a" } };
+  await enqueueTaskRun({
+    db: taskDb.db,
+    payload: winner,
+    options: { jobId: "generation-request-2", idempotencyFingerprint: "fingerprint-a" },
+    enqueue,
+  });
+  await enqueueTaskRun({
+    db: taskDb.db,
+    payload: { ...payload, data: { model: "model-b" } },
+    options: { jobId: "generation-request-2", idempotencyFingerprint: "fingerprint-a" },
+    enqueue,
+  });
+
+  assert.deepEqual(queuedPayloads, [winner, winner]);
 });

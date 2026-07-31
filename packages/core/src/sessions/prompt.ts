@@ -191,6 +191,22 @@ export type ExpandedSkillCommand = {
 
 export type SessionPromptDependencies = {
   randomUUID(): string;
+  findSessionTurnByClientMessageId(input: {
+    sessionId: string;
+    userUuid: string;
+    clientMessageId: string;
+  }): Promise<{
+    id: string;
+    userMessageId: string;
+    enqueueRecovery?: {
+      content: ContentBlock[];
+      meta: Record<string, unknown>;
+    };
+  } | null>;
+  recoverSessionTurnForEnqueue(input: {
+    sessionId: string;
+    turnId: string;
+  }): Promise<boolean>;
   expandPromptTemplate(input: {
     text: string;
     userId: string;
@@ -220,6 +236,10 @@ export type SessionPromptDependencies = {
     id: string;
     idempotent?: boolean;
     userMessageId?: string;
+    enqueueRecovery?: {
+      content: ContentBlock[];
+      meta: Record<string, unknown>;
+    };
   }>;
   enqueueSpacePrompt(input: {
     spaceId: string;
@@ -341,6 +361,53 @@ export const submitSessionPrompt = async (
   if (!Array.isArray(input.content) || input.content.length === 0) throw new Error("content is required");
   const systemInstructions = parsePromptSystemInstructions(input.systemInstructions);
 
+  const recoverIdempotentTurn = async (turn: {
+    id: string;
+    userMessageId: string;
+    enqueueRecovery?: { content: ContentBlock[]; meta: Record<string, unknown> };
+  }) => {
+    if (!turn.enqueueRecovery) return;
+    const recovered = await deps.recoverSessionTurnForEnqueue({
+      sessionId: input.sessionId,
+      turnId: turn.id,
+    });
+    if (!recovered) return;
+    const { content, meta } = turn.enqueueRecovery;
+    try {
+      await hooks.beforeEnqueue?.({
+        turnId: turn.id,
+        userMessageId: turn.userMessageId,
+        content,
+        meta,
+      });
+      await deps.enqueueSpacePrompt({
+        spaceId: input.spaceId,
+        sessionId: input.sessionId,
+        turnId: turn.id,
+        userMessageId: turn.userMessageId,
+        content,
+        meta,
+      });
+    } catch (error) {
+      await deps.failSessionTurn({
+        sessionId: input.sessionId,
+        turnId: turn.id,
+        errorMessage: error instanceof Error ? error.message : String(error),
+      }).catch(() => undefined);
+      throw error;
+    }
+  };
+
+  const existingTurn = await deps.findSessionTurnByClientMessageId({
+    sessionId: input.sessionId,
+    userUuid: userId,
+    clientMessageId,
+  });
+  if (existingTurn) {
+    await recoverIdempotentTurn(existingTurn);
+    return { turnId: existingTurn.id, userMessageId: existingTurn.userMessageId };
+  }
+
   if (deps.sandboxRecovery) {
     void Promise.resolve(deps.sandboxRecovery.maybeRecoverForPrompt({
       spaceId: input.spaceId,
@@ -421,6 +488,11 @@ const VALID_THINKING_LEVELS = new Set(["off", "minimal", "low", "medium", "high"
     if (!turn.userMessageId) {
       throw new SubmitSessionPromptError("idempotent session turn is missing userMessageId", undefined);
     }
+    await recoverIdempotentTurn({
+      id: turn.id,
+      userMessageId: turn.userMessageId,
+      enqueueRecovery: turn.enqueueRecovery,
+    });
     return { turnId: turn.id, userMessageId: turn.userMessageId };
   }
 

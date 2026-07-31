@@ -8,6 +8,7 @@ import {
 import type { ContentBlock } from "@cohub/protocol/core";
 import type { GenerationPolicy } from "@cohub/protocol/generation";
 import type { SessionTurnIntent } from "@cohub/protocol/model";
+import { createHash } from "node:crypto";
 
 export function parseScheduledSendMessagePromptOptions(input: {
   env?: unknown;
@@ -53,4 +54,19 @@ export function buildScheduledSendMessagePromptInput(input: {
     intent: input.intent ?? null,
     context: input.context,
   };
+}
+
+export function scheduledPromptSessionId(input: {
+  spaceId: string;
+  userId: string;
+  taskRunId: string;
+}) {
+  const hex = createHash("sha256").update(JSON.stringify([
+    "scheduled_prompt_session",
+    input.spaceId,
+    input.userId,
+    input.taskRunId,
+  ])).digest("hex");
+  const variant = ((Number.parseInt(hex[16] ?? "0", 16) & 0x3) | 0x8).toString(16);
+  return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-5${hex.slice(13, 16)}-${variant}${hex.slice(17, 20)}-${hex.slice(20, 32)}`;
 }

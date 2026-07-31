@@ -2,6 +2,8 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import {
   createGenerationTaskJobId,
+  createRequestFingerprint,
+  createRepeatPromptCronJobIdempotencyKey,
   createSessionlessPromptSessionId,
 } from "./request-idempotency.js";
 
@@ -18,20 +20,41 @@ test("sessionless prompts reuse one scoped deterministic session", () => {
   assert.notEqual(createSessionlessPromptSessionId({ ...input, userId: "user-b" }), sessionId);
 });
 
-test("generation jobs reuse only the same user, key, and canonical request", () => {
+test("repeat prompt identities are scoped by payer, space, and target session", () => {
+  const input = {
+    userId: "user-a",
+    spaceId: "space-a",
+    sessionId: "session-a",
+    clientMessageId: "schedule-a",
+  };
+  const key = createRepeatPromptCronJobIdempotencyKey(input);
+
+  assert.equal(createRepeatPromptCronJobIdempotencyKey(input), key);
+  assert.notEqual(createRepeatPromptCronJobIdempotencyKey({ ...input, spaceId: "space-b" }), key);
+  assert.notEqual(createRepeatPromptCronJobIdempotencyKey({ ...input, sessionId: "session-b" }), key);
+  assert.notEqual(createRepeatPromptCronJobIdempotencyKey({ ...input, userId: "user-b" }), key);
+});
+
+test("generation job identity is stable for one user and client key", () => {
   const input = {
     userId: "user-a",
     clientRequestId: "open-tap:image:payload-a",
-    request: { model: "image-model", parameters: { quality: "high", size: 1024 } },
   };
   const jobId = createGenerationTaskJobId(input);
 
   assert.doesNotMatch(jobId ?? "", /:/);
-  assert.equal(createGenerationTaskJobId({
-    ...input,
-    request: { parameters: { size: 1024, quality: "high" }, model: "image-model" },
-  }), jobId);
+  assert.equal(createGenerationTaskJobId(input), jobId);
   assert.notEqual(createGenerationTaskJobId({ ...input, userId: "user-b" }), jobId);
-  assert.notEqual(createGenerationTaskJobId({ ...input, request: { model: "other-model" } }), jobId);
   assert.equal(createGenerationTaskJobId({ ...input, clientRequestId: null }), undefined);
+});
+
+test("request fingerprints canonicalize object key order independently of the idempotency key", () => {
+  assert.equal(
+    createRequestFingerprint({ model: "image-model", parameters: { quality: "high", size: 1024 } }),
+    createRequestFingerprint({ parameters: { size: 1024, quality: "high" }, model: "image-model" }),
+  );
+  assert.notEqual(
+    createRequestFingerprint({ model: "image-model" }),
+    createRequestFingerprint({ model: "other-model" }),
+  );
 });

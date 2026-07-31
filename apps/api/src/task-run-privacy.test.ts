@@ -12,6 +12,7 @@ test("scheduled prompt client projections omit private system instructions", () 
     payload: {
       content: [{ type: "text", text: "Create a prompt" }],
       systemInstructions: "Private cron instructions",
+      auth: { type: "delegated_prompt", scopes: ["session.prompt.fullaccess"] },
     },
   };
   const taskRun = {
@@ -21,6 +22,7 @@ test("scheduled prompt client projections omit private system instructions", () 
       data: {
         content: [{ type: "text", text: "Create a prompt" }],
         systemInstructions: "Private task instructions",
+        auth: { type: "delegated_prompt", scopes: ["session.prompt.fullaccess"] },
       },
     },
   };
@@ -54,6 +56,7 @@ test("scheduled prompt updates preserve omitted private instructions", () => {
     currentPayload: {
       content: [{ type: "text", text: "Before" }],
       systemInstructions: "Private cron instructions",
+      auth: { type: "delegated_prompt", scopes: ["session.prompt.fullaccess"] },
     },
     nextPayload: { content: [{ type: "text", text: "After" }] },
   });
@@ -61,22 +64,29 @@ test("scheduled prompt updates preserve omitted private instructions", () => {
   assert.deepEqual(payload, {
     content: [{ type: "text", text: "After" }],
     systemInstructions: "Private cron instructions",
+    auth: { type: "delegated_prompt", scopes: ["session.prompt.fullaccess"] },
   });
 });
 
 test("scheduled prompt updates normalize replacements and allow explicit clearing", () => {
   const input = {
     taskType: "send_message",
-    currentPayload: { systemInstructions: "Before" },
+    currentPayload: {
+      systemInstructions: "Before",
+      auth: { type: "delegated_prompt", scopes: ["session.prompt.fullaccess"] },
+    },
   };
   assert.deepEqual(prepareScheduledPromptPayloadUpdate({
     ...input,
     nextPayload: { systemInstructions: "  After  " },
-  }), { systemInstructions: "After" });
+  }), {
+    systemInstructions: "After",
+    auth: { type: "delegated_prompt", scopes: ["session.prompt.fullaccess"] },
+  });
   assert.deepEqual(prepareScheduledPromptPayloadUpdate({
     ...input,
     nextPayload: { systemInstructions: null },
-  }), {});
+  }), { auth: { type: "delegated_prompt", scopes: ["session.prompt.fullaccess"] } });
 });
 
 test("scheduled prompt updates reject invalid private instructions before persistence", () => {

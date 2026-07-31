@@ -5,7 +5,17 @@ import { taskRuns } from "@cohub/db";
 import type { TaskPayload } from "@cohub/protocol/task";
 
 export type TaskQueueJobOptions = { [key: string]: unknown; jobId?: string; delay?: number };
-export type TaskEnqueueOptions = Omit<TaskQueueJobOptions, "scheduledAt"> & { scheduledAt?: Date | null };
+export type TaskEnqueueOptions = Omit<TaskQueueJobOptions, "scheduledAt" | "idempotencyFingerprint"> & {
+  scheduledAt?: Date | null;
+  idempotencyFingerprint?: string | null;
+};
+
+export class TaskIdempotencyConflictError extends Error {
+  constructor(readonly jobId: string) {
+    super(`Task idempotency key conflict for job ${jobId}`);
+    this.name = "TaskIdempotencyConflictError";
+  }
+}
 
 type TasksDb = PostgresJsDatabase<typeof schema>;
 
@@ -23,7 +33,12 @@ export async function enqueueTaskRun<Job = unknown>(input: EnqueueTaskRunInput<J
     : null;
   const taskRunId = crypto.randomUUID();
   const queueJobId = requestedJobId ?? taskRunId;
-  const { scheduledAt, jobId: _ignoredJobId, ...jobOptions } = input.options ?? {};
+  const {
+    scheduledAt,
+    jobId: _ignoredJobId,
+    idempotencyFingerprint = null,
+    ...jobOptions
+  } = input.options ?? {};
   const delay = typeof jobOptions.delay === "number" ? jobOptions.delay : 0;
   const scheduledAtValue = scheduledAt ?? (delay > 0 ? new Date(Date.now() + delay) : null);
 
@@ -35,6 +50,7 @@ export async function enqueueTaskRun<Job = unknown>(input: EnqueueTaskRunInput<J
     sessionId: input.payload.sessionId ?? null,
     turnId: input.payload.turnId ?? null,
     userUuid: input.payload.userId ?? null,
+    idempotencyFingerprint,
     cronJobId: input.payload.cronJobId ?? null,
     status: "pending",
     payload: input.payload,
@@ -50,13 +66,22 @@ export async function enqueueTaskRun<Job = unknown>(input: EnqueueTaskRunInput<J
         .limit(1);
   const taskRun = insertedTaskRun ?? existingTaskRun;
   if (!taskRun) throw new Error(`Task run not found after insert conflict for job ${queueJobId}`);
+  if (
+    requestedJobId
+    && idempotencyFingerprint
+    && taskRun.idempotencyFingerprint !== idempotencyFingerprint
+  ) {
+    throw new TaskIdempotencyConflictError(queueJobId);
+  }
 
   const shouldEnqueue = Boolean(insertedTaskRun)
     || (taskRun.startedAt == null && (taskRun.status === "pending" || taskRun.status === "failed"));
   if (!shouldEnqueue) return { job: null, taskRunId: taskRun.id };
 
   try {
-    const job = await input.enqueue(input.payload.type, input.payload, {
+    // A conflicting stable job id always resumes the payload that won the DB insert.
+    // Enqueuing the caller's payload here would let a reused idempotency key mutate work.
+    const job = await input.enqueue(taskRun.payload.type, taskRun.payload, {
       ...jobOptions,
       jobId: queueJobId,
     });

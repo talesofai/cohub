@@ -86,7 +86,7 @@ async function authorizeCronJobView(user: ReturnType<typeof getOptionalAuth>, jo
   return !!user && job.userUuid === user.uuid;
 }
 
-async function authorizeCronJobManage(user: Exclude<ReturnType<typeof useAuth>, Response>, job: CronJobAuthSubject) {
+async function authorizeCronJobAdmin(user: Exclude<ReturnType<typeof useAuth>, Response>, job: CronJobAuthSubject) {
   if (job.spaceId) return hasPermission(user, "cronjob.manage", { spaceId: job.spaceId, sessionId: job.sessionId ?? undefined });
   return job.userUuid === user.uuid;
 }
@@ -233,7 +233,7 @@ router.delete("/:id", async (c) => {
     .where(and(eq(cronJobs.id, cronJobId), isNull(cronJobs.deletedAt)))
     .limit(1);
   if (!job) return c.json({ message: "not found" }, 404);
-  if (!(await authorizeCronJobManage(user, job))) return authzDenied(c);
+  if (!(await authorizeCronJobAdmin(user, job))) return authzDenied(c);
 
   try {
     await removeCronJob(cronJobId);
@@ -259,10 +259,14 @@ router.patch("/:id", async (c) => {
     .where(and(eq(cronJobs.id, cronJobId), isNull(cronJobs.deletedAt)))
     .limit(1);
   if (!job) return c.json({ message: "not found" }, 404);
-  if (!(await authorizeCronJobManage(user, job))) return authzDenied(c);
+  if (!(await authorizeCronJobAdmin(user, job))) return authzDenied(c);
 
   const body = await c.req.json<Record<string, unknown>>().catch(() => null);
   if (!body || typeof body !== "object" || Array.isArray(body)) return c.json({ message: "invalid json body" }, 400);
+  if (
+    job.userUuid !== user.uuid
+    && (body.enabled === true || ["payload", "cronExpression", "timezone"].some((key) => key in body))
+  ) return authzDenied(c);
   if ("taskType" in body) return c.json({ message: "taskType cannot be changed" }, 400);
   if (body.expectedUpdatedAt !== undefined) {
     try {
@@ -297,6 +301,7 @@ router.patch("/:id", async (c) => {
 
   if ("payload" in body) {
     if (!isRecord(body.payload)) return c.json({ message: "payload must be an object" }, 400);
+    if (Object.hasOwn(body.payload, "auth")) return c.json({ message: "payload.auth is server-managed" }, 400);
     try {
       patch.payload = prepareScheduledPromptPayloadUpdate({
         taskType: job.taskType,

@@ -779,6 +779,11 @@ export const sessionTurns = v2.table(
       table.sequence,
     ),
     userUuidIdx: index("v2_idx_session_turns_user_uuid").on(table.userUuid),
+    clientMessageIdx: index("v2_idx_session_turns_client_message").on(
+      table.sessionId,
+      table.userUuid,
+      sql`(${table.meta} ->> 'clientMessageId')`,
+    ).where(sql`${table.meta} ? 'clientMessageId'`),
     createdAtIdx: index("v2_idx_session_turns_created_at").on(table.createdAt),
     userTextSearchIdx: index("v2_idx_session_turns_user_text_trgm").using("gin", table.userText.op("gin_trgm_ops")),
   }),
@@ -1141,6 +1146,8 @@ export const cronJobs = v2.table(
     queueSyncedVersion: integer("queue_synced_version").notNull().default(0),
     spaceId: uuid("space_id"),
     sessionId: uuid("session_id"),
+    idempotencyKey: varchar("idempotency_key", { length: 64 }),
+    requestFingerprint: varchar("request_fingerprint", { length: 64 }),
     enabled: boolean("enabled").notNull().default(true),
     deletedAt: timestamp("deleted_at", { withTimezone: true }),
     createdAt: timestamp("created_at", { withTimezone: true }).defaultNow(),
@@ -1151,6 +1158,12 @@ export const cronJobs = v2.table(
     spaceIdx: index("v2_idx_cron_jobs_space_id").on(table.spaceId),
     enabledIdx: index("v2_idx_cron_jobs_enabled").on(table.enabled),
     createdAtIdx: index("v2_idx_cron_jobs_created_at").on(table.createdAt),
+    idempotencyKeyUniqueIdx: uniqueIndex("v2_uq_cron_jobs_idempotency_key")
+      .on(table.idempotencyKey),
+    idempotencyPairCheck: check(
+      "v2_chk_cron_jobs_idempotency_pair",
+      sql`(${table.idempotencyKey} is null) = (${table.requestFingerprint} is null)`,
+    ),
     queueSyncPendingIdx: index("v2_idx_cron_jobs_queue_sync_pending")
       .on(table.updatedAt, table.id)
       .where(sql`${table.queueSyncedVersion} <> ${table.scheduleVersion}`),
@@ -1173,6 +1186,7 @@ export const taskRuns = v2.table(
     sessionId: uuid("session_id"),
     turnId: uuid("turn_id"),
     userUuid: varchar("user_uuid", { length: 255 }),
+    idempotencyFingerprint: varchar("idempotency_fingerprint", { length: 64 }),
     scheduledAt: timestamp("scheduled_at", { withTimezone: true }),
     startedAt: timestamp("started_at", { withTimezone: true }),
     finishedAt: timestamp("finished_at", { withTimezone: true }),

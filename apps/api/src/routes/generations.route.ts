@@ -10,6 +10,7 @@ import {
 } from "@cohub/billing";
 import { Hono, type Context } from "hono";
 import { createGenerationClient, GenerationValidationError } from "@neta-art/generation";
+import { TaskIdempotencyConflictError } from "@cohub/core/tasks";
 import {
   GENERATION_TASK_TYPE,
   type CreateGenerationTaskResponse,
@@ -26,7 +27,10 @@ import { enqueueTask, getTaskRunByJobId } from "../tasks.js";
 import { defaultJobRetention } from "@cohub/infra/bullmq";
 import { createLogger } from "@cohub/infra/logging";
 import { applyRequestSourceToMeta } from "../lib/request-source.js";
-import { createGenerationTaskJobId } from "../request-idempotency.js";
+import {
+  createGenerationTaskJobId,
+  createRequestFingerprint,
+} from "../request-idempotency.js";
 
 
 const logger = createLogger({ serviceName: "cohub-api" });
@@ -51,6 +55,24 @@ function zodDetails(error: { issues: Array<{ path: PropertyKey[]; message: strin
   }));
 }
 
+function generationIdempotencyMatches(
+  taskRun: { idempotencyFingerprint: string | null },
+  requestFingerprint: string,
+) {
+  return taskRun.idempotencyFingerprint === requestFingerprint;
+}
+
+function generationTaskStatus(value: string): CreateGenerationTaskResponse["status"] {
+  switch (value) {
+    case "running":
+    case "completed":
+    case "failed":
+      return value;
+    default:
+      return "pending";
+  }
+}
+
 router.post("/", async (c) => {
   const user = useAuth(c);
   if (user instanceof Response) return user;
@@ -64,7 +86,6 @@ router.post("/", async (c) => {
 
   const sessionId = request.sessionId?.trim() || null;
   const turnId = request.turnId?.trim() || null;
-  const meta = applyRequestSourceToMeta(c, request.meta) ?? undefined;
   if (sessionId) {
     const session = await getSpaceSessionById(sessionId);
     if (!session || session.spaceId !== request.spaceId) {
@@ -82,12 +103,64 @@ router.post("/", async (c) => {
     }
   }
 
+  const clientRequestId = request.clientRequestId?.trim() || null;
+  const requestFingerprint = clientRequestId
+    ? createRequestFingerprint({
+        spaceId: request.spaceId,
+        sessionId,
+        turnId,
+        model: request.model,
+        content: request.content,
+        parameters: request.parameters,
+        meta: request.meta,
+      })
+    : null;
+  const generationJobId = createGenerationTaskJobId({
+    userId: user.uuid,
+    clientRequestId,
+  });
+  if (generationJobId && clientRequestId && requestFingerprint) {
+    const existingTaskRun = await getTaskRunByJobId(generationJobId);
+    if (existingTaskRun) {
+      if (
+        existingTaskRun.taskType !== GENERATION_TASK_TYPE
+        || existingTaskRun.userUuid !== user.uuid
+        || !generationIdempotencyMatches(existingTaskRun, requestFingerprint)
+      ) {
+        return generationError(c, 409, "generation_idempotency_conflict", "Generation idempotency key conflict.");
+      }
+      try {
+        const resumed = await enqueueTask(existingTaskRun.payload, {
+          jobId: generationJobId,
+          attempts: 1,
+          ...defaultJobRetention,
+        });
+        const persisted = await getTaskRunByJobId(generationJobId);
+        return c.json({
+          taskRunId: resumed.taskRunId,
+          taskType: GENERATION_TASK_TYPE,
+          status: generationTaskStatus(persisted?.status ?? existingTaskRun.status),
+          billing: null,
+        } satisfies CreateGenerationTaskResponse, 202);
+      } catch (error) {
+        logger.error("[generations] failed to recover idempotent generation task", {
+          userId: user.uuid,
+          spaceId: request.spaceId,
+          taskRunId: existingTaskRun.id,
+          error,
+        });
+        return generationError(c, 503, "generation_queue_unavailable", "Generation queue is temporarily unavailable. Please try again later.");
+      }
+    }
+  }
+
   const declaration = await loadGenerationDeclaration(user.uuid, request.model);
   if (!declaration) {
     return generationError(c, 404, "generation_model_not_found", `Generation model not found: ${request.model}`);
   }
 
   let parameters: Record<string, unknown> | undefined;
+  const meta = applyRequestSourceToMeta(c, request.meta) ?? undefined;
   try {
     const resolved = createGenerationClient({
       models: [declaration],
@@ -104,50 +177,6 @@ router.post("/", async (c) => {
       return generationError(c, 400, "invalid_generation_input", error.message);
     }
     throw error;
-  }
-
-  const clientRequestId = request.clientRequestId?.trim() || null;
-  const generationJobId = createGenerationTaskJobId({
-    userId: user.uuid,
-    clientRequestId,
-    request: {
-      spaceId: request.spaceId,
-      sessionId,
-      turnId,
-      model: request.model,
-      content: request.content,
-      parameters,
-      meta,
-    },
-  });
-  if (generationJobId) {
-    const existingTaskRun = await getTaskRunByJobId(generationJobId);
-    if (existingTaskRun) {
-      if (existingTaskRun.taskType !== GENERATION_TASK_TYPE || existingTaskRun.userUuid !== user.uuid) {
-        return generationError(c, 409, "generation_idempotency_conflict", "Generation idempotency key conflict.");
-      }
-      try {
-        const resumed = await enqueueTask(existingTaskRun.payload, {
-          jobId: generationJobId,
-          attempts: 1,
-          ...defaultJobRetention,
-        });
-        return c.json({
-          taskRunId: resumed.taskRunId,
-          taskType: GENERATION_TASK_TYPE,
-          status: "pending",
-          billing: null,
-        } satisfies CreateGenerationTaskResponse, 202);
-      } catch (error) {
-        logger.error("[generations] failed to recover idempotent generation task", {
-          userId: user.uuid,
-          spaceId: request.spaceId,
-          taskRunId: existingTaskRun.id,
-          error,
-        });
-        return generationError(c, 503, "generation_queue_unavailable", "Generation queue is temporarily unavailable. Please try again later.");
-      }
-    }
   }
 
   const usageType = resolveGenerationUsageType({
@@ -220,11 +249,26 @@ router.post("/", async (c) => {
       },
     }, {
       jobId: generationJobId,
+      idempotencyFingerprint: requestFingerprint,
       attempts: 1,
       ...defaultJobRetention,
     });
     taskRunId = enqueued.taskRunId;
+    if (generationJobId && clientRequestId && requestFingerprint) {
+      const persisted = await getTaskRunByJobId(generationJobId);
+      if (
+        !persisted
+        || persisted.taskType !== GENERATION_TASK_TYPE
+        || persisted.userUuid !== user.uuid
+        || !generationIdempotencyMatches(persisted, requestFingerprint)
+      ) {
+        return generationError(c, 409, "generation_idempotency_conflict", "Generation idempotency key conflict.");
+      }
+    }
   } catch (error) {
+    if (error instanceof TaskIdempotencyConflictError) {
+      return generationError(c, 409, "generation_idempotency_conflict", "Generation idempotency key conflict.");
+    }
     logger.error("[generations] failed to enqueue generation task", {
       userId: user.uuid,
       spaceId: request.spaceId,

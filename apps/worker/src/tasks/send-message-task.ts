@@ -21,6 +21,7 @@ import { dispatchLabelAssignmentsUpdated } from "../label-events.js";
 import {
   buildScheduledSendMessagePromptInput,
   parseScheduledSendMessagePromptOptions,
+  scheduledPromptSessionId,
 } from "./send-message-prompt.js";
 
 const MAX_TASK_SOURCE_LENGTH = 255;
@@ -81,13 +82,18 @@ const sendMessageHandler = async (job: import("bullmq").Job, context?: { taskRun
     systemInstructions: promptSystemInstructions,
   } = parseScheduledSendMessagePromptOptions({ env, systemInstructions });
   const source = normalizeTaskSource(payloadSource);
-  const targetSessionId = sessionId?.trim() || null;
-  const createdSession = targetSessionId ? null : await sessionPromptService.registerCronjobSession(spaceId, { source, title: title ?? null, userUuid: userId });
-  const promptSessionId = targetSessionId ?? createdSession?.id;
-  if (!promptSessionId) throw new Error("sessionId is required for send_message task");
   const promptClientMessageId = payload.cronJobId?.trim()
     ? `cron:${payload.cronJobId.trim()}:run:${taskRunId}`
     : clientMessageId?.trim() || `taskrun:${taskRunId}`;
+  const targetSessionId = sessionId?.trim() || null;
+  const createdSession = targetSessionId ? null : await sessionPromptService.registerCronjobSession(spaceId, {
+    sessionId: scheduledPromptSessionId({ spaceId, userId, taskRunId }),
+    source,
+    title: title ?? null,
+    userUuid: userId,
+  });
+  const promptSessionId = targetSessionId ?? createdSession?.id;
+  if (!promptSessionId) throw new Error("sessionId is required for send_message task");
 
   if (labelIds && labelIds.length > 0) {
     await assignLabelsToSession({ db, spaceId, sessionId: promptSessionId, labelIds, userId });

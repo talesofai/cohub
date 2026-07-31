@@ -3,6 +3,7 @@ import { basename, dirname, extname, join } from "node:path";
 import type { Command } from "commander";
 import {
   GenerationPolicyError,
+  HttpError,
   assertGenerationRequestAllowedByPolicy,
   parseGenerationPolicyFromEnv,
   type GenerationContentBlock,
@@ -27,6 +28,26 @@ const rolesByMediaType: Record<MediaInputType, ReadonlySet<string>> = {
 };
 
 const mediaRoles = new Set([...frameMediaRoles, ...referenceMediaRoles]);
+const RETRYABLE_SUBMISSION_STATUSES = new Set([408, 502, 503, 504]);
+
+function isAmbiguousGenerationSubmissionError(error: unknown) {
+  if (error instanceof TypeError || error instanceof SyntaxError) return true;
+  return error instanceof HttpError && RETRYABLE_SUBMISSION_STATUSES.has(error.status);
+}
+
+export async function createGenerationWithRetry<T>(
+  create: () => Promise<T>,
+  wait: (delayMs: number) => Promise<void> = (delayMs) =>
+    new Promise((resolve) => setTimeout(resolve, delayMs)),
+) {
+  try {
+    return await create();
+  } catch (error) {
+    if (!isAmbiguousGenerationSubmissionError(error)) throw error;
+    await wait(150);
+    return create();
+  }
+}
 
 const mimeByExt: Record<string, string> = {
   ".png": "image/png",
@@ -272,6 +293,7 @@ export function registerGenerations(program: Command): void {
     .option("--param <key=value>", "Generation parameter; repeatable, values may be JSON/number/boolean", collect, [])
     .option("--parameters <json>", "Generation parameters as a JSON object")
     .option("--meta <json>", "Meta as a JSON object")
+    .option("--client-request-id <id>", "Reuse an idempotency key when safely retrying this exact request")
     .option("-o, --output <path>", "Save generated output to a file or directory")
     .option("--async", "Queue the generation task and return immediately")
     .option("--timeout-ms <ms>", "Maximum time to wait in synchronous mode")
@@ -294,6 +316,7 @@ Examples:
       param: string[];
       parameters?: string;
       meta?: string;
+      clientRequestId?: string;
       output?: string;
       async?: boolean;
       timeoutMs?: string;
@@ -320,16 +343,22 @@ Examples:
         }
 
         const meta = parseMeta(opts.meta);
+        const clientRequestId = opts.clientRequestId?.trim() || crypto.randomUUID();
+        if (clientRequestId.length > 255) return error("Generation request", "client request id must not exceed 255 characters");
         const client = createClient();
-        const created = await client.generations.create({
+        const createRequest = {
           spaceId,
+          clientRequestId,
           sessionId: envValue("COHUB_SESSION_ID"),
           turnId: envValue("COHUB_TURN_ID"),
           model: opts.model,
           content,
           parameters,
           meta,
-        });
+        };
+        const created = await createGenerationWithRetry(() =>
+          client.generations.create(createRequest),
+        );
 
         if (opts.async) {
           if (jsonRequested(opts)) return outJson(created);

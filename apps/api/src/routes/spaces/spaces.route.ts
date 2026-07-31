@@ -50,9 +50,13 @@ import {
 } from "../../space-sessions.js";
 import { syncSpaceChannelConfigCache, getSpaceChannelsBySpaceId, bindSpaceChannelsToGateway, unbindSpaceChannelFromGateway, updateSpaceChannelConfig } from "../../channels.js";
 import { fallbackBoundChannelHealth, getChannelHealthMap } from "../../channel-health.js";
-import { createCronJob, enqueueTask } from "../../tasks.js";
+import { createCronJob, CronJobIdempotencyConflictError, enqueueTask } from "../../tasks.js";
 import { cronJobQueueSyncStatus } from "../../cron-job-queue-state.js";
-import { createSessionlessPromptSessionId } from "../../request-idempotency.js";
+import {
+  createRepeatPromptCronJobIdempotencyKey,
+  createRequestFingerprint,
+  createSessionlessPromptSessionId,
+} from "../../request-idempotency.js";
 import { RUN_COMMAND_TASK_TYPE } from "@cohub/core/commands";
 import { sanitizePostgresJsonValue } from "@cohub/core/content/sanitize";
 import { assignLabelsToSession, getPinnedSpaceIds, parseLabelRefs, resolveLabelPaths, resolveOrCreateLabelPaths } from "@cohub/core/labels";
@@ -2006,15 +2010,59 @@ router.post("/:id/prompt", async (c) => {
     return c.json({ mode: "at", taskRunId, scheduledAt: scheduledAt.toISOString(), sessionId });
   }
 
-  const cronJob = await createCronJob({
-    userId: user.uuid,
-    title: body.title?.trim() || "scheduled prompt",
-    taskType: "send_message",
-    payload: taskData,
-    schedule: { pattern: promptSchedule.cronExpression, timezone: promptSchedule.timezone },
-    spaceId,
-    sessionId,
-  });
+  const cronTitle = body.title?.trim() || "scheduled prompt";
+  if (!(await hasPermission(user, "cronjob.manage", { spaceId, sessionId: sessionId ?? undefined }))) {
+    return authzDenied(c);
+  }
+  const repeatRequestFingerprint = requestedClientMessageId
+    ? createRequestFingerprint({
+        spaceId,
+        sessionId,
+        title: cronTitle,
+        content,
+        generationPolicy,
+        intent: promptIntent,
+        accessMode,
+        env: promptEnv,
+        systemInstructions,
+        model: body.model ?? null,
+        provider: body.provider ?? null,
+        thinkingLevel: promptThinkingLevel ?? null,
+        labelIds: promptLabelIds,
+        cronExpression: promptSchedule.cronExpression,
+        timezone: promptSchedule.timezone,
+      })
+    : null;
+  let cronJob: Awaited<ReturnType<typeof createCronJob>>;
+  try {
+    cronJob = await createCronJob({
+      userId: user.uuid,
+      title: cronTitle,
+      taskType: "send_message",
+      payload: taskData,
+      schedule: { pattern: promptSchedule.cronExpression, timezone: promptSchedule.timezone },
+      spaceId,
+      sessionId,
+      ...(requestedClientMessageId && repeatRequestFingerprint
+        ? {
+            idempotency: {
+              key: createRepeatPromptCronJobIdempotencyKey({
+                userId: user.uuid,
+                spaceId,
+                sessionId,
+                clientMessageId: requestedClientMessageId,
+              }),
+              requestFingerprint: repeatRequestFingerprint,
+            },
+          }
+        : {}),
+    });
+  } catch (error) {
+    if (error instanceof CronJobIdempotencyConflictError) {
+      return c.json({ code: error.code, message: error.message }, 409);
+    }
+    throw error;
+  }
   const repeatSchedule = validatePromptSchedule({
     mode: "repeat",
     cronExpression: promptSchedule.cronExpression,

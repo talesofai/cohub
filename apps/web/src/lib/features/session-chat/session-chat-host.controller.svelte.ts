@@ -78,6 +78,10 @@ import {
 	removeSessionComposerDraft,
 	writeSessionComposerDraft,
 } from "$lib/stores/session-composer-drafts";
+import {
+	createComposerSubmissionFingerprint,
+	resolveComposerClientMessageId,
+} from "$lib/stores/session-composer-submission";
 import { sessionGenerationStore } from "$lib/stores/session-generation.svelte";
 import {
 	buildStreamingStoredIntermediateMessages,
@@ -667,17 +671,29 @@ export function createSessionChatHost(options: SessionChatHostOptions) {
 			flushActiveComposerDraft();
 			activeComposerDraftKey = key;
 			if (preserveDraft) {
-				if (key)
+				if (key) {
+					const retryIdentity = composerDraftRetryIdentity(
+						key,
+						composer.input,
+						composer.systemInstructions,
+					);
 					writeSessionComposerDraft(key, {
 						text: composer.input,
 						systemInstructions: composer.systemInstructions,
+						...retryIdentity,
 					});
+				}
 				if (previousKey !== key) removeSessionComposerDraft(previousKey);
 				return;
 			}
 			const draft = key
 				? readSessionComposerDraft(key)
-				: { text: "", systemInstructions: "" };
+				: {
+						text: "",
+						systemInstructions: "",
+						retryClientMessageId: null,
+						retryRequestFingerprint: null,
+					};
 			composer.input = draft.text;
 			composer.systemInstructions = draft.systemInstructions;
 		});
@@ -687,11 +703,14 @@ export function createSessionChatHost(options: SessionChatHostOptions) {
 		const text = input;
 		const instructions = systemInstructions;
 		if (!key) return;
+		if (sending) return;
 		clearComposerDraftSaveTimer();
 		composerDraftSaveTimer = setTimeout(() => {
+			const retryIdentity = composerDraftRetryIdentity(key, text, instructions);
 			writeSessionComposerDraft(key, {
 				text,
 				systemInstructions: instructions,
+				...retryIdentity,
 			});
 			composerDraftSaveTimer = null;
 		}, 400);
@@ -1081,10 +1100,30 @@ export function createSessionChatHost(options: SessionChatHostOptions) {
 	function flushActiveComposerDraft() {
 		clearComposerDraftSaveTimer();
 		if (!activeComposerDraftKey) return;
+		const retryIdentity = composerDraftRetryIdentity(
+			activeComposerDraftKey,
+			composer.input,
+			composer.systemInstructions,
+		);
 		writeSessionComposerDraft(activeComposerDraftKey, {
 			text: composer.input,
 			systemInstructions: composer.systemInstructions,
+			...retryIdentity,
 		});
+	}
+
+	function composerDraftRetryIdentity(
+		key: string,
+		text: string,
+		instructions: string,
+	) {
+		const current = readSessionComposerDraft(key);
+		const matches =
+			current.text === text && current.systemInstructions === instructions;
+		return {
+			retryClientMessageId: matches ? current.retryClientMessageId : null,
+			retryRequestFingerprint: matches ? current.retryRequestFingerprint : null,
+		};
 	}
 
 	function clearActiveComposerDraft() {
@@ -2882,7 +2921,9 @@ export function createSessionChatHost(options: SessionChatHostOptions) {
 		const pendingSystemInstructions = systemInstructions.trim();
 		const pendingAttachments = attachments;
 		const optimisticTurnId = crypto.randomUUID();
-		const clientMessageId = crypto.randomUUID();
+		const submissionDraftKey = activeComposerDraftKey;
+		let clientMessageId: string | null = null;
+		let submissionFingerprint: string | null = null;
 		const currentUser = {
 			uuid: authStore.userUuid ?? null,
 			profile: authStore.profile,
@@ -3050,12 +3091,42 @@ export function createSessionChatHost(options: SessionChatHostOptions) {
 				...(viewportBlock ? [viewportBlock] : []),
 				...attachmentBlocks,
 			];
+			const submissionGenerationPolicy = buildTurnGenerationPolicy();
+			submissionFingerprint = await createComposerSubmissionFingerprint({
+				spaceId: opSpaceId,
+				sessionId,
+				content,
+				model: model?.id ?? null,
+				provider: model?.provider ?? null,
+				thinkingLevel: activeSessionThinkingLevel ?? null,
+				systemInstructions: pendingSystemInstructions || null,
+				generationPolicy: submissionGenerationPolicy,
+				accessMode: "full_access",
+				intent: "followup",
+			});
+			const retryDraft = submissionDraftKey
+				? readSessionComposerDraft(submissionDraftKey)
+				: null;
+			clientMessageId = resolveComposerClientMessageId({
+				retryClientMessageId: retryDraft?.retryClientMessageId ?? null,
+				retryRequestFingerprint: retryDraft?.retryRequestFingerprint ?? null,
+				requestFingerprint: submissionFingerprint,
+				randomUUID: () => crypto.randomUUID(),
+			});
 
 			// Clear input immediately so it disappears from the composer at the same
 			// time the optimistic turn appears in the list — avoids the awkward "stuck"
 			// feeling where the message shows in the list but lingers in the input.
 			composer.clearDraft();
 			clearActiveComposerDraft();
+			if (submissionDraftKey) {
+				writeSessionComposerDraft(submissionDraftKey, {
+					text: pendingInput,
+					systemInstructions: pendingSystemInstructions,
+					retryClientMessageId: clientMessageId,
+					retryRequestFingerprint: submissionFingerprint,
+				});
+			}
 
 			// Existing chat: optimistic turn before prompt.
 			// New chat: wait for prompt (server creates session); keep sending state.
@@ -3129,7 +3200,7 @@ export function createSessionChatHost(options: SessionChatHostOptions) {
 					? { systemInstructions: pendingSystemInstructions }
 					: {}),
 				clientMessageId,
-				generationPolicy: buildTurnGenerationPolicy(),
+				generationPolicy: submissionGenerationPolicy,
 				accessMode: "full_access",
 				intent: "followup",
 				schedule: { mode: "immediate" },
@@ -3137,6 +3208,7 @@ export function createSessionChatHost(options: SessionChatHostOptions) {
 			if (sendResult.mode !== "immediate") {
 				throw new Error("Expected immediate prompt response");
 			}
+			removeSessionComposerDraft(submissionDraftKey);
 			// Prompt already accepted server-side. If we left the space, skip local
 			// adopt; other hosts / re-enter will load via WS or session fetch.
 			if (disposed || spaceId !== opSpaceId) {
@@ -3226,6 +3298,8 @@ export function createSessionChatHost(options: SessionChatHostOptions) {
 			writeSessionComposerDraft(failedDraftKey, {
 				text: failedDraftText,
 				systemInstructions: pendingSystemInstructions,
+				retryClientMessageId: clientMessageId,
+				retryRequestFingerprint: submissionFingerprint,
 			});
 			// Restore UI only if we still own the originating space/session context.
 			if (disposed || spaceId !== opSpaceId) {

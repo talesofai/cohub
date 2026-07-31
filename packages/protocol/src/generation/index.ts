@@ -30,7 +30,7 @@ export type CreateGenerationTaskRequest = {
 export type CreateGenerationTaskResponse = {
   taskRunId: string;
   taskType: typeof GENERATION_TASK_TYPE;
-  status: "pending";
+  status: "pending" | "running" | "completed" | "failed";
   billing?: BillingPayload | null;
 };
 
