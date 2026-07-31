@@ -1,14 +1,14 @@
 import { createLogger } from "@cohub/infra/logging";
 import * as Lark from "@larksuiteoapi/node-sdk";
 import { randomUUID } from "node:crypto";
+import { createReadStream } from "node:fs";
 import type { ContentBlock } from "@cohub/protocol/core";
-import type { FeishuChannelConfig, GatewayInboundEvent, GatewayMediaItem } from "@cohub/protocol/gateway";
+import { GATEWAY_ATTACHMENT_MAX_BYTES, type FeishuChannelConfig, type GatewayInboundEvent, type GatewayMediaItem } from "@cohub/protocol/gateway";
 import type { PlannedGatewayOutboundCommand } from "@cohub/protocol/gateway";
 import type { GatewayProvider } from "../base.js";
 import { resolveChannelCommand } from "../../channel-commands.js";
 import { publishInboundEvent, } from "../../bus.js";
 import { getSpaceChannelConfig, getTurnMessageExternalRef, setTurnMessageExternalRef } from "../../redis.js";
-import { readResponseBufferLimited } from "../../limited-response.js";
 import { buildFeishuDeliveryPlan } from "../../session-output-planner.js";
 import {
   resolveReceiveIdType,
@@ -21,6 +21,7 @@ import {
   readFeishuResourceBuffer,
 } from "./media.js";
 import { safeFetch } from "../../media/safe-fetch.js";
+import { base64ToTempMediaFile, responseToTempMediaFile } from "../../media/temp-media-file.js";
 import {
   ensureImageMediaType,
   ingestInboundMedia,
@@ -34,8 +35,8 @@ import {
 } from "../../channel-health.js";
 
 const logger = createLogger({ serviceName: "cohub-gateway" });
-const FEISHU_OUTBOUND_FILE_MAX_BYTES = 100 * 1024 * 1024;
-const FEISHU_OUTBOUND_BASE64_MAX_CHARS = Math.ceil(FEISHU_OUTBOUND_FILE_MAX_BYTES / 3) * 4 + 4;
+const FEISHU_OUTBOUND_FILE_MAX_BYTES = GATEWAY_ATTACHMENT_MAX_BYTES;
+const LARGE_MEDIA_TIMEOUT_MS = 10 * 60 * 1000;
 // Detect image MIME type from magic bytes (first 4 bytes)
 function detectMimeType(buffer: Buffer): string | null {
   if (buffer.length < 4) return null;
@@ -468,24 +469,26 @@ export class FeishuProvider implements GatewayProvider {
   }
 
   private async uploadFile(item: GatewayMediaItem): Promise<{ fileKey: string; msgType: "file" | "audio" | "media" } | null> {
+    let file: Awaited<ReturnType<typeof responseToTempMediaFile>> | null = null;
     try {
-      let buffer: Buffer;
       let fileName = item.filename || "cohub-file";
       if (item.source.type === "base64") {
-        if (item.source.data.length > FEISHU_OUTBOUND_BASE64_MAX_CHARS) throw new Error(`Feishu outbound media exceeds ${FEISHU_OUTBOUND_FILE_MAX_BYTES} bytes`);
-        buffer = Buffer.from(item.source.data, "base64");
-        if (buffer.length > FEISHU_OUTBOUND_FILE_MAX_BYTES) throw new Error(`Feishu outbound media exceeds ${FEISHU_OUTBOUND_FILE_MAX_BYTES} bytes`);
+        file = await base64ToTempMediaFile(item.source.data, FEISHU_OUTBOUND_FILE_MAX_BYTES, "feishu-outbound-base64");
         const ext = item.source.media_type.split("/")[1] || "bin";
         if (!item.filename) fileName = `cohub-file.${ext}`;
       } else {
-        const response = await safeFetch({ url: item.source.url, label: "feishu outbound media" });
+        const response = await safeFetch({
+          url: item.source.url,
+          label: "feishu outbound media",
+          timeoutMs: LARGE_MEDIA_TIMEOUT_MS,
+        });
         if (!response.ok) {
           logger.warn(`[Feishu:${this.channelId}] Failed to fetch media URL: ${item.source.url} (${response.status})`);
           return null;
         }
-        buffer = await readResponseBufferLimited(response, FEISHU_OUTBOUND_FILE_MAX_BYTES, "Feishu outbound media");
+        file = await responseToTempMediaFile(response, FEISHU_OUTBOUND_FILE_MAX_BYTES, "feishu-outbound-media");
       }
-      if (buffer.length === 0) return null;
+      if (file.size === 0) return null;
 
       const fileType = item.kind === "video" ? "mp4" : item.kind === "voice" ? "opus" : "stream";
       const msgType = item.kind === "video" ? "media" : item.kind === "voice" ? "audio" : "file";
@@ -496,8 +499,8 @@ export class FeishuProvider implements GatewayProvider {
         data: { file_type: fileType, file_name: fileName },
         formData: {
           file: {
-            value: buffer,
-            options: { filename: fileName, contentType: item.mediaType },
+            value: createReadStream(file.path),
+            options: { filename: fileName, contentType: item.mediaType, knownLength: file.size },
           },
         },
       });
@@ -510,6 +513,8 @@ export class FeishuProvider implements GatewayProvider {
     } catch (err) {
       logger.warn(`[Feishu:${this.channelId}] File upload error:`, err instanceof Error ? err.message : String(err));
       return null;
+    } finally {
+      await file?.cleanup();
     }
   }
 

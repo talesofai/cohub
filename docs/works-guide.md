@@ -60,11 +60,11 @@ Editing a target changes the source used by the next version. The public page ch
 
 ## Targets and Limits
 
-File Works accept any single file. An HTML page (`.html` / `.htm`) is published as a web page and must be between 1 byte and 5 MB. A `.board` file is published as an interactive read-only Board, together with the assets it references. Any other file is published for native preview (Markdown, code, image, video, audio, PDF) with a download fallback; the file must be under 100 MB.
+File Works accept any single file up to 1 GiB. An HTML page (`.html` / `.htm`) is published as a web page. A `.board` file is published as an interactive read-only Board, together with the assets it references. Any other file is published for native preview (Markdown, code, image, video, audio, PDF) with a download fallback.
 
 A Board publish captures the Board's own state plus the workspace files it actually references — images, videos, file-card covers, and effect or clip assets. Files a Board does not reference are never published, and file cards show the preview captured at publish time rather than the whole target file.
 
-Directory Works must contain `index.html`. The published directory must contain 1 to 1000 files and total 1 byte to 100 MB.
+Directory Works must contain `index.html`. The published directory must contain 1 to 1000 files and total 1 byte to 1 GiB.
 
 Port Works use the sandbox public endpoint for the port. The port must be one of the supported Cohub public sandbox ports.
 
@@ -268,9 +268,9 @@ This guide was verified in a clean Space on 2026-06-19. File and directory Works
 
 If the public link cannot be formed, check that the user has a username and the Space has a slug.
 
-If a file Work fails, check that an HTML target is between 1 byte and 5 MB, and that any other file is under 100 MB. If a Board Work fails, check that the `.board` file is valid and references at most 1000 assets totalling under 100 MB.
+If a file Work fails, check that the target is between 1 byte and 1 GiB. If a Board Work fails, check that the `.board` file is valid and references at most 1000 assets totalling at most 1 GiB.
 
-If a directory Work fails, check that the directory contains `index.html`, has 1 to 1000 files, and is under 100 MB.
+If a directory Work fails, check that the directory contains `index.html`, has 1 to 1000 files, and totals at most 1 GiB.
 
 If a Work opens but cannot use Cohub APIs, check that it is running inside a published Work iframe — static asset URLs and local previews do not provide the Work runtime. If it is, check its `workScopes` and the viewer-granted scopes shown in `cohub.context()`.
 

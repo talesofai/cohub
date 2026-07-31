@@ -1,12 +1,15 @@
 import { createCipheriv, createDecipheriv } from "node:crypto";
 
+export const createAesEcbEncryptStream = (key: Buffer) => createCipheriv("aes-128-ecb", key, null);
+export const createAesEcbDecryptStream = (key: Buffer) => createDecipheriv("aes-128-ecb", key, null);
+
 export function encryptAesEcb(plaintext: Buffer, key: Buffer) {
-  const cipher = createCipheriv("aes-128-ecb", key, null);
+  const cipher = createAesEcbEncryptStream(key);
   return Buffer.concat([cipher.update(plaintext), cipher.final()]);
 }
 
 export function decryptAesEcb(ciphertext: Buffer, key: Buffer) {
-  const decipher = createDecipheriv("aes-128-ecb", key, null);
+  const decipher = createAesEcbDecryptStream(key);
   return Buffer.concat([decipher.update(ciphertext), decipher.final()]);
 }
 

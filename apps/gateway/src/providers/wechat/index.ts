@@ -375,7 +375,15 @@ export class WeChatProvider implements GatewayProvider {
     if (text) content.push({ type: "text", text });
 
     const downloadedImages: Array<{ id: string; buffer: Buffer; mediaType: string }> = [];
-    const downloadedFiles: Array<{ id: string; buffer: Buffer; filename: string; relativePath: string; mediaType: string | null }> = [];
+    const downloadedFiles: Array<{
+      id: string;
+      filePath: string;
+      size: number;
+      cleanup: () => Promise<void>;
+      filename: string;
+      relativePath: string;
+      mediaType: string | null;
+    }> = [];
     let imageCount = 0;
     let fileCount = 0;
     for (const item of message.item_list ?? []) {
@@ -420,7 +428,15 @@ export class WeChatProvider implements GatewayProvider {
             content.push({ type: "text", text: item.type === WeChatMessageItemType.VOICE ? "[Voice]" : item.type === WeChatMessageItemType.VIDEO ? "[Video]" : "[File]" });
             continue;
           }
-          downloadedFiles.push({ id: `file-${downloadedFiles.length}`, buffer: file.buffer, filename: file.filename, relativePath: file.relativePath, mediaType: file.mediaType });
+          downloadedFiles.push({
+            id: `file-${downloadedFiles.length}`,
+            filePath: file.filePath,
+            size: file.size,
+            cleanup: file.cleanup,
+            filename: file.filename,
+            relativePath: file.relativePath,
+            mediaType: file.mediaType,
+          });
         } catch (error) {
           logger.warn(`[WeChat:${this.channelId}] file download failed`, error);
           content.push({ type: "text", text: "[File unavailable]" });
@@ -429,25 +445,30 @@ export class WeChatProvider implements GatewayProvider {
     }
 
     if (downloadedImages.length > 0 || downloadedFiles.length > 0) {
-      const ingested = await ingestInboundMedia({
-        event: { ...eventBase, eventType: "message_create", content } satisfies GatewayInboundEvent,
-        source: "wechat",
-        images: downloadedImages.map((image) => ({
-          id: image.id,
-          buffer: image.buffer,
-          mediaType: image.mediaType,
-          filename: `${image.id}.${imageExtensionFromMimeType(image.mediaType)}`,
-        })),
-        files: downloadedFiles.map((file) => ({
-          id: file.id,
-          buffer: file.buffer,
-          mediaType: file.mediaType,
-          name: file.filename,
-          relativePath: file.relativePath,
-        })),
-        label: `wechat:${this.channelId}`,
-      });
-      content.push(...ingested.blocks);
+      try {
+        const ingested = await ingestInboundMedia({
+          event: { ...eventBase, eventType: "message_create", content } satisfies GatewayInboundEvent,
+          source: "wechat",
+          images: downloadedImages.map((image) => ({
+            id: image.id,
+            buffer: image.buffer,
+            mediaType: image.mediaType,
+            filename: `${image.id}.${imageExtensionFromMimeType(image.mediaType)}`,
+          })),
+          files: downloadedFiles.map((file) => ({
+            id: file.id,
+            filePath: file.filePath,
+            size: file.size,
+            mediaType: file.mediaType,
+            name: file.filename,
+            relativePath: file.relativePath,
+          })),
+          label: `wechat:${this.channelId}`,
+        });
+        content.push(...ingested.blocks);
+      } finally {
+        await Promise.all(downloadedFiles.map((file) => file.cleanup().catch(() => undefined)));
+      }
     }
 
     return content;

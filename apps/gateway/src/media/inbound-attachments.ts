@@ -7,6 +7,7 @@ import { gatewayConfig } from "../config.js";
 import { readResponseBufferLimited } from "../limited-response.js";
 import { detectImageMimeType, imageExtensionFromMimeType, sanitizeFilename } from "./mime.js";
 import { safeFetch } from "./safe-fetch.js";
+import { tempMediaBlob } from "./temp-media-file.js";
 
 const logger = createLogger({ serviceName: "cohub-gateway" });
 
@@ -51,14 +52,18 @@ export type InboundDownloadedImage = {
   originalUrl?: string | null;
 };
 
-export type InboundDownloadedFile = {
+type InboundDownloadedFileBase = {
   id: string;
-  buffer: Buffer;
   mediaType?: string | null;
   name: string;
   relativePath?: string | null;
   originalUrl?: string | null;
 };
+
+export type InboundDownloadedFile = InboundDownloadedFileBase & (
+  | { buffer: Buffer; filePath?: never; size?: never }
+  | { buffer?: never; filePath: string; size: number }
+);
 
 export type IngestInboundMediaResult = {
   blocks: ContentBlock[];
@@ -94,7 +99,7 @@ export async function requestGatewayAttachmentPlan(input: {
 }
 
 async function putPlannedAttachment(input: {
-  buffer: Buffer;
+  body: BodyInit;
   mediaType?: string | null;
   uploadUrl: string;
   uploadHeaders?: Record<string, string>;
@@ -106,7 +111,7 @@ async function putPlannedAttachment(input: {
       ...(input.mediaType ? { "content-type": input.mediaType } : {}),
       ...(input.uploadHeaders ?? {}),
     },
-    body: new Uint8Array(input.buffer),
+    body: input.body,
   });
   if (!response.ok) throw new Error(`${input.label} upload failed ${response.status}`);
 }
@@ -119,7 +124,7 @@ export async function uploadPlannedImageAttachment(input: {
   originalUrl?: string | null;
 }): Promise<ContentBlock> {
   await putPlannedAttachment({
-    buffer: input.buffer,
+    body: new Uint8Array(input.buffer),
     mediaType: input.mediaType,
     uploadUrl: input.plan.uploadUrl,
     uploadHeaders: input.plan.uploadHeaders,
@@ -142,7 +147,12 @@ export async function uploadPlannedImageAttachment(input: {
 export async function uploadPlannedFileAttachments(input: {
   spaceId: string;
   uploadId: string | null;
-  files: Array<{ id: string; buffer: Buffer; mediaType: string | null }>;
+  files: Array<{
+    id: string;
+    buffer?: Buffer;
+    filePath?: string;
+    mediaType: string | null;
+  }>;
   plans: GatewayFileAttachmentPlan[];
 }): Promise<{ paths: string[]; pathById: Map<string, string> }> {
   if (!input.uploadId || input.files.length === 0) {
@@ -153,8 +163,14 @@ export async function uploadPlannedFileAttachments(input: {
   for (const file of input.files) {
     const plan = plansById.get(file.id);
     if (!plan) continue;
+    const body = file.buffer !== undefined
+      ? new Uint8Array(file.buffer)
+      : file.filePath
+        ? await tempMediaBlob({ path: file.filePath }, file.mediaType ?? "application/octet-stream")
+        : null;
+    if (!body) continue;
     await putPlannedAttachment({
-      buffer: file.buffer,
+      body,
       mediaType: file.mediaType,
       uploadUrl: plan.uploadUrl,
       uploadHeaders: plan.uploadHeaders,
@@ -341,9 +357,10 @@ export async function ingestInboundMedia(input: {
         id: file.id,
         name: relativePath.split("/").at(-1) ?? name,
         relativePath,
-        size: file.buffer.length,
+        size: file.buffer !== undefined ? file.buffer.length : file.size,
         mimeType: file.mediaType ?? null,
         buffer: file.buffer,
+        filePath: file.filePath,
       };
     });
 
@@ -441,6 +458,7 @@ export async function ingestInboundMedia(input: {
       ...plannedFiles.map((file) => ({
         id: file.id,
         buffer: file.buffer,
+        filePath: file.filePath,
         mediaType: file.mimeType,
       })),
       ...imageFileSlots

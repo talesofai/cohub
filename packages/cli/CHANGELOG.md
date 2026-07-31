@@ -1,5 +1,16 @@
 # @neta-art/cohub-cli
 
+## 3.2.0
+
+### Minor Changes
+
+- f514b5e: Add paginated Space-level Turn listing with author and time boundaries, including CLI access.
+
+### Patch Changes
+
+- Updated dependencies [f514b5e]
+  - @neta-art/cohub@4.4.0
+
 ## 3.1.6
 
 ### Patch Changes

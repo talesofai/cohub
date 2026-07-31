@@ -1,15 +1,20 @@
 import crypto from "node:crypto";
-import type { GatewayMediaItem } from "@cohub/protocol/gateway";
+import { GATEWAY_ATTACHMENT_MAX_BYTES, type GatewayMediaItem } from "@cohub/protocol/gateway";
+import {
+  base64ToTempMediaFile,
+  hashTempMediaFile,
+  readTempMediaHead,
+  responseToTempMediaFile,
+} from "../../../media/temp-media-file.js";
 import { getWeChatUploadUrl } from "../api.js";
 import { WeChatMessageItemType, WeChatUploadMediaType, type WeChatMessageItem } from "../types.js";
-import { uploadWeChatCdnBuffer } from "./cdn.js";
+import { uploadWeChatCdnFile } from "./cdn.js";
 import { aesEcbPaddedSize } from "./crypto.js";
 import { detectImageMimeType } from "./mime.js";
-import { readResponseBufferLimited } from "../../../limited-response.js";
 import { safeFetch } from "./url.js";
 
-export const WECHAT_OUTBOUND_ATTACHMENT_MAX_BYTES = 100 * 1024 * 1024;
-const BASE64_MAX_CHARS = Math.ceil(WECHAT_OUTBOUND_ATTACHMENT_MAX_BYTES / 3) * 4 + 4;
+export const WECHAT_OUTBOUND_ATTACHMENT_MAX_BYTES = GATEWAY_ATTACHMENT_MAX_BYTES;
+const LARGE_MEDIA_TIMEOUT_MS = 10 * 60 * 1000;
 
 const mediaUploadType = (kind: GatewayMediaItem["kind"]) => {
   if (kind === "image") return WeChatUploadMediaType.IMAGE;
@@ -38,13 +43,16 @@ const sanitizeFilename = (value: string | undefined, fallback: string) => {
 
 async function fetchMediaSource(source: GatewayMediaItem["source"]) {
   if (source.type === "base64") {
-    if (source.data.length > BASE64_MAX_CHARS) throw new Error(`WeChat outbound attachment exceeds ${WECHAT_OUTBOUND_ATTACHMENT_MAX_BYTES} bytes`);
-    return Buffer.from(source.data, "base64");
+    return base64ToTempMediaFile(source.data, WECHAT_OUTBOUND_ATTACHMENT_MAX_BYTES, "wechat-outbound-base64");
   }
 
-  const response = await safeFetch({ url: source.url, label: "wechat outbound media" });
+  const response = await safeFetch({
+    url: source.url,
+    label: "wechat outbound media",
+    timeoutMs: LARGE_MEDIA_TIMEOUT_MS,
+  });
   if (!response.ok) throw new Error(`WeChat outbound media download failed ${response.status}`);
-  return readResponseBufferLimited(response, WECHAT_OUTBOUND_ATTACHMENT_MAX_BYTES, "WeChat outbound attachment");
+  return responseToTempMediaFile(response, WECHAT_OUTBOUND_ATTACHMENT_MAX_BYTES, "wechat-outbound-media");
 }
 
 export async function uploadWeChatMediaItem(params: {
@@ -54,57 +62,63 @@ export async function uploadWeChatMediaItem(params: {
   token: string;
   to: string;
 }) {
-  const buffer = await fetchMediaSource(params.item.source);
-  if (buffer.length === 0) throw new Error("WeChat outbound media is empty");
-  if (params.item.kind === "image" && !detectImageMimeType(buffer)) throw new Error("WeChat outbound image type is unsupported");
+  const file = await fetchMediaSource(params.item.source);
+  try {
+    if (file.size === 0) throw new Error("WeChat outbound media is empty");
+    if (params.item.kind === "image" && !detectImageMimeType(await readTempMediaHead(file, 32))) {
+      throw new Error("WeChat outbound image type is unsupported");
+    }
 
-  const filekey = crypto.randomBytes(16).toString("hex");
-  const aesKey = crypto.randomBytes(16);
-  const rawFileMd5 = crypto.createHash("md5").update(buffer).digest("hex");
-  const fileSize = aesEcbPaddedSize(buffer.length);
-  const uploadUrl = await getWeChatUploadUrl({
-    baseUrl: params.baseUrl,
-    token: params.token,
-    filekey,
-    mediaType: mediaUploadType(params.item.kind),
-    toUserId: params.to,
-    rawSize: buffer.length,
-    rawFileMd5,
-    fileSize,
-    aesKeyHex: aesKey.toString("hex"),
-  });
-  const uploaded = await uploadWeChatCdnBuffer({
-    buffer,
-    uploadFullUrl: uploadUrl.upload_full_url,
-    uploadParam: uploadUrl.upload_param,
-    filekey,
-    cdnBaseUrl: params.cdnBaseUrl,
-    aesKey,
-    label: `wechat:${params.to}:${params.item.kind}-upload`,
-  });
-  const media = {
-    encrypt_query_param: uploaded.downloadParam,
-    aes_key: Buffer.from(aesKey.toString("hex")).toString("base64"),
-    encrypt_type: 1,
-  };
+    const filekey = crypto.randomBytes(16).toString("hex");
+    const aesKey = crypto.randomBytes(16);
+    const rawFileMd5 = await hashTempMediaFile(file, "md5");
+    const encryptedSize = aesEcbPaddedSize(file.size);
+    const uploadUrl = await getWeChatUploadUrl({
+      baseUrl: params.baseUrl,
+      token: params.token,
+      filekey,
+      mediaType: mediaUploadType(params.item.kind),
+      toUserId: params.to,
+      rawSize: file.size,
+      rawFileMd5,
+      fileSize: encryptedSize,
+      aesKeyHex: aesKey.toString("hex"),
+    });
+    const uploaded = await uploadWeChatCdnFile({
+      file,
+      uploadFullUrl: uploadUrl.upload_full_url,
+      uploadParam: uploadUrl.upload_param,
+      filekey,
+      cdnBaseUrl: params.cdnBaseUrl,
+      aesKey,
+      label: `wechat:${params.to}:${params.item.kind}-upload`,
+    });
+    const media = {
+      encrypt_query_param: uploaded.downloadParam,
+      aes_key: Buffer.from(aesKey.toString("hex")).toString("base64"),
+      encrypt_type: 1,
+    };
 
-  if (params.item.kind === "image") {
-    return { type: WeChatMessageItemType.IMAGE, image_item: { media, mid_size: uploaded.ciphertextSize } } satisfies WeChatMessageItem;
-  }
-  if (params.item.kind === "video") {
-    return { type: WeChatMessageItemType.VIDEO, video_item: { media, video_size: buffer.length, video_md5: rawFileMd5 } } satisfies WeChatMessageItem;
-  }
-  if (params.item.kind === "voice") {
-    return { type: WeChatMessageItemType.VOICE, voice_item: { media } } satisfies WeChatMessageItem;
-  }
+    if (params.item.kind === "image") {
+      return { type: WeChatMessageItemType.IMAGE, image_item: { media, mid_size: uploaded.ciphertextSize } } satisfies WeChatMessageItem;
+    }
+    if (params.item.kind === "video") {
+      return { type: WeChatMessageItemType.VIDEO, video_item: { media, video_size: file.size, video_md5: rawFileMd5 } } satisfies WeChatMessageItem;
+    }
+    if (params.item.kind === "voice") {
+      return { type: WeChatMessageItemType.VOICE, voice_item: { media } } satisfies WeChatMessageItem;
+    }
 
-  return {
-    type: messageItemType(params.item.kind),
-    file_item: {
-      media,
-      file_name: sanitizeFilename(params.item.filename, "cohub-file"),
-      md5: rawFileMd5,
-      len: String(buffer.length),
-    },
-  } satisfies WeChatMessageItem;
+    return {
+      type: messageItemType(params.item.kind),
+      file_item: {
+        media,
+        file_name: sanitizeFilename(params.item.filename, "cohub-file"),
+        md5: rawFileMd5,
+        len: String(file.size),
+      },
+    } satisfies WeChatMessageItem;
+  } finally {
+    await file.cleanup();
+  }
 }

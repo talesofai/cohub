@@ -1,7 +1,8 @@
+import { GATEWAY_ATTACHMENT_MAX_BYTES } from "@cohub/protocol/gateway";
 import { WeChatMessageItemType, type WeChatCdnMedia, type WeChatMessageItem } from "../types.js";
-import { downloadWeChatCdnImage } from "./cdn.js";
+import { downloadWeChatCdnFile } from "./cdn.js";
 
-export const WECHAT_INBOUND_FILE_MAX_BYTES = 100 * 1024 * 1024;
+export const WECHAT_INBOUND_FILE_MAX_BYTES = GATEWAY_ATTACHMENT_MAX_BYTES;
 export const WECHAT_INBOUND_FILE_MAX_COUNT = 8;
 
 const extensionMimeTypes: Record<string, string> = {
@@ -71,7 +72,7 @@ export async function downloadAttachmentItem(params: {
   const media = attachment?.media;
   if (!attachment || (!media?.encrypt_query_param && !media?.full_url) || !media?.aes_key) return null;
 
-  const buffer = await downloadWeChatCdnImage({
+  const file = await downloadWeChatCdnFile({
     cdnBaseUrl: params.cdnBaseUrl,
     encryptedQueryParam: media.encrypt_query_param,
     fullUrl: media.full_url,
@@ -80,7 +81,9 @@ export async function downloadAttachmentItem(params: {
     label: `wechat:${params.channelId}:${params.externalMessageId}:attachment`,
   });
   return {
-    buffer,
+    filePath: file.path,
+    size: file.size,
+    cleanup: file.cleanup,
     filename: attachment.filename,
     relativePath: attachment.filename,
     mediaType: attachment.mimeType,

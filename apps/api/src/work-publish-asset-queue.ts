@@ -59,5 +59,5 @@ export async function publishWorkAssetInWorker(input: Omit<WorkPublishAssetJobDa
     ...defaultJobRetention,
   });
 
-  return job.waitUntilFinished(workPublishAssetQueueEvents, 15 * 60 * 1000) as Promise<WorkPublishAssetJobResult>;
+  return job.waitUntilFinished(workPublishAssetQueueEvents, 30 * 60 * 1000) as Promise<WorkPublishAssetJobResult>;
 }

@@ -43,8 +43,6 @@ const MAX_UPLOAD_SIZE = 50 * 1024 * 1024;
 const MAX_UPLOAD_COUNT = 20;
 const MAX_PATH_CHARS = 4096;
 const MAX_PATH_DEPTH = 64;
-const MAX_DIRECTORY_EXPORT_FILES = 1000;
-const MAX_DIRECTORY_EXPORT_TOTAL_BYTES = 100 * 1024 * 1024;
 const SPACE_REAL_ROOT_CACHE_TTL_MS = 30_000;
 const logger = createLogger({ serviceName: "cohub-api" });
 const tracer = getTracer("cohub-api");
@@ -977,121 +975,6 @@ export async function readSpaceFile(
     };
 
     return response;
-  });
-}
-
-export type SpaceFsDirectoryFile = {
-  path: string;
-  relativePath: string;
-  size: number;
-  mimeType: string | null;
-  content: Buffer;
-};
-
-export async function readSpaceDirectoryFiles(
-  spaceId: string,
-  path: string,
-  options?: { visibility?: SpaceFsVisibility },
-): Promise<{ path: string; files: SpaceFsDirectoryFile[] }> {
-  const visibility = options?.visibility ?? "full";
-  return observeSpaceFs("directory_files", { spaceId, path, visibility }, async (observation) => {
-    const { root, target, relativePath } = await observeSpaceFsStage(
-      observation,
-      "resolve_target",
-      "Normalize the requested path, resolve the workspace root, and protect against path traversal; slow when storage metadata or realpath is cold.",
-      () => resolveTarget(spaceId, path, { allowEmpty: true }),
-      (result) => pathTelemetry(result.relativePath),
-    );
-    observation.normalizedPath = relativePath;
-
-    const targetStats = await observeSpaceFsStage(
-      observation,
-      "target_stat",
-      "Read filesystem metadata for the requested export directory; slow when the backing volume is cold or under IO pressure.",
-      async () => {
-        try {
-          return await lstat(target);
-        } catch {
-          throw new SpaceFsError(404, "path_not_found", "File or directory not found.");
-        }
-      },
-      (stats) => ({ nodeType: entryType(stats), fileSizeBytes: stats.size, isDirectory: stats.isDirectory(), isSymlink: stats.isSymbolicLink() }),
-    );
-
-    const filter = await observeSpaceFsStage(
-      observation,
-      "visibility_filter",
-      "Build the visibility filter from workspace ignore rules when filtered access is requested; slow when ignore files need to be read.",
-      () => createVisibilityFilter(root, visibility),
-      (result) => ({ filterEnabled: result !== null }),
-    );
-
-    await observeSpaceFsStage(
-      observation,
-      "directory_check",
-      "Check visibility and validate that the requested node is an exportable directory.",
-      async () => {
-        await assertVisiblePath(filter, relativePath, { isDirectory: targetStats.isDirectory() });
-        if (targetStats.isSymbolicLink()) throw new SpaceFsError(400, "symlink_not_supported", "Symlink export is not supported.");
-        if (!targetStats.isDirectory()) throw new SpaceFsError(400, "not_a_directory", "The selected path is not a directory.");
-      },
-      () => ({ visible: true, isDirectory: true }),
-    );
-
-    const files: SpaceFsDirectoryFile[] = [];
-    let totalBytes = 0;
-    let directoriesVisited = 0;
-
-    await observeSpaceFsStage(
-      observation,
-      "directory_walk",
-      "Recursively stat and read visible files for directory export; slow when many files are present or storage is cold.",
-      async () => {
-        const walk = async (dir: string) => {
-          directoriesVisited += 1;
-          const names = await readdir(dir);
-          names.sort((a, b) => a.localeCompare(b));
-          for (const name of names) {
-            const absPath = join(dir, name);
-            const stats = await lstat(absPath);
-            const filePath = toRelativePath(root, absPath);
-            await assertVisiblePath(filter, filePath, { isDirectory: stats.isDirectory() });
-            if (stats.isSymbolicLink()) throw new SpaceFsError(400, "symlink_not_supported", "Symlink export is not supported.");
-            if (stats.isDirectory()) {
-              await walk(absPath);
-              continue;
-            }
-            if (!stats.isFile()) continue;
-            if (files.length >= MAX_DIRECTORY_EXPORT_FILES) {
-              throw new SpaceFsError(413, "directory_too_many_files", `Cannot publish more than ${MAX_DIRECTORY_EXPORT_FILES} files from a directory.`);
-            }
-            totalBytes += stats.size;
-            if (totalBytes > MAX_DIRECTORY_EXPORT_TOTAL_BYTES) {
-              throw new SpaceFsError(413, "directory_too_large", "Directory publish size exceeds 100MB.");
-            }
-            const relativeFilePath = relative(target, absPath).replace(/\\/g, "/");
-            files.push({
-              path: filePath,
-              relativePath: relativeFilePath,
-              size: stats.size,
-              mimeType: getMimeType(absPath),
-              content: await readFile(absPath),
-            });
-          }
-        };
-        await walk(target);
-      },
-      () => ({
-        fileCount: files.length,
-        totalBytes,
-        directoriesVisited,
-        maxFiles: MAX_DIRECTORY_EXPORT_FILES,
-        maxTotalBytes: MAX_DIRECTORY_EXPORT_TOTAL_BYTES,
-      }),
-    );
-
-    observation.result = { fileCount: files.length, totalBytes, directoriesVisited };
-    return { path: relativePath, files };
   });
 }
 

@@ -1,5 +1,20 @@
 [
 	{
+		"version": "2.6",
+		"date": "2026-07-31",
+		"tags": ["v2.6.0"],
+		"highlights": [
+			"**Space turn browsing**: a new permission-aware `GET /api/spaces/:id/turns` endpoint lists turns across all visible Sessions with author, session, and time-boundary filters plus stable cursor pagination, exposed through protocol types, the SDK (`SpaceTurnsApi`), and a new `cohub spaces turns ls` command with table and JSON output. The web workspace replays recent turns from other members through the existing danmaku layer, using local cursors, cross-tab lease coordination, deduplication, and live-message priority so catch-up never crowds out real-time activity.",
+			"**1 GiB Work publishes**: file, HTML, Board, and directory Works now accept up to 1 GiB, up from 5 MB for assets and 100 MB for sites. The publish job was rewritten to stream from disk through S3 multipart uploads (`@aws-sdk/lib-storage`) instead of buffering whole files and directories in memory, with HTML metadata parsing bounded to a 5 MB prefix read.",
+			"**500 MB gateway attachments**: inbound and outbound media limits are consolidated behind a shared `GATEWAY_ATTACHMENT_MAX_BYTES` constant and raised to 500 MB. A new `temp-media-file` module streams responses and base64 payloads to mode-`0600` temp files with byte-limit transforms and stream timeouts, replacing the buffer-everything path in the WeChat and Feishu providers.",
+			"**Indexed turn queries**: message lookups across the agent, API snapshot, and turn finalization paths now filter on the indexed `turn_id` column instead of the unindexed `meta->>'turnId'` JSONB expression, removing sequential scans over the full messages table on large deployments.",
+			"**Model in tool environment**: sandbox commands receive `COHUB_MODEL_PROVIDER` and `COHUB_MODEL_ID`, so tools and scripts can adapt to the model driving the current turn."
+		],
+		"fixes": [
+			"Raised the Work publish asset job wait timeout from 15 to 30 minutes so large publishes are no longer cut short."
+		]
+	},
+	{
 		"version": "2.5",
 		"date": "2026-07-31",
 		"tags": ["v2.5.0"],
