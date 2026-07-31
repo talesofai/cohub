@@ -8,36 +8,46 @@ export type CronJobQueueExpectation = {
   bullJobKey: string;
   enabled: boolean;
   deletedAt: Date | null;
+  scheduleVersion: number;
 };
 
 export type CronJobQueueIndex = {
-  byId: ReadonlyMap<string, readonly RepeatableJob[]>;
+  byOwnerId: ReadonlyMap<string, readonly RepeatableJob[]>;
   byKey: ReadonlyMap<string, RepeatableJob>;
 };
 
-const repeatJobId = (cronJobId: string) => `cron-${cronJobId}`;
+export const cronJobRepeatOwnerId = (cronJobId: string) => `cron-${cronJobId}`;
+
+export const cronJobRepeatVersionedId = (
+  cronJobId: string,
+  scheduleVersion: number,
+) => `${cronJobRepeatOwnerId(cronJobId)}-v${scheduleVersion}`;
+
+const repeatJobOwnerId = (repeatJobId: string) =>
+  repeatJobId.replace(/-v\d+$/, "");
 
 export function indexCronJobQueueEntries(
   repeatableJobs: readonly RepeatableJob[],
 ): CronJobQueueIndex {
-  const byId = new Map<string, RepeatableJob[]>();
+  const byOwnerId = new Map<string, RepeatableJob[]>();
   const byKey = new Map<string, RepeatableJob>();
   for (const job of repeatableJobs) {
     byKey.set(job.key, job);
     if (!job.id) continue;
-    const entries = byId.get(job.id);
+    const ownerId = repeatJobOwnerId(job.id);
+    const entries = byOwnerId.get(ownerId);
     if (entries) entries.push(job);
-    else byId.set(job.id, [job]);
+    else byOwnerId.set(ownerId, [job]);
   }
-  return { byId, byKey };
+  return { byOwnerId, byKey };
 }
 
 export function findCronJobQueueEntries(
   cronJob: Pick<CronJobQueueExpectation, "id" | "bullJobKey">,
   queueIndex: CronJobQueueIndex,
 ) {
-  const jobId = repeatJobId(cronJob.id);
-  const entries = [...(queueIndex.byId.get(jobId) ?? [])];
+  const ownerId = cronJobRepeatOwnerId(cronJob.id);
+  const entries = [...(queueIndex.byOwnerId.get(ownerId) ?? [])];
   const storedEntry = cronJob.bullJobKey
     ? queueIndex.byKey.get(cronJob.bullJobKey)
     : undefined;
@@ -59,7 +69,7 @@ export function isCronJobQueueStateCurrent(
 
   const [entry] = entries;
   return entry?.key === cronJob.bullJobKey
-    && entry.id === repeatJobId(cronJob.id)
+    && entry.id === cronJobRepeatVersionedId(cronJob.id, cronJob.scheduleVersion)
     && entry.name === cronJob.taskType
     && entry.pattern === cronJob.cronExpression
     && entry.tz === cronJob.timezone;

@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 import type { RepeatableJob } from "bullmq";
 import {
+  cronJobRepeatVersionedId,
   findCronJobQueueEntries,
   indexCronJobQueueEntries,
   isCronJobQueueStateCurrent,
@@ -16,6 +17,7 @@ const cronJob: CronJobQueueExpectation = {
   bullJobKey: "repeat-key",
   enabled: true,
   deletedAt: null,
+  scheduleVersion: 2,
 };
 
 const queueEntry: RepeatableJob = {
@@ -28,12 +30,32 @@ const queueEntry: RepeatableJob = {
 };
 
 test("cron queue state requires one exact live repeat job", () => {
-  assert.equal(isCronJobQueueStateCurrent(cronJob, indexCronJobQueueEntries([queueEntry])), true);
+  assert.equal(isCronJobQueueStateCurrent(cronJob, indexCronJobQueueEntries([queueEntry])), false);
+  assert.equal(
+    isCronJobQueueStateCurrent(
+      cronJob,
+      indexCronJobQueueEntries([{
+        ...queueEntry,
+        id: cronJobRepeatVersionedId(cronJob.id, cronJob.scheduleVersion),
+      }]),
+    ),
+    true,
+  );
   assert.equal(isCronJobQueueStateCurrent(cronJob, indexCronJobQueueEntries([])), false);
   assert.equal(
     isCronJobQueueStateCurrent(
       cronJob,
       indexCronJobQueueEntries([{ ...queueEntry, pattern: "30 9 * * *" }]),
+    ),
+    false,
+  );
+  assert.equal(
+    isCronJobQueueStateCurrent(
+      cronJob,
+      indexCronJobQueueEntries([{
+        ...queueEntry,
+        id: cronJobRepeatVersionedId(cronJob.id, cronJob.scheduleVersion - 1),
+      }]),
     ),
     false,
   );

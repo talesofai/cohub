@@ -15,9 +15,11 @@ import {
   nextCronJobUpdateVersion,
 } from "./cron-job-concurrency.js";
 import {
+  cronJobRepeatVersionedId,
   findCronJobQueueEntries,
   indexCronJobQueueEntries,
   isCronJobQueueStateCurrent,
+  type CronJobQueueIndex,
 } from "./cron-job-queue-state.js";
 
 
@@ -123,7 +125,7 @@ async function scheduleCronJobRepeat(
     taskPayload,
     {
       repeat: { pattern: jobData.cronExpression, tz: jobData.timezone },
-      jobId: `cron-${cronJobId}`,
+      jobId: cronJobRepeatVersionedId(cronJobId, jobData.scheduleVersion),
       ...defaultJobRetention,
       attempts: 3,
       backoff: { type: "exponential", delay: 60_000 },
@@ -150,54 +152,64 @@ type CronJobRow = typeof cronJobs.$inferSelect;
 
 export async function reconcileCronJobQueue(
   cronJobId: string,
-  options: { verifyQueueState?: boolean } = {},
+  options: {
+    verifyQueueState?: boolean;
+    queueIndex?: CronJobQueueIndex;
+  } = {},
 ) {
-  return db.transaction(async (tx) => {
-    await tx.execute(
-      sql`select pg_advisory_xact_lock(hashtextextended(${cronJobId}, 0))`,
+  const [current] = await db
+    .select()
+    .from(cronJobs)
+    .where(eq(cronJobs.id, cronJobId))
+    .limit(1);
+  if (!current) return null;
+
+  let queueIndex = options.queueIndex ?? null;
+  if (current.queueSyncedVersion === current.scheduleVersion) {
+    if (!options.verifyQueueState) return current;
+    queueIndex ??= indexCronJobQueueEntries(
+      await taskQueue.getRepeatableJobs(0, -1, true),
     );
-    const [current] = await tx
-      .select()
-      .from(cronJobs)
-      .where(eq(cronJobs.id, cronJobId))
-      .limit(1);
-    if (!current) return null;
+    if (isCronJobQueueStateCurrent(current, queueIndex)) return current;
+  }
 
-    let queueIndex = null;
-    if (current.queueSyncedVersion === current.scheduleVersion) {
-      if (!options.verifyQueueState) return current;
-      queueIndex = indexCronJobQueueEntries(
-        await taskQueue.getRepeatableJobs(0, -1, true),
-      );
-      if (isCronJobQueueStateCurrent(current, queueIndex)) return current;
+  const staleKeys = new Set<string>();
+  if (current.bullJobKey) staleKeys.add(current.bullJobKey);
+  if (queueIndex) {
+    for (const entry of findCronJobQueueEntries(current, queueIndex)) {
+      staleKeys.add(entry.key);
     }
+  }
+  await Promise.all([...staleKeys].map((key) => taskQueue.removeRepeatableByKey(key)));
 
-    const staleKeys = new Set<string>();
-    if (current.bullJobKey) staleKeys.add(current.bullJobKey);
-    if (queueIndex) {
-      for (const entry of findCronJobQueueEntries(current, queueIndex)) {
-        staleKeys.add(entry.key);
-      }
+  const nextBullJobKey = current.enabled && !current.deletedAt
+    ? await scheduleCronJobRepeat(current.id, cronJobScheduleData(current))
+    : "";
+
+  const [synced] = await db
+    .update(cronJobs)
+    .set({
+      bullJobKey: nextBullJobKey,
+      queueSyncedVersion: current.scheduleVersion,
+    })
+    .where(and(
+      eq(cronJobs.id, current.id),
+      eq(cronJobs.scheduleVersion, current.scheduleVersion),
+    ))
+    .returning();
+  if (!synced) {
+    if (nextBullJobKey) {
+      await taskQueue.removeRepeatableByKey(nextBullJobKey).catch((cleanupError) => {
+        logger.warn("[CronJob] failed to remove stale versioned repeat", {
+          cronJobId,
+          repeatJobKey: nextBullJobKey,
+          cleanupError,
+        });
+      });
     }
-    await Promise.all([...staleKeys].map((key) => taskQueue.removeRepeatableByKey(key)));
-    const nextBullJobKey = current.enabled && !current.deletedAt
-      ? await scheduleCronJobRepeat(current.id, cronJobScheduleData(current))
-      : "";
-
-    const [synced] = await tx
-      .update(cronJobs)
-      .set({
-        bullJobKey: nextBullJobKey,
-        queueSyncedVersion: current.scheduleVersion,
-      })
-      .where(and(
-        eq(cronJobs.id, current.id),
-        eq(cronJobs.scheduleVersion, current.scheduleVersion),
-      ))
-      .returning();
-    if (!synced) throw new CronJobUpdateConflictError();
-    return synced;
-  });
+    throw new CronJobUpdateConflictError();
+  }
+  return synced;
 }
 
 const logCronJobQueueSyncFailure = (cronJobId: string) => (error: unknown) => {
@@ -334,6 +346,7 @@ export async function reconcilePendingCronJobQueues(limit = 100) {
     try {
       await reconcileCronJobQueue(candidate.id, {
         verifyQueueState: candidate.verifyQueueState,
+        ...(candidate.verifyQueueState ? { queueIndex } : {}),
       });
     } catch (error) {
       failed += 1;
