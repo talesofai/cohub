@@ -33,6 +33,7 @@ import {
   streamCompletionEvents,
   type RunCompletionOutcome,
 } from "../../llm/stream-completion.js";
+import { resolveBillingUserId } from "../../identity-bridge.js";
 
 const logger = createLogger({ serviceName: "cohub-api" });
 const router = new Hono();
@@ -409,9 +410,17 @@ router.post("/", async (c) => {
   const model = resolved.model;
   const registry = resolved.registry;
 
+  const billingUserId = await resolveBillingUserId(user).catch((error) => {
+    logger.error("[Billing] failed to resolve legacy billing identity before raw completion", { error });
+    return null;
+  });
+  if (!billingUserId) {
+    return completionError(c, 503, "billing_identity_unavailable", "Billing identity is temporarily unavailable.");
+  }
+
   // Pre-check balance before spending tokens. Fail-open if credit lookup errors.
   const decision = await billingUsageGate.evaluate({
-    userId: user.uuid,
+    userId: billingUserId,
     usageKind: "llm.raw_completion",
     source: "raw_completion",
     model: model.id,
@@ -441,7 +450,7 @@ router.post("/", async (c) => {
     const completedAt = new Date();
     await recordCompletionBilling({
       completionId,
-      userId: user.uuid,
+      userId: billingUserId,
       provider: model.provider,
       model: model.id,
       usage: outcome.usage,

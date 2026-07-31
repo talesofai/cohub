@@ -110,7 +110,7 @@ export function createGenerationDeclarationLoader(input: {
     }
   }
 
-  async function loadGenerationDeclarations(userId: string): Promise<GenerationModelDeclaration[]> {
+  async function loadGenerationDeclarations(userId: string, userAliases: readonly string[] = []): Promise<GenerationModelDeclaration[]> {
     const platformGenerations = await loadCachedGenerations({
       redisKey: PLATFORM_GENERATIONS_REDIS_KEY,
       dir: platformGenerationsDir(),
@@ -118,24 +118,28 @@ export function createGenerationDeclarationLoader(input: {
     });
     if (!platformGenerations) throw new Error("Generation declarations directory not found");
 
-    const userGenerations = await loadCachedGenerations({
-      redisKey: getUserGenerationsRedisKey(userId),
-      dir: userGenerationsDir(userId),
+    const userIds = [...new Set([
+      ...userAliases.map((value) => value.trim()).filter((value) => value && value !== userId),
+      userId,
+    ])];
+    const userGenerations = await Promise.all(userIds.map((resolvedUserId) => loadCachedGenerations({
+      redisKey: getUserGenerationsRedisKey(resolvedUserId),
+      dir: userGenerationsDir(resolvedUserId),
       allowMissing: true,
-    });
+    })));
 
-    return mergeGenerationsConfigs(platformGenerations, userGenerations).declarations;
+    return mergeGenerationsConfigs(platformGenerations, ...userGenerations).declarations;
   }
 
   return {
     loadGenerationDeclarations,
-    async loadGenerationDeclaration(userId: string, model: string): Promise<GenerationModelDeclaration | null> {
-      const declarations = await loadGenerationDeclarations(userId);
+    async loadGenerationDeclaration(userId: string, model: string, userAliases: readonly string[] = []): Promise<GenerationModelDeclaration | null> {
+      const declarations = await loadGenerationDeclarations(userId, userAliases);
       return declarations.find((declaration) => declaration.model === model) ?? null;
     },
-    async loadPublicGenerationModels(userId: string): Promise<ListGenerationModelsResponse> {
+    async loadPublicGenerationModels(userId: string, userAliases: readonly string[] = []): Promise<ListGenerationModelsResponse> {
       return {
-        models: (await loadGenerationDeclarations(userId)).map(toPublicGenerationDeclaration),
+        models: (await loadGenerationDeclarations(userId, userAliases)).map(toPublicGenerationDeclaration),
       };
     },
   };

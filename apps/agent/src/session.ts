@@ -27,6 +27,7 @@ import { refreshUserEnv } from "./runtime/env-cache.js";
 import type { createSandboxCodingTools } from "./sandbox/tools.js";
 import type { Permission } from "@cohub/core/permissions";
 import type { PromptAccessMode } from "@cohub/core/sessions";
+import { resolveStoredPrincipalIdentityForAgent } from "./identity-bridge.js";
 import {
   applyAssistantMessageEvent,
   applyToolExecutionEnd,
@@ -1088,7 +1089,10 @@ export async function loadOrCreateSessionHandle(input: {
     logger.warn(`[Agent] Failed to load space info for ${input.spaceId}; falling back to platform config`, error);
     return null;
   });
-  const spaceOwnerUserId = spaceInfo?.space?.userUuid?.trim() || null;
+  const storedSpaceOwnerUserId = spaceInfo?.space?.userUuid?.trim() || null;
+  const spaceOwnerUserId = storedSpaceOwnerUserId
+    ? (await resolveStoredPrincipalIdentityForAgent(storedSpaceOwnerUserId)).uuid
+    : null;
 
   const existing = input.sessionHandles.get(sessionKey);
   if (existing) {

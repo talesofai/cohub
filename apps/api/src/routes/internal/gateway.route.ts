@@ -38,6 +38,7 @@ import {
 import { enqueueSandboxUploadFilesJob } from "../../sandbox-bash-queue.js";
 import { db } from "../../db/index.js";
 import { eq } from "drizzle-orm";
+import { identityEquals } from "../../identity-bridge.js";
 
 const logger = createLogger({ serviceName: "cohub-api" });
 const tracer = getTracer("cohub-api");
@@ -129,7 +130,7 @@ router.post("/authorize-realtime-rooms", async (c) => {
     const normalizedRoom = `${parsed.kind}:${parsed.id}`;
 
     if (parsed.kind === "user") {
-      if (parsed.id === user.uuid) {
+      if (identityEquals(user, parsed.id)) {
         accepted.push(normalizedRoom);
       } else {
         rejected.push({ room, code: "FORBIDDEN", message: "Cannot subscribe to another user" });

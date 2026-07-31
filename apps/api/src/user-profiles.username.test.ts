@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { describe, it } from "node:test";
 import {
   buildDefaultUsernameCandidates,
+  isUsernameOwnedByLogtoUser,
   normalizeUsername,
   resolveSyncedUsername,
   resolveTrustedLogtoUserId,
@@ -24,6 +25,12 @@ describe("resolveTrustedLogtoUserId", () => {
     assert.equal(resolveTrustedLogtoUserId({
       userUuid,
       storedLogtoUserId: "logto-user",
+    }), "logto-user");
+
+    assert.equal(resolveTrustedLogtoUserId({
+      userUuid: "logto-user",
+      storedLogtoUserId: "logto-user",
+      storedUserUuid: userUuid,
     }), "logto-user");
   });
 
@@ -119,5 +126,21 @@ describe("buildDefaultUsernameCandidates", () => {
     assert.ok(candidates.length >= 1);
     assert.ok(candidates.every((value) => value.startsWith("u")));
     assert.ok(candidates.every((value) => /^[a-z][a-z0-9]*$/.test(value)));
+  });
+});
+
+describe("isUsernameOwnedByLogtoUser", () => {
+  it("accepts a migrated user's legacy profile row when its Logto subject matches", () => {
+    assert.equal(isUsernameOwnedByLogtoUser({
+      userUuid: "5d4ac7d3-1f50-4af4-8d75-6df54d5edc6a",
+      logtoUserId: "logto-user",
+    }, "logto-user"), true);
+  });
+
+  it("rejects a profile row owned by another Logto subject", () => {
+    assert.equal(isUsernameOwnedByLogtoUser({
+      userUuid: "logto-user",
+      logtoUserId: "other-user",
+    }, "logto-user"), false);
   });
 });

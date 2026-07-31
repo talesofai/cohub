@@ -31,6 +31,7 @@ import {
   isPrivateNetworkAddress,
   requireValidId,
 } from "../../lib/middleware.js";
+import { identityEquals, resolveStoredPrincipalUser } from "../../identity-bridge.js";
 
 
 const logger = createLogger({ serviceName: "cohub-api" });
@@ -283,18 +284,36 @@ router.post("/:spaceId/sessions/:sessionId/messages", async (c) => {
     .catch(() => null);
   if (!body?.idempotencyKey?.trim()) return c.json({ message: "idempotencyKey is required" }, 400);
   if (!body.message || !Array.isArray(body.message.content)) return c.json({ message: "message.content is required" }, 400);
+  const messageIdentity = body.userId?.trim()
+    ? await resolveStoredPrincipalUser(body.userId).catch(() => null)
+    : null;
+  if (body.userId?.trim() && !messageIdentity) {
+    return c.json({ message: "user identity is not resolvable" }, 409);
+  }
+  const messageMeta = body.message.meta && typeof body.message.meta === "object" && !Array.isArray(body.message.meta)
+    ? { ...body.message.meta }
+    : body.message.meta;
+  if (messageIdentity && messageMeta && typeof messageMeta === "object" && !Array.isArray(messageMeta)) {
+    for (const key of ["userId", "actorUserId"] as const) {
+      const value = messageMeta[key];
+      if (typeof value === "string" && identityEquals(messageIdentity, value)) {
+        messageMeta[key] = messageIdentity.uuid;
+      }
+    }
+  }
 
   const messageNode = await persistMessageNode({
     spaceId,
     sessionId,
     previousMessageId: body.previousMessageId ?? null,
     anchorUserMessageId: body.anchorUserMessageId ?? null,
-    userId: body.userId ?? null,
+    userId: messageIdentity?.uuid ?? null,
     idempotencyKey: body.idempotencyKey,
     message: {
       ...(body.message as PersistMessageInput["message"]),
       id: body.message.id ?? undefined,
       content: body.message.content as never,
+      meta: messageMeta,
     } as PersistMessageInput["message"] & { id?: string },
   });
 
@@ -337,11 +356,17 @@ router.post("/:spaceId/sessions/:sessionId/turns/:turnId/abort", async (c) => {
   if (!session || session.spaceId !== spaceId) return c.json({ message: "session not found" }, 404);
 
   const body = await c.req.json<{ actorUserId?: string | null }>().catch(() => null);
+  const actorIdentity = body?.actorUserId?.trim()
+    ? await resolveStoredPrincipalUser(body.actorUserId).catch(() => null)
+    : null;
+  if (body?.actorUserId?.trim() && !actorIdentity) {
+    return c.json({ message: "actor identity is not resolvable" }, 409);
+  }
   const turn = await abortSessionTurn({
     spaceId,
     sessionId,
     turnId,
-    actorUserId: body?.actorUserId ?? null,
+    actorUserId: actorIdentity?.uuid ?? null,
   });
   if (turn) await dispatchTurnFinalized({ spaceId, sessionId, turn }).catch((error) => logger.warn("[SessionTurn] failed to dispatch aborted turn", error));
   return c.json({ ok: true, turn });
@@ -397,8 +422,11 @@ router.post("/:spaceId/sessions/:sessionId/prompt", async (c) => {
   if (!body || !Array.isArray(body.content) || body.content.length === 0) {
     return c.json({ message: "content is required" }, 400);
   }
-  const userId = body.userId?.trim();
-  if (!userId) return c.json({ message: "userId is required" }, 400);
+  const requestedUserId = body.userId?.trim();
+  if (!requestedUserId) return c.json({ message: "userId is required" }, 400);
+  const identity = await resolveStoredPrincipalUser(requestedUserId).catch(() => null);
+  if (!identity) return c.json({ message: "user identity is not resolvable" }, 409);
+  const userId = identity.uuid;
   const accessMode = body.accessMode ?? "full_access";
   if (accessMode !== "read_only" && accessMode !== "full_access") {
     return c.json({ message: "accessMode must be one of: read_only, full_access" }, 400);
@@ -408,10 +436,13 @@ router.post("/:spaceId/sessions/:sessionId/prompt", async (c) => {
   if (promptThinkingLevel === null) return c.json({ message: "thinkingLevel must be one of: off, minimal, low, medium, high, xhigh, max" }, 400);
   const promptPermission = accessMode === "read_only" ? "session.prompt.readonly" : "session.prompt.fullaccess";
   const workSession = body.authToken ? verifyWorkSessionToken(body.authToken) : null;
-  const permissionSubject = workSession && workSession.userUuid === userId
-    ? ({ uuid: userId, workSession } as { uuid: string; workSession: typeof workSession })
-    : { uuid: userId };
-  const promptAuth = workSession?.userUuid === userId ? promptAuthContextFromWorkSession(workSession, spaceId) : null;
+  const workSessionMatches = Boolean(workSession && identityEquals(identity, workSession.userUuid));
+  const permissionSubject = workSessionMatches
+    ? { ...identity, workSession }
+    : identity;
+  const promptAuth = workSessionMatches && workSession
+    ? promptAuthContextFromWorkSession(workSession, spaceId)
+    : null;
   if (!(await hasPermission(permissionSubject, promptPermission, { spaceId, sessionId }))) {
     return c.json({ message: "forbidden" }, 403);
   }

@@ -95,6 +95,10 @@ export function createWorkBridgeHost(
 			await authStore.ensureLoaded();
 			return authStore.userUuid;
 		},
+		getViewerIdentityKeys: async () => {
+			await authStore.ensureLoaded();
+			return authStore.identityKeys;
+		},
 		requestSignIn: (redirectPath) => signInWithRedirectPath(redirectPath),
 		onStateChange: (next) => {
 			authOpen = next.authOpen;

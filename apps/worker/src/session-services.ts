@@ -9,15 +9,22 @@ import { config } from "./config.js";
 import type { PromptTemplateService } from "./prompt-templates.js";
 import type { SkillService } from "./skills.js";
 import { dispatchLabelAssignmentsUpdated } from "./label-events.js";
+import { resolveBillingUserIdForStoredPrincipal, resolveStoredPrincipalIdentityForWorker } from "./identity-bridge.js";
 
 const AGENT_TURN_JOB_NAME = "agent_turns";
 
-const billingUsageGate = createBillingUsageGate({
+const legacyBillingUsageGate = createBillingUsageGate({
   operations: billingOperations,
   onEvaluationError: (error, gateInput) => {
     console.warn("[BillingGate] fail-open after worker prompt billing evaluation error", { error, gateInput });
   },
 });
+const billingUsageGate: ReturnType<typeof createBillingUsageGate> = {
+  async evaluate(input) {
+    const userId = await resolveBillingUserIdForStoredPrincipal(input.userId);
+    return legacyBillingUsageGate.evaluate({ ...input, userId });
+  },
+};
 
 const agentTurnQueue = createBullmqQueue<{
   spaceId: string;
@@ -42,8 +49,15 @@ export function getSessionDomainServices(input: {
     billingUsageGate,
     injectTrace,
     getRequestId: () => null,
-    onSessionParticipantsUpdated: async ({ spaceId, sessionId, userUuids }) => {
-      const affectedLabelIds = await assignSessionParticipantSystemLabels({ db, spaceId, sessionId, userUuids });
+    resolvePrincipalIdentity: async (userId) => {
+      const identity = await resolveStoredPrincipalIdentityForWorker(userId);
+      return {
+        uuid: identity.uuid,
+        aliases: identity.legacyUserUuid ? [identity.legacyUserUuid] : [],
+      };
+    },
+    onSessionParticipantsUpdated: async ({ spaceId, sessionId, userUuids, replacedUserUuids }) => {
+      const affectedLabelIds = await assignSessionParticipantSystemLabels({ db, spaceId, sessionId, userUuids, replacedUserUuids });
       await dispatchLabelAssignmentsUpdated({
         spaceId,
         resourceType: "session",

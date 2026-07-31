@@ -35,6 +35,9 @@ import { recordGenerationUsageStatsHourly } from "../generation-usage-stats.js";
 import { redisCommandClient } from "../redis.js";
 import { enqueueTask } from "./enqueue.js";
 import { registerTask } from "./registry.js";
+import { resolveBillingUserIdForStoredPrincipal } from "../identity-bridge.js";
+import { resolveStoredPrincipalIdentityForWorker } from "../identity-bridge.js";
+import { getIdentityKeys } from "@cohub/identity";
 
 const loader = createGenerationDeclarationLoader({
   platformConfigRoot: config.platformConfigRoot,
@@ -242,6 +245,7 @@ async function enqueueGenerationBillingRetry(input: {
 
 async function recordGenerationUsageBilling(input: {
   userId: string;
+  billingUserId: string;
   taskRunId: string;
   model: string;
   adapterType: string | null | undefined;
@@ -275,7 +279,7 @@ async function recordGenerationUsageBilling(input: {
 
   try {
     const result = await billingOperations.recordUsage({
-      userId: input.userId,
+      userId: input.billingUserId,
       amountUsd,
       tokenType: COHUB_BILLING_TOKEN_TYPES.usdMicroCent,
       usageType: input.usageType,
@@ -360,13 +364,15 @@ registerTask(GENERATION_TASK_TYPE, async (job: Job, context) => {
   });
 
   try {
-    const declaration = await loader.loadGenerationDeclaration(userId, data.model);
+    const userIdentity = await resolveStoredPrincipalIdentityForWorker(userId);
+    const declaration = await loader.loadGenerationDeclaration(userIdentity.uuid, data.model, getIdentityKeys(userIdentity));
     if (!declaration) throw new Error(`Generation model is unavailable: ${data.model}`);
+    const billingUserId = await resolveBillingUserIdForStoredPrincipal(userId);
 
     // Re-read authoritative entitlements before trusting a queued snapshot. This
     // binds discounts to the task user/model and keeps old API payloads safe.
     const resolvedDiscount = await billingOperations.getGenerationModelDiscount({
-      userId,
+      userId: billingUserId,
       model: data.model,
     });
     const modelDiscount = reconcileGenerationModelDiscountSnapshot({
@@ -394,7 +400,7 @@ registerTask(GENERATION_TASK_TYPE, async (job: Job, context) => {
     const billingDecision = isGenerationModelDiscountFree(modelDiscount)
       ? { status: "allowed" as const, balanceState: "zero" as const, netUsd: 0 }
       : await billingUsageGate.evaluate({
-          userId,
+          userId: billingUserId,
           usageKind: generationUsageKind(gateUsageType),
           source: "generation_task",
           model: data.model,
@@ -424,6 +430,7 @@ registerTask(GENERATION_TASK_TYPE, async (job: Job, context) => {
     });
     const billing = await recordGenerationUsageBilling({
       userId,
+      billingUserId,
       taskRunId,
       model: data.model,
       adapterType: declaration.adapter?.type,

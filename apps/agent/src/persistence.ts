@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import { and, asc, desc, eq, gte, inArray, sql } from "drizzle-orm";
+import { and, asc, desc, eq, gte, inArray, or, sql } from "drizzle-orm";
 import type { ContentBlock, Usage } from "@cohub/protocol/core";
 import type {
   ContextCompactionMeta,
@@ -30,6 +30,8 @@ import { logger } from "./logger.js";
 import { redis, publishRealtimeEnvelope, clearPersistedSessionStreamSnapshot, getGatewayNodeOutboundStreamKey, xaddWithMaxlen } from "./redis.js";
 import { buildTurnObjectPrefix, writeTurnObjectJson } from "./turn-object-storage.js";
 import { pickRealtimeMessageMeta } from "./realtime-message-meta.js";
+import { resolveStoredPrincipalIdentityForAgent } from "./identity-bridge.js";
+import { getIdentityKeys } from "@cohub/identity";
 
 
 const INTERNAL_API_BASE_URL =
@@ -174,26 +176,38 @@ const toTurnRecord = (row: typeof sessionTurns.$inferSelect): SessionTurnRecord 
 
 const fallbackDisplayName = (userUuid: string) => userUuid.replaceAll("-", "").slice(0, 8);
 
-async function hydrateTurnAuthorProfile(turn: SessionTurnRecord): Promise<SessionTurnRecord> {
-  if (!turn.userUuid) return { ...turn, authorProfile: null };
+async function hydrateTurnAuthorProfile(turn: SessionTurnRecord): Promise<{
+  turn: SessionTurnRecord;
+  userRooms: ReturnType<typeof getRealtimeUserRoom>[];
+}> {
+  if (!turn.userUuid) return { turn: { ...turn, authorProfile: null }, userRooms: [] };
+  const identity = await resolveStoredPrincipalIdentityForAgent(turn.userUuid);
   const [profile] = await db.select({
     userUuid: userProfiles.userUuid,
     displayName: userProfiles.displayName,
     avatarUrl: userProfiles.avatarUrl,
-  }).from(userProfiles).where(eq(userProfiles.userUuid, turn.userUuid)).limit(1);
-  return {
+  }).from(userProfiles).where(or(
+    eq(userProfiles.userUuid, turn.userUuid),
+    eq(userProfiles.logtoUserId, turn.userUuid),
+  )).limit(1);
+  const canonicalTurn = {
     ...turn,
+    userUuid: identity.uuid,
     authorProfile: profile
       ? {
-          userUuid: profile.userUuid,
+          userUuid: identity.uuid,
           displayName: profile.displayName,
           avatarUrl: profile.avatarUrl ?? null,
         }
       : {
-          userUuid: turn.userUuid,
-          displayName: fallbackDisplayName(turn.userUuid),
+          userUuid: identity.uuid,
+          displayName: fallbackDisplayName(identity.uuid),
           avatarUrl: null,
         },
+  };
+  return {
+    turn: canonicalTurn,
+    userRooms: getIdentityKeys(identity).map(getRealtimeUserRoom),
   };
 }
 
@@ -210,8 +224,8 @@ async function publishMessagePersisted(spaceId: string, message: MessageRecord) 
 }
 
 async function publishTurnCreated(spaceId: string, turn: SessionTurnRecord) {
-  const hydratedTurn = await hydrateTurnAuthorProfile(turn);
-  await publishRealtimeEnvelope({ domain: "session", type: "session.turn.created", spaceId, sessionId: hydratedTurn.sessionId, payload: { turn: hydratedTurn } });
+  const hydrated = await hydrateTurnAuthorProfile(turn);
+  await publishRealtimeEnvelope({ domain: "session", type: "session.turn.created", spaceId, sessionId: hydrated.turn.sessionId, payload: { turn: hydrated.turn } });
 }
 
 const truncateTurnPreview = (text: string | null | undefined) => {
@@ -221,28 +235,29 @@ const truncateTurnPreview = (text: string | null | undefined) => {
 };
 
 async function publishTurnFinalized(spaceId: string, turn: SessionTurnRecord) {
-  await clearPersistedSessionStreamSnapshot(spaceId, turn.sessionId);
-  await publishRealtimeEnvelope({ domain: "session", type: "session.turn.finalized", spaceId, sessionId: turn.sessionId, payload: { turn } });
-  if (!turn.userUuid) return;
+  const hydrated = await hydrateTurnAuthorProfile(turn);
+  await clearPersistedSessionStreamSnapshot(spaceId, hydrated.turn.sessionId);
+  await publishRealtimeEnvelope({ domain: "session", type: "session.turn.finalized", spaceId, sessionId: hydrated.turn.sessionId, payload: { turn: hydrated.turn } });
+  if (hydrated.userRooms.length === 0) return;
   await publishRealtimeEnvelope({
     domain: "session",
     type: "session.turn.notify",
     spaceId,
-    sessionId: turn.sessionId,
-    rooms: [getRealtimeUserRoom(turn.userUuid)],
+    sessionId: hydrated.turn.sessionId,
+    rooms: hydrated.userRooms,
     payload: {
       spaceId,
-      sessionId: turn.sessionId,
-      turnId: turn.id,
-      status: turn.status,
-      finishReason: turn.summary?.finishReason ?? null,
-      userPreview: truncateTurnPreview(turn.userText),
-      durationMs: turn.durationMs,
-      stepCount: turn.intermediateSummary?.messageCount ?? null,
-      sequence: turn.sequence ?? null,
-      provider: turn.provider,
-      model: turn.model,
-      completedAt: turn.completedAt,
+      sessionId: hydrated.turn.sessionId,
+      turnId: hydrated.turn.id,
+      status: hydrated.turn.status,
+      finishReason: hydrated.turn.summary?.finishReason ?? null,
+      userPreview: truncateTurnPreview(hydrated.turn.userText),
+      durationMs: hydrated.turn.durationMs,
+      stepCount: hydrated.turn.intermediateSummary?.messageCount ?? null,
+      sequence: hydrated.turn.sequence ?? null,
+      provider: hydrated.turn.provider,
+      model: hydrated.turn.model,
+      completedAt: hydrated.turn.completedAt,
     },
   });
 }

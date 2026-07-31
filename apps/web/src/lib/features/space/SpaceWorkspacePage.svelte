@@ -284,7 +284,7 @@ const rightSidebarAvailable = $derived(
 const canEditFiles = $derived(hasAccessPermission("file.edit"));
 const spaceOwnerUsername = $derived(
 	space?.ownerProfile?.username ??
-		(space?.userUuid === authStore.userUuid
+		(authStore.matchesUserId(space?.userUuid)
 			? (authStore.profile?.username ?? null)
 			: null),
 );
@@ -540,7 +540,11 @@ const previewWorksBuffer = createWorkMutationBuffer();
 let previewWorksToken = 0;
 const inlineFileWork = $derived.by(() => {
 	const filePath = inlineFile?.response?.path ?? null;
-	if (!filePath || activeFsReadonly || authStore.userUuid !== space?.userUuid)
+	if (
+		!filePath ||
+		activeFsReadonly ||
+		!authStore.matchesUserId(space?.userUuid)
+	)
 		return null;
 	return (
 		previewWorks.find(
@@ -570,7 +574,7 @@ $effect(() => {
 		try {
 			await authStore.ensureLoaded();
 			if (token !== previewWorksToken) return;
-			if (!authStore.userUuid || authStore.userUuid !== currentOwnerId) {
+			if (!authStore.matchesUserId(currentOwnerId)) {
 				previewWorks = [];
 				previewWorksLoadedFor = currentSpaceId;
 				return;
@@ -867,7 +871,7 @@ const pageVisible = $derived(spaceRealtime.pageVisible);
 const pageOnline = $derived(spaceRealtime.pageOnline);
 const wsConnectionState = $derived(spaceRealtime.connectionState);
 const onlineUsers = $derived(
-	spacePresence.users.filter((user) => user.userId !== authStore.userUuid),
+	spacePresence.users.filter((user) => !authStore.matchesUserId(user.userId)),
 );
 $effect(() => {
 	connectionStateBox.current = wsConnectionState;
@@ -1452,7 +1456,7 @@ async function handleWsEvent(payload: ChannelEnvelope) {
 				typeof turn?.userUuid === "string" ? turn.userUuid : null;
 			if (
 				senderUuid &&
-				senderUuid !== authStore.userUuid &&
+				!authStore.matchesUserId(senderUuid) &&
 				canRunDanmakuCatchup()
 			) {
 				const text = extractDanmakuText(turn);

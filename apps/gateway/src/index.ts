@@ -57,6 +57,7 @@ const logger = createLogger({ serviceName: "cohub-gateway" });
 type WsConnectionContext = {
   connectionId: string;
   userId?: string;
+  userIds: string[];
   userName?: string;
   userAvatarUrl?: string;
   token?: string;
@@ -210,6 +211,7 @@ const persistWsConnection = async (ctx: WsConnectionContext) => {
   await redisCommandClient.set(getWsConnectionKey(ctx.connectionId), JSON.stringify({
     connectionId: ctx.connectionId,
     userId: ctx.userId ?? null,
+    userIds: ctx.userIds,
     userName: ctx.userName ?? null,
     userAvatarUrl: ctx.userAvatarUrl ?? null,
     capabilities: [...ctx.capabilities],
@@ -854,6 +856,7 @@ async function main() {
       connectionId,
       capabilities: new Set(),
       rooms: new Set(),
+      userIds: [],
       presenceMetaBySpace: new Map(),
       compactStreamAliases: new Map(),
       nextCompactStreamAlias: 0,
@@ -915,6 +918,9 @@ async function main() {
           ctx.presenceMetaBySpace.clear();
           ctx.boardAwarenessSeqByBoard.clear();
           ctx.userId = result.user.uuid;
+          ctx.userIds = [...new Set([result.user.uuid, result.user.legacyUserUuid]
+            .filter((value): value is string => typeof value === "string" && Boolean(value.trim()))
+            .map((value) => value.trim()))];
           ctx.userName = typeof result.user.nick_name === "string" ? result.user.nick_name : undefined;
           ctx.userAvatarUrl = typeof result.user.avatar_url === "string" ? result.user.avatar_url : undefined;
           ctx.token = token;
@@ -923,7 +929,7 @@ async function main() {
               ? message.payload.capabilities.filter((value) => typeof value === "string" && value.trim())
               : [],
           );
-          subscribeConnectionToRoom(ctx, getRealtimeUserRoom(result.user.uuid));
+          for (const userId of ctx.userIds) subscribeConnectionToRoom(ctx, getRealtimeUserRoom(userId));
           await persistWsConnection(ctx);
           sendWsEnvelope(socket, buildRealtimeEnvelope({
             domain: "system",
@@ -985,7 +991,7 @@ async function main() {
 
         if (message.type === "unsubscribe") {
           for (const room of normalizeRealtimeRooms(message.payload.rooms)) {
-            if (room === getRealtimeUserRoom(ctx.userId)) continue;
+            if (ctx.userIds.some((userId) => room === getRealtimeUserRoom(userId))) continue;
             const boardId = getBoardIdFromRoom(room);
             if (boardId) ctx.boardAwarenessSeqByBoard.delete(boardId);
             const spaceId = getSpaceIdFromRoom(room);

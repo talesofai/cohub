@@ -1,5 +1,5 @@
 import { Hono, type Context } from "hono";
-import { sql, and, gte, lt, isNotNull, ne } from "drizzle-orm";
+import { sql, and, eq, gte, lt, isNotNull, ne, or } from "drizzle-orm";
 import { db } from "../db/index.js";
 import * as schema from "@cohub/db";
 import { getSpacePublicProfile } from "../lib/middleware.js";
@@ -148,7 +148,7 @@ async function loadTrendingSpaces() {
       rank: i + 1,
       spaceId: r.spaceId,
       spaceName: nameMap.get(r.spaceId) ?? r.spaceId.slice(0, 8),
-      userId: uid,
+      userId: userProfile.userUuid,
       userDisplay: userProfile.displayName,
       userProfile,
       spaceProfile: spaceProfileMap.get(r.spaceId as string) ?? { avatarUrl: null },
@@ -162,23 +162,28 @@ async function loadTrendingSpaces() {
 
 async function loadTrendingUsers() {
   const { yesterdayStart, todayStart } = getYesterdayWindow();
+  const canonicalUserId = sql<string>`coalesce(${schema.userProfiles.logtoUserId}, ${schema.tokenUsageStatsHourly.userId})`;
 
   const rows = await db
     .select({
-      userId: schema.tokenUsageStatsHourly.userId,
+      userId: canonicalUserId,
       totalTokens: sql<number>`SUM(${schema.tokenUsageStatsHourly.totalTokens})`.as("total_tokens"),
       costTotal: sql<string>`SUM(${schema.tokenUsageStatsHourly.costTotal})`.as("cost_total"),
       sessionCount: sql<number>`COUNT(DISTINCT ${schema.tokenUsageStatsHourly.sessionId})`.as("session_count"),
       requestCount: sql<number>`SUM(${schema.tokenUsageStatsHourly.requestCount})`.as("request_count"),
     })
     .from(schema.tokenUsageStatsHourly)
+    .leftJoin(schema.userProfiles, or(
+      eq(schema.userProfiles.userUuid, schema.tokenUsageStatsHourly.userId),
+      eq(schema.userProfiles.logtoUserId, schema.tokenUsageStatsHourly.userId),
+    ))
     .where(
       and(
         gte(schema.tokenUsageStatsHourly.bucketStartAt, yesterdayStart),
         lt(schema.tokenUsageStatsHourly.bucketStartAt, todayStart),
       ),
     )
-    .groupBy(schema.tokenUsageStatsHourly.userId)
+    .groupBy(canonicalUserId)
     .orderBy(sql`total_tokens DESC`)
     .limit(10);
 
@@ -290,7 +295,7 @@ async function loadGenerationTrendingSpaces() {
       rank: i + 1,
       spaceId: r.spaceId,
       spaceName: nameMap.get(r.spaceId) ?? r.spaceId.slice(0, 8),
-      userId: uid,
+      userId: userProfile.userUuid,
       userDisplay: userProfile.displayName,
       userProfile,
       spaceProfile: spaceProfileMap.get(r.spaceId as string) ?? { avatarUrl: null },
@@ -303,15 +308,20 @@ async function loadGenerationTrendingSpaces() {
 
 async function loadGenerationTrendingUsers() {
   const { yesterdayStart, todayStart } = getYesterdayWindow();
+  const canonicalUserId = sql<string>`coalesce(${schema.userProfiles.logtoUserId}, ${schema.generationUsageStatsHourly.userId})`;
 
   const rows = await db
     .select({
-      userId: schema.generationUsageStatsHourly.userId,
+      userId: canonicalUserId,
       costTotal: sql<string>`SUM(${schema.generationUsageStatsHourly.costTotal})`.as("cost_total"),
       sessionCount: sql<number>`COUNT(DISTINCT ${schema.generationUsageStatsHourly.sessionId})`.as("session_count"),
       requestCount: sql<number>`SUM(${schema.generationUsageStatsHourly.requestCount})`.as("request_count"),
     })
     .from(schema.generationUsageStatsHourly)
+    .leftJoin(schema.userProfiles, or(
+      eq(schema.userProfiles.userUuid, schema.generationUsageStatsHourly.userId),
+      eq(schema.userProfiles.logtoUserId, schema.generationUsageStatsHourly.userId),
+    ))
     .where(
       and(
         gte(schema.generationUsageStatsHourly.bucketStartAt, yesterdayStart),
@@ -320,7 +330,7 @@ async function loadGenerationTrendingUsers() {
         ne(schema.generationUsageStatsHourly.userId, "unknown"),
       ),
     )
-    .groupBy(schema.generationUsageStatsHourly.userId)
+    .groupBy(canonicalUserId)
     .orderBy(sql`request_count DESC`, sql`cost_total DESC`)
     .limit(10);
 

@@ -20,6 +20,7 @@ import { ensureSessionTurnSegments, findSegmentForTurn } from "./session-forks.j
 import { fallbackPublicUserProfile, getProfilesByUuids } from "./user-profiles.js";
 import { buildTurnObjectPrefix, assertTurnObjectKeyForTurn, createTurnObjectCdnUrl, writeTurnObjectJson } from "./turn-object-storage.js";
 import { deriveMessagePreviewText } from "./session-content.js";
+import { resolveStoredPrincipalUser } from "./identity-bridge.js";
 
 
 const logger = createLogger({ serviceName: "cohub-api" });
@@ -207,9 +208,11 @@ export async function hydrateTurnAuthorProfiles(turns: SessionTurnRecord[]) {
   const profiles = await getProfilesByUuids(userUuids);
   return turns.map((turn) => {
     if (!turn.userUuid) return { ...turn, authorProfile: null };
+    const authorProfile = profiles.get(turn.userUuid) ?? fallbackPublicUserProfile(turn.userUuid);
     return {
       ...turn,
-      authorProfile: profiles.get(turn.userUuid) ?? fallbackPublicUserProfile(turn.userUuid),
+      userUuid: authorProfile.userUuid,
+      authorProfile,
     };
   });
 }
@@ -266,9 +269,11 @@ export const hydrateTurnIndexAuthorProfiles = async (turns: SessionTurnIndexItem
   const profiles = await getProfilesByUuids(userUuids);
   return turns.map((turn) => {
     if (!turn.userUuid) return { ...turn, authorProfile: null };
+    const authorProfile = profiles.get(turn.userUuid) ?? fallbackPublicUserProfile(turn.userUuid);
     return {
       ...turn,
-      authorProfile: profiles.get(turn.userUuid) ?? fallbackPublicUserProfile(turn.userUuid),
+      userUuid: authorProfile.userUuid,
+      authorProfile,
     };
   });
 };
@@ -288,6 +293,8 @@ export const createSessionTurn = async (input: {
   intent?: SessionTurnIntent;
   meta?: Record<string, unknown> | null;
 }) => {
+  const identity = input.userUuid ? await resolveStoredPrincipalUser(input.userUuid) : null;
+  const userUuid = identity?.uuid ?? null;
   const userContent = sanitizeContentBlocksForPostgresJson(input.userContent);
   const meta = input.meta ? sanitizePostgresJsonValue(input.meta) : null;
   const userText = deriveMessagePreviewText({ content: userContent }) || null;
@@ -303,15 +310,19 @@ export const createSessionTurn = async (input: {
     )).orderBy(desc(sessionTurnSegments.ordinal)).limit(1);
     startSequence = localSegment?.fromSequence ?? 1;
     const sequence = seqRow?.max ? (seqRow.max + 1) : startSequence;
-    if (input.userUuid) {
+    if (userUuid) {
       await tx.update(spaceSessions).set({
-        meta: sanitizePostgresJsonValue(addSessionParticipantMeta(sessionRow.meta, input.userUuid)),
+        meta: sanitizePostgresJsonValue(addSessionParticipantMeta(
+          sessionRow.meta,
+          userUuid,
+          identity?.legacyUserUuid ? [identity.legacyUserUuid] : [],
+        )),
       }).where(eq(spaceSessions.id, input.sessionId));
     }
     return tx.insert(sessionTurns).values({
       ...(input.id ? { id: input.id } : {}),
       sessionId: input.sessionId,
-      userUuid: input.userUuid,
+      userUuid,
       sequence,
       status: "queued",
       intent: input.intent ?? "steer",

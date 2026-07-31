@@ -1,8 +1,13 @@
 import { randomInt } from "node:crypto";
-import { and, eq, inArray, ne } from "drizzle-orm";
+import { eq, inArray, or } from "drizzle-orm";
 import type { AuthUser } from "./lib/middleware.js";
 import { db } from "./db/index.js";
 import { userProfiles } from "@cohub/db";
+import {
+  getIdentityKeys,
+  resolveVerifiedPrincipalIdentity,
+  type IdentityMappingRow,
+} from "@cohub/identity";
 import { getLogtoUser, updateLogtoUserProfile } from "./logto-management.js";
 import { createLogger } from "@cohub/infra/logging";
 import {
@@ -22,6 +27,11 @@ export type PublicUserProfile = {
 export type UserProfile = PublicUserProfile & {
   logtoUserId?: string;
   syncedAt: string;
+};
+
+const storageUserUuidKey = Symbol("storageUserUuid");
+type StoredUserProfile = UserProfile & {
+  [storageUserUuidKey]: string;
 };
 
 export class UsernameConflictError extends Error {
@@ -49,6 +59,10 @@ type UserProfileFields = {
 
 type UserProfileRow = typeof userProfiles.$inferSelect;
 
+type ProfileIdentity = Pick<AuthUser, "uuid" | "legacyUserUuid">;
+
+const identityKeys = (user: ProfileIdentity | string): string[] =>
+  typeof user === "string" ? [user.trim()].filter(Boolean) : getIdentityKeys(user);
 const asRecord = (value: unknown): Record<string, unknown> =>
   value && typeof value === "object" && !Array.isArray(value) ? value as Record<string, unknown> : {};
 
@@ -153,13 +167,23 @@ async function filterLocallyAvailableUsernames(input: {
   if (input.candidates.length === 0) return [];
 
   const takenRows = await db
-    .select({ username: userProfiles.username })
+    .select({
+      username: userProfiles.username,
+      userUuid: userProfiles.userUuid,
+      logtoUserId: userProfiles.logtoUserId,
+    })
     .from(userProfiles)
-    .where(and(
-      inArray(userProfiles.username, input.candidates),
-      ne(userProfiles.userUuid, input.userUuid),
-    ));
-  const taken = new Set(takenRows.map((row) => row.username).filter((value): value is string => Boolean(value)));
+    .where(inArray(userProfiles.username, input.candidates));
+  const taken = new Set(
+    takenRows
+      .filter(
+        (row) =>
+          row.userUuid !== input.userUuid &&
+          row.logtoUserId !== input.userUuid,
+      )
+      .map((row) => row.username)
+      .filter((value): value is string => Boolean(value)),
+  );
   return input.candidates.filter((candidate) => !taken.has(candidate));
 }
 
@@ -183,6 +207,15 @@ export function resolveSyncedUsername(
   return validatePublicIdentifierAssignment("username", username).reason === "reserved"
     ? null
     : username;
+}
+
+export function isUsernameOwnedByLogtoUser(
+  owner: Pick<UserProfileRow, "userUuid" | "logtoUserId">,
+  currentLogtoUserId: string,
+): boolean {
+  const ownerLogtoUserId = owner.logtoUserId.trim();
+  const current = currentLogtoUserId.trim();
+  return Boolean(ownerLogtoUserId && current && ownerLogtoUserId === current);
 }
 
 export function validateUsername(value: unknown) {
@@ -256,8 +289,8 @@ function normalizeSyncedUserProfile(input: {
   };
 }
 
-const toUserProfile = (row: UserProfileRow): UserProfile => ({
-  userUuid: row.userUuid,
+const toUserProfile = (row: UserProfileRow, userUuid = row.userUuid): UserProfile => ({
+  userUuid,
   logtoUserId: row.logtoUserId,
   username: row.username ?? null,
   displayName: row.displayName,
@@ -265,8 +298,8 @@ const toUserProfile = (row: UserProfileRow): UserProfile => ({
   syncedAt: row.syncedAt instanceof Date ? row.syncedAt.toISOString() : new Date().toISOString(),
 });
 
-const toPublicUserProfile = (row: UserProfileRow): PublicUserProfile => ({
-  userUuid: row.userUuid,
+const toPublicUserProfile = (row: UserProfileRow, userUuid = row.userUuid): PublicUserProfile => ({
+  userUuid,
   username: row.username ?? null,
   displayName: row.displayName,
   avatarUrl: row.avatarUrl ?? null,
@@ -274,6 +307,7 @@ const toPublicUserProfile = (row: UserProfileRow): PublicUserProfile => ({
 
 async function upsertUserProfile(input: {
   userUuid: string;
+  legacyUserUuid?: string;
   logtoUserId: string;
   fields: UserProfileFields;
 }) {
@@ -282,8 +316,43 @@ async function upsertUserProfile(input: {
   // Never rehydrate a local-only username that Logto does not have.
   const fields = input.fields;
   try {
+    const lookupKeys = [...new Set([
+      input.userUuid,
+      input.legacyUserUuid,
+      input.logtoUserId,
+    ].filter((value): value is string => Boolean(value?.trim())).map((value) => value.trim()))];
+    const existingRows = await db.select({
+      userUuid: userProfiles.userUuid,
+      logtoUserId: userProfiles.logtoUserId,
+    })
+      .from(userProfiles)
+      .where(or(
+        inArray(userProfiles.userUuid, lookupKeys),
+        inArray(userProfiles.logtoUserId, lookupKeys),
+      ));
+    resolveVerifiedPrincipalIdentity({
+      sub: input.logtoUserId,
+      legacyUserUuid: input.legacyUserUuid,
+      mappings: existingRows satisfies IdentityMappingRow[],
+    });
+    const existing = existingRows[0];
+    const storageUserUuid = input.legacyUserUuid?.trim() || existing?.userUuid || input.userUuid;
+    if (existing) {
+      const [row] = await db.update(userProfiles).set({
+        userUuid: storageUserUuid,
+        logtoUserId: input.logtoUserId,
+        username: fields.username,
+        displayName: fields.displayName,
+        avatarUrl: fields.avatarUrl,
+        source: fields.source,
+        syncedAt: now,
+        updatedAt: now,
+      }).where(eq(userProfiles.userUuid, existing.userUuid)).returning();
+      if (!row) throw new Error("failed to update user profile");
+      return toUserProfile(row, input.userUuid);
+    }
     const [row] = await db.insert(userProfiles).values({
-      userUuid: input.userUuid,
+      userUuid: storageUserUuid,
       logtoUserId: input.logtoUserId,
       username: fields.username,
       displayName: fields.displayName,
@@ -305,7 +374,7 @@ async function upsertUserProfile(input: {
     }).returning();
 
     if (!row) throw new Error("failed to upsert user profile");
-    return toUserProfile(row);
+    return toUserProfile(row, input.userUuid);
   } catch (error) {
     const constraint = getUniqueViolationConstraint(error);
     if (constraint?.includes("username")) {
@@ -315,9 +384,31 @@ async function upsertUserProfile(input: {
   }
 }
 
-async function getStoredUserProfile(userUuid: string): Promise<UserProfile | null> {
-  const [row] = await db.select().from(userProfiles).where(eq(userProfiles.userUuid, userUuid)).limit(1);
-  return row ? toUserProfile(row) : null;
+async function getStoredUserProfile(
+  user: ProfileIdentity | string,
+): Promise<StoredUserProfile | null> {
+  const keys = identityKeys(user);
+  if (keys.length === 0) return null;
+  const rows = await db.select().from(userProfiles).where(or(
+    inArray(userProfiles.userUuid, keys),
+    inArray(userProfiles.logtoUserId, keys),
+  ));
+  if (rows.length > 1) {
+    throw new Error("identity profile aliases resolve to multiple rows");
+  }
+  const [row] = rows;
+  if (!row) return null;
+  if (typeof user !== "string") {
+    resolveVerifiedPrincipalIdentity({
+      sub: user.uuid,
+      legacyUserUuid: user.legacyUserUuid,
+      mappings: rows,
+    });
+  }
+  return {
+    ...toUserProfile(row, row.logtoUserId),
+    [storageUserUuidKey]: row.userUuid,
+  };
 }
 
 function sourceFromAuthUser(user: AuthUser): Record<string, unknown> {
@@ -346,7 +437,11 @@ export async function resolveCurrentUserEmail(user: AuthUser): Promise<string | 
   const [row] = await db
     .select({ source: userProfiles.source })
     .from(userProfiles)
-    .where(eq(userProfiles.userUuid, user.uuid))
+    .where(or(
+      eq(userProfiles.userUuid, user.uuid),
+      eq(userProfiles.logtoUserId, user.uuid),
+      ...(user.legacyUserUuid ? [eq(userProfiles.userUuid, user.legacyUserUuid)] : []),
+    ))
     .limit(1);
   if (!row) return null;
   return emailFromSource(asRecord(row.source));
@@ -474,12 +569,20 @@ export function resolveTrustedLogtoUserId(input: {
   userUuid: string;
   tokenLogtoUserId?: string | null;
   storedLogtoUserId?: string | null;
+  storedUserUuid?: string | null;
 }): string | null {
   const tokenLogtoUserId = input.tokenLogtoUserId?.trim();
   if (tokenLogtoUserId) return tokenLogtoUserId;
 
   const storedLogtoUserId = input.storedLogtoUserId?.trim();
-  if (!storedLogtoUserId || storedLogtoUserId === input.userUuid) return null;
+  if (!storedLogtoUserId) return null;
+  const storedUserUuid = input.storedUserUuid?.trim();
+  if (
+    storedLogtoUserId === input.userUuid &&
+    (!storedUserUuid || storedUserUuid === input.userUuid)
+  ) {
+    return null;
+  }
   return storedLogtoUserId;
 }
 
@@ -515,6 +618,7 @@ async function syncUserProfileFromLogto(input: {
     // A verified user token established this binding even when Logto is temporarily unavailable.
     return await upsertUserProfile({
       userUuid: input.user.uuid,
+      legacyUserUuid: input.user.legacyUserUuid,
       logtoUserId: input.logtoUserId,
       fields: mergeAuthEmailIntoFields(
         input.user,
@@ -556,6 +660,7 @@ async function syncUserProfileFromLogto(input: {
 
   return await upsertUserProfile({
     userUuid: input.user.uuid,
+    legacyUserUuid: input.user.legacyUserUuid,
     logtoUserId: input.logtoUserId,
     fields,
   });
@@ -566,12 +671,13 @@ async function syncUserProfileFromLogto(input: {
  * Principals without either identity return a transient profile and never create a guessed binding.
  */
 export async function ensureCurrentUserProfile(user: AuthUser): Promise<UserProfile> {
-  const stored = await getStoredUserProfile(user.uuid);
+  const stored = await getStoredUserProfile(user);
   const tokenLogtoUserId = typeof user.sub === "string" && user.sub.trim() ? user.sub.trim() : null;
   const logtoUserId = resolveTrustedLogtoUserId({
-    userUuid: user.uuid,
+    userUuid: user.legacyUserUuid ?? user.uuid,
     tokenLogtoUserId,
     storedLogtoUserId: stored?.logtoUserId,
+    storedUserUuid: stored?.[storageUserUuidKey],
   });
 
   if (!logtoUserId) return transientUserProfile(user, stored);
@@ -594,8 +700,8 @@ export async function ensureUserProfileByUuid(
   userUuid: string,
   actor?: AuthUser | null,
 ): Promise<UserProfile | null> {
-  const ownerActor = actor?.uuid === userUuid ? actor : null;
-  const stored = await getStoredUserProfile(userUuid);
+  const ownerActor = actor && getIdentityKeys(actor).includes(userUuid) ? actor : null;
+  const stored = await getStoredUserProfile(ownerActor ?? userUuid);
   const tokenLogtoUserId = typeof ownerActor?.sub === "string" && ownerActor.sub.trim()
     ? ownerActor.sub.trim()
     : null;
@@ -603,12 +709,18 @@ export async function ensureUserProfileByUuid(
     userUuid,
     tokenLogtoUserId,
     storedLogtoUserId: stored?.logtoUserId,
+    storedUserUuid: stored?.[storageUserUuidKey],
   });
 
   if (!logtoUserId) return null;
   if (!tokenLogtoUserId && stored?.username) return stored;
 
-  const user = ownerActor ?? ({ uuid: userUuid } as AuthUser);
+  const user = ownerActor ?? ({
+    uuid: stored?.logtoUserId ?? userUuid,
+    ...(stored?.logtoUserId && stored.logtoUserId !== userUuid
+      ? { legacyUserUuid: userUuid }
+      : {}),
+  } as AuthUser);
   return await syncUserProfileFromLogto({ user, logtoUserId, stored });
 }
 
@@ -616,11 +728,12 @@ export async function updateCurrentUserProfile(user: AuthUser, input: { displayN
   // Logto access tokens carry `sub`; execution / work / preview principals only have
   // actor uuid, so fall back to the stored profile's logtoUserId for those cases.
   const logtoUserIdFromToken = typeof user.sub === "string" && user.sub.trim() ? user.sub.trim() : null;
-  const storedProfile = await getStoredUserProfile(user.uuid);
+  const storedProfile = await getStoredUserProfile(user);
   const logtoUserId = resolveTrustedLogtoUserId({
     userUuid: user.uuid,
     tokenLogtoUserId: logtoUserIdFromToken,
     storedLogtoUserId: storedProfile?.logtoUserId,
+    storedUserUuid: storedProfile?.[storageUserUuidKey],
   });
   if (!logtoUserId) throw new LogtoUserRequiredError("profile updates require user sign-in");
 
@@ -645,10 +758,14 @@ export async function updateCurrentUserProfile(user: AuthUser, input: { displayN
   }
 
   if (username) {
-    const existing = await db.select({ userUuid: userProfiles.userUuid }).from(userProfiles).where(
-      and(eq(userProfiles.username, username), ne(userProfiles.userUuid, user.uuid)),
-    ).limit(1);
-    if (existing.length > 0) {
+    const [existing] = await db.select({
+      userUuid: userProfiles.userUuid,
+      logtoUserId: userProfiles.logtoUserId,
+    })
+      .from(userProfiles)
+      .where(eq(userProfiles.username, username))
+      .limit(1);
+    if (existing && !isUsernameOwnedByLogtoUser(existing, logtoUserId)) {
       throw new UsernameConflictError("username is already taken");
     }
   }
@@ -677,6 +794,7 @@ export async function updateCurrentUserProfile(user: AuthUser, input: { displayN
     }
     return await upsertUserProfile({
       userUuid: user.uuid,
+      legacyUserUuid: user.legacyUserUuid,
       logtoUserId,
       fields: updatedFields,
     });
@@ -696,8 +814,20 @@ export async function getProfilesByUuids(userUuids: string[]): Promise<Map<strin
   const unique = [...new Set(userUuids.map((value) => value.trim()).filter(Boolean))];
   if (unique.length === 0) return new Map();
 
-  const rows = await db.select().from(userProfiles).where(inArray(userProfiles.userUuid, unique));
-  return new Map(rows.map((row) => [row.userUuid, toPublicUserProfile(row)]));
+  const rows = await db.select().from(userProfiles).where(or(
+    inArray(userProfiles.userUuid, unique),
+    inArray(userProfiles.logtoUserId, unique),
+  ));
+  const result = new Map<string, PublicUserProfile>();
+  for (const key of unique) {
+    const matching = rows.filter((candidate) => candidate.userUuid === key || candidate.logtoUserId === key);
+    if (matching.length > 1) {
+      throw new Error(`identity profile conflict for ${key}`);
+    }
+    const row = matching[0];
+    if (row) result.set(key, toPublicUserProfile(row, row.logtoUserId));
+  }
+  return result;
 }
 
 export async function getProfilesByUsernames(usernames: string[]): Promise<Map<string, PublicUserProfile>> {
@@ -707,14 +837,14 @@ export async function getProfilesByUsernames(usernames: string[]): Promise<Map<s
   const rows = await db.select().from(userProfiles).where(inArray(userProfiles.username, unique));
   return new Map(rows
     .filter((row): row is typeof row & { username: string } => Boolean(row.username))
-    .map((row) => [row.username, toPublicUserProfile(row)]));
+    .map((row) => [row.username, toPublicUserProfile(row, row.logtoUserId)]));
 }
 
 export async function getProfileByUsername(username: string): Promise<PublicUserProfile | null> {
   const normalized = normalizeUsername(username);
   if (!normalized) return null;
   const [row] = await db.select().from(userProfiles).where(eq(userProfiles.username, normalized)).limit(1);
-  return row ? toPublicUserProfile(row) : null;
+  return row ? toPublicUserProfile(row, row.logtoUserId) : null;
 }
 
 export function fallbackPublicUserProfile(userUuid: string): PublicUserProfile {

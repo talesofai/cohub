@@ -47,10 +47,11 @@ function formatUpdatedAt(value: string | null) {
 	}
 }
 
-function findConfigSpace(spaces: SpaceRecord[], currentUserUuid: string) {
+function findConfigSpace(spaces: SpaceRecord[]) {
 	return (
 		spaces.find(
-			(space) => space.name === "config" && space.userUuid === currentUserUuid,
+			(space) =>
+				space.name === "config" && authStore.matchesUserId(space.userUuid),
 		) ?? null
 	);
 }
@@ -71,7 +72,7 @@ async function loadRulesPage() {
 		const spaces = setCachedSpaceList(spacesResult);
 		rulesContent = rules.content;
 		updatedAt = rules.updatedAt;
-		configSpace = userUuid ? findConfigSpace(spaces, userUuid) : null;
+		configSpace = userUuid ? findConfigSpace(spaces) : null;
 	} catch (error) {
 		if (
 			await handleUnauthorizedError(error, `${currentPath}${currentSearch}`)

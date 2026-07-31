@@ -7,6 +7,8 @@ import { hasPermission } from "../permissions.js";
 import { taskQueue } from "../tasks.js";
 import { fallbackPublicUserProfile, getProfilesByUuids } from "../user-profiles.js";
 import { sanitizeTaskRunPricingForViewer } from "../task-run-privacy.js";
+import { getIdentityKeys, identityEquals } from "../identity-bridge.js";
+import type { AuthUser } from "../lib/middleware.js";
 
 const router = new Hono();
 
@@ -98,16 +100,20 @@ function hydrateTaskRunUserProfiles<T extends {
   result: unknown;
 }>(
   runs: T[],
-  options?: { sanitizeForList?: boolean; viewerUserId?: string | null },
+  options?: { sanitizeForList?: boolean; viewer?: AuthUser | null },
 ) {
   const userUuids = runs.map((run) => run.userUuid).filter((value): value is string => Boolean(value));
   return getProfilesByUuids(userUuids).then((profiles) =>
     runs.map((run) => {
-      const privateRun = sanitizeTaskRunPricingForViewer(run, options?.viewerUserId);
+      const privateRun = sanitizeTaskRunPricingForViewer(run, options?.viewer);
       const sanitized = options?.sanitizeForList ? sanitizeTaskRunForList(privateRun) : privateRun;
+      const userProfile = sanitized.userUuid
+        ? profiles.get(sanitized.userUuid) ?? fallbackPublicUserProfile(sanitized.userUuid)
+        : undefined;
       return {
         ...sanitized,
-        userProfile: sanitized.userUuid ? profiles.get(sanitized.userUuid) ?? fallbackPublicUserProfile(sanitized.userUuid) : undefined,
+        userUuid: userProfile?.userUuid ?? null,
+        userProfile,
       };
     }),
   );
@@ -147,14 +153,14 @@ router.get("/", async (c) => {
       .limit(limit + 1);
     const runs = await hydrateTaskRunUserProfiles(rows.slice(0, limit), {
       sanitizeForList: true,
-      viewerUserId: userId,
+      viewer: user,
     });
     return c.json({ runs, pageInfo: { hasMore: rows.length > limit, nextCursor: rows.length > limit ? buildTaskCursor(runs.at(-1)) : null } });
   }
 
   if (!userId) return c.json({ message: "unauthorized" }, 401);
 
-  const conditions = [eq(taskRuns.userUuid, userId)];
+  const conditions = [inArray(taskRuns.userUuid, getIdentityKeys(user))];
   applyTaskFilters({ conditions, sessionId, cronJobId, taskType, status, cursor: cursorValue });
   const rows = await db
     .select()
@@ -164,7 +170,7 @@ router.get("/", async (c) => {
     .limit(limit + 1);
   const runs = await hydrateTaskRunUserProfiles(rows.slice(0, limit), {
     sanitizeForList: true,
-    viewerUserId: userId,
+    viewer: user,
   });
 
   return c.json({ runs, pageInfo: { hasMore: rows.length > limit, nextCursor: rows.length > limit ? buildTaskCursor(runs.at(-1)) : null } });
@@ -183,12 +189,12 @@ router.get("/:taskId", async (c) => {
     if (!(await hasPermission(user, "taskrun.view", { spaceId: run.spaceId, sessionId: run.sessionId ?? undefined }))) {
       return authzDenied(c);
     }
-  } else if (!user || run.userUuid !== user.uuid) {
+  } else if (!user || !identityEquals(user, run.userUuid)) {
     return authzDenied(c);
   }
 
   const job = await taskQueue.getJob(run.jobId).catch(() => null);
-  const [hydratedRun] = await hydrateTaskRunUserProfiles([run], { viewerUserId: user?.uuid });
+  const [hydratedRun] = await hydrateTaskRunUserProfiles([run], { viewer: user });
   return c.json({ run: hydratedRun, progress: job?.progress ?? null });
 });
 

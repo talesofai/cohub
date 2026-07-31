@@ -27,6 +27,7 @@ import { join, resolve } from "node:path";
 import { config } from "./config.js";
 import { db } from "./db.js";
 import { redisCommandClient } from "./redis.js";
+import { resolveStoredPrincipalReadKeysForWorker } from "./identity-bridge.js";
 
 const logger = createLogger({ serviceName: "cohub-worker" });
 
@@ -231,13 +232,15 @@ async function fetchSkills(options: LoadSkillsOptions): Promise<Skill[]> {
   }
 
   if (options.userId) {
-    configs.push(await loadCachedSkills({
-      redisKey: getUserSkillsRedisKey(options.userId),
-      dir: getUserSkillsDir(options.userId),
+    const userId = options.userId.trim();
+    const userIds = await resolveStoredPrincipalReadKeysForWorker(userId);
+    configs.push(...await Promise.all(userIds.map((userId) => loadCachedSkills({
+      redisKey: getUserSkillsRedisKey(userId),
+      dir: getUserSkillsDir(userId),
       sandboxDir: SANDBOX_USER_SKILLS_PATH,
       scope: "user",
       allowMissing: true,
-    }));
+    }))));
   }
 
   if (options.spaceId && config.spaceStorageRoot) {

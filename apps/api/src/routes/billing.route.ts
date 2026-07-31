@@ -3,7 +3,8 @@ import { ApiError, isBillingApiError } from "../lib/billing-api-error.js";
 import { billingOperations, COHUB_BILLING_FEATURES, COHUB_BILLING_TOKEN_TYPES, type CohubBillingFeatureKey } from "@cohub/billing";
 import { config } from "../config.js";
 import { jsonError } from "../lib/json-error.js";
-import { getOptionalAuth, useAuth } from "../lib/middleware.js";
+import { getOptionalAuth, useAuth, type AuthUser } from "../lib/middleware.js";
+import { resolveBillingUserId } from "../identity-bridge.js";
 
 const router = new Hono();
 const BILLING_PAGE_SIZE = 10;
@@ -67,6 +68,18 @@ function billingApiErrorResponse(c: Context, error: { status: number; message: s
   });
 }
 
+async function legacyBillingUserId(c: Context, user: AuthUser): Promise<string | Response> {
+  try {
+    return await resolveBillingUserId(user);
+  } catch {
+    return jsonError(c, {
+      status: 503,
+      message: "Billing identity is unavailable",
+      code: "billing_identity_unavailable",
+    });
+  }
+}
+
 const BILLING_FEATURE_KEYS = new Set<string>(Object.values(COHUB_BILLING_FEATURES));
 
 function resolveBillingFeatureKey(value: string): CohubBillingFeatureKey | null {
@@ -78,8 +91,10 @@ router.get("/credits", async (c) => {
   if (user instanceof Response) return user;
   const resolved = resolveTokenType(c.req.query("tokenType"));
   if ("error" in resolved) return c.json({ message: resolved.error }, 400);
+  const userId = await legacyBillingUserId(c, user);
+  if (userId instanceof Response) return userId;
   const credit = await billingOperations.getCreditStatus({
-    userId: user.uuid,
+    userId,
     tokenType: resolved.tokenType,
   });
   return c.json(credit);
@@ -90,8 +105,10 @@ router.get("/balance-activities", async (c) => {
   if (user instanceof Response) return user;
   const resolved = resolveTokenType(c.req.query("tokenType"));
   if ("error" in resolved) return c.json({ message: resolved.error }, 400);
+  const userId = await legacyBillingUserId(c, user);
+  if (userId instanceof Response) return userId;
   const activities = await billingOperations.listBalanceActivities({
-    userId: user.uuid,
+    userId,
     tokenType: resolved.tokenType,
     page: parsePositiveInt(c.req.query("page"), 1, 10_000),
     limit: parsePositiveInt(c.req.query("limit"), BILLING_PAGE_SIZE, BILLING_PAGE_SIZE),
@@ -102,8 +119,10 @@ router.get("/balance-activities", async (c) => {
 router.get("/catalog", async (c) => {
   const user = getOptionalAuth(c);
   try {
+    const userId = user ? await legacyBillingUserId(c, user) : undefined;
+    if (userId instanceof Response) return userId;
     const catalog = await billingOperations.getCatalog(
-      user?.uuid ? { userId: user.uuid } : undefined,
+      userId ? { userId } : undefined,
     );
     return c.json({ catalog });
   } catch (error) {
@@ -118,8 +137,10 @@ router.get("/features/:featureKey", async (c) => {
   const featureKey = resolveBillingFeatureKey(c.req.param("featureKey"));
   if (!featureKey) return c.json({ message: "unsupported billing feature" }, 400);
   try {
+    const userId = await legacyBillingUserId(c, user);
+    if (userId instanceof Response) return userId;
     const entitlement = await billingOperations.getFeatureEntitlement({
-      userId: user.uuid,
+      userId,
       featureKey,
     });
     return c.json({ enabled: Boolean(entitlement?.enabled) });
@@ -133,8 +154,10 @@ router.get("/subscriptions", async (c) => {
   const user = useAuth(c);
   if (user instanceof Response) return user;
   try {
+    const userId = await legacyBillingUserId(c, user);
+    if (userId instanceof Response) return userId;
     const subscriptions = await billingOperations.listSubscriptions({
-      userId: user.uuid,
+      userId,
       page: parsePositiveInt(c.req.query("page"), 1, 10_000),
       limit: parsePositiveInt(c.req.query("limit"), BILLING_PAGE_SIZE, BILLING_PAGE_SIZE),
     });
@@ -149,6 +172,8 @@ router.post("/orders", async (c) => {
   const user = useAuth(c);
   if (user instanceof Response) return user;
   try {
+    const userId = await legacyBillingUserId(c, user);
+    if (userId instanceof Response) return userId;
     const body = await readCheckoutBody(c);
     const productKey =
       typeof (body as { productKey?: unknown }).productKey === "string"
@@ -156,7 +181,7 @@ router.post("/orders", async (c) => {
         : "";
     if (!productKey) return c.json({ message: "Product key is required" }, 400);
     const checkout = await billingOperations.purchaseAddon({
-      userId: user.uuid,
+      userId,
       productKey,
       returnUrl: parseReturnUrl((body as { returnUrl?: unknown }).returnUrl),
     });
@@ -171,6 +196,8 @@ router.post("/subscriptions", async (c) => {
   const user = useAuth(c);
   if (user instanceof Response) return user;
   try {
+    const userId = await legacyBillingUserId(c, user);
+    if (userId instanceof Response) return userId;
     const body = await readCheckoutBody(c);
     const productKey =
       typeof (body as { productKey?: unknown }).productKey === "string"
@@ -178,7 +205,7 @@ router.post("/subscriptions", async (c) => {
         : "";
     if (!productKey) return c.json({ message: "Product key is required" }, 400);
     const checkout = await billingOperations.createSubscription({
-      userId: user.uuid,
+      userId,
       productKey,
       returnUrl: parseReturnUrl((body as { returnUrl?: unknown }).returnUrl),
     });
@@ -193,8 +220,10 @@ router.delete("/subscriptions/:subscriptionId/checkout", async (c) => {
   const user = useAuth(c);
   if (user instanceof Response) return user;
   try {
+    const userId = await legacyBillingUserId(c, user);
+    if (userId instanceof Response) return userId;
     const subscription = await billingOperations.cancelSubscriptionCheckout({
-      userId: user.uuid,
+      userId,
       subscriptionId: c.req.param("subscriptionId"),
     });
     return c.json({ subscription });
@@ -208,12 +237,14 @@ router.patch("/subscriptions/:subscriptionId", async (c) => {
   const user = useAuth(c);
   if (user instanceof Response) return user;
   try {
+    const userId = await legacyBillingUserId(c, user);
+    if (userId instanceof Response) return userId;
     const body = await readCheckoutBody(c);
     if ((body as { cancelAtPeriodEnd?: unknown }).cancelAtPeriodEnd !== true) {
       return c.json({ message: "cancelAtPeriodEnd must be true" }, 400);
     }
     const subscription = await billingOperations.cancelSubscriptionAutoRenew({
-      userId: user.uuid,
+      userId,
       subscriptionId: c.req.param("subscriptionId"),
     });
     return c.json({ subscription });
@@ -227,11 +258,13 @@ router.post("/redemptions", async (c) => {
   const user = useAuth(c);
   if (user instanceof Response) return user;
   try {
+    const userId = await legacyBillingUserId(c, user);
+    if (userId instanceof Response) return userId;
     const body = await readCheckoutBody(c);
     const code = parseRedemptionCode((body as { code?: unknown }).code);
     if (!code) return c.json({ message: "Redemption code is required" }, 400);
     const redemption = await billingOperations.redeemCode({
-      userId: user.uuid,
+      userId,
       code,
     });
     return c.json({ redemption });

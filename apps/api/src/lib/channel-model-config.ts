@@ -17,6 +17,7 @@ import { spaces } from "@cohub/db";
 import type { db as dbClient } from "../db/index.js";
 import { config } from "../config.js";
 import { redisCommandClient } from "../redis.js";
+import { resolveStoredPrincipalReadKeys } from "../identity-bridge.js";
 
 type DbClient = typeof dbClient;
 type SpaceRow = InferSelectModel<typeof spaces>;
@@ -90,14 +91,15 @@ export async function loadMergedModelsCatalog(db: DbClient, spaceOrId: Pick<Spac
     modelsPath: PLATFORM_MODELS_PATH,
     allowMissing: false,
   });
-  const userModels = space?.userUuid
-    ? await loadModelsConfig({
-        redisKey: getUserModelsRedisKey(space.userUuid),
-        modelsPath: getUserModelsPath(space.userUuid),
-        allowMissing: true,
-      })
-    : null;
-  return mergeModelsConfigs(platformModels, userModels);
+  const userIds = space?.userUuid
+    ? await resolveStoredPrincipalReadKeys(space.userUuid)
+    : [];
+  const userModels = await Promise.all(userIds.map((userId) => loadModelsConfig({
+    redisKey: getUserModelsRedisKey(userId),
+    modelsPath: getUserModelsPath(userId),
+    allowMissing: true,
+  })));
+  return mergeModelsConfigs(platformModels, ...userModels);
 }
 
 export function splitProviderModelInput(value: string): { provider: string | null; id: string } {

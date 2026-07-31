@@ -1,5 +1,3 @@
-import type { AuthUserProfile } from "@cohub/identity";
-import { AuthorizationError, verifyUserAccessToken } from "@cohub/identity";
 import { buildTraceHeaders, getTraceResponseHeaders, type TraceIdentifiers } from "@cohub/infra/tracing";
 import type { ContentBlock } from "@cohub/protocol/core";
 import type { RealtimeRoom } from "@cohub/protocol/realtime";
@@ -14,7 +12,7 @@ const parseJson = async <T>(response: Response): Promise<T | null> => {
 export type RealtimeAuthResult =
   | {
       ok: true;
-      user: GatewayAuthUser & { uuid: string };
+      user: GatewayAuthUser & { uuid: string; legacyUserUuid?: string };
     }
   | {
       ok: false;
@@ -28,7 +26,7 @@ export type RealtimeAuthResult =
 export type SessionAuthorizationResult =
   | {
       ok: true;
-      user: GatewayAuthUser & { uuid: string };
+      user: GatewayAuthUser & { uuid: string; legacyUserUuid?: string };
       spaceId: string;
       sessionId: string;
     }
@@ -42,27 +40,6 @@ export type SessionAuthorizationResult =
     };
 
 export const authenticateRealtimeToken = async (input: { token: string }): Promise<RealtimeAuthResult> => {
-  let user: AuthUserProfile;
-  try {
-    user = await verifyUserAccessToken({ token: input.token, logtoEndpoint: gatewayConfig.logtoEndpoint });
-    return {
-      ok: true,
-      user,
-    };
-  } catch (error) {
-    const status = error instanceof AuthorizationError ? error.status : 401;
-    if (status === 403) {
-      return {
-        ok: false,
-        status,
-        error: {
-          message: "Forbidden",
-          type: "authentication_error",
-        },
-      };
-    }
-  }
-
   const response = await fetch(`${gatewayConfig.apiBaseUrl}/api/me`, {
     headers: {
       authorization: `Bearer ${input.token}`,
@@ -79,7 +56,11 @@ export const authenticateRealtimeToken = async (input: { token: string }): Promi
       },
     };
   }
-  const data = await parseJson<{ uuid?: string; profile?: { displayName?: string | null; avatarUrl?: string | null } }>(response);
+  const data = await parseJson<{
+    uuid?: string;
+    legacyUserUuid?: string;
+    profile?: { displayName?: string | null; avatarUrl?: string | null };
+  }>(response);
   if (!data?.uuid) {
     return {
       ok: false,
@@ -94,6 +75,7 @@ export const authenticateRealtimeToken = async (input: { token: string }): Promi
     ok: true,
     user: {
       uuid: data.uuid,
+      ...(data.legacyUserUuid ? { legacyUserUuid: data.legacyUserUuid } : {}),
       nick_name: data.profile?.displayName ?? undefined,
       avatar_url: data.profile?.avatarUrl ?? undefined,
     },

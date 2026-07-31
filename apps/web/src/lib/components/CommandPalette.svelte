@@ -182,14 +182,13 @@ const recentItems = $derived.by(() => {
 });
 // Local commands are always resolved synchronously — never blocked by network/IDB.
 const localCommands = $derived(resolveLocalCommandItems(searchPlan));
-const myUserUuid = $derived(authStore.userUuid);
 const filteredSpaceItems = $derived.by(() => {
 	if (!isSpacePickerMode || spaceFilter === "all") return null;
 	return (items: CommandPaletteItem[]) =>
 		items.filter((item) => {
 			if (item.type !== "space") return true;
 			if (spaceFilter === "mine")
-				return item.ownerProfile?.userUuid === myUserUuid;
+				return authStore.matchesUserId(item.ownerProfile?.userUuid);
 			if (spaceFilter === "pinned") return item.isPinned ?? false;
 			return true;
 		});

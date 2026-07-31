@@ -56,6 +56,17 @@ export type Permission = typeof ALL_PERMISSIONS[number];
 
 export type PermissionSubject = {
   uuid?: string | null;
+  legacyUserUuid?: string | null;
+  aliases?: readonly string[];
+};
+
+const subjectKeys = (user: PermissionSubject | null): string[] => {
+  if (!user) return [];
+  return [...new Set([
+    user.uuid,
+    user.legacyUserUuid,
+    ...(user.aliases ?? []),
+  ].filter((value): value is string => typeof value === "string" && Boolean(value.trim())).map((value) => value.trim()))];
 };
 
 export type AccessPolicy = {
@@ -180,8 +191,8 @@ export async function resolvePermissionAccess(input: {
   user: PermissionSubject | null;
   context: { spaceId: string; sessionId?: string };
 }): Promise<PermissionAccess> {
-  if (input.user?.uuid) {
-    const memberRole = await input.store.getSpaceMemberRole(input.context.spaceId, input.user.uuid);
+  for (const key of subjectKeys(input.user)) {
+    const memberRole = await input.store.getSpaceMemberRole(input.context.spaceId, key);
     if (memberRole) {
       return {
         role: memberRole,
@@ -230,8 +241,8 @@ export async function hasPermission(input: {
   permission: Permission;
   context: { spaceId: string; sessionId?: string };
 }): Promise<boolean> {
-  if (input.user?.uuid) {
-    const memberRole = await input.store.getSpaceMemberRole(input.context.spaceId, input.user.uuid);
+  for (const key of subjectKeys(input.user)) {
+    const memberRole = await input.store.getSpaceMemberRole(input.context.spaceId, key);
     if (memberRole) return roleHasPermission(memberRole, input.permission);
   }
 
@@ -266,7 +277,7 @@ export async function filterSessionsByPermission<TSession extends SpaceSessionLi
 }): Promise<TSession[]> {
   if (input.sessions.length === 0) return [];
 
-  if (input.user?.uuid && (await input.store.getSpaceMemberRole(input.spaceId, input.user.uuid)) !== null) {
+  if ((await Promise.all(subjectKeys(input.user).map((key) => input.store.getSpaceMemberRole(input.spaceId, key)))).some((role) => role !== null)) {
     throw new Error(
       "filterSessionsByPermission must not be called for space members. " +
       "Use space-level permission checks instead.",
@@ -344,7 +355,7 @@ export function createBatchDrizzlePermissionStore(db: DrizzlePermissionDb): Perm
     ...store,
     async filterSessionsByPermission<TSession extends SpaceSessionLike>(input: Omit<Parameters<typeof filterSessionsByPermission<TSession>>[0], "store">) {
       if (input.sessions.length === 0) return [];
-      if (input.user?.uuid && (await store.getSpaceMemberRole(input.spaceId, input.user.uuid)) !== null) {
+      if ((await Promise.all(subjectKeys(input.user).map((key) => store.getSpaceMemberRole(input.spaceId, key)))).some((role) => role !== null)) {
         throw new Error(
           "filterSessionsByPermission must not be called for space members. " +
           "Use space-level permission checks instead.",
@@ -379,12 +390,12 @@ export function createBatchDrizzlePermissionStore(db: DrizzlePermissionDb): Perm
       const allowed = new Set<string>();
       const memberSpaceIds = new Set<string>();
 
-      if (input.user?.uuid) {
+      if (subjectKeys(input.user).length > 0) {
         const members = await queryDb
           .select({ spaceId: spaceMembers.spaceId, role: spaceMembers.role })
           .from(spaceMembers)
           .where(
-            and(eq(spaceMembers.userId, input.user.uuid), inArray(spaceMembers.spaceId, unique)),
+            and(inArray(spaceMembers.userId, subjectKeys(input.user)), inArray(spaceMembers.spaceId, unique)),
           );
         for (const member of members) {
           memberSpaceIds.add(member.spaceId);

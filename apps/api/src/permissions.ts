@@ -19,15 +19,28 @@ type ScopedExecutionPrincipal = {
 
 const permissionStore = createBatchDrizzlePermissionStore(db);
 
+const identityKeys = (user: AuthUserProfile | null | undefined): string[] =>
+  [...new Set([user?.uuid, user?.legacyUserUuid]
+    .filter((value): value is string => typeof value === "string" && Boolean(value.trim()))
+    .map((value) => value.trim()))];
+
 export type { Audience, Permission } from "@cohub/core/permissions";
 
 export async function getSpaceMemberRole(spaceId: string, userId: string): Promise<SpaceRole | null> {
   return permissionStore.getSpaceMemberRole(spaceId, userId);
 }
 
+export async function getSpaceMemberRoleForUser(spaceId: string, user: AuthUserProfile | null): Promise<SpaceRole | null> {
+  for (const key of identityKeys(user)) {
+    const role = await getSpaceMemberRole(spaceId, key);
+    if (role) return role;
+  }
+  return null;
+}
+
 const getUserWorkSession = (user: AuthUserProfile | null): CachedWorkSessionPrincipal | null => {
   const session = (user as (AuthUserProfile & { workSession?: CachedWorkSessionPrincipal }) | null)?.workSession;
-  if (!session || user?.uuid !== session.userUuid) return null;
+  if (!session || !identityKeys(user).includes(session.userUuid)) return null;
   return session;
 };
 
@@ -39,7 +52,7 @@ const getUserExecution = (user: AuthUserProfile | null): ScopedExecutionPrincipa
 
 const getUserPreviewSession = (user: AuthUserProfile | null): PreviewSessionPrincipal | null => {
   const session = (user as (AuthUserProfile & { previewSession?: PreviewSessionPrincipal }) | null)?.previewSession;
-  if (!session || user?.uuid !== session.userUuid) return null;
+  if (!session || !identityKeys(user).includes(session.userUuid)) return null;
   return session;
 };
 
@@ -48,9 +61,11 @@ const getUserPreviewSession = (user: AuthUserProfile | null): PreviewSessionPrin
  * (`user.space.list` / `user.session.list` / `user.usage.read`).
  * Gate with the original principal; load data with this identity.
  */
-export function asAccountIdentity(user: { uuid?: string | null } | null | undefined): { uuid: string } | null {
+export function asAccountIdentity(user: { uuid?: string | null; legacyUserUuid?: string | null } | null | undefined): { uuid: string; legacyUserUuid?: string } | null {
   const uuid = typeof user?.uuid === "string" ? user.uuid.trim() : "";
-  return uuid ? { uuid } : null;
+  if (!uuid) return null;
+  const legacyUserUuid = typeof user?.legacyUserUuid === "string" ? user.legacyUserUuid.trim() : "";
+  return legacyUserUuid ? { uuid, legacyUserUuid } : { uuid };
 }
 
 const loadActiveViewerGrantScopes = async (workSession: CachedWorkSessionPrincipal) => {
@@ -116,8 +131,9 @@ export async function hasPermission(
   });
 }
 
-export async function getRoleForSpaceUser(spaceId: string, userId: string): Promise<SpaceRole | null> {
-  return getSpaceMemberRole(spaceId, userId);
+export async function getRoleForSpaceUser(spaceId: string, userId: string | { uuid: string; legacyUserUuid?: string }): Promise<SpaceRole | null> {
+  if (typeof userId === "string") return getSpaceMemberRole(spaceId, userId);
+  return getSpaceMemberRoleForUser(spaceId, userId);
 }
 
 export async function resolvePermissionAccess(

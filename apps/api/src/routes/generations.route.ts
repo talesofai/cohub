@@ -26,6 +26,7 @@ import { enqueueTask } from "../tasks.js";
 import { defaultJobRetention } from "@cohub/infra/bullmq";
 import { createLogger } from "@cohub/infra/logging";
 import { applyRequestSourceToMeta } from "../lib/request-source.js";
+import { getIdentityKeys, resolveBillingUserId } from "../identity-bridge.js";
 
 
 const logger = createLogger({ serviceName: "cohub-api" });
@@ -81,7 +82,7 @@ router.post("/", async (c) => {
     }
   }
 
-  const declaration = await loadGenerationDeclaration(user.uuid, request.model);
+  const declaration = await loadGenerationDeclaration(user.uuid, request.model, getIdentityKeys(user));
   if (!declaration) {
     return generationError(c, 404, "generation_model_not_found", `Generation model not found: ${request.model}`);
   }
@@ -109,10 +110,22 @@ router.post("/", async (c) => {
     adapterType: declaration.adapter?.type,
     contentTypes: contentTypesFromBlocks(request.content),
   });
+  const billingUserId = await resolveBillingUserId(user).catch((error) => {
+    logger.error("[Billing] failed to resolve legacy billing identity before generation enqueue", { error });
+    return null;
+  });
+  if (!billingUserId) {
+    return generationError(
+      c,
+      503,
+      "generation_pricing_unavailable",
+      "Generation pricing is temporarily unavailable. Please try again later.",
+    );
+  }
   let resolvedDiscount: Awaited<ReturnType<typeof billingOperations.getGenerationModelDiscount>>;
   try {
     resolvedDiscount = await billingOperations.getGenerationModelDiscount({
-      userId: user.uuid,
+      userId: billingUserId,
       model: request.model,
     });
   } catch (error) {
@@ -146,7 +159,7 @@ router.post("/", async (c) => {
   const billingDecision = isGenerationModelDiscountFree(resolvedDiscount)
     ? { status: "allowed" as const, balanceState: "zero" as const, netUsd: 0 }
     : await billingUsageGate.evaluate({
-        userId: user.uuid,
+        userId: billingUserId,
         usageKind: generationUsageKind(usageType),
         source: "generation_task",
         model: request.model,

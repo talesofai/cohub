@@ -4,6 +4,8 @@ import { FEATURE_NOT_ENTITLED_ERROR_CODE } from "@cohub/billing";
 import { featureGateResponse } from "./feature-gate.js";
 import { jsonError } from "./json-error.js";
 import { SpaceCommerceNotInitializedError, resolveSpaceCommerceEntitlement } from "./space-commerce.js";
+import type { AuthUser } from "./middleware.js";
+import { resolveBillingUserId } from "../identity-bridge.js";
 
 export const SPACE_COMMERCE_NOT_INITIALIZED_CODE = "space_commerce_not_initialized";
 export const SPACE_COMMERCE_ENTITLEMENT_REQUIRED_CODE = FEATURE_NOT_ENTITLED_ERROR_CODE;
@@ -58,8 +60,16 @@ export function handleWorkCommerceRouteError(c: Context, error: unknown) {
  */
 export async function requireSpaceCommerceEntitlement(
   c: Context,
-  userId: string,
+  user: AuthUser,
 ): Promise<Response | null> {
+  const userId = await resolveBillingUserId(user).catch(() => null);
+  if (!userId) {
+    return jsonError(c, {
+      status: 503,
+      message: "Could not verify billing identity. Please try again.",
+      code: SPACE_COMMERCE_ENTITLEMENT_UNAVAILABLE_CODE,
+    });
+  }
   const entitled = await resolveSpaceCommerceEntitlement(userId);
   if (entitled === null) {
     return jsonError(c, {

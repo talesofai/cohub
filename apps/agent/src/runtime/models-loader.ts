@@ -11,6 +11,8 @@ import {
 } from "@cohub/infra/config-runtime/models";
 import { redis } from "../redis.js";
 import { getAgentPlatformModelsPath, getAgentUserModelsPath } from "./paths.js";
+import { getIdentityKeys } from "@cohub/identity";
+import { resolveStoredPrincipalIdentityForAgentRead } from "../identity-bridge.js";
 
 async function loadModelsFromFile(input: {
   modelsPath: string;
@@ -64,12 +66,19 @@ export async function loadRuntimeModelsConfigs(userId?: string | null): Promise<
 
   const trimmedUserId = userId?.trim();
   if (trimmedUserId) {
-    const user = await loadCachedModels({
-      redisKey: getUserModelsRedisKey(trimmedUserId),
-      modelsPath: getAgentUserModelsPath(trimmedUserId),
-      allowMissing: true,
-    });
-    if (user) configs.push(user);
+    const identity = await resolveStoredPrincipalIdentityForAgentRead(trimmedUserId);
+    const userIds = [
+      ...getIdentityKeys(identity).filter((key) => key !== identity.uuid),
+      identity.uuid,
+    ];
+    for (const resolvedUserId of userIds) {
+      const user = await loadCachedModels({
+        redisKey: getUserModelsRedisKey(resolvedUserId),
+        modelsPath: getAgentUserModelsPath(resolvedUserId),
+        allowMissing: true,
+      });
+      if (user) configs.push(user);
+    }
   }
 
   return configs;

@@ -9,6 +9,8 @@ import type { LabelResourceType } from "@cohub/core/labels";
 import { hasPermission } from "../permissions.js";
 import { getRealtimeUserRoom } from "@cohub/protocol/realtime";
 import { dispatchRealtimeEvent } from "../channels.js";
+import { getIdentityKeys } from "../identity-bridge.js";
+import type { AuthUser } from "../lib/middleware.js";
 
 const router = new Hono();
 
@@ -41,7 +43,8 @@ router.get("/resources/:resourceType/labels", async (c) => {
   const resourceType = parseResourceType(c.req.param("resourceType") ?? "");
   const resourceRef = c.req.query("resourceRef")?.trim() ?? "";
   if (!resourceType || !resourceRef) return c.json({ message: "resource not found" }, 404);
-  const assignments = await getUserResourceLabelAssignments(db, user.uuid, resourceType, resourceRef);
+  const identity = { uuid: user.uuid, aliases: user.legacyUserUuid ? [user.legacyUserUuid] : [] };
+  const assignments = await getUserResourceLabelAssignments(db, identity, resourceType, resourceRef);
   return c.json({ assignments });
 });
 
@@ -71,13 +74,14 @@ router.patch("/resources/:resourceType/labels", async (c) => {
   const removeLabelRefs = parseLabelRefs((body as { removeLabelRefs?: unknown }).removeLabelRefs);
   if (addLabelRefs === null || removeLabelRefs === null) return c.json({ message: "addLabelRefs and removeLabelRefs must be arrays of strings" }, 400);
   if (addLabelRefs.length === 0 && removeLabelRefs.length === 0) return c.json({ message: "addLabelRefs or removeLabelRefs is required" }, 400);
+  const identity = { uuid: user.uuid, aliases: user.legacyUserUuid ? [user.legacyUserUuid] : [] };
   const assignments = await db.transaction((tx) =>
-    patchUserResourceLabels(tx, user.uuid, resourceType, resourceRef, {
+    patchUserResourceLabels(tx, identity, resourceType, resourceRef, {
       addLabelRefs,
       removeLabelRefs,
     }),
   );
-  await dispatchUserLabelAssignmentsUpdated(user.uuid, resourceType, resourceRef, assignments.map((a) => a.labelId));
+  await dispatchUserLabelAssignmentsUpdated(user, resourceType, resourceRef, assignments.map((a) => a.labelId));
   return c.json({ assignments });
 });
 
@@ -86,12 +90,13 @@ router.patch("/resources/:resourceType/labels", async (c) => {
  * Reuses the existing event type so the web client can handle it uniformly.
  */
 async function dispatchUserLabelAssignmentsUpdated(
-  userUuid: string,
+  user: AuthUser,
   resourceType: LabelResourceType,
   resourceRef: string,
   affectedLabelIds: string[],
 ) {
-  const assignments = await getUserResourceLabelAssignments(db, userUuid, resourceType, resourceRef);
+  const identity = { uuid: user.uuid, aliases: user.legacyUserUuid ? [user.legacyUserUuid] : [] };
+  const assignments = await getUserResourceLabelAssignments(db, identity, resourceType, resourceRef);
   await dispatchRealtimeEvent({
     id: crypto.randomUUID(),
     timestamp: Date.now(),
@@ -99,7 +104,7 @@ async function dispatchUserLabelAssignmentsUpdated(
     type: "label.assignments.updated",
     spaceId: null,
     sessionId: null,
-    rooms: [getRealtimeUserRoom(userUuid)],
+    rooms: getIdentityKeys(user).map(getRealtimeUserRoom),
     payload: {
       resourceType,
       resourceRef,

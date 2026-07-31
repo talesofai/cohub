@@ -8,7 +8,7 @@ const MAX_META_JSON_LENGTH = 4096;
 
 type StoredPresenceConnection = {
   connectionId: string;
-  userId: string | null;
+  userId: string;
   lastSeenAt: number;
   meta: Record<string, unknown> | null;
 };
@@ -16,6 +16,7 @@ type StoredPresenceConnection = {
 type StoredWsConnection = {
   connectionId?: string;
   userId?: string | null;
+  userIds?: string[];
   rooms?: string[];
 };
 
@@ -60,6 +61,9 @@ const parseWsConnection = (raw: string | null): StoredWsConnection | null => {
     return {
       connectionId: typeof value.connectionId === "string" ? value.connectionId : undefined,
       userId: typeof value.userId === "string" ? value.userId : null,
+      userIds: Array.isArray(value.userIds)
+        ? value.userIds.filter((userId): userId is string => typeof userId === "string")
+        : [],
       rooms: Array.isArray(value.rooms)
         ? value.rooms.filter((room): room is string => typeof room === "string")
         : [],
@@ -90,7 +94,10 @@ export async function getSpacePresenceSnapshot(spaceId: string): Promise<SpacePr
   entries.forEach((entry, index) => {
     const raw = connectionRows?.[index]?.[1];
     const wsConnection = parseWsConnection(typeof raw === "string" ? raw : null);
-    if (!wsConnection?.userId || wsConnection.userId !== entry.userId || !wsConnection.rooms?.includes(room)) {
+    const connectionUserIds = wsConnection
+      ? [...new Set([wsConnection.userId, ...(wsConnection.userIds ?? [])].filter((value): value is string => Boolean(value)))]
+      : [];
+    if (!connectionUserIds.includes(entry.userId) || !wsConnection?.rooms?.includes(room)) {
       staleConnectionIds.push(entry.connectionId);
       return;
     }
@@ -109,14 +116,29 @@ export async function getSpacePresenceSnapshot(spaceId: string): Promise<SpacePr
   }
 
   const profiles = await getProfilesByUuids([...users.keys()]);
-  const snapshotUsers = [...users.entries()]
+  const canonicalUsers = new Map<string, { connectionCount: number; lastSeenAt: number; meta: Record<string, unknown> | null; metas: Record<string, unknown>[]; profile: ReturnType<typeof fallbackPublicUserProfile> }>();
+  for (const [userId, state] of users) {
+    const profile = profiles.get(userId) ?? fallbackPublicUserProfile(userId);
+    const existing = canonicalUsers.get(profile.userUuid);
+    if (!existing) {
+      canonicalUsers.set(profile.userUuid, { ...state, profile });
+      continue;
+    }
+    existing.connectionCount += state.connectionCount;
+    existing.metas.push(...state.metas);
+    if (state.lastSeenAt >= existing.lastSeenAt) {
+      existing.lastSeenAt = state.lastSeenAt;
+      existing.meta = state.meta;
+    }
+  }
+  const snapshotUsers = [...canonicalUsers.entries()]
     .map(([userId, state]) => ({
       userId,
       connectionCount: state.connectionCount,
       lastSeenAt: new Date(state.lastSeenAt).toISOString(),
       meta: state.meta,
       metas: state.metas,
-      profile: profiles.get(userId) ?? fallbackPublicUserProfile(userId),
+      profile: state.profile,
     }))
     .sort((a, b) => Date.parse(b.lastSeenAt) - Date.parse(a.lastSeenAt));
 

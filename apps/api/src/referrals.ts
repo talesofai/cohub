@@ -6,8 +6,10 @@ import {
   userProfiles,
   type ReferralStatus,
 } from "@cohub/db";
-import { and, desc, eq, inArray } from "drizzle-orm";
+import { and, desc, eq, inArray, or } from "drizzle-orm";
 import { db } from "./db/index.js";
+import { getIdentityKeys, identityEquals, resolveStoredPrincipalUser } from "./identity-bridge.js";
+import type { PrincipalIdentity } from "@cohub/identity";
 
 export const REFERRAL_REWARD_USD = 5;
 
@@ -22,18 +24,20 @@ function toIso(value: Date | string | null | undefined) {
   return value instanceof Date ? value.toISOString() : value;
 }
 
-export async function ensureReferralCode(userId: string) {
-  const [existing] = await db
+export async function ensureReferralCode(user: PrincipalIdentity) {
+  const identityKeys = getIdentityKeys(user);
+  const existingCodes = await db
     .select()
     .from(referralCodes)
-    .where(and(eq(referralCodes.userId, userId), eq(referralCodes.status, "active")))
-    .limit(1);
+    .where(and(inArray(referralCodes.userId, identityKeys), eq(referralCodes.status, "active")));
+  if (existingCodes.length > 1) throw new Error("referral identity conflict requires repair");
+  const existing = existingCodes[0];
   if (existing) return existing;
 
   for (let attempt = 0; attempt < 3; attempt += 1) {
     const [created] = await db
       .insert(referralCodes)
-      .values({ userId, code: generateReferralCode() })
+      .values({ userId: user.uuid, code: generateReferralCode() })
       .onConflictDoNothing()
       .returning();
     if (created) return created;
@@ -41,25 +45,26 @@ export async function ensureReferralCode(userId: string) {
     const [concurrent] = await db
       .select()
       .from(referralCodes)
-      .where(and(eq(referralCodes.userId, userId), eq(referralCodes.status, "active")))
+      .where(and(inArray(referralCodes.userId, identityKeys), eq(referralCodes.status, "active")))
       .limit(1);
     if (concurrent) return concurrent;
   }
   throw new Error("failed to create referral code");
 }
 
-export async function rotateReferralCode(userId: string) {
+export async function rotateReferralCode(user: PrincipalIdentity) {
   const now = new Date();
+  const identityKeys = getIdentityKeys(user);
   return db.transaction(async (tx) => {
     await tx
       .update(referralCodes)
       .set({ status: "revoked", revokedAt: now, updatedAt: now })
-      .where(and(eq(referralCodes.userId, userId), eq(referralCodes.status, "active")));
+      .where(and(inArray(referralCodes.userId, identityKeys), eq(referralCodes.status, "active")));
 
     for (let attempt = 0; attempt < 3; attempt += 1) {
       const [created] = await tx
         .insert(referralCodes)
-        .values({ userId, code: generateReferralCode() })
+        .values({ userId: user.uuid, code: generateReferralCode() })
         .onConflictDoNothing()
         .returning();
       if (created) return created;
@@ -74,14 +79,17 @@ export async function getPublicReferral(code: string) {
       codeId: referralCodes.id,
       inviterUserId: referralCodes.userId,
       profile: {
-        userUuid: userProfiles.userUuid,
+        userUuid: userProfiles.logtoUserId,
         username: userProfiles.username,
         displayName: userProfiles.displayName,
         avatarUrl: userProfiles.avatarUrl,
       },
     })
     .from(referralCodes)
-    .leftJoin(userProfiles, eq(userProfiles.userUuid, referralCodes.userId))
+    .leftJoin(userProfiles, or(
+      eq(userProfiles.userUuid, referralCodes.userId),
+      eq(userProfiles.logtoUserId, referralCodes.userId),
+    ))
     .where(and(eq(referralCodes.code, code), eq(referralCodes.status, "active")))
     .limit(1);
   return result ?? null;
@@ -92,22 +100,24 @@ export type ClaimReferralResult = {
   status: ReferralStatus | "self" | "existing_user" | "already_claimed";
 };
 
-export async function claimReferral(code: string, inviteeUserId: string): Promise<ClaimReferralResult | null> {
+export async function claimReferral(code: string, invitee: PrincipalIdentity): Promise<ClaimReferralResult | null> {
   const publicReferral = await getPublicReferral(code);
   if (!publicReferral) return null;
-  if (publicReferral.inviterUserId === inviteeUserId) {
+  if (identityEquals(invitee, publicReferral.inviterUserId)) {
     return { referralId: null, status: "self" };
   }
+  const inviteeIdentityKeys = getIdentityKeys(invitee);
 
-  const [existing] = await db
+  const existingRows = await db
     .select({
       id: referrals.id,
       referralCodeId: referrals.referralCodeId,
       status: referrals.status,
     })
     .from(referrals)
-    .where(eq(referrals.inviteeUserId, inviteeUserId))
-    .limit(1);
+    .where(inArray(referrals.inviteeUserId, inviteeIdentityKeys));
+  if (existingRows.length > 1) throw new Error("referral identity conflict requires repair");
+  const existing = existingRows[0];
   if (existing) {
     return {
       referralId: existing.id,
@@ -123,19 +133,20 @@ export async function claimReferral(code: string, inviteeUserId: string): Promis
     .from(sessionTurns)
     .where(
       and(
-        eq(sessionTurns.userUuid, inviteeUserId),
+        inArray(sessionTurns.userUuid, inviteeIdentityKeys),
         inArray(sessionTurns.status, [...successfulTurnStatuses]),
       ),
     )
     .limit(1);
   if (successfulTurn) return { referralId: null, status: "existing_user" };
+  const inviterIdentity = await resolveStoredPrincipalUser(publicReferral.inviterUserId);
 
   const [created] = await db
     .insert(referrals)
     .values({
       referralCodeId: publicReferral.codeId,
-      inviterUserId: publicReferral.inviterUserId,
-      inviteeUserId,
+      inviterUserId: inviterIdentity.uuid,
+      inviteeUserId: invitee.uuid,
       inviterRewardAmountUsd: String(REFERRAL_REWARD_USD),
       inviteeRewardAmountUsd: String(REFERRAL_REWARD_USD),
     })
@@ -150,7 +161,7 @@ export async function claimReferral(code: string, inviteeUserId: string): Promis
       status: referrals.status,
     })
     .from(referrals)
-    .where(eq(referrals.inviteeUserId, inviteeUserId))
+    .where(inArray(referrals.inviteeUserId, inviteeIdentityKeys))
     .limit(1);
   if (!concurrent) return null;
   return {
@@ -162,8 +173,8 @@ export async function claimReferral(code: string, inviteeUserId: string): Promis
   };
 }
 
-export async function getReferralDashboard(userId: string) {
-  const code = await ensureReferralCode(userId);
+export async function getReferralDashboard(user: PrincipalIdentity) {
+  const code = await ensureReferralCode(user);
   const items = await db
     .select({
       id: referrals.id,
@@ -173,15 +184,18 @@ export async function getReferralDashboard(userId: string) {
       rewardedAt: referrals.rewardedAt,
       inviterRewardAmountUsd: referrals.inviterRewardAmountUsd,
       profile: {
-        userUuid: userProfiles.userUuid,
+        userUuid: userProfiles.logtoUserId,
         username: userProfiles.username,
         displayName: userProfiles.displayName,
         avatarUrl: userProfiles.avatarUrl,
       },
     })
     .from(referrals)
-    .leftJoin(userProfiles, eq(userProfiles.userUuid, referrals.inviteeUserId))
-    .where(eq(referrals.inviterUserId, userId))
+    .leftJoin(userProfiles, or(
+      eq(userProfiles.userUuid, referrals.inviteeUserId),
+      eq(userProfiles.logtoUserId, referrals.inviteeUserId),
+    ))
+    .where(inArray(referrals.inviterUserId, getIdentityKeys(user)))
     .orderBy(desc(referrals.claimedAt));
 
   const pending = items.filter((item) => item.status === "pending").length;

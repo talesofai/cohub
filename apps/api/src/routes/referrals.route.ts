@@ -32,7 +32,7 @@ router.post("/:code/claim", async (c) => {
   const code = c.req.param("code");
   if (!CODE_PATTERN.test(code)) return c.json({ message: "referral not found" }, 404);
 
-  const result = await claimReferral(code, user.uuid);
+  const result = await claimReferral(code, user);
   if (!result) return c.json({ message: "referral not found" }, 404);
   if (result.status === "self") return c.json({ message: "this is your referral link", status: "self" }, 409);
   if (result.status === "existing_user") {

@@ -9,6 +9,8 @@ import type { TaskPayload, TaskScheduleConfig } from "@cohub/protocol/task";
 import { GENERATION_TASK_TYPE } from "@cohub/protocol/generation";
 import { dispatchTaskCreated } from "./realtime-events.js";
 import { createLogger } from "@cohub/infra/logging";
+import { resolveStoredPrincipalUser } from "./identity-bridge.js";
+import { canonicalizeCronJobIdentity } from "./cron-job-identity.js";
 
 
 const logger = createLogger({ serviceName: "cohub-api" });
@@ -26,15 +28,19 @@ export const SUPPORTED_TASK_TYPES = new Set<string>(["send_message", "save_check
 export const enqueueTask = async (
   payload: TaskPayload,
   opts?: TaskEnqueueOptions,
-) => enqueueTaskRun({
-  db,
-  payload,
-  options: opts,
-  enqueue: (name, taskPayload, options) => taskQueue.add(name, taskPayload, options),
-  onTaskCreated: (taskRun) => dispatchTaskCreated(taskRun).catch((error) => {
-    logger.warn("[Realtime] failed to dispatch task.created", error);
-  }),
-});
+) => {
+  const identity = payload.userId ? await resolveStoredPrincipalUser(payload.userId) : null;
+  const canonicalPayload = identity ? { ...payload, userId: identity.uuid } : payload;
+  return enqueueTaskRun({
+    db,
+    payload: canonicalPayload,
+    options: opts,
+    enqueue: (name, taskPayload, options) => taskQueue.add(name, taskPayload, options),
+    onTaskCreated: (taskRun) => dispatchTaskCreated(taskRun).catch((error) => {
+      logger.warn("[Realtime] failed to dispatch task.created", error);
+    }),
+  });
+};
 
 export const createCronJob = async (params: {
   userId: string;
@@ -193,7 +199,12 @@ export const enableCronJob = async (cronJobId: string, bullJobKey: string, jobDa
   try {
     await db
       .update(cronJobs)
-      .set({ enabled: true, bullJobKey: repeatJobKey, updatedAt: new Date() })
+      .set({
+        userUuid: jobData.userUuid,
+        enabled: true,
+        bullJobKey: repeatJobKey,
+        updatedAt: new Date(),
+      })
       .where(eq(cronJobs.id, cronJobId));
   } catch (error) {
     await taskQueue.removeRepeatableByKey(repeatJobKey).catch((cleanupError) => {
@@ -239,6 +250,7 @@ export const updateCronJob = async (
     const [updatedConfig] = await db
       .update(cronJobs)
       .set({
+        userUuid: current.userUuid,
         ...(patch.title !== undefined ? { title: patch.title } : {}),
         ...(patch.payload !== undefined ? { payload: patch.payload } : {}),
         ...(patch.cronExpression !== undefined ? { cronExpression: patch.cronExpression } : {}),
@@ -249,17 +261,23 @@ export const updateCronJob = async (
       .where(eq(cronJobs.id, current.id))
       .returning();
     if (!updatedConfig) throw new Error("Failed to update cron job");
+    const canonicalUpdatedConfig = canonicalizeCronJobIdentity(updatedConfig, current.userUuid);
 
     let nextBullJobKey: string | null = null;
     try {
       nextBullJobKey = await scheduleCronJobRepeat(
         current.id,
         current.bullJobKey,
-        cronJobScheduleData(updatedConfig),
+        cronJobScheduleData(canonicalUpdatedConfig),
       );
       const [updatedJob] = await db
         .update(cronJobs)
-        .set({ bullJobKey: nextBullJobKey, enabled: true, updatedAt: new Date() })
+        .set({
+          userUuid: current.userUuid,
+          bullJobKey: nextBullJobKey,
+          enabled: true,
+          updatedAt: new Date(),
+        })
         .where(eq(cronJobs.id, current.id))
         .returning();
       if (!updatedJob) throw new Error("Failed to persist cron job schedule");
@@ -273,6 +291,7 @@ export const updateCronJob = async (
       const [rolledBack] = await db
         .update(cronJobs)
         .set({
+          userUuid: current.userUuid,
           title: current.title,
           payload: current.payload,
           cronExpression: current.cronExpression,
@@ -289,7 +308,12 @@ export const updateCronJob = async (
           const restoredBullJobKey = await scheduleCronJobRepeat(current.id, "", cronJobScheduleData(current));
           await db
             .update(cronJobs)
-            .set({ bullJobKey: restoredBullJobKey, enabled: true, updatedAt: new Date() })
+            .set({
+              userUuid: current.userUuid,
+              bullJobKey: restoredBullJobKey,
+              enabled: true,
+              updatedAt: new Date(),
+            })
             .where(eq(cronJobs.id, current.id));
         } catch (restoreError) {
           logger.warn("[CronJob] failed to restore previous repeat job after reschedule failure", { cronJobId: current.id, error: restoreError });
@@ -304,7 +328,11 @@ export const updateCronJob = async (
     if (patch.title === undefined) return enabledJob;
     const [updatedJob] = await db
       .update(cronJobs)
-      .set({ title: patch.title, updatedAt: new Date() })
+      .set({
+        userUuid: current.userUuid,
+        title: patch.title,
+        updatedAt: new Date(),
+      })
       .where(eq(cronJobs.id, current.id))
       .returning();
     if (!updatedJob) throw new Error("Failed to update cron job");
@@ -318,6 +346,7 @@ export const updateCronJob = async (
   const [updatedJob] = await db
     .update(cronJobs)
     .set({
+      userUuid: current.userUuid,
       ...(patch.title !== undefined ? { title: patch.title } : {}),
       ...(patch.payload !== undefined ? { payload: patch.payload } : {}),
       ...(patch.cronExpression !== undefined ? { cronExpression: patch.cronExpression } : {}),

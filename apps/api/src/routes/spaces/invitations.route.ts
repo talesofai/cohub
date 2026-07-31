@@ -33,7 +33,7 @@ router.post("/", async (c) => {
   if (!space) return c.json({ message: "space not found" }, 404);
 
   // Only hosts can create invitations
-  const actorRole = await getRoleForSpaceUser(spaceId, user.uuid);
+  const actorRole = await getRoleForSpaceUser(spaceId, user);
   if (actorRole !== "host") return c.json({ message: "forbidden" }, 403);
 
   const body = await c.req.json<{
@@ -135,7 +135,7 @@ router.delete("/:token", async (c) => {
   const token = c.req.param("token");
   if (!spaceId || !requireValidId(spaceId)) return c.json({ message: "space not found" }, 404);
 
-  const actorRole = await getRoleForSpaceUser(spaceId, user.uuid);
+  const actorRole = await getRoleForSpaceUser(spaceId, user);
   if (actorRole !== "host") return c.json({ message: "forbidden" }, 403);
 
   const key = inviteKey(token);

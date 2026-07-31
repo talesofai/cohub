@@ -1,15 +1,29 @@
 import { readFile, stat } from "node:fs/promises";
 import { join } from "node:path";
 import { Hono } from "hono";
-import { and, eq, gte, lte, desc } from "drizzle-orm";
+import { and, gte, lte, desc, inArray } from "drizzle-orm";
 import * as schema from "@cohub/db";
+import { isStorageSafePrincipalId } from "@cohub/identity";
 import { db } from "../db/index.js";
 import { config } from "../config.js";
-import { requireValidId, useAuth, authzDenied } from "../lib/middleware.js";
-import { ensureCurrentUserProfile, resolveCurrentUserEmail, updateCurrentUserProfile, LogtoUserRequiredError, UsernameClearError, UsernameConflictError, UsernameReservedError, validateUsername } from "../user-profiles.js";
+import {
+  authzDenied,
+  getIdentityKeys,
+  useAuth,
+} from "../lib/middleware.js";
+import {
+  ensureCurrentUserProfile,
+  LogtoUserRequiredError,
+  resolveCurrentUserEmail,
+  updateCurrentUserProfile,
+  UsernameClearError,
+  UsernameConflictError,
+  UsernameReservedError,
+  validateUsername,
+} from "../user-profiles.js";
 import {
   filterSessionsByPermission,
-  getSpaceMemberRole,
+  getSpaceMemberRoleForUser,
   hasPermission,
   asAccountIdentity,
 } from "../permissions.js";
@@ -46,7 +60,7 @@ function getUserRulesPath(userId: string) {
 }
 
 function assertValidUserId(userId: string) {
-  if (!requireValidId(userId)) {
+  if (!isStorageSafePrincipalId(userId)) {
     throw new Error("invalid user id");
   }
 }
@@ -57,31 +71,31 @@ function getErrorCode(error: unknown) {
     : undefined;
 }
 
-async function readUserRules(userId: string) {
-  assertValidUserId(userId);
-  const path = getUserRulesPath(userId);
-  try {
-    const [content, fileStat] = await Promise.all([
-      readFile(path, "utf-8"),
-      stat(path),
-    ]);
-    return {
-      content,
-      updatedAt: fileStat.mtime.toISOString(),
-      source: "config-space" as const,
-      path: USER_RULES_SANDBOX_PATH,
-    };
-  } catch (error) {
-    if (getErrorCode(error) === "ENOENT") {
+async function readUserRules(userIds: readonly string[]) {
+  for (const userId of userIds) {
+    assertValidUserId(userId);
+    const path = getUserRulesPath(userId);
+    try {
+      const [content, fileStat] = await Promise.all([
+        readFile(path, "utf-8"),
+        stat(path),
+      ]);
       return {
-        content: "",
-        updatedAt: null,
+        content,
+        updatedAt: fileStat.mtime.toISOString(),
         source: "config-space" as const,
         path: USER_RULES_SANDBOX_PATH,
       };
+    } catch (error) {
+      if (getErrorCode(error) !== "ENOENT") throw error;
     }
-    throw error;
   }
+  return {
+    content: "",
+    updatedAt: null,
+    source: "config-space" as const,
+    path: USER_RULES_SANDBOX_PATH,
+  };
 }
 
 router.get("/", async (c) => {
@@ -89,7 +103,12 @@ router.get("/", async (c) => {
   if (user instanceof Response) return user;
   const profile = await ensureCurrentUserProfile(user);
   const email = await resolveCurrentUserEmail(user);
-  return c.json({ uuid: user.uuid, profile, email });
+  return c.json({
+    uuid: user.uuid,
+    ...(user.legacyUserUuid ? { legacyUserUuid: user.legacyUserUuid } : {}),
+    profile,
+    email,
+  });
 });
 
 router.patch("/profile", async (c) => {
@@ -166,13 +185,13 @@ router.patch("/profile", async (c) => {
 router.get("/referrals", async (c) => {
   const user = useAuth(c);
   if (user instanceof Response) return user;
-  return c.json(await getReferralDashboard(user.uuid));
+  return c.json(await getReferralDashboard(user));
 });
 
 router.post("/referrals/code/rotate", async (c) => {
   const user = useAuth(c);
   if (user instanceof Response) return user;
-  const code = await rotateReferralCode(user.uuid);
+  const code = await rotateReferralCode(user);
   return c.json({ code: code.code });
 });
 
@@ -180,7 +199,7 @@ router.get("/rules", async (c) => {
   const user = useAuth(c);
   if (user instanceof Response) return user;
   try {
-    return c.json(await readUserRules(user.uuid));
+    return c.json(await readUserRules(getIdentityKeys(user)));
   } catch {
     return c.json({ message: "failed to load user rules" }, 500);
   }
@@ -212,7 +231,7 @@ async function listVisibleUserSessions(
   const canViewAllInSpace = async (spaceId: string) => {
     const cached = memberViewBySpace.get(spaceId);
     if (cached !== undefined) return cached;
-    const isMember = (await getSpaceMemberRole(spaceId, identity.uuid)) !== null;
+    const isMember = (await getSpaceMemberRoleForUser(spaceId, identity)) !== null;
     const allowed = isMember
       ? await hasPermission(identity, "session.view", { spaceId })
       : false;
@@ -223,7 +242,7 @@ async function listVisibleUserSessions(
   while (visible.length < limit && hasMore && guard < 8) {
     guard += 1;
     const batchLimit = Math.min(100, Math.max(limit * 2, limit - visible.length + 4));
-    const batch = await listUserSessions(identity.uuid, { limit: batchLimit, cursor });
+    const batch = await listUserSessions([identity.uuid, identity.legacyUserUuid].filter((value): value is string => Boolean(value)), { limit: batchLimit, cursor });
     hasMore = Boolean(batch.pageInfo.hasMore);
     cursor = batch.pageInfo.nextCursor;
 
@@ -317,7 +336,7 @@ router.get("/usage", async (c) => {
         .from(schema.tokenUsageStatsHourly)
         .where(
           and(
-            eq(schema.tokenUsageStatsHourly.userId, identity.uuid),
+            inArray(schema.tokenUsageStatsHourly.userId, [identity.uuid, identity.legacyUserUuid].filter((value): value is string => Boolean(value))),
             gte(schema.tokenUsageStatsHourly.bucketStartAt, startDate),
             lte(schema.tokenUsageStatsHourly.bucketStartAt, now),
           ),
@@ -328,7 +347,7 @@ router.get("/usage", async (c) => {
         .from(schema.generationUsageStatsHourly)
         .where(
           and(
-            eq(schema.generationUsageStatsHourly.userId, identity.uuid),
+            inArray(schema.generationUsageStatsHourly.userId, [identity.uuid, identity.legacyUserUuid].filter((value): value is string => Boolean(value))),
             gte(schema.generationUsageStatsHourly.bucketStartAt, startDate),
             lte(schema.generationUsageStatsHourly.bucketStartAt, now),
           ),

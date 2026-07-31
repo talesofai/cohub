@@ -1,7 +1,7 @@
 import { randomBytes } from "node:crypto";
 import type { BillingOperations } from "@cohub/billing";
 import { referrals, type ReferralStatus } from "@cohub/db";
-import { and, eq, isNull, lt, or, sql } from "drizzle-orm";
+import { and, eq, inArray, isNull, lt, or, sql } from "drizzle-orm";
 import type { PostgresJsDatabase } from "drizzle-orm/postgres-js";
 
 export const REFERRAL_REWARD_LEASE_MS = 5 * 60_000;
@@ -21,14 +21,17 @@ export type RewardQualifiedReferralInput = {
   referral: ReferralRow;
   logger?: ReferralRewardLogger;
   leaseMs?: number;
+  resolveBillingUserId?: (userId: string) => Promise<string>;
 };
 
 export type QualifyAndRewardReferralInput = {
   db: ReferralsDb;
   billing: Pick<BillingOperations, "status" | "grantReferralReward">;
   inviteeUserId: string;
+  inviteeUserAliases?: readonly string[];
   logger?: ReferralRewardLogger;
   leaseMs?: number;
+  resolveBillingUserId?: (userId: string) => Promise<string>;
 };
 
 export type RetryQualifiedReferralRewardsInput = {
@@ -38,18 +41,19 @@ export type RetryQualifiedReferralRewardsInput = {
   cooldownMs?: number;
   logger?: ReferralRewardLogger;
   leaseMs?: number;
+  resolveBillingUserId?: (userId: string) => Promise<string>;
 };
 
 const rewardErrorMessage = (side: "inviter" | "invitee", error: unknown) =>
   `${side}: ${error instanceof Error ? error.message : String(error)}`;
 
-async function loadReferralByInvitee(db: ReferralsDb, inviteeUserId: string) {
-  const [row] = await db
+async function loadReferralByInvitee(db: ReferralsDb, inviteeUserIds: readonly string[]) {
+  const rows = await db
     .select()
     .from(referrals)
-    .where(eq(referrals.inviteeUserId, inviteeUserId))
-    .limit(1);
-  return row ?? null;
+    .where(inArray(referrals.inviteeUserId, [...new Set(inviteeUserIds)]));
+  if (rows.length > 1) throw new Error("referral identity conflict requires repair");
+  return rows[0] ?? null;
 }
 
 async function loadReferralById(db: ReferralsDb, referralId: string) {
@@ -67,9 +71,13 @@ async function grantReferralSide(input: {
   userId: string;
   side: "inviter" | "invitee";
   expectedAmountUsd: number;
+  resolveBillingUserId?: (userId: string) => Promise<string>;
 }) {
+  const userId = input.resolveBillingUserId
+    ? await input.resolveBillingUserId(input.userId)
+    : input.userId;
   return input.billing.grantReferralReward({
-    userId: input.userId,
+    userId,
     referralId: input.referralId,
     side: input.side,
     expectedAmountUsd: input.expectedAmountUsd,
@@ -135,6 +143,7 @@ export async function rewardQualifiedReferral(
         userId: current.inviteeUserId,
         side: "invitee",
         expectedAmountUsd: Number(current.inviteeRewardAmountUsd),
+        resolveBillingUserId: input.resolveBillingUserId,
       });
       const rewardedAt = new Date();
       if (result.amountUsd !== Number(current.inviteeRewardAmountUsd)) {
@@ -174,6 +183,7 @@ export async function rewardQualifiedReferral(
         userId: afterInvitee.inviterUserId,
         side: "inviter",
         expectedAmountUsd: Number(afterInvitee.inviterRewardAmountUsd),
+        resolveBillingUserId: input.resolveBillingUserId,
       });
       const rewardedAt = new Date();
       if (result.amountUsd !== Number(afterInvitee.inviterRewardAmountUsd)) {
@@ -270,12 +280,17 @@ export async function qualifyAndRewardReferral(
   input: QualifyAndRewardReferralInput,
 ): Promise<ReferralRow | null> {
   const { db, inviteeUserId } = input;
+  const inviteeUserIds = [...new Set([inviteeUserId, ...(input.inviteeUserAliases ?? [])])];
+  const existing = await loadReferralByInvitee(db, inviteeUserIds);
+  if (!existing) return null;
   const qualifiedAt = new Date();
-  const [qualified] = await db
-    .update(referrals)
-    .set({ status: "qualified", qualifiedAt, updatedAt: qualifiedAt })
-    .where(and(eq(referrals.inviteeUserId, inviteeUserId), eq(referrals.status, "pending")))
-    .returning();
+  const [qualified] = existing.status === "pending"
+    ? await db
+      .update(referrals)
+      .set({ status: "qualified", qualifiedAt, updatedAt: qualifiedAt })
+      .where(and(eq(referrals.id, existing.id), eq(referrals.status, "pending")))
+      .returning()
+    : [];
 
   if (qualified) {
     return rewardQualifiedReferral({
@@ -284,18 +299,20 @@ export async function qualifyAndRewardReferral(
       referral: qualified,
       logger: input.logger,
       leaseMs: input.leaseMs,
+      resolveBillingUserId: input.resolveBillingUserId,
     });
   }
 
   // Already qualified (or rewarded) — still try to finish incomplete grants.
-  const existing = await loadReferralByInvitee(db, inviteeUserId);
-  if (existing?.status !== "qualified") return existing;
+  const current = qualified ?? await loadReferralByInvitee(db, inviteeUserIds);
+  if (current?.status !== "qualified") return current;
   return rewardQualifiedReferral({
     db,
     billing: input.billing,
-    referral: existing,
+    referral: current,
     logger: input.logger,
     leaseMs: input.leaseMs,
+    resolveBillingUserId: input.resolveBillingUserId,
   });
 }
 
@@ -328,6 +345,7 @@ export async function retryQualifiedReferralRewards(
       referral,
       logger: input.logger,
       leaseMs: input.leaseMs,
+      resolveBillingUserId: input.resolveBillingUserId,
     });
     if (result?.status === "rewarded") rewarded += 1;
   }

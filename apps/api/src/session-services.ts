@@ -15,6 +15,7 @@ import { getSpaceSessionById, getSpaceById } from "./space-sessions.js";
 import { touchSpaceActivity } from "./space-activity.js";
 import { dispatchLabelAssignmentsUpdated, dispatchSessionUpdated } from "./realtime-events.js";
 import { createLogger } from "@cohub/infra/logging";
+import { resolveBillingUserIdForStoredPrincipal, resolveStoredPrincipalUser } from "./identity-bridge.js";
 
 
 const logger = createLogger({ serviceName: "cohub-api" });
@@ -48,12 +49,18 @@ const agentTurnQueue = createBullmqQueue<{
 });
 
 const sandboxLifecycle = createSandboxLifecycleController({ db, infra: null });
-const billingUsageGate = createBillingUsageGate({
+const legacyBillingUsageGate = createBillingUsageGate({
   operations: billingOperations,
   onEvaluationError: (error, gateInput) => {
     logger.warn("[BillingGate] fail-open after billing evaluation error", { error, gateInput });
   },
 });
+const billingUsageGate: ReturnType<typeof createBillingUsageGate> = {
+  async evaluate(input) {
+    const userId = await resolveBillingUserIdForStoredPrincipal(input.userId);
+    return legacyBillingUsageGate.evaluate({ ...input, userId });
+  },
+};
 
 let defaultSessionDomainServices: ReturnType<typeof createSessionServices> | null = null;
 
@@ -97,6 +104,13 @@ export function getSessionDomainServices(input?: {
     },
     injectTrace,
     getRequestId: getCurrentRequestId,
+    resolvePrincipalIdentity: async (userId) => {
+      const identity = await resolveStoredPrincipalUser(userId);
+      return {
+        uuid: identity.uuid,
+        aliases: identity.legacyUserUuid ? [identity.legacyUserUuid] : [],
+      };
+    },
     onSessionActivityUpdated: async ({ sessionId, changed }) => {
       const session = await getSpaceSessionById(sessionId);
       if (!session) return;
@@ -105,8 +119,8 @@ export function getSessionDomainServices(input?: {
       });
       await dispatchSessionUpdated({ session, changed });
     },
-    onSessionParticipantsUpdated: async ({ spaceId, sessionId, userUuids }) => {
-      const affectedLabelIds = await assignSessionParticipantSystemLabels({ db, spaceId, sessionId, userUuids });
+    onSessionParticipantsUpdated: async ({ spaceId, sessionId, userUuids, replacedUserUuids }) => {
+      const affectedLabelIds = await assignSessionParticipantSystemLabels({ db, spaceId, sessionId, userUuids, replacedUserUuids });
       await dispatchLabelAssignmentsUpdated({
         spaceId,
         resourceType: "session",

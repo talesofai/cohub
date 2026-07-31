@@ -1,5 +1,11 @@
 import { asc, eq, isNull, ne, or, sql } from "drizzle-orm";
 import { billingOperations, COHUB_BILLING_FEATURES } from "@cohub/billing";
+import { resolveBillingUserId, resolveStoredPrincipalUser } from "./identity-bridge.js";
+import {
+  IdentityMappingConflictError,
+  UnresolvedLegacyIdentityError,
+  type PrincipalIdentity,
+} from "@cohub/identity";
 import {
   DEFAULT_SANDBOX_SPEC_ID,
   SANDBOX_SPECS,
@@ -26,6 +32,7 @@ import type { SpaceSandboxRuntimeStatus, SpaceSandboxStatus, SpaceSandboxStopRea
 import { smokeVerifySandboxPod } from "./lib/sandbox/recovery.js";
 import type { V1Pod } from "@kubernetes/client-node";
 import { createLogger } from "@cohub/infra/logging";
+import { resolveSandboxPrincipalIdentities } from "./sandbox-principal-identity.js";
 
 
 const logger = createLogger({ serviceName: "cohub-api" });
@@ -58,15 +65,22 @@ const getSpaceSandboxSpec = async (spaceId: string): Promise<SandboxSpecId> => {
   return normalizeSandboxSpecId(sandbox.spec);
 };
 
-const getAllowedSandboxSpecId = async (userId: string): Promise<SandboxSpecId> => {
+const getAllowedSandboxSpecId = async (identity: PrincipalIdentity): Promise<SandboxSpecId> => {
   try {
-    const state = await billingOperations.getState({ userId });
+    const billingUserId = await resolveBillingUserId(identity);
+    const state = await billingOperations.getState({ userId: billingUserId });
     const keys = new Set(state.entitlements.filter((entitlement) => entitlement.enabled).map((entitlement) => entitlement.key));
     if (keys.has(COHUB_BILLING_FEATURES.sandboxSpecUltra)) return "ultra";
     if (keys.has(COHUB_BILLING_FEATURES.sandboxSpecBoost)) return "boost";
     return DEFAULT_SANDBOX_SPEC_ID;
   } catch (error) {
-    logger.warn("[SandboxSpec] failed to check entitlement during reconcile", { userId, error });
+    if (
+      error instanceof IdentityMappingConflictError
+      || error instanceof UnresolvedLegacyIdentityError
+    ) {
+      throw error;
+    }
+    logger.warn("[SandboxSpec] failed to check entitlement during reconcile", { error });
     return DEFAULT_SANDBOX_SPEC_ID;
   }
 };
@@ -428,6 +442,7 @@ export const reconcileSpaceSandbox = async (input: {
   mode: "ensure" | "replace";
   reason: "space_created" | "manual_recreate" | "auto_recover" | "auto_resume" | "space_mods_changed";
 }) => {
+  const principalIdentities = await resolveSandboxPrincipalIdentities(input, resolveStoredPrincipalUser);
   const podName = `sandbox-${input.spaceId}`;
   const existingSandbox = await getSpaceSandboxBySpaceId(input.spaceId);
   const existingMeta = asMetaObject(existingSandbox?.meta);
@@ -475,7 +490,7 @@ export const reconcileSpaceSandbox = async (input: {
   }
 
   const configuredSpec = await getSpaceSandboxSpec(input.spaceId);
-  const allowedSpec = await getAllowedSandboxSpecId(input.ownerUserUuid ?? input.userUuid);
+  const allowedSpec = await getAllowedSandboxSpecId(principalIdentities.ownerIdentity);
   const desiredSpec = getSandboxSpecRank(configuredSpec) > getSandboxSpecRank(allowedSpec) ? allowedSpec : configuredSpec;
   const specEntitlementDowngraded = desiredSpec !== configuredSpec;
   const desiredSpecConfig = SANDBOX_SPECS[desiredSpec] ?? SANDBOX_SPECS[DEFAULT_SANDBOX_SPEC_ID];
@@ -515,8 +530,8 @@ export const reconcileSpaceSandbox = async (input: {
 
   const pod = renderSandboxPodTemplate({
     SPACE_ID: input.spaceId,
-    USER_ID: input.userUuid,
-    OWNER_USER_ID: input.ownerUserUuid ?? input.userUuid,
+    USER_ID: principalIdentities.userId,
+    OWNER_USER_ID: principalIdentities.ownerUserId,
     ENV: config.env,
     SPACE_STORAGE_PVC: config.spaceStoragePvc,
     SPACE_STORAGE_SUBPATH: config.spaceStorageSubpath,
@@ -777,4 +792,3 @@ export const recoverSpaceSandbox = async (input: {
     await redisCommandClient.del(lockKey).catch(() => undefined);
   }
 };
-

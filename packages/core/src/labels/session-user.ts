@@ -7,6 +7,7 @@ export type SessionUserLabelInput = {
   spaceId: string;
   sessionId: string;
   userUuids: Array<string | null | undefined>;
+  replacedUserUuids?: Array<string | null | undefined>;
   userId?: string | null;
 };
 
@@ -153,6 +154,28 @@ async function getOrCreateSystemLabel(db: PostgresJsDatabase<Record<string, unkn
 export async function assignSessionParticipantSystemLabels(input: SessionUserLabelInput) {
   const userUuids = normalizeUserUuids(input.userUuids);
   if (userUuids.length === 0) return [];
+  const replacedUserUuids = normalizeUserUuids(input.replacedUserUuids ?? [])
+    .filter((userUuid) => !userUuids.includes(userUuid));
+
+  const replacedLabels = replacedUserUuids.length > 0
+    ? await input.db
+      .select({ id: labels.id })
+      .from(labels)
+      .where(and(
+        eq(labels.scopeType, SCOPE_TYPE),
+        eq(labels.scopeId, input.spaceId),
+        inArray(labels.systemKey, replacedUserUuids.map(getSessionUserLabelSystemKey)),
+      ))
+    : [];
+  if (replacedLabels.length > 0) {
+    await input.db.delete(labelAssignments).where(and(
+      eq(labelAssignments.scopeType, SCOPE_TYPE),
+      eq(labelAssignments.scopeId, input.spaceId),
+      eq(labelAssignments.resourceType, "session"),
+      eq(labelAssignments.resourceRef, input.sessionId),
+      inArray(labelAssignments.labelId, replacedLabels.map((label) => label.id)),
+    ));
+  }
 
   const rootLabel = await getOrCreateSystemLabel(input.db, {
     spaceId: input.spaceId,
@@ -201,5 +224,5 @@ export async function assignSessionParticipantSystemLabels(input: SessionUserLab
     }));
 
   if (rows.length > 0) await input.db.insert(labelAssignments).values(rows).onConflictDoNothing();
-  return labelIds;
+  return [...new Set([...labelIds, ...replacedLabels.map((label) => label.id)])];
 }

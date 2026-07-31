@@ -2455,7 +2455,7 @@ async function handleNavigateToTask(taskId: string) {
 function getCurrentSpaceOwnerUsername() {
 	return (
 		currentSpace?.ownerProfile?.username ??
-		(currentSpace?.userUuid === authStore.userUuid
+		(authStore.matchesUserId(currentSpace?.userUuid)
 			? authStore.profile?.username
 			: null)
 	);

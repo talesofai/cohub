@@ -50,7 +50,7 @@ async function claim() {
 				return;
 			}
 		}
-		if (authStore.userUuid === referral?.inviter.userUuid) {
+		if (authStore.matchesUserId(referral?.inviter.userUuid)) {
 			action = "self";
 			return;
 		}

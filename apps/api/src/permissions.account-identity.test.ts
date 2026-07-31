@@ -25,4 +25,11 @@ describe("asAccountIdentity", () => {
     assert.equal(asAccountIdentity({}), null);
     assert.equal(asAccountIdentity({ uuid: "   " }), null);
   });
+
+  it("keeps the legacy UUID alias for dual-read account queries", () => {
+    assert.deepEqual(asAccountIdentity({ uuid: "logto-sub", legacyUserUuid: "legacy-uuid" }), {
+      uuid: "logto-sub",
+      legacyUserUuid: "legacy-uuid",
+    });
+  });
 });

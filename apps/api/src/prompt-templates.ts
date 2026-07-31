@@ -19,6 +19,7 @@ import { getSpaceModMountSignature, listEnabledSpaceMods } from "@cohub/core/spa
 import { config } from "./config.js";
 import { db } from "./db/index.js";
 import { redisCommandClient } from "./redis.js";
+import { resolveStoredPrincipalReadKeys } from "./identity-bridge.js";
 
 export type { PromptTemplateCatalogEntry } from "@cohub/infra/config-runtime/prompts";
 
@@ -236,12 +237,14 @@ async function fetchPromptTemplates(options: LoadPromptTemplatesOptions): Promis
   }
 
   if (options.userId) {
-    configs.push(await loadCachedPrompts({
-      redisKey: getUserPromptsRedisKey(options.userId),
-      dir: getUserPromptsDir(options.userId),
+    const userId = options.userId.trim();
+    const userIds = await resolveStoredPrincipalReadKeys(userId);
+    configs.push(...await Promise.all(userIds.map((userId) => loadCachedPrompts({
+      redisKey: getUserPromptsRedisKey(userId),
+      dir: getUserPromptsDir(userId),
       scope: "user",
       allowMissing: true,
-    }));
+    }))));
   }
 
   if (options.spaceId && config.spaceStorageRoot) {

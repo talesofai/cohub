@@ -7,6 +7,7 @@ import { ensureFsCdnManifest, shouldUseFsCdnForMeta } from "../../space-fs-cdn-c
 import { FS_CDN_DOWNLOAD_WAIT_TIMEOUT_MS } from "../../space-fs-cdn-constants.js";
 import { getOptionalAuth, useAuth, requireValidId, authzDenied } from "../../lib/middleware.js";
 import { hasPermission } from "../../permissions.js";
+import { identityEquals } from "../../identity-bridge.js";
 import { getSpacePendingDiffFile, getSpacePendingDiffSummary } from "../../checkpoint-pending-diff.js";
 import { checkpointFsJsonError } from "../../checkpoint-fs.js";
 import {
@@ -467,7 +468,7 @@ router.post("/uploads/:uploadId/complete", async (c) => {
 
   try {
     const manifest = await getSpaceUploadManifest(spaceId, uploadId);
-    if (!manifest || manifest.userId !== user.uuid) {
+    if (!manifest || !identityEquals(user, manifest.userId)) {
       await cancelSpaceUploadComplete(spaceId, uploadId);
       return c.json({ message: "upload not found" }, 404);
     }

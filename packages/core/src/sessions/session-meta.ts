@@ -47,5 +47,10 @@ export const initializeSessionParticipantsMeta = (
 export const addSessionParticipantMeta = (
   meta: unknown,
   userUuid: string | null | undefined,
+  replacedUserUuids: Array<string | null | undefined> = [],
   now = new Date(),
-): Record<string, unknown> => setSessionParticipantsMeta(meta, [...readSessionParticipantUserUuids(meta), userUuid], now);
+): Record<string, unknown> => {
+  const replaced = new Set(normalizeUserUuids(replacedUserUuids));
+  const current = readSessionParticipantUserUuids(meta).filter((value) => !replaced.has(value));
+  return setSessionParticipantsMeta(meta, [...current, userUuid], now);
+};

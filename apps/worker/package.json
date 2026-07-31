@@ -22,6 +22,7 @@
     "@cohub/core": "workspace:*",
     "@cohub/db": "workspace:*",
     "@cohub/infra": "workspace:*",
+    "@cohub/identity": "workspace:*",
     "@cohub/protocol": "workspace:*",
     "@cohub/sandbox-controller": "workspace:*",
     "@kubernetes/client-node": "^1.4.0",

@@ -5,6 +5,7 @@ import { spaces } from "@cohub/db";
 import { db } from "../db.js";
 import { assertValidSpaceId } from "./ids.js";
 import type { AgentFileVisibility } from "./workspace-visibility.js";
+import { resolveStoredPrincipalIdentityForAgent } from "../identity-bridge.js";
 
 const permissionStore = createDrizzlePermissionStore(db);
 
@@ -28,7 +29,7 @@ export async function resolveSpaceFileVisibility(input: {
   const promptAuthVisibility = visibilityFromPromptAuth(input.promptAuth, spaceId);
   if (promptAuthVisibility) return promptAuthVisibility;
 
-  const user = { uuid: input.actorUserId };
+  const user = await resolveStoredPrincipalIdentityForAgent(input.actorUserId);
   const context = { spaceId };
   const visibility = await hasPermission({ store: permissionStore, user, permission: "file.view", context })
     ? "full"

@@ -5,6 +5,7 @@ import {
 } from "@cohub/core/referrals";
 import { createLogger } from "@cohub/infra/logging";
 import { db } from "../db.js";
+import { resolveBillingUserIdForStoredPrincipal } from "../identity-bridge.js";
 
 const logger = createLogger({ serviceName: "cohub-worker" });
 
@@ -21,6 +22,7 @@ export function startSystemReferralRewardRetryLoop(intervalMs = 60_000) {
       retryQualifiedReferralRewards({
         db,
         billing: billingOperations,
+        resolveBillingUserId: resolveBillingUserIdForStoredPrincipal,
         logger: {
           info: (message, meta) => logger.info(message, meta),
           warn: (message, meta) => logger.warn(message, meta),

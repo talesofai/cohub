@@ -4,6 +4,7 @@ import { db } from "../db/index.js";
 import { fallbackPublicUserProfile, getProfilesByUuids } from "../user-profiles.js";
 import { normalizePublicAvatarUrl, useAuth } from "../lib/middleware.js";
 import { createLogger } from "@cohub/infra/logging";
+import { getIdentityKeys } from "../identity-bridge.js";
 
 
 const logger = createLogger({ serviceName: "cohub-api" });
@@ -183,6 +184,7 @@ router.get("/", async (c) => {
   const combinedResults = sql.join(resultQueries, sql`
       UNION ALL
       `);
+  const identityList = sql.join(getIdentityKeys(user).map((key) => sql`${key}`), sql`, `);
 
   try {
     const rows = await db.transaction(async (tx) => {
@@ -192,16 +194,16 @@ router.get("/", async (c) => {
       SELECT
         s.*,
         CASE
-          WHEN s.user_uuid = ${user.uuid} OR sm.user_id IS NOT NULL THEN 1.0::double precision
+          WHEN s.user_uuid IN (${identityList}) OR sm.user_id IS NOT NULL THEN 1.0::double precision
           ELSE 0.0::double precision
         END AS membership_priority_score
       FROM v2.spaces s
       LEFT JOIN v2.space_members sm
-        ON sm.space_id = s.id AND sm.user_id = ${user.uuid}
+        ON sm.space_id = s.id AND sm.user_id IN (${identityList})
       WHERE
         (${spaceId}::uuid IS NULL OR s.id = ${spaceId}::uuid)
         AND (
-          s.user_uuid = ${user.uuid}
+          s.user_uuid IN (${identityList})
           OR sm.user_id IS NOT NULL
           OR EXISTS (
             SELECT 1

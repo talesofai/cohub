@@ -12,6 +12,11 @@ import { createLogger } from "@cohub/infra/logging";
 import { db } from "../../../db.js";
 import { registerSystemJob } from "../../registry.js";
 import { resolveLlmRequestStats } from "./request-stats.js";
+import {
+  resolveBillingUserIdForStoredPrincipal,
+  resolveStoredPrincipalIdentityForWorker,
+} from "../../../identity-bridge.js";
+import { getIdentityKeys } from "@cohub/identity";
 
 const logger = createLogger({ serviceName: "cohub-worker" });
 
@@ -42,8 +47,9 @@ const recordBilling = async (message: typeof sessionMessages.$inferSelect, userI
     ? Number(amount.toFixed(8))
     : 0;
   if (amountUsd <= 0 || !billingOperations.status.configured) return;
+  const billingUserId = await resolveBillingUserIdForStoredPrincipal(userId);
   await billingOperations.recordUsage({
-    userId,
+    userId: billingUserId,
     amountUsd,
     tokenType: COHUB_BILLING_TOKEN_TYPES.usdMicroCent,
     usageType: COHUB_BILLING_USAGE_TYPES.generationLlm,
@@ -68,11 +74,14 @@ const maybeQualifyReferral = async (message: typeof sessionMessages.$inferSelect
   if (turn?.status !== "completed") return;
   const inviteeUserId = turn.userUuid?.trim() || actorUserId;
   if (!inviteeUserId) return;
+  const inviteeIdentity = await resolveStoredPrincipalIdentityForWorker(inviteeUserId);
 
   await qualifyAndRewardReferral({
     db,
     billing: billingOperations,
-    inviteeUserId,
+    resolveBillingUserId: resolveBillingUserIdForStoredPrincipal,
+    inviteeUserId: inviteeIdentity.uuid,
+    inviteeUserAliases: getIdentityKeys(inviteeIdentity),
     logger: {
       warn: (messageText, metaFields) => logger.warn(messageText, metaFields),
       info: (messageText, metaFields) => logger.info(messageText, metaFields),
@@ -178,12 +187,16 @@ registerSystemJob(SESSION_MESSAGE_POSTPROCESS_JOB, async (job: Job) => {
   if (!isLlmUsageMessage(message)) return { ok: true, skipped: "non_llm_usage" };
 
   const usage = normalizeUsage(message.usage);
-  const userId = await resolveActorUserId(message);
+  const storedUserId = await resolveActorUserId(message);
+  const userIdentity = storedUserId
+    ? await resolveStoredPrincipalIdentityForWorker(storedUserId)
+    : null;
+  const canonicalUserId = userIdentity?.uuid ?? null;
 
   // Idempotent external effects first; non-idempotent hourly aggregation must remain last.
-  await recordBilling(message, userId, usage);
+  await recordBilling(message, canonicalUserId, usage);
   await maybeQualifyReferral(message);
-  await aggregateUsage(message, spaceId, userId, usage);
+  await aggregateUsage(message, spaceId, canonicalUserId, usage);
 
   return { ok: true };
 });

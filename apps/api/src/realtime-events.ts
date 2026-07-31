@@ -2,9 +2,11 @@ import { randomUUID } from "node:crypto";
 import type { RealtimeMessageRecord, RealtimeSessionRecord, RealtimeTaskRecord, RealtimeTurnRecord, SpacePresenceSnapshot } from "@cohub/protocol/realtime";
 import type { MessageRecord, SessionRecord, SessionTurnRecord } from "@cohub/protocol/model";
 import type { TaskRunStatus } from "@cohub/protocol/task";
+import { getRealtimeUserRoom } from "@cohub/protocol/realtime";
 import { dispatchRealtimeEvent } from "./channels.js";
 import { buildResourceLabelSnapshot, type LabelResourceType } from "@cohub/core/labels/resource-events";
 import { db } from "./db/index.js";
+import { getIdentityKeys, resolveStoredPrincipalUser } from "./identity-bridge.js";
 
 const toIsoOrNull = (value: Date | string | null | undefined) => {
   if (!value) return null;
@@ -201,6 +203,9 @@ export async function dispatchTurnCreated(input: {
 
 export async function dispatchTaskCreated(task: Parameters<typeof toRealtimeTaskRecord>[0]) {
   const realtimeTask = toRealtimeTaskRecord(task);
+  const rooms = realtimeTask.userId && !realtimeTask.spaceId
+    ? getIdentityKeys(await resolveStoredPrincipalUser(realtimeTask.userId)).map(getRealtimeUserRoom)
+    : undefined;
   await dispatchRealtimeEvent({
     id: randomUUID(),
     timestamp: Date.now(),
@@ -208,6 +213,7 @@ export async function dispatchTaskCreated(task: Parameters<typeof toRealtimeTask
     type: "task.created",
     spaceId: realtimeTask.spaceId,
     sessionId: realtimeTask.sessionId,
+    rooms,
     payload: {
       task: realtimeTask,
       ...(realtimeTask.userId && !realtimeTask.spaceId ? { userId: realtimeTask.userId } : {}),
@@ -221,6 +227,9 @@ export async function dispatchTaskUpdated(input: {
 }) {
   if (input.changed.length === 0) return;
   const realtimeTask = toRealtimeTaskRecord(input.task);
+  const rooms = realtimeTask.userId && !realtimeTask.spaceId
+    ? getIdentityKeys(await resolveStoredPrincipalUser(realtimeTask.userId)).map(getRealtimeUserRoom)
+    : undefined;
   await dispatchRealtimeEvent({
     id: randomUUID(),
     timestamp: Date.now(),
@@ -228,6 +237,7 @@ export async function dispatchTaskUpdated(input: {
     type: "task.updated",
     spaceId: realtimeTask.spaceId,
     sessionId: realtimeTask.sessionId,
+    rooms,
     payload: {
       task: realtimeTask,
       changed: input.changed,

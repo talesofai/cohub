@@ -64,6 +64,9 @@ export type WorkBridgeGetAccessToken = (
  */
 export type WorkBridgeGetViewerUuid = () => Promise<string | null>;
 
+/** Resolves canonical and migration aliases, ordered with canonical first. */
+export type WorkBridgeGetViewerIdentityKeys = () => Promise<string[]>;
+
 /**
  * Requests the host to start a sign-in flow, redirecting back to the given
  * path afterward. The core calls this when an API request fails due to missing
@@ -93,6 +96,8 @@ export type WorkBridgeCoreConfig = {
 	getAccessToken: WorkBridgeGetAccessToken;
 	/** Resolves the current viewer's user UUID. */
 	getViewerUuid: WorkBridgeGetViewerUuid;
+	/** Resolves canonical and legacy viewer IDs for migration-safe comparisons. */
+	getViewerIdentityKeys?: WorkBridgeGetViewerIdentityKeys;
 	/** Starts a sign-in flow with a post-login redirect path. */
 	requestSignIn: WorkBridgeRequestSignIn;
 	/** Called whenever the dialog state changes, for reactive UI binding. */
@@ -161,9 +166,15 @@ export function createWorkBridgeCore(
 
 	const pendingPurchaseStorageKey = `cohub-work-purchase:${work.id}`;
 
+	async function resolveViewerIdentityKeys() {
+		const keys = config.getViewerIdentityKeys
+			? await config.getViewerIdentityKeys()
+			: [await getViewerUuid()];
+		return [...new Set(keys.map((value) => value?.trim()).filter((value): value is string => Boolean(value)))];
+	}
+
 	async function isCurrentViewerWorkOwner() {
-		const viewerUuid = await getViewerUuid();
-		return Boolean(viewerUuid && viewerUuid === work.userUuid);
+		return (await resolveViewerIdentityKeys()).includes(work.userUuid);
 	}
 
 	async function ensureBaseToken(forceRefresh = false) {
@@ -387,11 +398,9 @@ export function createWorkBridgeCore(
 				}
 				// Returning viewers who previously granted the requested scopes are
 				// re-authorized silently with a fresh token — no consent dialog.
-				const viewerUuid = await getViewerUuid();
-				if (
-					viewerUuid &&
-					hasGrantedWorkScopes(viewerUuid, work.id, scopes)
-				) {
+				const viewerUuid = (await resolveViewerIdentityKeys())
+					.find((candidate) => hasGrantedWorkScopes(candidate, work.id, scopes));
+				if (viewerUuid) {
 					try {
 						const token = await authorize(scopes);
 						reply(data.requestId, {

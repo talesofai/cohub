@@ -1,13 +1,14 @@
 import { createLogger } from "@cohub/infra/logging";
-import { and, asc, eq, gte, inArray, lte } from "drizzle-orm";
+import { and, asc, eq, gte, inArray, lte, or } from "drizzle-orm";
 import type { SessionForkRecord, SessionTurnSegmentRecord } from "@cohub/protocol/model";
 import { db } from "./db/index.js";
-import { labelAssignments, sessionForks, sessionTurnSegments, sessionTurns, spaceSessions } from "@cohub/db";
+import { labelAssignments, sessionForks, sessionTurnSegments, sessionTurns, spaceSessions, userProfiles } from "@cohub/db";
 import { sanitizePostgresJsonValue } from "@cohub/core/content/sanitize";
 import { sessionForkReference } from "@cohub/core/references";
 import { enqueueReferences } from "./reference-index-queue.js";
 import { assignSessionParticipantSystemLabels } from "@cohub/core/labels/session-user";
 import { readSessionParticipantUserUuids, setSessionParticipantsMeta } from "@cohub/core/sessions";
+import { resolveCanonicalStoredUserIds } from "./session-fork-identity.js";
 
 type SegmentRow = typeof sessionTurnSegments.$inferSelect;
 type ForkRow = typeof sessionForks.$inferSelect;
@@ -199,11 +200,36 @@ export async function createSessionFork(input: {
     const [parent] = await tx.select().from(spaceSessions).where(and(eq(spaceSessions.id, input.parentSessionId), eq(spaceSessions.spaceId, input.spaceId))).limit(1);
     if (!parent) throw new Error("Parent session not found");
 
+    const resolveStoredUserIds = async (userIds: readonly string[]) => {
+      const storedUserIds = [...new Set(userIds.map((userId) => userId.trim()).filter(Boolean))];
+      const profileRows = storedUserIds.length > 0
+        ? await tx.select({ userUuid: userProfiles.userUuid, logtoUserId: userProfiles.logtoUserId })
+          .from(userProfiles)
+          .where(or(
+            inArray(userProfiles.userUuid, storedUserIds),
+            inArray(userProfiles.logtoUserId, storedUserIds),
+          ))
+        : [];
+      return resolveCanonicalStoredUserIds(storedUserIds, profileRows);
+    };
+
     const existingChild = await tx.select().from(spaceSessions).where(eq(spaceSessions.id, input.childSessionId)).limit(1);
     if (existingChild[0]) {
       const [existingFork] = await tx.select().from(sessionForks).where(eq(sessionForks.childSessionId, input.childSessionId)).limit(1);
       if (existingFork?.parentSessionId === parent.id && existingFork.anchorTurnId === input.turnId && existingFork.anchorSequence === anchorSequence) {
-        return { session: existingChild[0], fork: existingFork, participantUserUuids: [createdBy, ...readSessionParticipantUserUuids(existingChild[0].meta)] };
+        const existingParticipantUserUuids = readSessionParticipantUserUuids(existingChild[0].meta);
+        const canonicalUserIds = await resolveStoredUserIds(existingParticipantUserUuids);
+        const canonicalParticipantUserUuids = existingParticipantUserUuids.map(
+          (userId) => canonicalUserIds.get(userId) ?? userId,
+        );
+        return {
+          session: existingChild[0],
+          fork: existingFork,
+          participantUserUuids: [...new Set([createdBy, ...canonicalParticipantUserUuids])],
+          replacedParticipantUserUuids: existingParticipantUserUuids.filter(
+            (userId, index) => canonicalParticipantUserUuids[index] !== userId,
+          ),
+        };
       }
       throw new Error("Session id already exists");
     }
@@ -240,7 +266,31 @@ export async function createSessionFork(input: {
       for (const row of rows) if (row.userUuid?.trim()) visibleTurnUserUuids.add(row.userUuid.trim());
     }
 
-    const childParticipantUserUuids = [createdBy, ...visibleTurnUserUuids];
+    // Inherit the parent session's label assignments so the fork is categorized
+    // consistently with its origin. Identity-bearing provenance is canonicalized
+    // together with visible participants before any child rows are inserted.
+    const parentLabelAssignments = await tx.select({
+      labelId: labelAssignments.labelId,
+      rank: labelAssignments.rank,
+      source: labelAssignments.source,
+      createdBy: labelAssignments.createdBy,
+      meta: labelAssignments.meta,
+    }).from(labelAssignments).where(and(
+      eq(labelAssignments.scopeType, "space"),
+      eq(labelAssignments.scopeId, input.spaceId),
+      eq(labelAssignments.resourceType, "session"),
+      eq(labelAssignments.resourceRef, parent.id),
+    ));
+
+    const visibleUserIds = [...visibleTurnUserUuids];
+    const labelCreatorIds = parentLabelAssignments
+      .map((assignment) => assignment.createdBy?.trim() ?? "")
+      .filter(Boolean);
+    const storedUserIds = [...new Set([...visibleUserIds, ...labelCreatorIds])];
+    const canonicalUserIds = await resolveStoredUserIds(storedUserIds);
+    const canonicalVisibleUserIds = visibleUserIds.map((userId) => canonicalUserIds.get(userId) ?? userId);
+    const replacedParticipantUserUuids = visibleUserIds.filter((userId, index) => canonicalVisibleUserIds[index] !== userId);
+    const childParticipantUserUuids = [...new Set([createdBy, ...canonicalVisibleUserIds])];
 
     const [child] = await tx.insert(spaceSessions).values({
       id: input.childSessionId,
@@ -288,21 +338,6 @@ export async function createSessionFork(input: {
       toSequence: segment.toSequence,
     })));
 
-    // Inherit the parent session's label assignments so the fork is categorized
-    // consistently with its origin. Preserves the original source (user/system)
-    // and provenance while pointing the assignment at the new child session.
-    const parentLabelAssignments = await tx.select({
-      labelId: labelAssignments.labelId,
-      rank: labelAssignments.rank,
-      source: labelAssignments.source,
-      createdBy: labelAssignments.createdBy,
-      meta: labelAssignments.meta,
-    }).from(labelAssignments).where(and(
-      eq(labelAssignments.scopeType, "space"),
-      eq(labelAssignments.scopeId, input.spaceId),
-      eq(labelAssignments.resourceType, "session"),
-      eq(labelAssignments.resourceRef, parent.id),
-    ));
     if (parentLabelAssignments.length > 0) {
       await tx.insert(labelAssignments).values(parentLabelAssignments.map((assignment) => ({
         labelId: assignment.labelId,
@@ -312,18 +347,26 @@ export async function createSessionFork(input: {
         resourceRef: child.id,
         rank: assignment.rank,
         source: assignment.source,
-        createdBy: assignment.createdBy,
+        createdBy: assignment.createdBy
+          ? (canonicalUserIds.get(assignment.createdBy.trim()) ?? assignment.createdBy)
+          : null,
         meta: assignment.meta,
       }))).onConflictDoNothing();
     }
 
-    return { session: child, fork, participantUserUuids: childParticipantUserUuids };
+    return {
+      session: child,
+      fork,
+      participantUserUuids: childParticipantUserUuids,
+      replacedParticipantUserUuids,
+    };
   });
   await assignSessionParticipantSystemLabels({
     db,
     spaceId: input.spaceId,
     sessionId: result.session.id,
     userUuids: result.participantUserUuids,
+    replacedUserUuids: result.replacedParticipantUserUuids,
   }).catch((error) => {
     logger.warn("[SessionFork] failed to assign participant labels", { sessionId: result.session.id, error });
   });

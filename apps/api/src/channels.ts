@@ -21,6 +21,8 @@ import { buildSessionSourceChannel } from "./lib/session-source-channel.js";
 import { assignSessionChannelSystemLabel } from "@cohub/core/labels/session-channel";
 import { assignSessionSourceSystemLabel } from "@cohub/core/labels/session-source";
 import { dispatchLabelAssignmentsUpdated } from "./realtime-events.js";
+import { resolveStoredPrincipalUser } from "./identity-bridge.js";
+import { resolveChannelInboundOwnerIdentity } from "./channel-inbound-identity.js";
 
 
 const logger = createLogger({ serviceName: "cohub-api" });
@@ -68,6 +70,7 @@ type ResolvedChannelInbound = {
   spaceChannelId: string;
   channelId: string;
   userId: string;
+  legacyUserUuid?: string;
   sessionId: string;
   binding: typeof spaceSessionBindings.$inferSelect;
   conversationId: string;
@@ -647,6 +650,10 @@ export async function resolveChannelInboundForEvent(event: GatewayInboundEvent):
   if (!spaceChannel) return null;
   const [userChannel] = await db.select({ userUuid: userChannels.userUuid }).from(userChannels).where(eq(userChannels.id, spaceChannel.channelId)).limit(1);
   if (!userChannel) return null;
+  const ownerIdentity = await resolveChannelInboundOwnerIdentity(
+    userChannel.userUuid,
+    resolveStoredPrincipalUser,
+  );
 
   const conversationId = event.conversation?.id?.trim() || event.externalChatId;
   const existingInboundRef = await getProviderMessageRef({
@@ -660,7 +667,7 @@ export async function resolveChannelInboundForEvent(event: GatewayInboundEvent):
   const bindingKey = resolveInboundBindingKey(event, conversationId);
   const binding = await _resolveOrCreateSessionBindingForEvent({
     spaceId: spaceChannel.spaceId,
-    userUuid: userChannel.userUuid,
+    userUuid: ownerIdentity.userId,
     spaceChannelId: spaceChannel.id,
     channelId: spaceChannel.channelId,
     provider: event.provider,
@@ -673,7 +680,8 @@ export async function resolveChannelInboundForEvent(event: GatewayInboundEvent):
     spaceId: spaceChannel.spaceId,
     spaceChannelId: spaceChannel.id,
     channelId: spaceChannel.channelId,
-    userId: userChannel.userUuid,
+    userId: ownerIdentity.userId,
+    legacyUserUuid: ownerIdentity.legacyUserUuid,
     sessionId: binding.spaceSessionId,
     binding,
     conversationId,
@@ -706,7 +714,10 @@ async function handleMessageCreateInboundEvent(event: GatewayInboundEvent) {
   const resolved = await resolveChannelInboundForEvent(event);
   if (!resolved) return;
 
-  const canChannelOwnerWrite = await hasPermission({ uuid: resolved.userId }, "session.prompt.fullaccess", {
+  const canChannelOwnerWrite = await hasPermission({
+    uuid: resolved.userId,
+    legacyUserUuid: resolved.legacyUserUuid,
+  }, "session.prompt.fullaccess", {
     spaceId: resolved.spaceId,
     sessionId: resolved.sessionId,
   });

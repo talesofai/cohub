@@ -1,9 +1,9 @@
 import { Hono } from "hono";
-import { and, desc, eq, or, sql } from "drizzle-orm";
+import { and, desc, eq, inArray, or, sql } from "drizzle-orm";
 import { accessPolicies, spaces, userProfiles, works } from "@cohub/db";
 import { readWorkPageFields, workTitleFromMeta } from "@cohub/core/works";
 import { db } from "../db/index.js";
-import { getSpacePublicProfile, requireValidId, useAuth } from "../lib/middleware.js";
+import { getSpacePublicProfile, requireValidPrincipalId, useAuth } from "../lib/middleware.js";
 import { createWorkPublicUrl } from "../lib/work-public-url.js";
 import {
   getProfileByUsername,
@@ -44,7 +44,7 @@ router.post("/profiles/batch", async (c) => {
     }
 
     const userUuid = value.trim();
-    if (!requireValidId(userUuid)) {
+    if (!requireValidPrincipalId(userUuid)) {
       return c.json({ message: "userUuids contains an invalid id" }, 400);
     }
 
@@ -70,6 +70,13 @@ router.get("/by-username/:username", async (c) => {
 
   const profile = await getProfileByUsername(username);
   if (!profile?.username) return c.json({ message: "user not found" }, 404);
+  const [profileIdentity] = await db
+    .select({ userUuid: userProfiles.userUuid, logtoUserId: userProfiles.logtoUserId })
+    .from(userProfiles)
+    .where(eq(userProfiles.username, username))
+    .limit(1);
+  if (!profileIdentity) return c.json({ message: "user not found" }, 404);
+  const profileIdentityKeys = [profileIdentity.logtoUserId, profileIdentity.userUuid];
   const ownerUsername = profile.username;
 
   // Discoverable spaces only: join access policy + limit in SQL.
@@ -94,7 +101,7 @@ router.get("/by-username/:username", async (c) => {
       ),
     )
     .where(and(
-      eq(spaces.userUuid, profile.userUuid),
+      inArray(spaces.userUuid, profileIdentityKeys),
       isDiscoverableSpacePolicy,
     ))
     .orderBy(
@@ -137,9 +144,12 @@ router.get("/by-username/:username", async (c) => {
     })
     .from(works)
     .innerJoin(spaces, eq(spaces.id, works.spaceId))
-    .innerJoin(userProfiles, eq(userProfiles.userUuid, spaces.userUuid))
+    .innerJoin(userProfiles, or(
+      eq(userProfiles.userUuid, spaces.userUuid),
+      eq(userProfiles.logtoUserId, spaces.userUuid),
+    ))
     .where(and(
-      eq(works.userUuid, profile.userUuid),
+      inArray(works.userUuid, profileIdentityKeys),
       eq(works.status, "published"),
       eq(works.visibility, "public"),
       sql`${spaces.slug} is not null`,

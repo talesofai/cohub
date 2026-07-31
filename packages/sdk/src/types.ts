@@ -148,6 +148,7 @@ export type SpacePresenceSnapshot = {
 
 export type MeResponse = {
   uuid: string;
+  legacyUserUuid?: string;
   profile: UserProfile;
   email: string | null;
 };

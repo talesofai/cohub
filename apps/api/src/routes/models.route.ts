@@ -16,6 +16,7 @@ import {
   type ModelsConfig,
 } from "@cohub/infra/config-runtime/models";
 import { loadPublicGenerationModels } from "../generations/declarations.js";
+import { getIdentityKeys, resolveStoredPrincipalReadKeys } from "../identity-bridge.js";
 import { config } from "../config.js";
 import { useAuth } from "../lib/middleware.js";
 import { redisCommandClient } from "../redis.js";
@@ -102,13 +103,14 @@ async function fetchModelsCatalog(userId: string): Promise<ModelCatalogEntry[]> 
   });
   if (!platformModels) throw new Error("Models catalog file not found");
 
-  const userModels = await loadCachedModels({
-    redisKey: getUserModelsRedisKey(userId),
-    modelsPath: getUserModelsPath(userId),
+  const userIds = await resolveStoredPrincipalReadKeys(userId);
+  const userModels = await Promise.all(userIds.map((resolvedUserId) => loadCachedModels({
+    redisKey: getUserModelsRedisKey(resolvedUserId),
+    modelsPath: getUserModelsPath(resolvedUserId),
     allowMissing: true,
-  });
+  })));
 
-  return flattenModelsCatalog(mergeModelsConfigs(platformModels, userModels));
+  return flattenModelsCatalog(mergeModelsConfigs(platformModels, ...userModels));
 }
 
 const router = new Hono();
@@ -123,7 +125,7 @@ router.get("/", async (c) => {
   try {
     const modelType = c.req.query("modelType");
     if (modelType === MULTIMODAL_MODEL_TYPE) {
-      return c.json(await loadPublicGenerationModels(user.uuid));
+      return c.json(await loadPublicGenerationModels(user.uuid, getIdentityKeys(user)));
     }
 
     const catalog = await fetchModelsCatalog(user.uuid);

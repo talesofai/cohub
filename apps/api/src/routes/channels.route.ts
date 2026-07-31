@@ -3,10 +3,11 @@ import { Hono } from "hono";
 import { db } from "../db/index.js";
 import { userChannels, spaceChannels, spaces } from "@cohub/db";
 import { eq, and, desc, inArray } from "drizzle-orm";
-import { useAuth, requireValidId } from "../lib/middleware.js";
+import { useAuth, requireValidId, type AuthUser } from "../lib/middleware.js";
 import { redisCommandClient } from "../redis.js";
 import { deleteChannelResponse, type DeleteChannelResult } from "./channel-delete.js";
 import { fallbackBoundChannelHealth, getChannelHealthMap } from "../channel-health.js";
+import { getIdentityKeys, identityEquals } from "../identity-bridge.js";
 
 const WECHAT_LOGIN_BASE_URL = "https://ilinkai.weixin.qq.com";
 const WECHAT_CDN_BASE_URL = "https://novac2c.cdn.weixin.qq.com/c2c";
@@ -85,11 +86,11 @@ type WeChatQrStatusResponse = {
   redirect_host?: string;
 };
 
-async function listUserWeChatChannels(userUuid: string) {
+async function listUserWeChatChannels(user: AuthUser) {
   return db
     .select()
     .from(userChannels)
-    .where(and(eq(userChannels.userUuid, userUuid), eq(userChannels.provider, "wechat")))
+    .where(and(inArray(userChannels.userUuid, getIdentityKeys(user)), eq(userChannels.provider, "wechat")))
     .orderBy(desc(userChannels.updatedAt), desc(userChannels.createdAt));
 }
 
@@ -151,7 +152,7 @@ router.post("/wechat/login/start", async (c) => {
 
   let qr: { qrcode: string; qrDataUrl: string };
   try {
-    const channels = await listUserWeChatChannels(user.uuid);
+    const channels = await listUserWeChatChannels(user);
     const localTokenList = channels
       .map((channel) => getWeChatCredentials(channel).token?.trim())
       .filter((token): token is string => Boolean(token))
@@ -189,7 +190,7 @@ router.post("/wechat/login/wait", async (c) => {
   if (!rawState) return c.json({ connected: false, expired: true, message: "Login session expired. Start again." });
 
   const state = JSON.parse(rawState) as WeChatLoginState;
-  if (state.userUuid !== user.uuid) return c.json({ message: "login session not found" }, 404);
+  if (!identityEquals(user, state.userUuid)) return c.json({ message: "login session not found" }, 404);
 
   const status = await pollWeChatQrStatus(state.qrcode, state.currentBaseUrl, body.verifyCode);
   if (status.status === "scaned_but_redirect" && status.redirect_host) {
@@ -217,7 +218,7 @@ router.post("/wechat/login/wait", async (c) => {
   }
 
   if (status.status === "binded_redirect") {
-    const channels = await listUserWeChatChannels(user.uuid);
+    const channels = await listUserWeChatChannels(user);
     await redisCommandClient.del(wechatLoginKey(sessionKey));
     const onlyChannel = channels.length === 1 ? channels[0] : null;
     if (onlyChannel) {
@@ -248,11 +249,11 @@ router.post("/wechat/login/wait", async (c) => {
       baseUrl: resolveWeChatBaseUrl(status.baseurl),
       cdnBaseUrl: WECHAT_CDN_BASE_URL,
     };
-    const existingChannel = findWeChatChannelByAccountId(await listUserWeChatChannels(user.uuid), status.ilink_bot_id);
+    const existingChannel = findWeChatChannelByAccountId(await listUserWeChatChannels(user), status.ilink_bot_id);
     if (existingChannel) {
       const [channel] = await db.update(userChannels)
-        .set({ credentials, status: "active", updatedAt: new Date() })
-        .where(and(eq(userChannels.id, existingChannel.id), eq(userChannels.userUuid, user.uuid)))
+        .set({ userUuid: user.uuid, credentials, status: "active", updatedAt: new Date() })
+        .where(and(eq(userChannels.id, existingChannel.id), inArray(userChannels.userUuid, getIdentityKeys(user))))
         .returning();
       await redisCommandClient.del(wechatLoginKey(sessionKey));
       return c.json({ connected: true, alreadyConnected: true, message: "WeChat is already connected.", channel: channel ? serializeChannel(channel) : null });
@@ -279,7 +280,7 @@ router.get("/", async (c) => {
   const channels = await db
     .select()
     .from(userChannels)
-    .where(eq(userChannels.userUuid, user.uuid))
+    .where(inArray(userChannels.userUuid, getIdentityKeys(user)))
     .orderBy(desc(userChannels.updatedAt), desc(userChannels.createdAt));
 
   const channelIds = channels.map((ch) => ch.id);
@@ -360,7 +361,7 @@ router.delete("/:id", async (c) => {
     const [channel] = await tx
       .select()
       .from(userChannels)
-      .where(and(eq(userChannels.id, channelId), eq(userChannels.userUuid, user.uuid)))
+      .where(and(eq(userChannels.id, channelId), inArray(userChannels.userUuid, getIdentityKeys(user))))
       .limit(1)
       .for("update");
     if (!channel) return "not_found";

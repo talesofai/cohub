@@ -15,6 +15,7 @@ import { db } from "./db/index.js";
 import { spaceChannels } from "@cohub/db";
 import { clearSessionStreamSnapshot } from "./session-stream-snapshot.js";
 import { toRealtimeMessageRecord, toRealtimeTurnRecord } from "./realtime-events.js";
+import { getIdentityKeys, resolveStoredPrincipalUser } from "./identity-bridge.js";
 
 
 const logger = createLogger({ serviceName: "cohub-api" });
@@ -144,6 +145,7 @@ export const dispatchSessionOutput = async (output: GatewaySessionOutput) => {
 };
 
 export const dispatchTurnUpdated = async (input: { spaceId: string; sessionId: string; turn: SessionTurnRecord }) => {
+  const resolved = await resolveRealtimeTurnIdentity(input.turn);
   await dispatchRealtimeEvent({
     id: randomUUID(),
     timestamp: Date.now(),
@@ -152,7 +154,7 @@ export const dispatchTurnUpdated = async (input: { spaceId: string; sessionId: s
     spaceId: input.spaceId,
     sessionId: input.sessionId,
     payload: {
-      turn: toRealtimeTurnRecord(input.turn),
+      turn: toRealtimeTurnRecord(resolved.turn),
     },
   });
 };
@@ -163,7 +165,23 @@ const truncateTurnPreview = (text: string | null | undefined) => {
   return normalized.length > 180 ? `${normalized.slice(0, 177)}...` : normalized;
 };
 
+const resolveRealtimeTurnIdentity = async (turn: SessionTurnRecord) => {
+  if (!turn.userUuid) return { turn, userRooms: [] };
+  const identity = await resolveStoredPrincipalUser(turn.userUuid);
+  return {
+    turn: {
+      ...turn,
+      userUuid: identity.uuid,
+      authorProfile: turn.authorProfile
+        ? { ...turn.authorProfile, userUuid: identity.uuid }
+        : turn.authorProfile,
+    },
+    userRooms: getIdentityKeys(identity).map(getRealtimeUserRoom),
+  };
+};
+
 export const dispatchTurnFinalized = async (input: { spaceId: string; sessionId: string; turn: SessionTurnRecord }) => {
+  const resolved = await resolveRealtimeTurnIdentity(input.turn);
   await clearSessionStreamSnapshot({ spaceId: input.spaceId, sessionId: input.sessionId });
   await dispatchSpaceDomainEvent({
     id: randomUUID(),
@@ -173,11 +191,11 @@ export const dispatchTurnFinalized = async (input: { spaceId: string; sessionId:
     spaceId: input.spaceId,
     sessionId: input.sessionId,
     payload: {
-      turn: toRealtimeTurnRecord(input.turn),
+      turn: toRealtimeTurnRecord(resolved.turn),
     },
   });
 
-  if (!input.turn.userUuid) return;
+  if (resolved.userRooms.length === 0) return;
   await dispatchRealtimeEvent({
     id: randomUUID(),
     timestamp: Date.now(),
@@ -185,20 +203,20 @@ export const dispatchTurnFinalized = async (input: { spaceId: string; sessionId:
     type: "session.turn.notify",
     spaceId: input.spaceId,
     sessionId: input.sessionId,
-    rooms: [getRealtimeUserRoom(input.turn.userUuid)],
+    rooms: resolved.userRooms,
     payload: {
       spaceId: input.spaceId,
       sessionId: input.sessionId,
-      turnId: input.turn.id,
-      status: input.turn.status,
-      finishReason: input.turn.summary?.finishReason ?? null,
-      userPreview: truncateTurnPreview(input.turn.userText),
-      durationMs: input.turn.durationMs,
-      stepCount: input.turn.intermediateSummary?.messageCount ?? null,
-      sequence: input.turn.sequence ?? null,
-      provider: input.turn.provider,
-      model: input.turn.model,
-      completedAt: input.turn.completedAt,
+      turnId: resolved.turn.id,
+      status: resolved.turn.status,
+      finishReason: resolved.turn.summary?.finishReason ?? null,
+      userPreview: truncateTurnPreview(resolved.turn.userText),
+      durationMs: resolved.turn.durationMs,
+      stepCount: resolved.turn.intermediateSummary?.messageCount ?? null,
+      sequence: resolved.turn.sequence ?? null,
+      provider: resolved.turn.provider,
+      model: resolved.turn.model,
+      completedAt: resolved.turn.completedAt,
     },
   });
 };

@@ -7,6 +7,7 @@ import { db } from "../db.js";
 import { taskRuns } from "@cohub/db";
 import { dispatchTaskCreated, dispatchTaskUpdated } from "../realtime-events.js";
 import { createLogger } from "@cohub/infra/logging";
+import { resolveStoredPrincipalIdentityForWorker } from "../identity-bridge.js";
 
 
 const logger = createLogger({ serviceName: "cohub-worker" });
@@ -66,7 +67,14 @@ export const registerTask = (type: string, handler: TaskHandler) => {
     const jobId = job.id;
     if (!jobId) throw new Error("Job has no id");
 
-    const payload = job.data as TaskPayload;
+    const rawPayload = job.data as TaskPayload;
+    const identity = rawPayload.userId
+      ? await resolveStoredPrincipalIdentityForWorker(rawPayload.userId)
+      : null;
+    const payload = identity
+      ? { ...rawPayload, userId: identity.uuid }
+      : rawPayload;
+    if (payload !== rawPayload) job.data = payload;
     const now = new Date();
 
     // UPSERT: insert if cron-spawned, or update pending → running

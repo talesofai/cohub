@@ -17,6 +17,7 @@ import {
 import type { Api, Model } from "@earendil-works/pi-ai";
 import { config } from "../config.js";
 import { redisCommandClient } from "../redis.js";
+import { resolveStoredPrincipalReadKeys } from "../identity-bridge.js";
 
 const PLATFORM_MODELS_PATH = join(config.platformConfigRoot, "platform", ".cohub", "models.json");
 const getUserModelsPath = (userId: string) => join(config.platformConfigRoot, "users", userId, ".cohub", "models.json");
@@ -121,12 +122,15 @@ export async function loadRuntimeModelsConfigs(userId?: string | null): Promise<
 
   const trimmedUserId = userId?.trim();
   if (trimmedUserId) {
-    const user = await loadCachedModels({
-      redisKey: getUserModelsRedisKey(trimmedUserId),
-      modelsPath: getUserModelsPath(trimmedUserId),
-      allowMissing: true,
-    });
-    if (user) configs.push(user);
+    const userIds = await resolveStoredPrincipalReadKeys(trimmedUserId);
+    for (const resolvedUserId of userIds) {
+      const user = await loadCachedModels({
+        redisKey: getUserModelsRedisKey(resolvedUserId),
+        modelsPath: getUserModelsPath(resolvedUserId),
+        allowMissing: true,
+      });
+      if (user) configs.push(user);
+    }
   }
   return configs;
 }

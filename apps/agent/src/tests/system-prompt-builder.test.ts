@@ -6,16 +6,21 @@ import { join } from "node:path";
 const root = await mkdtemp(join(tmpdir(), "cohub-system-prompt-"));
 process.env.PLATFORM_CONFIG_ROOT = join(root, "configs");
 
-const userId = "11111111-1111-4111-8111-111111111111";
+const legacyUserId = "11111111-1111-4111-8111-111111111111";
+const userId = "logto-user";
 const workspace = join(root, "workspace");
 const userConfig = join(process.env.PLATFORM_CONFIG_ROOT, "users", userId);
+const legacyUserConfig = join(process.env.PLATFORM_CONFIG_ROOT, "users", legacyUserId);
 const platformAgent = join(process.env.PLATFORM_CONFIG_ROOT, "platform", ".cohub");
 
 await mkdir(workspace, { recursive: true });
 await mkdir(userConfig, { recursive: true });
+await mkdir(legacyUserConfig, { recursive: true });
 await mkdir(platformAgent, { recursive: true });
 await writeFile(join(platformAgent, "SYSTEM.md"), "You are a Cohub test assistant.");
 await writeFile(join(userConfig, "AGENTS.md"), "Always prefer concise answers.");
+await writeFile(join(legacyUserConfig, "AGENTS.md"), "Legacy instructions should be replaced.");
+await writeFile(join(legacyUserConfig, "CLAUDE.md"), "Keep legacy-only context available during migration.");
 await mkdir(join(userConfig, ".agents", "skills", "owner-skill"), { recursive: true });
 await writeFile(join(userConfig, ".agents", "skills", "owner-skill", "SKILL.md"), "---\nname: owner-skill\ndescription: Owner-only skill\n---\nOwner skill body.");
 await writeFile(join(workspace, "AGENTS.md"), "Project rule: run typecheck.");
@@ -25,12 +30,15 @@ const { buildCohubSystemPrompt } = await import("../runtime/system-prompt-builde
 const prompt = await buildCohubSystemPrompt({
   cwd: workspace,
   userId,
+  userIdentity: { uuid: userId, legacyUserUuid: legacyUserId },
   selectedTools: [],
 });
 
 assert.ok(prompt.includes("# User Context"), "should include user context section");
 assert.ok(!prompt.includes("/configs/user/AGENTS.md"), "should not expose sandbox user rule path");
 assert.ok(prompt.includes("Always prefer concise answers."), "should include user rules content");
+assert.ok(!prompt.includes("Legacy instructions should be replaced."), "canonical user rules should override the legacy namespace");
+assert.ok(prompt.includes("Keep legacy-only context available during migration."), "missing canonical user context should fall back to the legacy namespace");
 assert.ok(prompt.includes("# Project Context"), "should include project context section");
 assert.ok(prompt.includes("Project rule: run typecheck."), "should include project rules content");
 assert.ok(
@@ -67,6 +75,7 @@ await writeFile(
 const promptWithSkills = await buildCohubSystemPrompt({
   cwd: workspace,
   userId,
+  userIdentity: { uuid: userId, legacyUserUuid: legacyUserId },
   selectedTools: ["read"],
 });
 

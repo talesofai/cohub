@@ -8,6 +8,7 @@ import { GENERATION_BILLING_RETRY_TASK_TYPE } from "@cohub/protocol/generation";
 import type { TaskPayload } from "@cohub/protocol/task";
 import { parseGenerationBillingRetryData } from "./generation-billing-retry-data.js";
 import { registerTask } from "./registry.js";
+import { resolveBillingUserIdForStoredPrincipal } from "../identity-bridge.js";
 
 /**
  * Retry post-success generation charging. Safe to re-run: recordUsage is
@@ -24,8 +25,9 @@ registerTask(GENERATION_BILLING_RETRY_TASK_TYPE, async (job: Job) => {
     return { status: "skipped", reason: "billing_not_configured", taskRunId: data.taskRunId };
   }
 
+  const billingUserId = await resolveBillingUserIdForStoredPrincipal(data.userId);
   const result = await billingOperations.recordUsage({
-    userId: data.userId,
+    userId: billingUserId,
     amountUsd,
     tokenType: COHUB_BILLING_TOKEN_TYPES.usdMicroCent,
     usageType: data.usageType as CohubBillingUsageType,

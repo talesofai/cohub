@@ -17,6 +17,8 @@ import { verifyUserAccessToken } from "@cohub/identity";
 import { getTokenFromRequest, type AuthUserProfile, consumeExecutionAuthFromToken, type ExecutionAuthPrincipal } from "./auth.js";
 import { verifyPreviewSessionToken, type PreviewSessionPrincipal } from "./preview-sessions.js";
 import { verifyWorkSessionToken, type WorkSessionPrincipal } from "./work-sessions.js";
+import { resolveStoredPrincipalUser, resolveVerifiedAuthUser } from "./identity-bridge.js";
+import type { AuthUser, RequestPrincipal } from "./lib/middleware.js";
 import { assertRequiredConfig, config } from "./config.js";
 
 import router from "./routes/index.js";
@@ -31,7 +33,7 @@ const app = new Hono<{
     executionAuth: ExecutionAuthPrincipal | null;
     previewSession: PreviewSessionPrincipal | null;
     workSession: WorkSessionPrincipal | null;
-    principal: { type: "user"; user: AuthUserProfile } | { type: "execution"; execution: ExecutionAuthPrincipal } | { type: "preview_session"; previewSession: PreviewSessionPrincipal } | { type: "work_session"; workSession: WorkSessionPrincipal } | null;
+    principal: RequestPrincipal | null;
     requestId: string;
     traceId: string | null;
   };
@@ -111,8 +113,18 @@ app.use(async (c, next) => {
       return null;
     });
     if (executionAuth) {
+      let user: AuthUser | null = null;
+      if (executionAuth.actorUserId) {
+        try {
+          const identity = await resolveStoredPrincipalUser(executionAuth.actorUserId);
+          user = { ...identity, execution: executionAuth } as AuthUser & { execution: ExecutionAuthPrincipal };
+        } catch (error) {
+          logger.warn("[API] Failed to resolve execution principal identity:", error);
+          return c.json({ message: "unauthorized" }, 401);
+        }
+      }
       c.set("executionAuth", executionAuth);
-      c.set("principal", { type: "execution", execution: executionAuth });
+      c.set("principal", { type: "execution", execution: executionAuth, user });
       await next();
       return;
     }
@@ -120,8 +132,14 @@ app.use(async (c, next) => {
     if (onPreviewHost) {
       const previewSession = verifyPreviewSessionToken(token);
       if (previewSession) {
+        const identity = await resolveStoredPrincipalUser(previewSession.userUuid).catch((error) => {
+          logger.warn("[API] Failed to resolve preview principal identity:", error);
+          return null;
+        });
+        if (!identity) return c.json({ message: "unauthorized" }, 401);
+        const user = { ...identity, previewSession } as AuthUser & { previewSession: PreviewSessionPrincipal };
         c.set("previewSession", previewSession);
-        c.set("principal", { type: "preview_session", previewSession });
+        c.set("principal", { type: "preview_session", previewSession, user });
         await next();
         return;
       }
@@ -129,14 +147,21 @@ app.use(async (c, next) => {
 
     const workSession = verifyWorkSessionToken(token);
     if (workSession) {
+      const identity = await resolveStoredPrincipalUser(workSession.userUuid).catch((error) => {
+        logger.warn("[API] Failed to resolve work principal identity:", error);
+        return null;
+      });
+      if (!identity) return c.json({ message: "unauthorized" }, 401);
+      const user = { ...identity, workSession } as AuthUser & { workSession: WorkSessionPrincipal };
       c.set("workSession", workSession);
-      c.set("principal", { type: "work_session", workSession });
+      c.set("principal", { type: "work_session", workSession, user });
       await next();
       return;
     }
 
     try {
-      const authUser = await verifyUserAccessToken({ token, logtoEndpoint: config.logtoEndpoint });
+      const verifiedUser = await verifyUserAccessToken({ token, logtoEndpoint: config.logtoEndpoint });
+      const authUser = await resolveVerifiedAuthUser(verifiedUser);
       c.set("authUser", authUser);
       c.set("principal", { type: "user", user: authUser });
     } catch {

@@ -2,13 +2,14 @@ import { Hono } from "hono";
 import * as cronParser from "cron-parser";
 import { db } from "../db/index.js";
 import { cronJobs, taskRuns } from "@cohub/db";
-import { eq, and, isNull, desc, lt, or } from "drizzle-orm";
+import { eq, and, isNull, desc, inArray, lt, or } from "drizzle-orm";
 import { sanitizePostgresJsonValue } from "@cohub/core/content/sanitize";
 import { getOptionalAuth, useAuth, requireValidId, authzDenied } from "../lib/middleware.js";
 import { hasPermission } from "../permissions.js";
 import { disableCronJob, enableCronJob, removeCronJob, updateCronJob } from "../tasks.js";
 import { fallbackPublicUserProfile, getProfilesByUuids } from "../user-profiles.js";
 import { sanitizeTaskRunPricingForViewer } from "../task-run-privacy.js";
+import { getIdentityKeys, identityEquals, resolveStoredPrincipalUser } from "../identity-bridge.js";
 
 const router = new Hono();
 const { CronExpressionParser } = cronParser;
@@ -24,10 +25,14 @@ type CronJobAuthSubject = {
 
 async function hydrateCronJobUserProfiles<T extends { userUuid: string }>(jobs: T[]) {
   const profiles = await getProfilesByUuids(jobs.map((job) => job.userUuid));
-  return jobs.map((job) => ({
-    ...job,
-    userProfile: profiles.get(job.userUuid) ?? fallbackPublicUserProfile(job.userUuid),
-  }));
+  return jobs.map((job) => {
+    const userProfile = profiles.get(job.userUuid) ?? fallbackPublicUserProfile(job.userUuid);
+    return {
+      ...job,
+      userUuid: userProfile.userUuid,
+      userProfile,
+    };
+  });
 }
 
 function validateTimezone(timezone: string) {
@@ -61,17 +66,17 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 
 async function authorizeCronJobView(user: ReturnType<typeof getOptionalAuth>, job: CronJobAuthSubject) {
   if (job.spaceId) return hasPermission(user, "cronjob.view", { spaceId: job.spaceId, sessionId: job.sessionId ?? undefined });
-  return !!user && job.userUuid === user.uuid;
+  return !!user && identityEquals(user, job.userUuid);
 }
 
 async function authorizeCronJobManage(user: Exclude<ReturnType<typeof useAuth>, Response>, job: CronJobAuthSubject) {
   if (job.spaceId) return hasPermission(user, "cronjob.manage", { spaceId: job.spaceId, sessionId: job.sessionId ?? undefined });
-  return job.userUuid === user.uuid;
+  return identityEquals(user, job.userUuid);
 }
 
 async function authorizeTaskRunView(user: ReturnType<typeof getOptionalAuth>, job: CronJobAuthSubject) {
   if (job.spaceId) return hasPermission(user, "taskrun.view", { spaceId: job.spaceId, sessionId: job.sessionId ?? undefined });
-  return !!user && job.userUuid === user.uuid;
+  return !!user && identityEquals(user, job.userUuid);
 }
 
 async function loadCronJobAuthSubject(cronJobId: string): Promise<CronJobAuthSubject | null> {
@@ -125,7 +130,7 @@ router.get("/", async (c) => {
   const jobs = await db
     .select()
     .from(cronJobs)
-    .where(and(eq(cronJobs.userUuid, userId), isNull(cronJobs.deletedAt)))
+    .where(and(inArray(cronJobs.userUuid, getIdentityKeys(user)), isNull(cronJobs.deletedAt)))
     .orderBy(desc(cronJobs.createdAt));
 
   return c.json({ jobs: await hydrateCronJobUserProfiles(jobs) });
@@ -179,7 +184,7 @@ router.get("/:id/runs", async (c) => {
     .limit(limit + 1);
   const runs = rows
     .slice(0, limit)
-    .map((run) => sanitizeTaskRunPricingForViewer(run, user?.uuid));
+    .map((run) => sanitizeTaskRunPricingForViewer(run, user));
 
   return c.json({
     runs,
@@ -279,12 +284,13 @@ router.patch("/:id", async (c) => {
 
   if (patch.enabled !== undefined && Object.keys(patch).length === 1) {
     if (patch.enabled && !job.enabled) {
+      const jobIdentity = await resolveStoredPrincipalUser(job.userUuid);
       const enabledJob = await enableCronJob(cronJobId, job.bullJobKey, {
         taskType: job.taskType,
         payload: job.payload as Record<string, unknown>,
         cronExpression: job.cronExpression,
         timezone: job.timezone,
-        userUuid: job.userUuid,
+        userUuid: jobIdentity.uuid,
         spaceId: job.spaceId,
         sessionId: job.sessionId,
       });
@@ -299,7 +305,8 @@ router.patch("/:id", async (c) => {
     return c.json({ ok: true, job: hydrated });
   }
 
-  const updatedJob = await updateCronJob(job, patch);
+  const jobIdentity = await resolveStoredPrincipalUser(job.userUuid);
+  const updatedJob = await updateCronJob({ ...job, userUuid: jobIdentity.uuid }, patch);
   const [hydrated] = await hydrateCronJobUserProfiles([updatedJob]);
   return c.json({ ok: true, job: hydrated });
 });

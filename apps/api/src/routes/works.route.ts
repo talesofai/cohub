@@ -1,5 +1,5 @@
 import { Hono, type Context } from "hono";
-import { and, desc, eq, ne, sql } from "drizzle-orm";
+import { and, desc, eq, inArray, ne, or, sql } from "drizzle-orm";
 import { spaces, works, workVersions, workViewerGrants, userProfiles } from "@cohub/db";
 import { createWorkAssetPublicUrl, deleteWorkAssetsByObjectKey, isConfiguredWorkAssetPublicUrl } from "../work-asset-storage.js";
 import { publishWorkAssetInWorker, type WorkPublishAssetJobResult } from "../work-publish-asset-queue.js";
@@ -26,7 +26,12 @@ import { featureGateResponse } from "../lib/feature-gate.js";
 import { createWorkPublicUrl } from "../lib/work-public-url.js";
 import { applyRequestSourceToMeta, getRequestSource } from "../lib/request-source.js";
 import { dispatchWorkVersionPublished } from "../work-events.js";
-import { ensureUserProfileByUuid } from "../user-profiles.js";
+import {
+  ensureUserProfileByUuid,
+  getProfilesByUuids,
+} from "../user-profiles.js";
+import { resolveBillingUserId } from "../identity-bridge.js";
+import { getIdentityKeys } from "../identity-bridge.js";
 
 const logger = createLogger({ serviceName: "cohub-api" });
 const router = new Hono();
@@ -66,22 +71,23 @@ const getHideCohubBar = (meta: WorkMeta | null | undefined): boolean => {
   return presentation?.hideCohubBar === true;
 };
 
-async function canHideCohubBar(userId: string) {
+async function canHideCohubBar(user: AuthUser) {
   try {
+    const userId = await resolveBillingUserId(user);
     const entitlement = await billingOperations.getFeatureEntitlement({
       userId,
       featureKey: COHUB_BILLING_FEATURES.workPublishHideCohubBar,
     });
     return Boolean(entitlement?.enabled);
   } catch (error) {
-    logger.warn("[works] failed to check hide Cohub bar entitlement", { userId, error });
+    logger.warn("[works] failed to check hide Cohub bar entitlement", { error });
     return false;
   }
 }
 
-async function ensureWorkPresentationAllowed(c: Context, input: { userId: string; meta: WorkMeta | null | undefined }) {
+async function ensureWorkPresentationAllowed(c: Context, input: { user: AuthUser; meta: WorkMeta | null | undefined }) {
   if (!getHideCohubBar(input.meta)) return null;
-  if (await canHideCohubBar(input.userId)) return null;
+  if (await canHideCohubBar(input.user)) return null;
   return workHideCohubBarRequiredResponse(c);
 }
 
@@ -108,7 +114,10 @@ async function getWorkPublicIdentity(spaceId: string) {
       ownerUsername: userProfiles.username,
     })
     .from(spaces)
-    .leftJoin(userProfiles, eq(userProfiles.userUuid, spaces.userUuid))
+    .leftJoin(userProfiles, or(
+      eq(userProfiles.userUuid, spaces.userUuid),
+      eq(userProfiles.logtoUserId, spaces.userUuid),
+    ))
     .where(eq(spaces.id, spaceId))
     .limit(1);
   return {
@@ -182,6 +191,20 @@ const serializeWork = (work: typeof works.$inferSelect): RealtimeWorkRecord => (
   createdAt: work.createdAt?.toISOString() ?? null,
   updatedAt: work.updatedAt?.toISOString() ?? null,
 });
+
+const serializeWorksForResponse = async (workList: Array<typeof works.$inferSelect>): Promise<RealtimeWorkRecord[]> => {
+  const profiles = await getProfilesByUuids(workList.map((work) => work.userUuid));
+  return workList.map((work) => ({
+    ...serializeWork(work),
+    userUuid: profiles.get(work.userUuid)?.userUuid ?? work.userUuid,
+  }));
+};
+
+const serializeWorkForResponse = async (work: typeof works.$inferSelect): Promise<RealtimeWorkRecord> => {
+  const [serialized] = await serializeWorksForResponse([work]);
+  if (!serialized) throw new Error("Failed to serialize work");
+  return serialized;
+};
 
 const serializeWorkVersion = (version: typeof workVersions.$inferSelect): RealtimeWorkVersionRecord => ({
   id: version.id,
@@ -348,12 +371,15 @@ router.get("/by-slug/:username/:spaceSlug/:workSlug", async (c) => {
 
   const [row] = await db
     .select({
-      owner: { userUuid: userProfiles.userUuid, username: userProfiles.username, displayName: userProfiles.displayName, avatarUrl: userProfiles.avatarUrl },
+      owner: { userUuid: userProfiles.logtoUserId, username: userProfiles.username, displayName: userProfiles.displayName, avatarUrl: userProfiles.avatarUrl },
       space: spaces,
       work: works,
     })
     .from(userProfiles)
-    .innerJoin(spaces, and(eq(spaces.userUuid, userProfiles.userUuid), eq(spaces.slug, spaceSlug)))
+    .innerJoin(spaces, and(or(
+      eq(spaces.userUuid, userProfiles.userUuid),
+      eq(spaces.userUuid, userProfiles.logtoUserId),
+    ), eq(spaces.slug, spaceSlug)))
     .innerJoin(works, and(eq(works.spaceId, spaces.id), eq(works.slug, workSlug), eq(works.status, "published")))
     .where(eq(userProfiles.username, username))
     .limit(1);
@@ -367,8 +393,8 @@ router.get("/by-slug/:username/:spaceSlug/:workSlug", async (c) => {
     requiresSpaceWorkAccess(row.work) ? PRIVATE_WORK_HTTP_CACHE : PUBLIC_WORK_HTTP_CACHE,
   );
   return c.json({
-    work: serializeWork(row.work),
-    space: { id: row.space.id, slug: row.space.slug, name: row.space.name, userUuid: row.space.userUuid, publicProfile: getSpacePublicProfile(row.space) },
+    work: await serializeWorkForResponse(row.work),
+    space: { id: row.space.id, slug: row.space.slug, name: row.space.name, userUuid: row.owner.userUuid, publicProfile: getSpacePublicProfile(row.space) },
     owner: { ...row.owner, username: row.owner.username },
     publicUrl: createWorkPublicUrl({ ownerUsername: row.owner.username, spaceSlug: row.space.slug, workSlug: row.work.slug, status: row.work.status }),
     content: await getPublishedWorkContent(row.work),
@@ -383,7 +409,7 @@ router.get("/space/:spaceId", async (c) => {
   if (!requireValidId(spaceId)) return c.json({ message: "space not found" }, 404);
   if (!(await hasPermission(user, "space.view", { spaceId }))) return authzDenied(c);
   const rows = await db.select().from(works).where(eq(works.spaceId, spaceId));
-  return c.json({ works: rows.map(serializeWork) });
+  return c.json({ works: await serializeWorksForResponse(rows) });
 });
 
 router.get("/:id/public", async (c) => {
@@ -398,18 +424,21 @@ router.get("/:id/public", async (c) => {
   if (requiresSpaceWorkAccess(work) && !(await hasPermission(user, "space.view", { spaceId: work.spaceId }))) return authzDenied(c);
   const [row] = await db
     .select({
-      owner: { userUuid: userProfiles.userUuid, username: userProfiles.username, displayName: userProfiles.displayName, avatarUrl: userProfiles.avatarUrl },
+      owner: { userUuid: userProfiles.logtoUserId, username: userProfiles.username, displayName: userProfiles.displayName, avatarUrl: userProfiles.avatarUrl },
       space: spaces,
     })
     .from(spaces)
-    .innerJoin(userProfiles, eq(userProfiles.userUuid, spaces.userUuid))
+    .innerJoin(userProfiles, or(
+      eq(userProfiles.userUuid, spaces.userUuid),
+      eq(userProfiles.logtoUserId, spaces.userUuid),
+    ))
     .where(eq(spaces.id, work.spaceId))
     .limit(1);
   if (!row) return c.json({ message: "work not found" }, 404);
   if (!row.owner.username || !row.space.slug) return c.json({ message: "work public identity is incomplete" }, 409);
-  const space = { id: row.space.id, slug: row.space.slug, name: row.space.name, userUuid: row.space.userUuid, publicProfile: getSpacePublicProfile(row.space) };
+  const space = { id: row.space.id, slug: row.space.slug, name: row.space.name, userUuid: row.owner.userUuid, publicProfile: getSpacePublicProfile(row.space) };
   return c.json({
-    work: serializeWork(work),
+    work: await serializeWorkForResponse(work),
     space,
     owner: { ...row.owner, username: row.owner.username },
   });
@@ -425,18 +454,21 @@ router.get("/:id", async (c) => {
   if (!(await hasPermission(user, "space.view", { spaceId: work.spaceId }))) return authzDenied(c);
   const [row] = await db
     .select({
-      owner: { userUuid: userProfiles.userUuid, username: userProfiles.username, displayName: userProfiles.displayName, avatarUrl: userProfiles.avatarUrl },
+      owner: { userUuid: userProfiles.logtoUserId, username: userProfiles.username, displayName: userProfiles.displayName, avatarUrl: userProfiles.avatarUrl },
       space: spaces,
     })
     .from(spaces)
-    .innerJoin(userProfiles, eq(userProfiles.userUuid, spaces.userUuid))
+    .innerJoin(userProfiles, or(
+      eq(userProfiles.userUuid, spaces.userUuid),
+      eq(userProfiles.logtoUserId, spaces.userUuid),
+    ))
     .where(eq(spaces.id, work.spaceId))
     .limit(1);
   if (!row) return c.json({ message: "work not found" }, 404);
   if (!row.owner.username || !row.space.slug) return c.json({ message: "work public identity is incomplete" }, 409);
-  const space = { id: row.space.id, slug: row.space.slug, name: row.space.name, userUuid: row.space.userUuid, publicProfile: getSpacePublicProfile(row.space) };
+  const space = { id: row.space.id, slug: row.space.slug, name: row.space.name, userUuid: row.owner.userUuid, publicProfile: getSpacePublicProfile(row.space) };
   return c.json({
-    work: serializeWork(work),
+    work: await serializeWorkForResponse(work),
     space,
     owner: { ...row.owner, username: row.owner.username },
     publicUrl: createWorkPublicUrl({ ownerUsername: row.owner.username, spaceSlug: row.space.slug, workSlug: work.slug, status: work.status }),
@@ -473,7 +505,7 @@ router.post("/", async (c) => {
   const identityError = await ensureWorkPublicIdentity(c, spaceId, user);
   if (identityError) return identityError;
   const meta = getWorkMeta(body?.meta);
-  const presentationError = await ensureWorkPresentationAllowed(c, { userId: user.uuid, meta });
+  const presentationError = await ensureWorkPresentationAllowed(c, { user, meta });
   if (presentationError) return presentationError;
   const now = new Date();
 
@@ -534,7 +566,7 @@ router.post("/", async (c) => {
       await cleanupWorkAssets(assetKey, { workId: "new", spaceId, reason: "create_slug_conflict" });
       return c.json({ message: "slug already exists" }, 409);
     }
-    const serializedWork = serializeWork(result.work);
+    const serializedWork = await serializeWorkForResponse(result.work);
     if (result.version) {
       const serializedVersion = serializeWorkVersion(result.version);
       await dispatchWorkVersionPublished({
@@ -592,7 +624,7 @@ async function updateWork(
   const identityError = await ensureWorkPublicIdentity(c, current.spaceId, actor);
   if (identityError) return identityError;
   const nextMeta = "meta" in (body ?? {}) ? getWorkMeta(body?.meta) : getWorkMeta(current.meta);
-  const presentationError = await ensureWorkPresentationAllowed(c, { userId: actor.uuid, meta: nextMeta });
+  const presentationError = await ensureWorkPresentationAllowed(c, { user: actor, meta: nextMeta });
   if (presentationError) return presentationError;
 
   const assetKey = nextStatus === "published" ? current.assetKey : null;
@@ -620,7 +652,7 @@ async function updateWork(
     throw error;
   });
   if (!work) return c.json({ message: "slug already exists" }, 409);
-  return c.json({ work: serializeWork(work) });
+  return c.json({ work: await serializeWorkForResponse(work) });
 }
 
 async function publishWorkVersion(
@@ -687,7 +719,7 @@ async function publishWorkVersion(
       if (!work) throw new Error("failed to publish work version");
       return { work, version, previousVersionId: versionedWork.previousVersionId };
     });
-    const serializedWork = serializeWork(result.work);
+    const serializedWork = await serializeWorkForResponse(result.work);
     const serializedVersion = serializeWorkVersion(result.version);
     await dispatchWorkVersionPublished({
       work: serializedWork,
@@ -780,7 +812,7 @@ router.post("/:id/session", async (c) => {
     spaceId: work.spaceId,
     workScopes: work.workScopes as Permission[],
   });
-  return c.json({ token, expiresIn: WORK_SESSION_TTL_SECONDS, work: serializeWork(work) });
+  return c.json({ token, expiresIn: WORK_SESSION_TTL_SECONDS, work: await serializeWorkForResponse(work) });
 });
 
 router.post("/:id/authorize", async (c) => {
@@ -797,16 +829,28 @@ router.post("/:id/authorize", async (c) => {
   if (!isSubset(requested, work.allowedViewerScopes ?? [])) return c.json({ message: "scope not allowed for this work" }, 403);
 
   const expiresAt = new Date(Date.now() + WORK_SESSION_TTL_SECONDS * 1000);
-  const [grant] = await db.insert(workViewerGrants).values({
-    workId: work.id,
-    spaceId: work.spaceId,
-    viewerUserUuid: user.uuid,
-    scopes: requested,
-    expiresAt,
-  }).onConflictDoUpdate({
-    target: [workViewerGrants.workId, workViewerGrants.viewerUserUuid],
-    set: { scopes: requested, expiresAt, revokedAt: null, updatedAt: new Date() },
-  }).returning();
+  const existingGrants = await db.select({ id: workViewerGrants.id })
+    .from(workViewerGrants)
+    .where(and(
+      eq(workViewerGrants.workId, work.id),
+      inArray(workViewerGrants.viewerUserUuid, getIdentityKeys(user)),
+    ));
+  if (existingGrants.length > 1) return c.json({ message: "viewer identity conflict requires repair" }, 409);
+  const [grant] = existingGrants[0]
+    ? await db.update(workViewerGrants).set({
+        viewerUserUuid: user.uuid,
+        scopes: requested,
+        expiresAt,
+        revokedAt: null,
+        updatedAt: new Date(),
+      }).where(eq(workViewerGrants.id, existingGrants[0].id)).returning()
+    : await db.insert(workViewerGrants).values({
+        workId: work.id,
+        spaceId: work.spaceId,
+        viewerUserUuid: user.uuid,
+        scopes: requested,
+        expiresAt,
+      }).returning();
   if (!grant) return c.json({ message: "failed to create grant" }, 500);
 
   const token = createWorkSessionToken({

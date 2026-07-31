@@ -5,15 +5,16 @@ import type { AuthUserProfile } from "../auth.js";
 import type { ExecutionAuthPrincipal } from "../auth.js";
 import type { PreviewSessionPrincipal } from "../preview-sessions.js";
 import type { WorkSessionPrincipal } from "../work-sessions.js";
+import { getIdentityKeys } from "../identity-bridge.js";
 
-/** AuthUserProfile with guaranteed uuid (returned after auth checks pass). */
-export type AuthUser = AuthUserProfile & { uuid: string };
+/** AuthUserProfile with a canonical principal and optional legacy alias. */
+export type AuthUser = AuthUserProfile & { uuid: string; legacyUserUuid?: string };
 
 export type RequestPrincipal =
   | { type: "user"; user: AuthUser }
-  | { type: "execution"; execution: ExecutionAuthPrincipal }
-  | { type: "preview_session"; previewSession: PreviewSessionPrincipal }
-  | { type: "work_session"; workSession: WorkSessionPrincipal };
+  | { type: "execution"; execution: ExecutionAuthPrincipal; user: AuthUser | null }
+  | { type: "preview_session"; previewSession: PreviewSessionPrincipal; user: AuthUser }
+  | { type: "work_session"; workSession: WorkSessionPrincipal; user: AuthUser };
 
 import { config } from "../config.js";
 import { getProfilesByUuids } from "../user-profiles.js";
@@ -24,39 +25,10 @@ import { inArray } from "drizzle-orm";
 import type { spaces } from "@cohub/db";
 
 const principalToAuthUser = (principal: RequestPrincipal | null | undefined): AuthUser | null => {
-  if (principal?.type === "user") return principal.user;
-  if (principal?.type === "execution" && principal.execution.actorUserId) {
-    return {
-      uuid: principal.execution.actorUserId,
-      id: undefined,
-      nick_name: undefined,
-      phone_num: undefined,
-      avatar_url: undefined,
-      execution: principal.execution,
-    } as AuthUser & { execution: ExecutionAuthPrincipal };
-  }
-  if (principal?.type === "work_session") {
-    return {
-      uuid: principal.workSession.userUuid,
-      id: undefined,
-      nick_name: undefined,
-      phone_num: undefined,
-      avatar_url: undefined,
-      workSession: principal.workSession,
-    } as AuthUser & { workSession: WorkSessionPrincipal };
-  }
-  if (principal?.type === "preview_session") {
-    return {
-      uuid: principal.previewSession.userUuid,
-      id: undefined,
-      nick_name: undefined,
-      phone_num: undefined,
-      avatar_url: undefined,
-      previewSession: principal.previewSession,
-    } as AuthUser & { previewSession: PreviewSessionPrincipal };
-  }
-  return null;
+  return principal?.user ?? null;
 };
+
+export { getIdentityKeys };
 
 // ── ID validation ────────────────────────────────────────────────────────────
 
@@ -68,6 +40,10 @@ const SHORT_UUID_REGEX = /^[0-9a-f]{32}$/i;
 
 export const requireValidId = (value: string | null | undefined) =>
   Boolean(value && (UUID_REGEX.test(value) || SHORT_UUID_REGEX.test(value)));
+
+/** Identity IDs may be Logto subjects, unlike resource IDs which stay UUIDs. */
+export const requireValidPrincipalId = (value: string | null | undefined) =>
+  Boolean(value && /^[A-Za-z0-9._:-]{1,255}$/.test(value.trim()));
 
 // ── Auth helpers ─────────────────────────────────────────────────────────────
 
@@ -204,12 +180,16 @@ export const buildSpaceListItems = async (spaceList: typeof spaces.$inferSelect[
   const statusBySpaceId = new Map(sandboxRows.map((r) => [r.spaceId, r.status]));
   const profileByUserUuid = await getProfilesByUuids(spaceList.map((space) => space.userUuid));
 
-  return spaceList.map((space) => ({
-    ...space,
-    publicProfile: getSpacePublicProfile(space),
-    sandboxStatus: statusBySpaceId.get(space.id) ?? null,
-    ownerProfile: profileByUserUuid.get(space.userUuid) ?? null,
-  }));
+  return spaceList.map((space) => {
+    const ownerProfile = profileByUserUuid.get(space.userUuid) ?? null;
+    return {
+      ...space,
+      userUuid: ownerProfile?.userUuid ?? space.userUuid,
+      publicProfile: getSpacePublicProfile(space),
+      sandboxStatus: statusBySpaceId.get(space.id) ?? null,
+      ownerProfile,
+    };
+  });
 };
 
 export const buildStorageRepoName = (spaceId: string) => `space-${spaceId}`;

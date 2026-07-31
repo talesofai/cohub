@@ -15,8 +15,13 @@ import {
 import { serializeProduct, serializeOrder } from "../lib/commerce-serialize.js";
 import { db } from "../db/index.js";
 import { spaces, userProfiles } from "@cohub/db";
-import { eq } from "drizzle-orm";
+import { eq, or } from "drizzle-orm";
 import { config } from "../config.js";
+import {
+  identityEquals,
+  resolveBillingUserId,
+  resolveBillingUserIdForStoredPrincipal,
+} from "../identity-bridge.js";
 
 const router = new Hono();
 
@@ -33,7 +38,10 @@ async function resolvePublicWorkUrl(input: { spaceId: string; workSlug: string }
   const [row] = await db
     .select({ username: userProfiles.username, spaceSlug: spaces.slug })
     .from(spaces)
-    .innerJoin(userProfiles, eq(userProfiles.userUuid, spaces.userUuid))
+    .innerJoin(userProfiles, or(
+      eq(userProfiles.userUuid, spaces.userUuid),
+      eq(userProfiles.logtoUserId, spaces.userUuid),
+    ))
     .where(eq(spaces.id, input.spaceId))
     .limit(1);
   if (!row?.username || !row.spaceSlug) return null;
@@ -102,7 +110,8 @@ router.get("/works/:id/commerce/entitlements", async (c) => {
   try {
     const businessKey = await requireSpaceCommerceBusinessKey(resolved.work.spaceId);
     const ops = await createSpaceBusinessBillingOperations(businessKey);
-    const state = await ops.getEntitlements({ userId: user.uuid });
+    const billingUserId = await resolveBillingUserId(user);
+    const state = await ops.getEntitlements({ userId: billingUserId });
     const creditBalance = state.credits.find((c: { tokenType: string }) => c.tokenType === "cohub_credit");
     return c.json({
       entitlements: state.entitlements.map((entitlement: { key: string; enabled: boolean; metadata: Record<string, string | number | boolean> }) => ({
@@ -148,11 +157,13 @@ router.post("/works/:id/commerce/credits/consume", async (c) => {
   const reason = typeof body?.reason === "string" ? body.reason.trim().slice(0, 512) : undefined;
 
   const consumerUserId = typeof body?.consumerUserId === "string" ? body.consumerUserId.trim() : null;
-  const targetUserId = consumerUserId ?? user.uuid;
-  if (consumerUserId && consumerUserId !== user.uuid) {
+  if (consumerUserId && !identityEquals(user, consumerUserId)) {
     if (!(await hasPermission(user, "space.commerce.manage", { spaceId: resolved.work.spaceId }))) return authzDenied(c);
   }
   try {
+    const targetUserId = consumerUserId && !identityEquals(user, consumerUserId)
+      ? await resolveBillingUserIdForStoredPrincipal(consumerUserId)
+      : await resolveBillingUserId(user);
     const businessKey = await requireSpaceCommerceBusinessKey(resolved.work.spaceId);
     const ops = await createSpaceBusinessBillingOperations(businessKey);
     const result = await ops.consume({
@@ -188,6 +199,7 @@ router.post("/works/:id/commerce/purchase", async (c) => {
   const productKey = typeof body?.productKey === "string" ? body.productKey.trim() : "";
   if (!productKey) return c.json({ message: "productKey is required" }, 400);
   try {
+    const billingUserId = await resolveBillingUserId(user);
     const businessKey = await requireSpaceCommerceBusinessKey(resolved.work.spaceId);
     const sdk = await createSpaceCommerceSdk();
     const product = await sdk.admin.products.get({ business_key: businessKey, product_key: productKey });
@@ -202,7 +214,7 @@ router.post("/works/:id/commerce/purchase", async (c) => {
     const provisionalRedirects = buildWorkCheckoutReturnUrls({ workUrl });
     const result = await sdk.admin.orders.create({
       business_key: businessKey,
-      external_user_id: user.uuid,
+      external_user_id: billingUserId,
       product_key: product.key,
       billing_reason: "purchase",
       success_redirect_url: provisionalRedirects.successRedirectUrl,
@@ -242,13 +254,14 @@ router.get("/works/:id/commerce/orders/:orderId", async (c) => {
   if ("error" in resolved) return c.json({ message: resolved.error }, 404);
   if ((resolved.work.workVisibility ?? "public") === "space" && !(await hasPermission(user, "space.view", { spaceId: resolved.work.spaceId }))) return authzDenied(c);
   try {
+    const billingUserId = await resolveBillingUserId(user);
     const businessKey = await requireSpaceCommerceBusinessKey(resolved.work.spaceId);
     const sdk = await createSpaceCommerceSdk();
     const order = await sdk.admin.orders.get({
       business_key: businessKey,
       order_id: orderId,
     });
-    if (order.external_user_id !== user.uuid) return authzDenied(c);
+    if (order.external_user_id !== billingUserId) return authzDenied(c);
     return c.json({ order: serializeOrder(order) });
   } catch (error) {
     const response = handleWorkCommerceRouteError(c, error);

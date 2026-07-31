@@ -1,7 +1,9 @@
 import { randomUUID } from "node:crypto";
-import { REALTIME_OUTBOUND_CHANNEL, type RealtimeTaskRecord } from "@cohub/protocol/realtime";
+import { getRealtimeUserRoom, REALTIME_OUTBOUND_CHANNEL, type RealtimeTaskRecord } from "@cohub/protocol/realtime";
 import type { TaskRunStatus } from "@cohub/protocol/task";
+import { getIdentityKeys } from "@cohub/identity";
 import { redisCommandClient } from "./redis.js";
+import { resolveStoredPrincipalIdentityForWorker } from "./identity-bridge.js";
 
 const toIsoOrNull = (value: Date | string | null | undefined) => {
   if (!value) return null;
@@ -56,6 +58,9 @@ async function publishTaskEvent(input: {
 }) {
   const task = toRealtimeTaskRecord(input.task);
   if (!task.spaceId && !task.userId) return;
+  const rooms = task.userId && !task.spaceId
+    ? getIdentityKeys(await resolveStoredPrincipalIdentityForWorker(task.userId)).map(getRealtimeUserRoom)
+    : undefined;
 
   await redisCommandClient.publish(
     REALTIME_OUTBOUND_CHANNEL,
@@ -66,6 +71,7 @@ async function publishTaskEvent(input: {
       type: input.type,
       spaceId: task.spaceId,
       sessionId: task.sessionId,
+      rooms,
       payload: {
         task,
         ...(input.changed ? { changed: input.changed } : {}),

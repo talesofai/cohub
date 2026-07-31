@@ -1,5 +1,5 @@
 import { createLogger } from "@cohub/infra/logging";
-import { and, asc, desc, eq, gt, inArray, isNull, lt, or, sql } from "drizzle-orm";
+import { and, asc, desc, eq, gt, inArray, isNull, lt, not, or, sql } from "drizzle-orm";
 import type { Usage } from "@cohub/protocol/core";
 import type { PersistMessageInput, RegisterSessionInput, SessionTurnRecord, UpdateSessionInfoInput } from "@cohub/protocol/model";
 import type { ModelThinkingLevel } from "@cohub/protocol";
@@ -26,6 +26,7 @@ import { enqueueAgentSessionForkJob } from "./agent-turn-queue.js";
 import { requestAgentTurnAbort } from "./agent-turn-abort.js";
 import { countToolCallsInContent, deriveMessagePreviewText, extractPlainText } from "./session-content.js";
 import { fallbackPublicUserProfile, getProfilesByUuids } from "./user-profiles.js";
+import { resolveStoredPrincipalUser } from "./identity-bridge.js";
 // space public profile is inlined in attachSessionSpaceSummaries to avoid route-layer coupling
 import { enqueueSessionMessagePostprocess } from "./session-message-postprocess-queue.js";
 import { touchSpaceActivity } from "./space-activity.js";
@@ -207,7 +208,8 @@ async function assignSessionUserLabelsAndDispatch(input: { spaceId: string; sess
 }
 
 export const createInitialSpaceSession = async (input: RegisterSessionInput) => {
-  const userUuid = normalizeRequiredUserUuid(input.userUuid);
+  const requestedUserUuid = normalizeRequiredUserUuid(input.userUuid);
+  const userUuid = (await resolveStoredPrincipalUser(requestedUserUuid)).uuid;
   const [session] = await db.insert(spaceSessions).values({
     id: input.sessionId,
     spaceId: input.spaceId,
@@ -235,7 +237,8 @@ export const registerSpaceSession = async (input: RegisterSessionInput) => {
   const space = await getSpaceById(input.spaceId);
   if (!space) throw new Error("Space not found");
 
-  const userUuid = normalizeRequiredUserUuid(input.userUuid);
+  const requestedUserUuid = normalizeRequiredUserUuid(input.userUuid);
+  const userUuid = (await resolveStoredPrincipalUser(requestedUserUuid)).uuid;
 
   try {
     const [session] = await db.insert(spaceSessions).values({
@@ -281,14 +284,21 @@ export const hydrateSessionParticipantProfiles = async <T extends typeof spaceSe
 
   const profiles = await getProfilesByUuids([...allUserUuids]);
   return sessions.map((session) => {
-    const participantUserUuids = readSessionParticipantUserUuids(session.meta);
-    const userUuid = session.userUuid?.trim() || null;
+    const storedParticipantUserUuids = readSessionParticipantUserUuids(session.meta);
+    const storedUserUuid = session.userUuid?.trim() || null;
+    const userProfile = storedUserUuid
+      ? profiles.get(storedUserUuid) ?? fallbackPublicUserProfile(storedUserUuid)
+      : null;
+    const participantProfiles = [...new Map(storedParticipantUserUuids.map((uuid) => {
+      const profile = profiles.get(uuid) ?? fallbackPublicUserProfile(uuid);
+      return [profile.userUuid, profile] as const;
+    })).values()];
     return {
       ...session,
-      userUuid,
-      userProfile: userUuid ? profiles.get(userUuid) ?? fallbackPublicUserProfile(userUuid) : null,
-      participantUserUuids,
-      participantProfiles: participantUserUuids.map((uuid) => profiles.get(uuid) ?? fallbackPublicUserProfile(uuid)),
+      userUuid: userProfile?.userUuid ?? null,
+      userProfile,
+      participantUserUuids: participantProfiles.map((profile) => profile.userUuid),
+      participantProfiles,
     };
   });
 };
@@ -409,7 +419,7 @@ export const attachSessionSpaceSummaries = async <T extends { spaceId: string }>
  * avoid duplicates before merge.
  */
 export const listUserSessions = async (
-  userUuid: string,
+  userUuid: string | readonly string[],
   options?: { limit?: number; cursor?: string | null },
 ) => {
   const limit = resolveSessionListLimit(options?.limit);
@@ -417,13 +427,17 @@ export const listUserSessions = async (
   const activityCursor = sessionListActivityCursorCondition(cursor);
   const branchLimit = limit + 1;
 
-  const creatorWhere = activityCursor
-    ? and(eq(spaceSessions.userUuid, userUuid), activityCursor)
-    : eq(spaceSessions.userUuid, userUuid);
+  const userIds = [...new Set((Array.isArray(userUuid) ? userUuid : [userUuid]).map((value) => value.trim()).filter(Boolean))];
+  if (userIds.length === 0) return mergeUserSessionListBranches([[], []], limit);
+  const [firstUserId] = userIds;
+  const creatorIdentity = firstUserId && userIds.length === 1
+    ? eq(spaceSessions.userUuid, firstUserId)
+    : inArray(spaceSessions.userUuid, userIds);
+  const creatorWhere = activityCursor ? and(creatorIdentity, activityCursor) : creatorIdentity;
 
   const participantOnly = and(
-    userSessionParticipantCondition(userUuid),
-    sql`${spaceSessions.userUuid} is distinct from ${userUuid}`,
+    or(...userIds.map((id) => userSessionParticipantCondition(id))),
+    or(isNull(spaceSessions.userUuid), not(inArray(spaceSessions.userUuid, userIds))),
   );
   const participantWhere = activityCursor
     ? and(participantOnly, activityCursor)

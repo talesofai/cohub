@@ -3,9 +3,10 @@ import { db } from "../db/index.js";
 import { spaceMembers, spaces } from "@cohub/db";
 import type { SpaceRole } from "@cohub/db";
 import { isRoleHigherThan } from "@cohub/core/permissions";
-import { and, eq } from "drizzle-orm";
+import { and, eq, inArray } from "drizzle-orm";
 import { redisCommandClient } from "../redis.js";
 import { useAuth } from "../lib/middleware.js";
+import { getIdentityKeys } from "../identity-bridge.js";
 
 const INVITE_PREFIX = "invite";
 
@@ -96,11 +97,14 @@ router.post("/:token/accept", async (c) => {
 
   // Check if user is already a member. Invite links may upgrade an existing
   // lower-role member, for example guest -> builder, but must never demote.
-  const [existing] = await db
+  const existingMembers = await db
     .select({ id: spaceMembers.id, role: spaceMembers.role })
     .from(spaceMembers)
-    .where(and(eq(spaceMembers.spaceId, spaceId), eq(spaceMembers.userId, user.uuid)))
-    .limit(1);
+    .where(and(eq(spaceMembers.spaceId, spaceId), inArray(spaceMembers.userId, getIdentityKeys(user))));
+  if (existingMembers.length > 1) {
+    return c.json({ message: "member identity conflict requires repair" }, 409);
+  }
+  const existing = existingMembers[0];
 
   let acceptedRole = role;
   let consumedInviteUse = false;
@@ -109,8 +113,8 @@ router.post("/:token/accept", async (c) => {
     if (isRoleHigherThan(role, existing.role)) {
       await db
         .update(spaceMembers)
-        .set({ role, updatedBy: user.uuid, updatedAt: new Date() })
-        .where(and(eq(spaceMembers.spaceId, spaceId), eq(spaceMembers.userId, user.uuid)));
+        .set({ userId: user.uuid, role, updatedBy: user.uuid, updatedAt: new Date() })
+        .where(eq(spaceMembers.id, existing.id));
       consumedInviteUse = true;
     } else {
       acceptedRole = existing.role;

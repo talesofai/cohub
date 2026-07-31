@@ -84,6 +84,7 @@ import { redisCommandClient } from "../../redis.js";
 import { featureGateResponse } from "../../lib/feature-gate.js";
 import { billingBlockedResponse } from "../../lib/billing-blocked.js";
 import { applyRequestSourceToMeta, getRequestSource, resolveSessionSourceFromRequest } from "../../lib/request-source.js";
+import { getIdentityKeys, resolveBillingUserId, resolveBillingUserIdForStoredPrincipal } from "../../identity-bridge.js";
 
 
 const logger = createLogger({ serviceName: "cohub-api" });
@@ -335,15 +336,16 @@ const uniqueViolationConstraint = (error: unknown): string | null => {
 
 type SpaceRow = typeof spaces.$inferSelect;
 
-async function listAccessibleSpaceIds(userUuid: string): Promise<string[]> {
+async function listAccessibleSpaceIds(userUuids: readonly string[]): Promise<string[]> {
+  const unique = [...new Set(userUuids)];
   const owned = await db
     .select({ id: spaces.id })
     .from(spaces)
-    .where(eq(spaces.userUuid, userUuid));
+    .where(inArray(spaces.userUuid, unique));
   const member = await db
     .select({ id: spaceMembers.spaceId })
     .from(spaceMembers)
-    .where(eq(spaceMembers.userId, userUuid));
+    .where(inArray(spaceMembers.userId, unique));
 
   return Array.from(new Set([...owned.map((item) => item.id), ...member.map((item) => item.id)]));
 }
@@ -422,15 +424,18 @@ const getSpaceSandboxSpec = (space: typeof spaces.$inferSelect): SandboxSpecId =
   return isSandboxSpecId(sandbox.spec) ? sandbox.spec : DEFAULT_SANDBOX_SPEC_ID;
 };
 
-async function getAllowedSandboxSpecId(userId: string): Promise<SandboxSpecId> {
+async function getAllowedSandboxSpecId(user: AuthUser | string): Promise<SandboxSpecId> {
   try {
+    const userId = typeof user === "string"
+      ? await resolveBillingUserIdForStoredPrincipal(user)
+      : await resolveBillingUserId(user);
     const state = await billingOperations.getState({ userId });
     const keys = new Set(state.entitlements.filter((entitlement) => entitlement.enabled).map((entitlement) => entitlement.key));
     if (keys.has(COHUB_BILLING_FEATURES.sandboxSpecUltra)) return "ultra";
     if (keys.has(COHUB_BILLING_FEATURES.sandboxSpecBoost)) return "boost";
     return DEFAULT_SANDBOX_SPEC_ID;
   } catch (error) {
-    logger.warn("[SandboxSpec] failed to check entitlement", { userId, error });
+    logger.warn("[SandboxSpec] failed to check entitlement", { error });
     return DEFAULT_SANDBOX_SPEC_ID;
   }
 }
@@ -550,33 +555,33 @@ function getSpaceProvisionParams(
   };
 }
 
-async function findOwnedHomeSpace(userUuid: string): Promise<SpaceRow | null> {
+async function findOwnedHomeSpace(userUuids: readonly string[]): Promise<SpaceRow | null> {
   const [ownedHome] = await db
     .select()
     .from(spaces)
-    .where(and(eq(spaces.userUuid, userUuid), eq(spaces.slug, HOME_SPACE_SLUG)))
+    .where(and(inArray(spaces.userUuid, [...new Set(userUuids)]), eq(spaces.slug, HOME_SPACE_SLUG)))
     .limit(1);
   return ownedHome ?? null;
 }
 
-async function findOwnedRecentSpace(userUuid: string): Promise<SpaceRow | null> {
+async function findOwnedRecentSpace(userUuids: readonly string[]): Promise<SpaceRow | null> {
   const [ownedRecent] = await db
     .select()
     .from(spaces)
-    .where(eq(spaces.userUuid, userUuid))
+    .where(inArray(spaces.userUuid, [...new Set(userUuids)]))
     .orderBy(sql`${spaces.lastActivityAt} desc nulls last`, desc(spaces.createdAt))
     .limit(1);
   return ownedRecent ?? null;
 }
 
 /** After a unique conflict, prefer the real home slug, then any owned space. */
-async function resolveHomeEnsureConflict(userUuid: string, reason: string): Promise<SpaceRow | null> {
-  const home = await findOwnedHomeSpace(userUuid);
+async function resolveHomeEnsureConflict(userUuids: readonly string[], reason: string): Promise<SpaceRow | null> {
+  const home = await findOwnedHomeSpace(userUuids);
   if (home) return home;
-  const recent = await findOwnedRecentSpace(userUuid);
+  const recent = await findOwnedRecentSpace(userUuids);
   if (recent) {
     logger.warn("[DefaultSpace] home ensure conflict without slug=home", {
-      userUuid,
+      userUuid: userUuids[0],
       reason,
       spaceId: recent.id,
       name: recent.name,
@@ -586,19 +591,20 @@ async function resolveHomeEnsureConflict(userUuid: string, reason: string): Prom
   return recent;
 }
 
-async function findDefaultSpaceCandidate(userUuid: string): Promise<SpaceRow | null> {
+async function findDefaultSpaceCandidate(userUuids: readonly string[]): Promise<SpaceRow | null> {
+  const unique = [...new Set(userUuids)];
   // Hot path: most accounts already have a home space.
   const [[ownedHome], [memberHome]] = await Promise.all([
     db
       .select()
       .from(spaces)
-      .where(and(eq(spaces.userUuid, userUuid), eq(spaces.slug, HOME_SPACE_SLUG)))
+      .where(and(inArray(spaces.userUuid, unique), eq(spaces.slug, HOME_SPACE_SLUG)))
       .limit(1),
     db
       .select({ space: spaces })
       .from(spaceMembers)
       .innerJoin(spaces, eq(spaces.id, spaceMembers.spaceId))
-      .where(and(eq(spaceMembers.userId, userUuid), eq(spaces.slug, HOME_SPACE_SLUG)))
+      .where(and(inArray(spaceMembers.userId, unique), eq(spaces.slug, HOME_SPACE_SLUG)))
       .orderBy(sql`${spaces.lastActivityAt} desc nulls last`, desc(spaces.createdAt))
       .limit(1),
   ]);
@@ -609,14 +615,14 @@ async function findDefaultSpaceCandidate(userUuid: string): Promise<SpaceRow | n
     db
       .select()
       .from(spaces)
-      .where(eq(spaces.userUuid, userUuid))
+      .where(inArray(spaces.userUuid, unique))
       .orderBy(sql`${spaces.lastActivityAt} desc nulls last`, desc(spaces.createdAt))
       .limit(1),
     db
       .select({ space: spaces })
       .from(spaceMembers)
       .innerJoin(spaces, eq(spaces.id, spaceMembers.spaceId))
-      .where(eq(spaceMembers.userId, userUuid))
+      .where(inArray(spaceMembers.userId, unique))
       .orderBy(sql`${spaces.lastActivityAt} desc nulls last`, desc(spaces.createdAt))
       .limit(1),
   ]);
@@ -692,7 +698,7 @@ async function ensureHomeSpace(user: AuthUser): Promise<SpaceRow | null> {
     const constraint = uniqueViolationConstraint(error);
     if (constraint?.includes("user_slug") || constraint?.includes("user_name")) {
       return resolveHomeEnsureConflict(
-        user.uuid,
+        getIdentityKeys(user),
         constraint.includes("user_slug") ? "slug_conflict" : "name_conflict",
       );
     }
@@ -709,7 +715,7 @@ async function ensureHomeSpace(user: AuthUser): Promise<SpaceRow | null> {
       } catch (retryError) {
         const retryConstraint = uniqueViolationConstraint(retryError);
         if (retryConstraint?.includes("user_slug") || retryConstraint?.includes("user_name")) {
-          return resolveHomeEnsureConflict(user.uuid, "retry_unique_conflict");
+          return resolveHomeEnsureConflict(getIdentityKeys(user), "retry_unique_conflict");
         }
         throw retryError;
       }
@@ -718,7 +724,7 @@ async function ensureHomeSpace(user: AuthUser): Promise<SpaceRow | null> {
     }
   }
 
-  if (!space) return resolveHomeEnsureConflict(user.uuid, "missing_space");
+  if (!space) return resolveHomeEnsureConflict(getIdentityKeys(user), "missing_space");
   const provisioned = await provisionCreatedSpace({
     user,
     space,
@@ -741,7 +747,8 @@ router.get("/", async (c) => {
   if (!identity) return authzDenied(c);
 
   // Account list: owned/member by viewer uuid, independent of work space scopes.
-  const spaceIds = await listAccessibleSpaceIds(identity.uuid);
+  const identityKeys = [identity.uuid, identity.legacyUserUuid].filter((value): value is string => Boolean(value));
+  const spaceIds = await listAccessibleSpaceIds(identityKeys);
   if (spaceIds.length === 0) return c.json([]);
 
   const spaceList = await db
@@ -751,7 +758,10 @@ router.get("/", async (c) => {
     .orderBy(sql`${spaces.lastActivityAt} desc nulls last`, desc(spaces.createdAt));
 
   const items = await buildSpaceListItems(spaceList);
-  const pinnedSpaceIds = await getPinnedSpaceIds(db, identity.uuid);
+  const pinnedSpaceIds = await getPinnedSpaceIds(db, {
+    uuid: identity.uuid,
+    aliases: identity.legacyUserUuid ? [identity.legacyUserUuid] : [],
+  });
   const itemsWithPins = items.map((item) => ({
     ...item,
     isPinned: pinnedSpaceIds.has(item.id),
@@ -768,7 +778,7 @@ router.get("/default", async (c) => {
   if (!identity) return authzDenied(c);
 
   // Prefer existing home / recent space.
-  let space = await findDefaultSpaceCandidate(identity.uuid);
+  let space = await findDefaultSpaceCandidate([identity.uuid, identity.legacyUserUuid].filter((value): value is string => Boolean(value)));
   // Ensure only for normal account sessions. Work / preview / execution
   // principals may list via viewer grants but must not mint spaces.
   const canEnsureHome =
@@ -837,7 +847,7 @@ router.post("/", async (c) => {
   const existingSpace = await db
     .select({ id: spaces.id })
     .from(spaces)
-    .where(and(eq(spaces.userUuid, user.uuid), eq(spaces.name, name)))
+    .where(and(inArray(spaces.userUuid, getIdentityKeys(user)), eq(spaces.name, name)))
     .limit(1);
   if (existingSpace.length > 0) return c.json({ message: "space already exists" }, 409);
 
@@ -852,7 +862,7 @@ router.post("/", async (c) => {
     return c.json({ message: error instanceof Error ? error.message : "invalid space config" }, 400);
   }
   const requestedSpec = normalizedConfig.sandbox?.spec ?? DEFAULT_SANDBOX_SPEC_ID;
-  const allowedSpec = await getAllowedSandboxSpecId(user.uuid);
+  const allowedSpec = await getAllowedSandboxSpecId(user);
   if (getSandboxSpecRank(requestedSpec) > getSandboxSpecRank(allowedSpec)) {
     return createSandboxSpecRequiredResponse(c, requestedSpec);
   }
@@ -873,7 +883,7 @@ router.post("/", async (c) => {
     const channels = await db
       .select({ id: userChannels.id })
       .from(userChannels)
-      .where(and(eq(userChannels.userUuid, user.uuid), inArray(userChannels.id, ids)));
+      .where(and(inArray(userChannels.userUuid, getIdentityKeys(user)), inArray(userChannels.id, ids)));
     if (channels.length !== ids.length) return c.json({ message: "one or more channels are invalid" }, 400);
   }
 
@@ -1057,6 +1067,7 @@ async function serializeSpaceForResponse(space: typeof spaces.$inferSelect, user
 
   return {
     ...space,
+    userUuid: ownerProfile.userUuid,
     meta: sanitizeSpaceMeta(space.meta),
     publicProfile: getSpacePublicProfile(space),
     sandboxStatus: sandbox?.status ?? null,
@@ -1146,7 +1157,7 @@ router.get("/by-slug/:username/:slug", async (c) => {
   if (slugError || !slug) return c.json({ message: "space not found" }, 404);
 
   const [profile] = await db
-    .select({ userUuid: userProfiles.userUuid })
+    .select({ userUuid: userProfiles.userUuid, logtoUserId: userProfiles.logtoUserId })
     .from(userProfiles)
     .where(eq(userProfiles.username, username))
     .limit(1);
@@ -1155,7 +1166,7 @@ router.get("/by-slug/:username/:slug", async (c) => {
   const [space] = await db
     .select()
     .from(spaces)
-    .where(and(eq(spaces.userUuid, profile.userUuid), eq(spaces.slug, slug)))
+    .where(and(inArray(spaces.userUuid, [profile.logtoUserId, profile.userUuid]), eq(spaces.slug, slug)))
     .limit(1);
   if (!space) return c.json({ message: "space not found" }, 404);
 
@@ -1682,7 +1693,7 @@ router.get("/:id/config", async (c) => {
   if (!space) return c.json({ message: "space not found" }, 404);
 
   const [allowedSpec, sandbox] = await Promise.all([
-    user?.uuid ? getAllowedSandboxSpecId(user.uuid) : Promise.resolve(DEFAULT_SANDBOX_SPEC_ID),
+    user ? getAllowedSandboxSpecId(user) : Promise.resolve(DEFAULT_SANDBOX_SPEC_ID),
     getSpaceSandboxBySpaceId(spaceId),
   ]);
   return c.json({
@@ -2284,7 +2295,7 @@ router.post("/:id/channels/:channelId", async (c) => {
   if (!(await hasPermission(user, "channel.manage", { spaceId }))) return authzDenied(c);
 
   // Verify ownership: the channel must belong to the same user
-  const [userChannel] = await db.select().from(userChannels).where(and(eq(userChannels.id, channelId), eq(userChannels.userUuid, user.uuid))).limit(1);
+  const [userChannel] = await db.select().from(userChannels).where(and(eq(userChannels.id, channelId), inArray(userChannels.userUuid, getIdentityKeys(user)))).limit(1);
   if (!userChannel) return c.json({ message: "channel not owned by you" }, 403);
 
   // Check if already bound to any space

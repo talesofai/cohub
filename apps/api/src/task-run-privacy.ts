@@ -9,6 +9,18 @@ type TaskRunPricingView = {
   result: unknown;
 };
 
+type ViewerIdentity = string | {
+  uuid?: string | null;
+  legacyUserUuid?: string | null;
+};
+
+const viewerIdentityKeys = (viewer: ViewerIdentity | null | undefined) => {
+  if (typeof viewer === "string") return [viewer.trim()].filter(Boolean);
+  return [...new Set([viewer?.uuid, viewer?.legacyUserUuid]
+    .filter((value): value is string => typeof value === "string" && Boolean(value.trim()))
+    .map((value) => value.trim()))];
+};
+
 /**
  * Generation pricing reveals the creator's subscription tier. Keep the
  * server-side snapshot intact while removing it from collaborator-visible
@@ -16,11 +28,11 @@ type TaskRunPricingView = {
  */
 export function sanitizeTaskRunPricingForViewer<T extends TaskRunPricingView>(
   run: T,
-  viewerUserId: string | null | undefined,
+  viewer: ViewerIdentity | null | undefined,
 ): T {
   const isGeneration = run.taskType === "generation";
   const isBillingRetry = run.taskType === "generation.billing_retry";
-  if ((!isGeneration && !isBillingRetry) || (viewerUserId && run.userUuid === viewerUserId)) return run;
+  if ((!isGeneration && !isBillingRetry) || (run.userUuid && viewerIdentityKeys(viewer).includes(run.userUuid))) return run;
 
   let payload = run.payload;
   if (isRecord(payload) && isRecord(payload.data)) {

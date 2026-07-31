@@ -18,6 +18,7 @@ type RestoredAuthSession = {
 	isAuthenticated: boolean;
 	claims: IdTokenClaims | null;
 	userUuid: string | null;
+	legacyUserUuid: string | null;
 	profile: UserProfile | null;
 	email: string | null;
 };
@@ -26,6 +27,7 @@ const unauthenticatedSession = (): RestoredAuthSession => ({
 	isAuthenticated: false,
 	claims: null,
 	userUuid: null,
+	legacyUserUuid: null,
 	profile: null,
 	email: null,
 });
@@ -47,6 +49,7 @@ const restoreAuthSession = async (
 	const claims = await getCurrentIdTokenClaims();
 	const subject = typeof claims?.sub === "string" ? claims.sub : null;
 	let userUuid: string | null = null;
+	let legacyUserUuid: string | null = null;
 	let profile: UserProfile | null = null;
 	let email: string | null = null;
 
@@ -58,12 +61,14 @@ const restoreAuthSession = async (
 	const cached = getCachedMeProfile(subject);
 	if (cached) {
 		userUuid = cached.uuid ?? null;
+		legacyUserUuid = cached.legacyUserUuid ?? null;
 		profile = cached.profile ?? null;
 		email = cached.email ?? null;
 		const cachedSession = {
 			isAuthenticated: true,
 			claims,
 			userUuid,
+			legacyUserUuid,
 			profile,
 			email,
 		};
@@ -77,6 +82,7 @@ const restoreAuthSession = async (
 						isAuthenticated: true,
 						claims,
 						userUuid: me.uuid ?? null,
+						legacyUserUuid: me.legacyUserUuid ?? null,
 						profile: me.profile ?? null,
 						email: me.email ?? null,
 					});
@@ -98,6 +104,7 @@ const restoreAuthSession = async (
 	try {
 		const me = await sdk.user.getMe(meOptions);
 		userUuid = me.uuid ?? null;
+		legacyUserUuid = me.legacyUserUuid ?? null;
 		profile = me.profile ?? null;
 		email = me.email ?? null;
 		setCachedMeProfile(subject, me);
@@ -114,6 +121,7 @@ const restoreAuthSession = async (
 		isAuthenticated: true,
 		claims,
 		userUuid,
+		legacyUserUuid,
 		profile,
 		email,
 	};
@@ -128,6 +136,7 @@ class AuthStore {
 	// userUuid from backend API (/api/me), used for ownership checks
 	// against space.userUuid, session ownership, etc.
 	_userUuid = $state<string | null>(null);
+	_legacyUserUuid = $state<string | null>(null);
 	profile = $state<UserProfile | null>(null);
 	email = $state<string | null>(null);
 
@@ -136,6 +145,21 @@ class AuthStore {
 
 	get userUuid(): string | null {
 		return this._userUuid;
+	}
+
+	get identityKeys(): string[] {
+		return [
+			...new Set(
+				[this._userUuid, this._legacyUserUuid].filter(
+					(value): value is string => Boolean(value),
+				),
+			),
+		];
+	}
+
+	matchesUserId(userId: string | null | undefined): boolean {
+		const normalized = userId?.trim();
+		return Boolean(normalized && this.identityKeys.includes(normalized));
 	}
 
 	async ensureLoaded(force = false) {
@@ -149,6 +173,7 @@ class AuthStore {
 					this.isAuthenticated = restored.isAuthenticated;
 					this.claims = restored.claims;
 					this._userUuid = restored.userUuid;
+					this._legacyUserUuid = restored.legacyUserUuid;
 					this.profile = restored.profile;
 					this.email = restored.email;
 					this.loaded = true;
@@ -177,6 +202,9 @@ class AuthStore {
 		if (this._userUuid) {
 			setCachedMeProfile(this.claims?.sub, {
 				uuid: this._userUuid,
+				...(this._legacyUserUuid
+					? { legacyUserUuid: this._legacyUserUuid }
+					: {}),
 				profile,
 				email: this.email,
 			});
@@ -192,6 +220,7 @@ class AuthStore {
 		this.loaded = false;
 		this.loading = false;
 		this._userUuid = null;
+		this._legacyUserUuid = null;
 		this.profile = null;
 		this.email = null;
 		this._loadPromise = null;

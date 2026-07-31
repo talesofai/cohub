@@ -2,6 +2,7 @@ import { chmod, copyFile, lstat, mkdir, readFile, readdir, rename, rm, stat, wri
 import { dirname, join } from "node:path";
 import { randomUUID } from "node:crypto";
 import { config } from "./config.js";
+import { isStorageSafePrincipalId } from "@cohub/identity";
 
 const DIR_MODE = 0o775;
 const FILE_MODE = 0o664;
@@ -14,13 +15,11 @@ const USER_CONFIG_PUBLISH_WHITELIST = [
   ".agents",
   ".cohub",
 ] as const;
-const USER_ID_REGEX = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
-const SHORT_USER_ID_REGEX = /^[0-9a-f]{32}$/i;
 const MAX_COPY_DEPTH = 16;
 
 function assertValidUserId(userId: string) {
   const value = userId.trim();
-  if (!USER_ID_REGEX.test(value) && !SHORT_USER_ID_REGEX.test(value)) {
+  if (!isStorageSafePrincipalId(value)) {
     throw new Error(`Invalid userId: ${userId}`);
   }
   return value;

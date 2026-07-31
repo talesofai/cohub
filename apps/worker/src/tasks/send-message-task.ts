@@ -12,6 +12,7 @@ import { getSessionDomainServices } from "../session-services.js";
 import { createLogger } from "@cohub/infra/logging";
 import { db } from "../db.js";
 import { dispatchLabelAssignmentsUpdated } from "../label-events.js";
+import { resolveStoredPrincipalIdentityForWorker } from "../identity-bridge.js";
 
 const MAX_TASK_SOURCE_LENGTH = 255;
 
@@ -29,11 +30,12 @@ const sessionPromptService = getSessionDomainServices({
   skillService: getSkillService(),
 });
 
-function sanitizeTaskPromptAuth(auth: PromptAuthContext | null | undefined, input: { spaceId: string; userId: string }) {
+async function sanitizeTaskPromptAuth(auth: PromptAuthContext | null | undefined, input: { spaceId: string; userId: string }) {
   if (auth?.type !== "delegated_prompt" || auth.spaceId !== input.spaceId) return null;
-  if (auth.actorUserId !== input.userId) return null;
+  const actor = await resolveStoredPrincipalIdentityForWorker(auth.actorUserId).catch(() => null);
+  if (!actor || actor.uuid !== input.userId) return null;
   if (getPromptAuthScopes(auth, input.spaceId).length === 0) return null;
-  return auth;
+  return { ...auth, actorUserId: actor.uuid };
 }
 
 const sendMessageHandler = async (job: import("bullmq").Job, context?: { taskRunId: string }) => {
@@ -104,7 +106,7 @@ const sendMessageHandler = async (job: import("bullmq").Job, context?: { taskRun
       kind: "scheduled_task",
       taskRunId,
       cronJobId: payload.cronJobId ?? null,
-      auth: sanitizeTaskPromptAuth(auth ?? null, { spaceId, userId }),
+      auth: await sanitizeTaskPromptAuth(auth ?? null, { spaceId, userId }),
     } satisfies SubmitSessionPromptContext,
   });
 

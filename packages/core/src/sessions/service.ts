@@ -101,13 +101,28 @@ export function createSessionServices(input: {
   injectTrace?: () => Record<string, unknown>;
   getRequestId?: () => string | null | undefined;
   logger?: Pick<Console, "warn">;
+  resolvePrincipalIdentity?: (userId: string) => Promise<{ uuid: string; aliases?: readonly string[] }>;
   onSessionActivityUpdated?: (input: { sessionId: string; changed: string[] }) => void | Promise<void>;
-  onSessionParticipantsUpdated?: (input: { spaceId: string; sessionId: string; userUuids: string[] }) => void | Promise<void>;
+  onSessionParticipantsUpdated?: (input: { spaceId: string; sessionId: string; userUuids: string[]; replacedUserUuids?: string[] }) => void | Promise<void>;
 }) {
   const randomUUID = input.randomUUID ?? defaultRandomUUID;
   const injectTrace = input.injectTrace ?? (() => ({}));
   const getRequestId = input.getRequestId ?? (() => null);
   const logger = input.logger ?? console;
+
+  async function resolvePrincipalIdentity(userId: string) {
+    const normalized = userId.trim();
+    if (!normalized) throw new Error("userUuid is required");
+    const resolved = input.resolvePrincipalIdentity
+      ? await input.resolvePrincipalIdentity(normalized)
+      : { uuid: normalized };
+    const uuid = resolved.uuid.trim();
+    if (!uuid) throw new Error("userUuid is required");
+    const aliases = [...new Set((resolved.aliases ?? [])
+      .map((value) => value.trim())
+      .filter((value) => value && value !== uuid))];
+    return { uuid, aliases };
+  }
 
   async function ensureRootSessionTurnSegment(sessionId: string) {
     await input.db.insert(sessionTurnSegments).values({
@@ -122,8 +137,8 @@ export function createSessionServices(input: {
   }
 
   async function registerCronjobSession(spaceId: string, options: { source: string; title?: string | null; userUuid: string }) {
-    const userUuid = options.userUuid.trim();
-    if (!userUuid) throw new Error("userUuid is required");
+    const identity = await resolvePrincipalIdentity(options.userUuid);
+    const userUuid = identity.uuid;
     const [space] = await input.db.select({ id: spaces.id }).from(spaces).where(eq(spaces.id, spaceId)).limit(1);
     if (!space) throw new Error("space not found");
 
@@ -157,6 +172,7 @@ export function createSessionServices(input: {
     intent: SessionTurnIntent;
     meta: Record<string, unknown>;
   }) {
+    const identity = await resolvePrincipalIdentity(turnInput.userUuid);
     const userContent = sanitizePostgresJsonValue(turnInput.userContent);
     const meta = sanitizePostgresJsonValue(turnInput.meta);
     const userText = deriveMessagePreviewText({ content: userContent }) || null;
@@ -177,12 +193,12 @@ export function createSessionServices(input: {
         latestMessageText: userText,
         lastMessageAt: touchedAt,
         updatedAt: touchedAt,
-        meta: sanitizePostgresJsonValue(addSessionParticipantMeta(sessionRow.meta, turnInput.userUuid)),
+        meta: sanitizePostgresJsonValue(addSessionParticipantMeta(sessionRow.meta, identity.uuid, identity.aliases)),
       }).where(eq(spaceSessions.id, turnInput.sessionId));
       const [row] = await tx.insert(sessionTurns).values({
         sessionId: turnInput.sessionId,
         sequence,
-        userUuid: turnInput.userUuid,
+        userUuid: identity.uuid,
         userContent,
         userText,
         intent: turnInput.intent,
@@ -201,7 +217,8 @@ export function createSessionServices(input: {
     await Promise.resolve(input.onSessionParticipantsUpdated?.({
       spaceId,
       sessionId: turnInput.sessionId,
-      userUuids: [turnInput.userUuid],
+      userUuids: [identity.uuid],
+      replacedUserUuids: identity.aliases,
     })).catch((error) => logger.warn("[Session] failed to publish session participant labels", error));
     return row;
   }
@@ -297,11 +314,12 @@ export function createSessionServices(input: {
   }
 
   async function submitPrompt(promptInput: SubmitSessionPromptInput, hooks: SubmitSessionPromptHooks = {}) {
+    const skillService = input.skillService;
     return submitSessionPrompt({
       randomUUID,
       expandPromptTemplate: ({ text, userId, spaceId }) => input.promptTemplateService.expand(text, { userId, spaceId }),
-      expandSkillCommand: input.skillService
-        ? ({ text, userId, spaceId }) => input.skillService!.expand(text, { userId, spaceId })
+      expandSkillCommand: skillService
+        ? ({ text, userId, spaceId }) => skillService.expand(text, { userId, spaceId })
         : undefined,
       createSessionTurn,
       enqueueSpacePrompt,
@@ -315,10 +333,11 @@ export function createSessionServices(input: {
     userId: string;
     spaceId: string;
   }) {
+    const skillService = input.skillService;
     return expandPromptContent({
       expandPromptTemplate: ({ text, userId, spaceId }) => input.promptTemplateService.expand(text, { userId, spaceId }),
-      expandSkillCommand: input.skillService
-        ? ({ text, userId, spaceId }) => input.skillService!.expand(text, { userId, spaceId })
+      expandSkillCommand: skillService
+        ? ({ text, userId, spaceId }) => skillService.expand(text, { userId, spaceId })
         : undefined,
     }, promptInput);
   }

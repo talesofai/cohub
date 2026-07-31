@@ -33,6 +33,7 @@ import { env } from "./env.js";
 import { logger } from "./logger.js";
 import { getPromptAuthScopes, parsePromptEnv, type PromptAccessMode } from "@cohub/core/sessions";
 import { createAgentExecutionToken } from "./execution-grants.js";
+import { resolveStoredPrincipalIdentityForAgent } from "./identity-bridge.js";
 
 
 const sessionHandles = new Map<string, SessionHandle>();
@@ -830,8 +831,9 @@ export async function processAgentTurnJob(job: Job<AgentTurnJobData>) {
       const ownerMeta = (batch.ownerTurn.meta && typeof batch.ownerTurn.meta === "object" && !Array.isArray(batch.ownerTurn.meta)
         ? batch.ownerTurn.meta as Record<string, unknown>
         : {});
-      const actorUserId = resolveActorUserId(ownerMeta);
-      if (!actorUserId) throw new Error("Agent turn requires actorUserId for execution token");
+      const storedActorUserId = resolveActorUserId(ownerMeta);
+      if (!storedActorUserId) throw new Error("Agent turn requires actorUserId for execution token");
+      const actorUserId = (await resolveStoredPrincipalIdentityForAgent(storedActorUserId)).uuid;
       const promptContext = ownerMeta.context && typeof ownerMeta.context === "object" && !Array.isArray(ownerMeta.context)
         ? ownerMeta.context as Record<string, unknown>
         : null;
