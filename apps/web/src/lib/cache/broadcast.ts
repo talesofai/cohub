@@ -23,6 +23,7 @@ export type CacheBroadcastMessage = {
 	resourceRef?: string;
 	userUuid?: string;
 	prefix?: string;
+	epoch?: number;
 	updatedAt: number;
 };
 

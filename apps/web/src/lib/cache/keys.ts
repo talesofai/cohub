@@ -147,6 +147,10 @@ export function spaceFsDirKey(
 		.join(":");
 }
 
+export function spaceFsEpochKey(userKey: string, spaceId: string) {
+	return [userKey, spaceId, "fs-epoch"].map(encodeKeyPart).join(":");
+}
+
 export function normalizeDirPath(dirPath: string) {
 	return dirPath.trim().replace(/^\/+|\/+$/g, "");
 }

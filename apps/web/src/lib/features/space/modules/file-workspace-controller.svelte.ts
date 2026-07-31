@@ -134,6 +134,7 @@ export function createFileWorkspaceController(
 	>();
 	const pendingDraftTails = new Map<string, Promise<void>>();
 	const forcedOverwritePaths = new Set<string>();
+	const deletingPaths = new Set<string>();
 	let workspaceSpaceId = options.getSpaceId();
 	let workspaceGeneration = 0;
 	type WorkspaceContext = { spaceId: string; generation: number };
@@ -497,11 +498,25 @@ export function createFileWorkspaceController(
 		updater: (entries: SpaceFsEntry[]) => SpaceFsEntry[],
 		context = getWorkspaceContext(),
 	) {
-		const nextEntries = await patchCachedSpaceFsDir(
+		let nextEntries = await patchCachedSpaceFsDir(
 			context.spaceId,
 			dirPath,
 			updater,
 		);
+		if (!isCurrentWorkspaceContext(context)) return nextEntries;
+		if (!nextEntries) {
+			try {
+				nextEntries = await fetchSpaceFsDirWithCache(
+					context.spaceId,
+					dirPath,
+					async () =>
+						(await sdk.space(context.spaceId).files.list(dirPath)).entries,
+					{ force: true },
+				);
+			} catch {
+				return null;
+			}
+		}
 		if (!isCurrentWorkspaceContext(context)) return nextEntries;
 		if (dirPath === "") {
 			updateRootFsEntries(nextEntries);
@@ -1394,25 +1409,49 @@ export function createFileWorkspaceController(
 	}
 
 	async function handleDeleteNode(node: SpaceFsNode): Promise<boolean> {
-		if (options.getActiveFsReadonly() || !options.getCanEditFiles())
+		if (
+			options.getActiveFsReadonly() ||
+			!options.getCanEditFiles() ||
+			deletingPaths.has(node.path)
+		)
 			return false;
 		if (!confirm(`Delete ${node.name}?`)) return false;
+		const context = getWorkspaceContext();
+		const parentPath = getParentDirPath(node.path);
+		deletingPaths.add(node.path);
 		try {
 			await sdk
-				.space(options.getSpaceId())
+				.space(context.spaceId)
 				.files.delete(node.path, node.type === "dir");
-			await patchFsDirectory(getParentDirPath(node.path), (entries) =>
-				entries.filter((entry) => entry.path !== node.path),
+			await patchFsDirectory(
+				parentPath,
+				(entries) => entries.filter((entry) => entry.path !== node.path),
+				context,
 			);
 			if (node.type === "dir")
-				await clearCachedSpaceFsSubtree(options.getSpaceId(), node.path);
+				await clearCachedSpaceFsSubtree(context.spaceId, node.path);
 			if (inlineFileTabs.some((tab) => tab.path === node.path))
 				closeInlineFile(node.path);
+			try {
+				const entries = await fetchSpaceFsDirWithCache(
+					context.spaceId,
+					parentPath,
+					async () =>
+						(await sdk.space(context.spaceId).files.list(parentPath)).entries,
+					{ force: true },
+				);
+				if (isCurrentWorkspaceContext(context))
+					applyDirectoryEntries(parentPath, entries);
+			} catch {
+				// The confirmed delete remains authoritative; realtime will retry refresh.
+			}
 			return true;
 		} catch (error) {
 			fileTreeError =
 				error instanceof Error ? error.message : "Failed to delete";
 			return false;
+		} finally {
+			deletingPaths.delete(node.path);
 		}
 	}
 

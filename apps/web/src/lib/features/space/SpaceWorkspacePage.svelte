@@ -1,4 +1,5 @@
 <script lang="ts">
+import type { SpaceFsChangedPayload } from "@cohub/protocol/fs";
 import type { ChannelEnvelope } from "@cohub/protocol/realtime";
 import type {
 	BoardOperation,
@@ -41,6 +42,11 @@ import type {
 import { invalidateFilePreview } from "$lib/board/board-file-preview-source";
 import { spaceFsRepo } from "$lib/cache/repositories/space-fs-repo";
 import { spaceRecordRepo } from "$lib/cache/repositories/space-record-repo";
+import {
+	createSpaceFsRefreshCoordinator,
+	type SpaceFsRefreshBatch,
+} from "$lib/cache/space-fs-refresh-coordinator";
+import { reconcileSpaceFsSequence } from "$lib/cache/space-fs-sequence";
 import AccessStateView from "$lib/components/AccessStateView.svelte";
 import CenteredLoading from "$lib/components/CenteredLoading.svelte";
 import ResourceLabelPicker from "$lib/components/ResourceLabelPicker.svelte";
@@ -679,6 +685,13 @@ const immersiveFilesInset = $derived(
 
 let workspaceWidthTick = $state(0);
 let pageMounted = $state(false);
+let spaceFsEventTail = Promise.resolve();
+let spaceFsEventGeneration = 0;
+let lastSandboxFsSeq: number | null = null;
+const spaceFsRefreshCoordinator = createSpaceFsRefreshCoordinator(
+	refreshSpaceFsBatch,
+	(error) => console.error("[files] Failed to refresh filesystem state", error),
+);
 const spaceBootstrap = createSpaceBootstrapController({
 	getSpaceId: () => spaceId,
 	getPageMounted: () => pageMounted,
@@ -1274,65 +1287,106 @@ function spaceConfigChanged(
 			isSpaceConfigPath(change.path) || isSpaceConfigPath(change.oldPath),
 	);
 }
-async function handleSpaceFsChanged(payload: ChannelEnvelope) {
+function normalizeSandboxFsPayload(
+	payload: SpaceFsChangedPayload,
+): SpaceFsChangedPayload | null {
+	const result = reconcileSpaceFsSequence(payload, lastSandboxFsSeq);
+	lastSandboxFsSeq = result.lastSeq;
+	return result.payload;
+}
+
+function enqueueSpaceFsChanged(payload: ChannelEnvelope) {
+	const generation = spaceFsEventGeneration;
+	const eventSpaceId = payload.spaceId ?? spaceId;
 	const sourceKey = activeFsSourceKey;
-	const shouldPatchVisibleTree = () =>
-		activeFsSource.kind === "live" && activeFsSourceKey === sourceKey;
-	const eventPayload = payload.payload as {
-		source?: string;
-		mutationId?: string;
-		resync?: boolean;
-		changes?: Array<{
-			path?: string;
-			oldPath?: string;
-			kind?: string;
-			nodeType?: string;
-			mtimeMs?: number;
-			size?: number;
-		}>;
-	};
-	const shouldRefreshSpaceStyle =
-		eventPayload.resync || spaceStyleChanged(eventPayload.changes);
-	if (shouldRefreshSpaceStyle) refreshSpaceStyle(spaceId);
-	const shouldRefreshSpaceConfig =
-		eventPayload.resync || spaceConfigChanged(eventPayload.changes);
-	if (shouldRefreshSpaceConfig) refreshSpaceConfig(spaceId);
-	// Board file cards cache a preview of the file they reference; drop the cached
-	// preview for changed paths so visible cards pick up the new content. The event's
-	// own metadata rides along, which spares a stat request per card — and is the
-	// only way a card whose content is never read (a PDF, an archive) refreshes its
-	// size and mtime at all.
+	const prepared = spaceFsEventTail
+		.catch(() => undefined)
+		.then(async () => {
+			if (generation !== spaceFsEventGeneration || eventSpaceId !== spaceId)
+				return null;
+			const eventPayload = normalizeSandboxFsPayload(
+				payload.payload as SpaceFsChangedPayload,
+			);
+			if (!eventPayload) return null;
+			const { refreshDirs } = await spaceFsRepo.invalidateFsChanged(
+				eventSpaceId,
+				eventPayload,
+			);
+			return { eventPayload, refreshDirs };
+		});
+	spaceFsEventTail = prepared.then(
+		() => undefined,
+		(error) => {
+			console.error("[files] Failed to invalidate filesystem cache", error);
+		},
+	);
+	void prepared
+		.then((result) => {
+			if (
+				!result ||
+				generation !== spaceFsEventGeneration ||
+				eventSpaceId !== spaceId
+			)
+				return;
+			scheduleSpaceFsRefresh({
+				eventPayload: result.eventPayload,
+				dirs: result.refreshDirs,
+				eventSpaceId,
+				sourceKey,
+				generation,
+			});
+		})
+		.catch(() => undefined);
+}
+
+function isCurrentSpaceFsRefresh(batch: SpaceFsRefreshBatch) {
+	return (
+		batch.generation === spaceFsEventGeneration &&
+		spaceId === batch.eventSpaceId &&
+		activeFsSource.kind === "live" &&
+		activeFsSourceKey === batch.sourceKey
+	);
+}
+
+function scheduleSpaceFsRefresh(input: {
+	eventPayload: SpaceFsChangedPayload;
+	dirs: Set<string>;
+	eventSpaceId: string;
+	sourceKey: string;
+	generation: number;
+}) {
+	const { eventPayload, eventSpaceId } = input;
+	if (eventPayload.resync || spaceStyleChanged(eventPayload.changes))
+		refreshSpaceStyle(eventSpaceId);
+	if (eventPayload.resync || spaceConfigChanged(eventPayload.changes))
+		refreshSpaceConfig(eventSpaceId);
+
 	for (const change of eventPayload.changes ?? []) {
 		const meta = {
 			size: change.size,
 			mtimeMs: change.mtimeMs,
 			removed: change.kind === "delete",
 		};
-		if (change.path) invalidateFilePreview(spaceId, change.path, meta);
-		// The old path of a rename is gone regardless of the event's kind.
+		if (change.path) invalidateFilePreview(eventSpaceId, change.path, meta);
 		if (change.oldPath)
-			invalidateFilePreview(spaceId, change.oldPath, { removed: true });
+			invalidateFilePreview(eventSpaceId, change.oldPath, { removed: true });
 	}
-	const { refreshDirs: dirsToRefresh } = await spaceFsRepo.applyFsChanged(
-		spaceId,
-		eventPayload as Parameters<typeof spaceFsRepo.applyFsChanged>[1],
-	);
-	for (const dir of dirsToRefresh) {
-		const snapshot = await spaceFsRepo.getDir(spaceId, dir);
-		if (!snapshot || !shouldPatchVisibleTree()) continue;
-		fileWorkspace.applyDirectoryEntries(dir, snapshot.entries);
-	}
-	if (!shouldPatchVisibleTree()) return;
-	if (eventPayload.resync) {
-		await Promise.all([loadFileTree(true), boardPreview.reconcileOpenBoards()]);
-		for (const tab of inlineFileTabs) {
-			if (!fileWorkspace.isInlineFileDirty(tab.path))
-				await fileWorkspace
-					.openInlineFile(tab.path, { activate: false, forceReload: true })
-					.catch(() => undefined);
-		}
+
+	const batch: SpaceFsRefreshBatch = {
+		eventSpaceId,
+		sourceKey: input.sourceKey,
+		generation: input.generation,
+		resync: Boolean(eventPayload.resync),
+		dirs: input.dirs,
+		boardManifestPaths: new Set(),
+		inlineFilePaths: new Set(),
+	};
+	if (!isCurrentSpaceFsRefresh(batch)) return;
+	if (batch.resync) {
+		spaceFsRefreshCoordinator.enqueue(batch);
 		return;
 	}
+
 	for (const change of eventPayload.changes ?? []) {
 		if (change.kind === "rename" && change.oldPath && change.path) {
 			boardPreview.renamePath(change.oldPath, change.path);
@@ -1344,9 +1398,8 @@ async function handleSpaceFsChanged(payload: ChannelEnvelope) {
 			(change.kind === "create" ||
 				change.kind === "modify" ||
 				change.kind === "rename")
-		) {
-			await boardPreview.refreshBoardManifest(change.path);
-		}
+		)
+			batch.boardManifestPaths.add(change.path);
 
 		const isOwnPendingChange = fileWorkspace.isOwnPendingFileSave(
 			change.path,
@@ -1356,38 +1409,72 @@ async function handleSpaceFsChanged(payload: ChannelEnvelope) {
 		);
 		for (const tab of inlineFileTabs) {
 			if (change.path !== tab.path && change.oldPath !== tab.path) continue;
-			if (isOwnPendingChange) {
-				// See open-file branch above: this is our own save echo, not an
-				// external modification.
-			} else if (change.kind === "delete")
-				fileWorkspace.closeInlineFileTab(tab.path);
+			if (isOwnPendingChange) continue;
+			if (change.kind === "delete") fileWorkspace.closeInlineFileTab(tab.path);
 			else if (!fileWorkspace.isInlineFileDirty(tab.path) && change.path)
-				await fileWorkspace
-					.openInlineFile(change.path, { activate: false, forceReload: true })
-					.catch(() => undefined);
+				batch.inlineFilePaths.add(change.path);
 			else fileWorkspace.markInlineFileExternalChange(tab.path);
 		}
 	}
-	if (dirsToRefresh.has("")) await loadFileTree(true);
-	if (!shouldPatchVisibleTree()) return;
-	for (const dir of dirsToRefresh) {
+	spaceFsRefreshCoordinator.enqueue(batch);
+}
+
+async function refreshVisibleFsDirs(batch: SpaceFsRefreshBatch) {
+	if (batch.dirs.has("")) await loadFileTree(true);
+	if (!isCurrentSpaceFsRefresh(batch)) return;
+	const refreshes: Promise<void>[] = [];
+	for (const dir of batch.dirs) {
 		if (!dir) continue;
 		const node = fileWorkspace.findFsNode(dir);
-		if (node?.isOpen) {
-			if (!shouldPatchVisibleTree()) return;
-			fileWorkspace.markDirectoryUnloaded(dir);
-			await expandDirectory({ ...node, isOpen: false, isLoaded: false });
-		}
+		if (!node?.isOpen) continue;
+		fileWorkspace.markDirectoryUnloaded(dir);
+		refreshes.push(
+			expandDirectory({ ...node, isOpen: false, isLoaded: false }),
+		);
 	}
+	await Promise.all(refreshes);
+}
+
+async function refreshSpaceFsBatch(batch: SpaceFsRefreshBatch) {
+	if (!isCurrentSpaceFsRefresh(batch)) return;
+	if (batch.resync) {
+		const inlineReloads = inlineFileTabs
+			.filter((tab) => !fileWorkspace.isInlineFileDirty(tab.path))
+			.map((tab) =>
+				fileWorkspace
+					.openInlineFile(tab.path, { activate: false, forceReload: true })
+					.catch(() => undefined),
+			);
+		await Promise.all([
+			loadFileTree(true),
+			boardPreview.reconcileOpenBoards(),
+			...inlineReloads,
+		]);
+		return;
+	}
+
+	const boardRefreshes = [...batch.boardManifestPaths].map((path) =>
+		boardPreview.refreshBoardManifest(path),
+	);
+	const inlineReloads = [...batch.inlineFilePaths]
+		.filter((path) => !fileWorkspace.isInlineFileDirty(path))
+		.map((path) =>
+			fileWorkspace
+				.openInlineFile(path, { activate: false, forceReload: true })
+				.catch(() => undefined),
+		);
+	await Promise.all([
+		refreshVisibleFsDirs(batch),
+		...boardRefreshes,
+		...inlineReloads,
+	]);
 }
 
 async function handleWsEvent(payload: ChannelEnvelope) {
 	try {
 		// Shell consumers only. Chat kernel is a single fan-out below so we never
 		// double-apply session/task semantics against the same host state.
-		if (payload.type === "space.fs.changed") {
-			await handleSpaceFsChanged(payload);
-		} else if (payload.type === "space.ports.changed") {
+		if (payload.type === "space.ports.changed") {
 			applyPortsChanged(payload);
 		} else if (payload.type === "work.version.published") {
 			const published = parseWorkVersionPublished(payload);
@@ -2205,6 +2292,10 @@ onMount(() => {
 	};
 });
 function resetSpaceScopedState(currentSpaceId: string) {
+	spaceFsEventGeneration += 1;
+	spaceFsEventTail = Promise.resolve();
+	spaceFsRefreshCoordinator.reset();
+	lastSandboxFsSeq = null;
 	if (danmakuCatchupTimer) clearTimeout(danmakuCatchupTimer);
 	danmakuCatchupTimer = null;
 	danmakuController.clear();
@@ -2357,6 +2448,10 @@ $effect(() => {
 	// Shared refcounted room: Sessions host (and any other panel) can join the
 	// same space without opening a second sdk.space(id).subscribe.
 	return subscribeSpaceChannel(currentSpaceId, (event) => {
+		if (event.type === "space.fs.changed") {
+			enqueueSpaceFsChanged(event);
+			return;
+		}
 		void handleWsEvent(event);
 	});
 });

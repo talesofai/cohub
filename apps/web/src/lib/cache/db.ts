@@ -18,7 +18,7 @@ import type {
 import type { SessionListPageInfo } from "$lib/cache/types";
 
 export const DB_NAME = "cohub-web-cache";
-export const DB_VERSION = 13;
+export const DB_VERSION = 14;
 
 export type SessionListForkRecord = Partial<SessionForkRecord> & {
 	childSessionId: string;
@@ -144,6 +144,14 @@ export type SpaceFsDirCacheRecord = {
 	watermark: string | null;
 };
 
+export type SpaceFsEpochCacheRecord = {
+	key: string;
+	userKey: string;
+	spaceId: string;
+	epoch: number;
+	updatedAt: number;
+};
+
 export type SpaceRecordCacheRecord = {
 	key: string;
 	userKey: string;
@@ -257,13 +265,14 @@ export type TaskRunDetailCacheRecord = {
 	lastAccessedAt: number;
 };
 
-type StoreName =
+export type StoreName =
 	| "session_lists"
 	| "session_list_indexes"
 	| "session_details"
 	| "session_turns"
 	| "session_generation_snapshots"
 	| "space_fs_dirs"
+	| "space_fs_epochs"
 	| "space_records"
 	| "label_trees"
 	| "label_items"
@@ -644,6 +653,10 @@ export async function openCacheDb(): Promise<IDBDatabase | null> {
 				},
 				{ name: "by_last_accessed", keyPath: "lastAccessedAt" },
 			]);
+			createStore(db, "space_fs_epochs", [
+				{ name: "by_user_space", keyPath: ["userKey", "spaceId"] },
+				{ name: "by_updated_at", keyPath: "updatedAt" },
+			]);
 			createStore(db, "label_trees", [
 				{ name: "by_user_space", keyPath: ["userKey", "spaceId"] },
 				{ name: "by_last_accessed", keyPath: "lastAccessedAt" },
@@ -824,6 +837,61 @@ async function withObjectStore<T>(
 						resetDbConnection(db);
 						return withObjectStore(storeName, mode, run, false);
 					}
+					throw error;
+				}
+			})(),
+			label,
+			idbOpTimeoutMs,
+		);
+		if (result !== null) noteIdbSuccess();
+		return result;
+	} catch (error) {
+		noteIdbFailure(error, label);
+		if (error instanceof CacheTimeoutError) {
+			console.warn(`[cache] ${label}`, error);
+			return null;
+		}
+		throw error;
+	}
+}
+
+export async function idbRunTransaction<T>(
+	storeNames: StoreName[],
+	mode: IDBTransactionMode,
+	run: (
+		getStore: (name: StoreName) => IDBObjectStore,
+		tx: IDBTransaction,
+	) => Promise<T> | T,
+	retry = true,
+): Promise<T | null> {
+	const label = `idb:${mode}:${storeNames.join(",")}`;
+	const db = await openCacheDb();
+	if (!db) return null;
+	try {
+		const result = await withTimeout(
+			(async () => {
+				let tx: IDBTransaction;
+				try {
+					tx = db.transaction(storeNames, mode);
+				} catch (error) {
+					if (retry && isClosingConnectionError(error)) {
+						resetDbConnection(db);
+						return idbRunTransaction(storeNames, mode, run, false);
+					}
+					throw error;
+				}
+				const completed = awaitTransaction(tx);
+				try {
+					const value = await run((name) => tx.objectStore(name), tx);
+					await completed;
+					return value;
+				} catch (error) {
+					try {
+						tx.abort();
+					} catch {
+						// Transaction may already be complete or aborted.
+					}
+					await completed.catch(() => undefined);
 					throw error;
 				}
 			})(),

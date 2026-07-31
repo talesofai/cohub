@@ -1,26 +1,28 @@
-import type { SpaceFsChange, SpaceFsChangedPayload } from "@cohub/protocol/fs";
+import type { SpaceFsChangedPayload } from "@cohub/protocol/fs";
 import type { SpaceFsEntry } from "@neta-art/cohub";
 import {
 	publishCacheMessage,
 	subscribeCacheMessages,
 } from "$lib/cache/broadcast";
 import {
-	idbDelete,
-	idbDeleteWhere,
 	idbGet,
-	idbPut,
+	idbRunTransaction,
 	type SpaceFsDirCacheRecord,
+	type SpaceFsEpochCacheRecord,
 } from "$lib/cache/db";
 import {
 	getCacheUserKey,
 	normalizeDirPath,
 	spaceFsDirKey,
+	spaceFsEpochKey,
 } from "$lib/cache/keys";
 import { MemoryLru } from "$lib/cache/memory-lru";
+import { getFsInvalidationTargets } from "$lib/cache/space-fs-invalidation";
 import type { CacheSource } from "$lib/cache/types";
 
 const SPACE_FS_TTL_MS = 60_000;
 const memory = new MemoryLru<string, SpaceFsDirCacheRecord>(300);
+const epochs = new Map<string, number>();
 const listeners = new Set<
 	(snapshot: SpaceFsDirSnapshot & { spaceId: string; dirPath: string }) => void
 >();
@@ -32,6 +34,11 @@ export type SpaceFsDirSnapshot = {
 	updatedAt: number;
 	stale: boolean;
 	source: CacheSource;
+};
+
+export type SpaceFsDirCommit = {
+	committed: boolean;
+	snapshot: SpaceFsDirSnapshot | null;
 };
 
 function sortEntries(entries: SpaceFsEntry[]) {
@@ -48,30 +55,6 @@ function normalizeEntries(entries: SpaceFsEntry[]) {
 	return sortEntries(Array.from(byPath.values()));
 }
 
-function basename(path: string) {
-	const normalized = normalizeDirPath(path);
-	return normalized.split("/").pop() ?? normalized;
-}
-
-function parentDir(path: string) {
-	const normalized = normalizeDirPath(path);
-	if (!normalized.includes("/")) return "";
-	return normalized.slice(0, normalized.lastIndexOf("/"));
-}
-
-function buildEntry(change: SpaceFsChange): SpaceFsEntry | null {
-	const path = normalizeDirPath(change.path ?? "");
-	if (!path) return null;
-	return {
-		name: basename(path),
-		path,
-		type: change.nodeType === "dir" ? "dir" : "file",
-		size: change.size ?? 0,
-		mimeType: null,
-		mtimeMs: change.mtimeMs ?? Date.now(),
-	};
-}
-
 function toSnapshot(
 	record: SpaceFsDirCacheRecord,
 	source: CacheSource,
@@ -85,33 +68,17 @@ function toSnapshot(
 	};
 }
 
-async function readRecord(spaceId: string, dirPath: string) {
-	const userKey = getCacheUserKey();
-	const normalizedDir = normalizeDirPath(dirPath);
-	const key = spaceFsDirKey(userKey, spaceId, normalizedDir);
-	const cached = memory.get(key);
-	if (cached) return { record: cached, source: "memory" as CacheSource };
-	const record = await idbGet<SpaceFsDirCacheRecord>("space_fs_dirs", key);
-	if (!record) return null;
-	const touched = { ...record, lastAccessedAt: Date.now() };
-	memory.set(key, touched);
-	void idbPut("space_fs_dirs", touched).catch(() => undefined);
-	return { record: touched, source: "indexeddb" as CacheSource };
-}
-
-async function writeRecord(
+function createRecord(
+	userKey: string,
 	spaceId: string,
 	dirPath: string,
 	entries: SpaceFsEntry[],
-	options?: { broadcast?: boolean; source?: CacheSource },
-) {
-	const userKey = getCacheUserKey();
+): SpaceFsDirCacheRecord {
 	const normalizedDir = normalizeDirPath(dirPath);
-	const key = spaceFsDirKey(userKey, spaceId, normalizedDir);
-	const now = Date.now();
 	const normalized = normalizeEntries(entries);
-	const record: SpaceFsDirCacheRecord = {
-		key,
+	const now = Date.now();
+	return {
+		key: spaceFsDirKey(userKey, spaceId, normalizedDir),
 		userKey,
 		spaceId,
 		dirPath: normalizedDir,
@@ -127,25 +94,86 @@ async function writeRecord(
 				)
 				?.toString() ?? null,
 	};
-	memory.set(key, record);
-	await idbPut("space_fs_dirs", record);
-	if (options?.broadcast !== false) {
-		publishCacheMessage({
-			type: "cache-updated",
-			store: "space_fs_dirs",
-			key,
-			userKey,
-			spaceId,
-			dirPath: normalizedDir,
-			updatedAt: now,
-		});
-	}
-	emit(
+}
+
+function requestValue<T>(request: IDBRequest<T>) {
+	return new Promise<T>((resolve, reject) => {
+		request.onsuccess = () => resolve(request.result);
+		request.onerror = () => reject(request.error);
+	});
+}
+
+function deleteMatchingRecords(
+	store: IDBObjectStore,
+	userKey: string,
+	spaceId: string,
+	dirs: Set<string>,
+	subtrees: Set<string>,
+) {
+	return new Promise<void>((resolve, reject) => {
+		const request = store
+			.index("by_user_space")
+			.openCursor(IDBKeyRange.only([userKey, spaceId]));
+		request.onsuccess = () => {
+			const cursor = request.result;
+			if (!cursor) {
+				resolve();
+				return;
+			}
+			const record = cursor.value as SpaceFsDirCacheRecord;
+			const inSubtree = Array.from(subtrees).some(
+				(prefix) =>
+					!prefix ||
+					record.dirPath === prefix ||
+					record.dirPath.startsWith(`${prefix}/`),
+			);
+			if (dirs.has(record.dirPath) || inSubtree) cursor.delete();
+			cursor.continue();
+		};
+		request.onerror = () => reject(request.error);
+	});
+}
+
+async function readRecord(spaceId: string, dirPath: string) {
+	const userKey = getCacheUserKey();
+	const normalizedDir = normalizeDirPath(dirPath);
+	const key = spaceFsDirKey(userKey, spaceId, normalizedDir);
+	const cached = memory.get(key);
+	if (cached) return { record: cached, source: "memory" as CacheSource };
+	const record = await idbGet<SpaceFsDirCacheRecord>("space_fs_dirs", key);
+	if (!record) return null;
+	const touched = { ...record, lastAccessedAt: Date.now() };
+	memory.set(key, touched);
+	return { record: touched, source: "indexeddb" as CacheSource };
+}
+
+async function readEpoch(spaceId: string) {
+	const userKey = getCacheUserKey();
+	const key = spaceFsEpochKey(userKey, spaceId);
+	const cached = epochs.get(key);
+	if (cached != null) return cached;
+	const record = await idbGet<SpaceFsEpochCacheRecord>("space_fs_epochs", key);
+	cacheEpoch(userKey, spaceId, record?.epoch ?? 0);
+	return epochs.get(key) ?? 0;
+}
+
+function cacheEpoch(userKey: string, spaceId: string, epoch: number) {
+	const key = spaceFsEpochKey(userKey, spaceId);
+	epochs.set(key, Math.max(epochs.get(key) ?? 0, epoch));
+}
+
+function publishInvalidation(userKey: string, spaceId: string, epoch: number) {
+	cacheEpoch(userKey, spaceId, epoch);
+	memory.clear();
+	publishCacheMessage({
+		type: "cache-scope-invalidated",
+		store: "space_fs_dirs",
+		userKey,
 		spaceId,
-		normalizedDir,
-		toSnapshot(record, options?.source ?? "indexeddb"),
-	);
-	return record;
+		prefix: "",
+		epoch,
+		updatedAt: Date.now(),
+	});
 }
 
 function emit(spaceId: string, dirPath: string, snapshot: SpaceFsDirSnapshot) {
@@ -159,12 +187,36 @@ function emit(spaceId: string, dirPath: string, snapshot: SpaceFsDirSnapshot) {
 	for (const listener of listeners) listener({ ...snapshot, spaceId, dirPath });
 }
 
+function publishRecord(
+	record: SpaceFsDirCacheRecord,
+	epoch: number,
+	source: CacheSource,
+) {
+	memory.set(record.key, record);
+	cacheEpoch(record.userKey, record.spaceId, epoch);
+	publishCacheMessage({
+		type: "cache-updated",
+		store: "space_fs_dirs",
+		key: record.key,
+		userKey: record.userKey,
+		spaceId: record.spaceId,
+		dirPath: record.dirPath,
+		epoch,
+		updatedAt: record.updatedAt,
+	});
+	const snapshot = toSnapshot(record, source);
+	emit(record.spaceId, record.dirPath, snapshot);
+	return snapshot;
+}
+
 function ensureBroadcastSubscription() {
 	if (subscribedToBroadcast) return;
 	subscribedToBroadcast = true;
 	subscribeCacheMessages((message) => {
 		if (message.store !== "space_fs_dirs" || !message.spaceId) return;
 		if (message.userKey !== getCacheUserKey()) return;
+		if (message.epoch != null)
+			cacheEpoch(message.userKey, message.spaceId, message.epoch);
 		if (message.key) memory.delete(message.key);
 		if (message.type === "cache-scope-invalidated") {
 			memory.clear();
@@ -192,6 +244,112 @@ function ensureBroadcastSubscription() {
 	});
 }
 
+async function invalidateRecords(
+	spaceId: string,
+	dirs: Set<string>,
+	subtrees: Set<string>,
+) {
+	if (dirs.size === 0 && subtrees.size === 0) return readEpoch(spaceId);
+	ensureBroadcastSubscription();
+	const userKey = getCacheUserKey();
+	const epochKey = spaceFsEpochKey(userKey, spaceId);
+	const fallbackEpoch = (epochs.get(epochKey) ?? 0) + 1;
+	const result = await idbRunTransaction(
+		["space_fs_dirs", "space_fs_epochs"],
+		"readwrite",
+		async (getStore) => {
+			const epochStore = getStore("space_fs_epochs");
+			const current = (await requestValue(epochStore.get(epochKey))) as
+				| SpaceFsEpochCacheRecord
+				| undefined;
+			const epoch = Math.max(current?.epoch ?? 0, fallbackEpoch - 1) + 1;
+			epochStore.put({
+				key: epochKey,
+				userKey,
+				spaceId,
+				epoch,
+				updatedAt: Date.now(),
+			} satisfies SpaceFsEpochCacheRecord);
+			await deleteMatchingRecords(
+				getStore("space_fs_dirs"),
+				userKey,
+				spaceId,
+				dirs,
+				subtrees,
+			);
+			return epoch;
+		},
+	);
+	const epoch = result ?? fallbackEpoch;
+	publishInvalidation(userKey, spaceId, epoch);
+	return epoch;
+}
+
+async function patchRecord(
+	spaceId: string,
+	dirPath: string,
+	updater: (entries: SpaceFsEntry[]) => SpaceFsEntry[],
+) {
+	ensureBroadcastSubscription();
+	const userKey = getCacheUserKey();
+	const normalizedDir = normalizeDirPath(dirPath);
+	const key = spaceFsDirKey(userKey, spaceId, normalizedDir);
+	const epochKey = spaceFsEpochKey(userKey, spaceId);
+	const fallbackEpoch = (epochs.get(epochKey) ?? 0) + 1;
+	const result = await idbRunTransaction(
+		["space_fs_dirs", "space_fs_epochs"],
+		"readwrite",
+		async (getStore) => {
+			const dirStore = getStore("space_fs_dirs");
+			const epochStore = getStore("space_fs_epochs");
+			const [currentRecord, currentEpoch] = await Promise.all([
+				requestValue(dirStore.get(key)) as Promise<
+					SpaceFsDirCacheRecord | undefined
+				>,
+				requestValue(epochStore.get(epochKey)) as Promise<
+					SpaceFsEpochCacheRecord | undefined
+				>,
+			]);
+			const epoch = Math.max(currentEpoch?.epoch ?? 0, fallbackEpoch - 1) + 1;
+			const record = currentRecord
+				? createRecord(
+						userKey,
+						spaceId,
+						normalizedDir,
+						updater(currentRecord.entries),
+					)
+				: null;
+			if (record) dirStore.put(record);
+			epochStore.put({
+				key: epochKey,
+				userKey,
+				spaceId,
+				epoch,
+				updatedAt: Date.now(),
+			} satisfies SpaceFsEpochCacheRecord);
+			return { epoch, record };
+		},
+	);
+	if (result) {
+		if (result.record)
+			return publishRecord(result.record, result.epoch, "indexeddb");
+		publishInvalidation(userKey, spaceId, result.epoch);
+		return null;
+	}
+	const current = memory.get(key);
+	if (!current) {
+		publishInvalidation(userKey, spaceId, fallbackEpoch);
+		return null;
+	}
+	const record = createRecord(
+		userKey,
+		spaceId,
+		normalizedDir,
+		updater(current.entries),
+	);
+	return publishRecord(record, fallbackEpoch, "indexeddb");
+}
+
 export const spaceFsRepo = {
 	async getDir(spaceId: string, dirPath: string) {
 		ensureBroadcastSubscription();
@@ -199,115 +357,91 @@ export const spaceFsRepo = {
 		return result ? toSnapshot(result.record, result.source) : null;
 	},
 
-	async setDir(spaceId: string, dirPath: string, entries: SpaceFsEntry[]) {
+	getEpoch(spaceId: string) {
 		ensureBroadcastSubscription();
-		const record = await writeRecord(spaceId, dirPath, entries, {
-			source: "network",
-		});
-		return toSnapshot(record, "network");
+		return readEpoch(spaceId);
 	},
 
-	async patchDir(
+	async setDirIfEpoch(
+		spaceId: string,
+		dirPath: string,
+		entries: SpaceFsEntry[],
+		expectedEpoch: number,
+	): Promise<SpaceFsDirCommit> {
+		ensureBroadcastSubscription();
+		const userKey = getCacheUserKey();
+		const normalizedDir = normalizeDirPath(dirPath);
+		const epochKey = spaceFsEpochKey(userKey, spaceId);
+		const record = createRecord(userKey, spaceId, normalizedDir, entries);
+		const result = await idbRunTransaction(
+			["space_fs_dirs", "space_fs_epochs"],
+			"readwrite",
+			async (getStore) => {
+				const epochStore = getStore("space_fs_epochs");
+				const epochRecord = (await requestValue(epochStore.get(epochKey))) as
+					| SpaceFsEpochCacheRecord
+					| undefined;
+				const persistedEpoch = epochRecord?.epoch ?? 0;
+				const epoch = Math.max(persistedEpoch, epochs.get(epochKey) ?? 0);
+				if (epoch !== expectedEpoch)
+					return { committed: false as const, epoch, record: null };
+				getStore("space_fs_dirs").put(record);
+				if (persistedEpoch !== epoch) {
+					epochStore.put({
+						key: epochKey,
+						userKey,
+						spaceId,
+						epoch,
+						updatedAt: Date.now(),
+					} satisfies SpaceFsEpochCacheRecord);
+				}
+				return { committed: true as const, epoch, record };
+			},
+		);
+		if (!result) {
+			const epoch = epochs.get(epochKey) ?? expectedEpoch;
+			if (epoch !== expectedEpoch) return { committed: false, snapshot: null };
+			return {
+				committed: true,
+				snapshot: publishRecord(record, epoch, "network"),
+			};
+		}
+		cacheEpoch(userKey, spaceId, result.epoch);
+		if (!result.committed) return { committed: false, snapshot: null };
+		return {
+			committed: true,
+			snapshot: publishRecord(result.record, result.epoch, "network"),
+		};
+	},
+
+	patchDir(
 		spaceId: string,
 		dirPath: string,
 		updater: (entries: SpaceFsEntry[]) => SpaceFsEntry[],
 	) {
-		ensureBroadcastSubscription();
-		const current = await readRecord(spaceId, dirPath);
-		const record = await writeRecord(
-			spaceId,
-			dirPath,
-			updater(current?.record.entries ?? []),
-			{ source: "indexeddb" },
-		);
-		return toSnapshot(record, "indexeddb");
+		return patchRecord(spaceId, dirPath, updater);
 	},
 
 	async clearDir(spaceId: string, dirPath: string) {
-		const userKey = getCacheUserKey();
-		const normalizedDir = normalizeDirPath(dirPath);
-		const key = spaceFsDirKey(userKey, spaceId, normalizedDir);
-		memory.delete(key);
-		await idbDelete("space_fs_dirs", key);
-		publishCacheMessage({
-			type: "cache-deleted",
-			store: "space_fs_dirs",
-			key,
-			userKey,
+		await invalidateRecords(
 			spaceId,
-			dirPath: normalizedDir,
-			updatedAt: Date.now(),
-		});
+			new Set([normalizeDirPath(dirPath)]),
+			new Set(),
+		);
 	},
 
 	async clearSubtree(spaceId: string, dirPath: string) {
-		const userKey = getCacheUserKey();
-		const normalizedDir = normalizeDirPath(dirPath);
-		await idbDeleteWhere<SpaceFsDirCacheRecord>("space_fs_dirs", (record) => {
-			if (record.userKey !== userKey || record.spaceId !== spaceId)
-				return false;
-			if (!normalizedDir) return true;
-			return (
-				record.dirPath === normalizedDir ||
-				record.dirPath.startsWith(`${normalizedDir}/`)
-			);
-		});
-		memory.clear();
-		publishCacheMessage({
-			type: "cache-scope-invalidated",
-			store: "space_fs_dirs",
-			userKey,
+		await invalidateRecords(
 			spaceId,
-			prefix: normalizedDir,
-			updatedAt: Date.now(),
-		});
+			new Set(),
+			new Set([normalizeDirPath(dirPath)]),
+		);
 	},
 
-	async applyFsChanged(spaceId: string, payload: SpaceFsChangedPayload) {
-		if (payload.resync) {
-			await this.clearSubtree(spaceId, "");
-			return { refreshDirs: new Set<string>([""]) };
-		}
-		const refreshDirs = new Set<string>();
-		for (const change of payload.changes) {
-			const path = normalizeDirPath(change.path ?? "");
-			const oldPath = normalizeDirPath(change.oldPath ?? "");
-			if (path) refreshDirs.add(parentDir(path));
-			if (oldPath) refreshDirs.add(parentDir(oldPath));
-			if (change.nodeType === "dir" && path)
-				await this.clearSubtree(spaceId, path);
-			if (change.nodeType === "dir" && oldPath)
-				await this.clearSubtree(spaceId, oldPath);
-			if (change.kind === "delete") {
-				const target = path;
-				if (target)
-					await this.patchDir(spaceId, parentDir(target), (entries) =>
-						entries.filter((entry) => entry.path !== target),
-					);
-				continue;
-			}
-			if (change.kind === "rename" && oldPath && path) {
-				await this.patchDir(spaceId, parentDir(oldPath), (entries) =>
-					entries.filter((entry) => entry.path !== oldPath),
-				);
-				const entry = buildEntry(change);
-				if (entry)
-					await this.patchDir(spaceId, parentDir(path), (entries) => [
-						...entries.filter((item) => item.path !== entry.path),
-						entry,
-					]);
-				continue;
-			}
-			if (change.kind === "create" || change.kind === "modify") {
-				const entry = buildEntry(change);
-				if (entry)
-					await this.patchDir(spaceId, parentDir(entry.path), (entries) => [
-						...entries.filter((item) => item.path !== entry.path),
-						entry,
-					]);
-			}
-		}
-		return { refreshDirs };
+	async invalidateFsChanged(spaceId: string, payload: SpaceFsChangedPayload) {
+		const targets = getFsInvalidationTargets(payload);
+		await invalidateRecords(spaceId, targets.dirs, targets.subtrees);
+		return { refreshDirs: targets.dirs };
 	},
 
 	subscribeDir(

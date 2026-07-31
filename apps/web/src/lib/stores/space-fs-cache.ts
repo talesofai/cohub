@@ -27,27 +27,14 @@ export async function getCachedSpaceFsDirMeta(
 	return { updatedAt: snapshot.updatedAt, isStale: snapshot.stale };
 }
 
-export async function setCachedSpaceFsDir(
-	spaceId: string,
-	dirPath: string,
-	entries: SpaceFsEntry[],
-): Promise<SpaceFsEntry[]> {
-	if (!(await resolveCacheUserKey())) return entries;
-	const snapshot = await spaceFsRepo.setDir(spaceId, dirPath, entries);
-	return snapshot.entries;
-}
-
 export async function patchCachedSpaceFsDir(
 	spaceId: string,
 	dirPath: string,
 	updater: (entries: SpaceFsEntry[]) => SpaceFsEntry[],
-): Promise<SpaceFsEntry[]> {
-	if (!(await resolveCacheUserKey())) {
-		const current = (await getCachedSpaceFsDir(spaceId, dirPath)) ?? [];
-		return updater(current);
-	}
+): Promise<SpaceFsEntry[] | null> {
+	if (!(await resolveCacheUserKey())) return null;
 	const snapshot = await spaceFsRepo.patchDir(spaceId, dirPath, updater);
-	return snapshot.entries;
+	return snapshot?.entries ?? null;
 }
 
 export async function clearCachedSpaceFsDir(spaceId: string, dirPath: string) {
@@ -103,8 +90,19 @@ export async function fetchSpaceFsDirWithCache(
 		const cached = await spaceFsRepo.getDir(spaceId, dirPath);
 		if (cached && !cached.stale) return cached.entries;
 	}
-	const entries = await fetcher();
-	if (!canCache) return entries;
-	const snapshot = await spaceFsRepo.setDir(spaceId, dirPath, entries);
-	return snapshot.entries;
+	if (!canCache) return fetcher();
+	for (let attempt = 0; attempt < 2; attempt += 1) {
+		const epoch = await spaceFsRepo.getEpoch(spaceId);
+		const entries = await fetcher();
+		const result = await spaceFsRepo.setDirIfEpoch(
+			spaceId,
+			dirPath,
+			entries,
+			epoch,
+		);
+		if (result.committed) return result.snapshot?.entries ?? entries;
+	}
+	// Sustained filesystem churn should not block the UI. Return one uncached,
+	// authoritative read and let the next invalidation refresh it again.
+	return fetcher();
 }
