@@ -355,7 +355,6 @@ export async function reconcileCronJobQueueDrift(limit = 100) {
 
   const cursor = await redisCommandClient.get(CRON_JOB_DRIFT_CURSOR_KEY);
   const conditions = [
-    eq(cronJobs.enabled, true),
     isNull(cronJobs.deletedAt),
     eq(cronJobs.queueSyncedVersion, cronJobs.scheduleVersion),
   ];
