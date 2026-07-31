@@ -78,7 +78,11 @@ export function registerCronJobs(program: Command): void {
         if (opts.timezone !== undefined) patch.timezone = opts.timezone;
         if (opts.payload !== undefined) patch.payload = readJsonObject(opts.payload);
         if (Object.keys(patch).length === 0) error("No changes provided", "Use --title, --cron, --timezone, or --payload");
-        const result = await client.cronJobs.update(id, patch);
+        const { job: current } = await client.cronJobs.get(id);
+        const result = await client.cronJobs.update(id, {
+          ...patch,
+          expectedUpdatedAt: current.updatedAt,
+        });
         if (jsonRequested(opts)) return outJson(result);
         ok(`Cron job updated: ${result.job.id}`);
       } catch (e: unknown) {
@@ -110,7 +114,8 @@ export function registerCronJobs(program: Command): void {
       const enabled = state === "on";
       const client = createClient();
       try {
-        await client.cronJobs.toggle(id, enabled);
+        const { job: current } = await client.cronJobs.get(id);
+        await client.cronJobs.toggle(id, enabled, current.updatedAt);
         ok(`Cron job ${enabled ? "enabled" : "disabled"}: ${id}`);
       } catch (e: unknown) {
         handleHttp(e);

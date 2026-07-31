@@ -1,4 +1,8 @@
-import type { CronJobRecord, TaskRunRecord } from "@neta-art/cohub";
+import {
+	type CronJobRecord,
+	HttpError,
+	type TaskRunRecord,
+} from "@neta-art/cohub";
 import { untrack } from "svelte";
 import { goto } from "$app/navigation";
 import {
@@ -295,7 +299,11 @@ export function createCronjobDetailController(options: {
 		if (!detail || actionInProgress) return;
 		actionInProgress = true;
 		try {
-			const { job } = await sdk.cronJobs.toggle(detail.id, enabled);
+			const { job } = await sdk.cronJobs.toggle(
+				detail.id,
+				enabled,
+				detail.updatedAt,
+			);
 			detail = job;
 			notify(job);
 			notifyCronjobsUpdated();
@@ -343,6 +351,7 @@ export function createCronjobDetailController(options: {
 	async function submitUpdate(event: SubmitEvent) {
 		event.preventDefault();
 		if (!detail || formSubmitting) return;
+		const cronjobId = detail.id;
 		const error = validateCronjobForm({
 			title: formTitle,
 			cronExpression: formExpression,
@@ -363,6 +372,7 @@ export function createCronjobDetailController(options: {
 				formClearSystemInstructions,
 			);
 			const { job } = await sdk.cronJobs.update(detail.id, {
+				expectedUpdatedAt: detail.updatedAt,
 				title: formTitle.trim(),
 				cronExpression: formExpression.trim(),
 				timezone: formTimezone.trim(),
@@ -374,6 +384,12 @@ export function createCronjobDetailController(options: {
 			syncFormFromDetail();
 			notifyCronjobsUpdated();
 		} catch (error) {
+			if (error instanceof HttpError && error.code === "cron_job_conflict") {
+				await loadDetail(cronjobId);
+				formError =
+					"This scheduled prompt changed elsewhere. The latest version has been reloaded.";
+				return;
+			}
 			formError = error instanceof Error ? error.message : "Failed to save";
 		} finally {
 			formSubmitting = false;

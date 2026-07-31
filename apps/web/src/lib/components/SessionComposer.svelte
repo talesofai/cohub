@@ -1182,10 +1182,11 @@ $effect(() => {
 					<textarea
 						id="turn-system-instructions"
 						bind:value={systemInstructions}
+						disabled={disabled || sending}
 						maxlength={MAX_PROMPT_SYSTEM_INSTRUCTIONS_LENGTH}
 						rows="2"
 						placeholder="Instructions for this turn"
-						class="block max-h-28 min-h-12 w-full resize-y bg-transparent text-[12px] leading-5 text-text-primary outline-none placeholder:text-text-placeholder"
+						class="block max-h-28 min-h-12 w-full resize-y bg-transparent text-[12px] leading-5 text-text-primary outline-none placeholder:text-text-placeholder disabled:cursor-not-allowed disabled:opacity-60"
 					></textarea>
 					{#if systemInstructions.length >= MAX_PROMPT_SYSTEM_INSTRUCTIONS_LENGTH - 1_000}
 						<div class="mt-1 text-right text-[10px] tabular-nums text-text-placeholder">

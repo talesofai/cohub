@@ -1105,6 +1105,7 @@ export type SendMessageCronJobPayload = CronJobPayload & {
 };
 
 export type CronJobUpdatePatch<TPayload extends CronJobPayload = CronJobPayload> = {
+  expectedUpdatedAt: string;
   title?: string;
   payload?: TPayload;
   cronExpression?: string;

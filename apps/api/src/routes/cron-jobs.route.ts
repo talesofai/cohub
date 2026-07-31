@@ -7,13 +7,19 @@ import { sanitizePostgresJsonValue } from "@cohub/core/content/sanitize";
 import { PromptSystemInstructionsValidationError } from "@cohub/core/sessions";
 import { getOptionalAuth, useAuth, requireValidId, authzDenied } from "../lib/middleware.js";
 import { hasPermission } from "../permissions.js";
-import { disableCronJob, enableCronJob, removeCronJob, updateCronJob } from "../tasks.js";
+import { removeCronJob, updateCronJob } from "../tasks.js";
 import { fallbackPublicUserProfile, getProfilesByUuids } from "../user-profiles.js";
 import {
   prepareScheduledPromptPayloadUpdate,
   sanitizeScheduledPromptForClient,
   sanitizeTaskRunPricingForViewer,
 } from "../task-run-privacy.js";
+import {
+  assertCronJobUpdateVersion,
+  CronJobUpdateConflictError,
+  CronJobUpdateVersionError,
+  parseCronJobExpectedUpdatedAt,
+} from "../cron-job-concurrency.js";
 
 const router = new Hono();
 const { CronExpressionParser } = cronParser;
@@ -248,6 +254,20 @@ router.patch("/:id", async (c) => {
   const body = await c.req.json<Record<string, unknown>>().catch(() => null);
   if (!body || typeof body !== "object" || Array.isArray(body)) return c.json({ message: "invalid json body" }, 400);
   if ("taskType" in body) return c.json({ message: "taskType cannot be changed" }, 400);
+  try {
+    assertCronJobUpdateVersion(
+      job.updatedAt,
+      parseCronJobExpectedUpdatedAt(body.expectedUpdatedAt),
+    );
+  } catch (error) {
+    if (error instanceof CronJobUpdateVersionError) {
+      return c.json({ message: error.message }, 400);
+    }
+    if (error instanceof CronJobUpdateConflictError) {
+      return c.json({ code: error.code, message: error.message }, 409);
+    }
+    throw error;
+  }
 
   const patch: {
     title?: string;
@@ -303,31 +323,16 @@ router.patch("/:id", async (c) => {
 
   if (Object.keys(patch).length === 0) return c.json({ message: "no changes provided" }, 400);
 
-  if (patch.enabled !== undefined && Object.keys(patch).length === 1) {
-    if (patch.enabled && !job.enabled) {
-      const enabledJob = await enableCronJob(cronJobId, job.bullJobKey, {
-        taskType: job.taskType,
-        payload: job.payload as Record<string, unknown>,
-        cronExpression: job.cronExpression,
-        timezone: job.timezone,
-        userUuid: job.userUuid,
-        spaceId: job.spaceId,
-        sessionId: job.sessionId,
-      });
-      const [hydrated] = await hydrateCronJobUserProfiles([enabledJob]);
-      return c.json({ ok: true, job: hydrated });
-    }
-    if (!patch.enabled && job.enabled) {
-      await disableCronJob(cronJobId, job.bullJobKey);
-    }
-    const [freshJob] = await db.select().from(cronJobs).where(eq(cronJobs.id, cronJobId)).limit(1);
-    const [hydrated] = await hydrateCronJobUserProfiles([freshJob ?? { ...job, enabled: patch.enabled }]);
+  try {
+    const updatedJob = await updateCronJob(job, patch);
+    const [hydrated] = await hydrateCronJobUserProfiles([updatedJob]);
     return c.json({ ok: true, job: hydrated });
+  } catch (error) {
+    if (error instanceof CronJobUpdateConflictError) {
+      return c.json({ code: error.code, message: error.message }, 409);
+    }
+    throw error;
   }
-
-  const updatedJob = await updateCronJob(job, patch);
-  const [hydrated] = await hydrateCronJobUserProfiles([updatedJob]);
-  return c.json({ ok: true, job: hydrated });
 });
 
 export default router;

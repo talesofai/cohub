@@ -18,6 +18,7 @@ import { CohubModelRegistry } from "./runtime/model-registry.js";
 import { loadRuntimeModelsConfigs } from "./runtime/models-loader.js";
 import { CompactionStateRecoveryError, maybeAutoCompact, OverflowRecoveryError, type CompactionOutcome } from "./runtime/compaction.js";
 import { clearCurrentSessionExecutionAuth, setCurrentSessionExecutionAuth } from "./runtime/session-execution-auth.js";
+import { activateTurnSystemInstructions } from "./runtime/turn-system-instructions.js";
 import { resolveSpaceFileVisibility } from "./runtime/cross-space-query-access.js";
 import { normalizeGenerationPolicy } from "@cohub/protocol/generation";
 import { runWithToolExecutionContext } from "./tool-context.js";
@@ -811,6 +812,18 @@ export async function processAgentTurnJob(job: Job<AgentTurnJobData>) {
     let terminalHandled = false;
     let caughtError: unknown = null;
     let drainAfterRelease: PostReleaseDrain = null;
+    let clearTurnSystemInstructions: (() => Promise<void>) | null = null;
+    const clearConfiguredTurnInstructions = async () => {
+      const clear = clearTurnSystemInstructions;
+      clearTurnSystemInstructions = null;
+      if (!clear) return;
+      await clear().catch((error) => {
+        logger.warn(
+          `[Agent] failed to clear turn instructions sessionId=${data.sessionId}:`,
+          error,
+        );
+      });
+    };
 
     try {
       const claim = await claimNextTurnBatch(data);
@@ -882,7 +895,10 @@ export async function processAgentTurnJob(job: Job<AgentTurnJobData>) {
       const activeHandle = handle;
       try {
         await configureHandleAccessMode(activeHandle, accessMode);
-        await activeHandle.session.configureSystemInstructions(resolvePromptSystemInstructions(ownerMeta));
+        clearTurnSystemInstructions = await activateTurnSystemInstructions(
+          activeHandle.session,
+          resolvePromptSystemInstructions(ownerMeta),
+        );
       } catch (error) {
         logger.error(`[Agent] failed to configure prompt runtime sessionId=${data.sessionId} turnId=${batch.ownerTurn.id} accessMode=${accessMode}:`, error);
         throw error;
@@ -1184,6 +1200,7 @@ export async function processAgentTurnJob(job: Job<AgentTurnJobData>) {
             removePendingUserMessage(handle, userMessageId);
           }
         }
+        await clearConfiguredTurnInstructions();
         if (caughtError instanceof CompactionStateRecoveryError) {
           sessionHandles.delete(handle.sessionKey);
           clearCurrentSessionExecutionAuth(handle.sessionId);
@@ -1194,6 +1211,7 @@ export async function processAgentTurnJob(job: Job<AgentTurnJobData>) {
           await settleSessionHandle(handle, terminalHandled ? "strict" : "best_effort");
         }
       }
+      await clearConfiguredTurnInstructions();
       if (claimedBatch) clearRetryState(data);
       await lock.release();
       if (drainAfterRelease) await drainNextQueuedTurn(drainAfterRelease);

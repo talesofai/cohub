@@ -9,7 +9,6 @@ import { Hono } from "hono";
 import { cors } from "hono/cors";
 import { httpInstrumentationMiddleware } from "@hono/otel";
 import { WebSocketServer, type RawData, type WebSocket } from "ws";
-import type { ContentBlock } from "@cohub/protocol/core";
 import type {
   RealtimeCompactFrame,
   RealtimeEnvelope,
@@ -46,6 +45,10 @@ import {
 import { markChannelDegraded, touchChannelOutbound } from "./channel-health.js";
 import { handleAsrWebSocketConnection } from "./asr/session.js";
 import { handleRelayControlConnection, handleRelayDataConnection, handleRelayPeerConnection } from "./relay/index.js";
+import {
+  buildWebsocketSessionPromptRequest,
+  normalizeWebsocketSessionPromptPayload,
+} from "./websocket-session-prompt.js";
 import {
   createPubSubRedisClient,
   redisCommandClient,
@@ -605,26 +608,8 @@ async function startSpaceOutputSubscriber() {
 }
 
 const submitWebsocketSessionMessage = async (ctx: WsConnectionContext, requestId: string | undefined, payload: Record<string, unknown>) => {
-  const spaceId = typeof payload.spaceId === "string" ? payload.spaceId.trim() : "";
-  const sessionId = typeof payload.sessionId === "string" ? payload.sessionId.trim() : "";
-  const clientMessageId = typeof payload.clientMessageId === "string" && payload.clientMessageId.trim()
-    ? payload.clientMessageId.trim()
-    : randomUUID();
-  const content = Array.isArray(payload.content)
-    ? payload.content as ContentBlock[]
-    : [];
-  const model = typeof payload.model === "string" && payload.model.trim()
-    ? payload.model.trim()
-    : null;
-  const provider = typeof payload.provider === "string" && payload.provider.trim()
-    ? payload.provider.trim()
-    : null;
-  const thinkingLevel = typeof payload.thinkingLevel === "string" && payload.thinkingLevel.trim()
-    ? payload.thinkingLevel.trim()
-    : null;
-  const systemInstructions = typeof payload.systemInstructions === "string" && payload.systemInstructions.trim()
-    ? payload.systemInstructions.trim()
-    : null;
+  const prompt = normalizeWebsocketSessionPromptPayload(payload);
+  const { spaceId, sessionId, clientMessageId, content, thinkingLevel } = prompt;
   // WS schema already validates enum; reject if non-empty but invalid
   if (thinkingLevel && !new Set(["off", "minimal", "low", "medium", "high", "xhigh", "max"]).has(thinkingLevel)) {
     throw new WsClientInputError("thinkingLevel must be one of: off, minimal, low, medium, high, xhigh, max");
@@ -635,24 +620,13 @@ const submitWebsocketSessionMessage = async (ctx: WsConnectionContext, requestId
   if (content.length === 0) throw new WsClientInputError("content is required");
 
   const effectiveRequestId = getOrCreateRequestId(requestId);
-  const result = await submitInternalSessionPrompt({
-    spaceId,
-    sessionId,
+  const result = await submitInternalSessionPrompt(buildWebsocketSessionPromptRequest({
+    prompt,
     userId: ctx.userId,
     authToken: ctx.token,
-    clientMessageId,
-    content,
-    source: "websocket",
-    model,
-    provider,
-    thinkingLevel,
-    systemInstructions,
-    context: {
-      kind: "websocket",
-      requestId: effectiveRequestId,
-      connectionId: ctx.connectionId,
-    },
-  });
+    requestId: effectiveRequestId,
+    connectionId: ctx.connectionId,
+  }));
 
   return { ...result, spaceId, sessionId, clientMessageId, requestId: effectiveRequestId };
 };
