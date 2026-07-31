@@ -224,7 +224,6 @@ router.delete("/:id", async (c) => {
       userUuid: cronJobs.userUuid,
       spaceId: cronJobs.spaceId,
       sessionId: cronJobs.sessionId,
-      bullJobKey: cronJobs.bullJobKey,
     })
     .from(cronJobs)
     .where(and(eq(cronJobs.id, cronJobId), isNull(cronJobs.deletedAt)))
@@ -232,8 +231,15 @@ router.delete("/:id", async (c) => {
   if (!job) return c.json({ message: "not found" }, 404);
   if (!(await authorizeCronJobManage(user, job))) return authzDenied(c);
 
-  await removeCronJob(cronJobId, job.bullJobKey);
-  return c.json({ ok: true });
+  try {
+    await removeCronJob(cronJobId);
+    return c.json({ ok: true });
+  } catch (error) {
+    if (error instanceof CronJobUpdateConflictError) {
+      return c.json({ code: error.code, message: error.message }, 409);
+    }
+    throw error;
+  }
 });
 
 router.patch("/:id", async (c) => {

@@ -14,6 +14,7 @@ import {
   CronJobUpdateConflictError,
   nextCronJobUpdateVersion,
 } from "./cron-job-concurrency.js";
+import { runCronJobQueueTransaction } from "./cron-job-queue-transaction.js";
 
 
 const logger = createLogger({ serviceName: "cohub-api" });
@@ -117,16 +118,6 @@ export const createCronJob = async (params: {
   }
 };
 
-export const removeCronJob = async (cronJobId: string, bullJobKey: string) => {
-  if (bullJobKey) {
-    await taskQueue.removeRepeatableByKey(bullJobKey);
-  }
-  await db
-    .update(cronJobs)
-    .set({ deletedAt: new Date(), updatedAt: new Date() })
-    .where(eq(cronJobs.id, cronJobId));
-};
-
 const cronJobUpdateCondition = (
   cronJobId: string,
   expectedUpdatedAt: Date | null,
@@ -201,6 +192,105 @@ const cronJobScheduleData = (job: CronJobRow): CronJobScheduleData => ({
 
 type CronJobRow = typeof cronJobs.$inferSelect;
 
+type CronJobQueueRollback = {
+  previous: CronJobRow;
+  replacementBullJobKey?: string;
+};
+
+const sameCronJobVersion = (left: Date | null, right: Date | null) =>
+  left?.getTime() === right?.getTime();
+
+async function compensateCronJobQueue(rollback: CronJobQueueRollback) {
+  await db.transaction(async (tx) => {
+    await tx.execute(
+      sql`select pg_advisory_xact_lock(hashtextextended(${rollback.previous.id}, 0))`,
+    );
+    const [current] = await tx
+      .select()
+      .from(cronJobs)
+      .where(eq(cronJobs.id, rollback.previous.id))
+      .limit(1);
+
+    const stillOwnsVersion = Boolean(
+      current &&
+        !current.deletedAt &&
+        sameCronJobVersion(current.updatedAt, rollback.previous.updatedAt),
+    );
+    if (!stillOwnsVersion) {
+      if (
+        rollback.replacementBullJobKey &&
+        rollback.replacementBullJobKey !== current?.bullJobKey
+      ) {
+        await taskQueue.removeRepeatableByKey(rollback.replacementBullJobKey);
+      }
+      return;
+    }
+    if (!current) return;
+
+    if (rollback.replacementBullJobKey) {
+      await taskQueue.removeRepeatableByKey(rollback.replacementBullJobKey);
+    }
+    if (!current.enabled) return;
+
+    const restoredBullJobKey = await scheduleCronJobRepeat(
+      current.id,
+      "",
+      cronJobScheduleData(current),
+    );
+    if (restoredBullJobKey === current.bullJobKey) return;
+
+    await tx
+      .update(cronJobs)
+      .set({
+        bullJobKey: restoredBullJobKey,
+        updatedAt: nextCronJobUpdateVersion(current.updatedAt),
+      })
+      .where(cronJobUpdateCondition(current.id, current.updatedAt));
+  });
+}
+
+const logCronJobCompensationFailure = (cronJobId: string) => (error: unknown) => {
+  logger.error("[CronJob] failed to reconcile queue after database rollback", {
+    cronJobId,
+    error,
+  });
+};
+
+export const removeCronJob = async (cronJobId: string) =>
+  runCronJobQueueTransaction(
+    (registerRollback) =>
+      db.transaction(async (tx) => {
+        await tx.execute(
+          sql`select pg_advisory_xact_lock(hashtextextended(${cronJobId}, 0))`,
+        );
+        const [current] = await tx
+          .select()
+          .from(cronJobs)
+          .where(and(eq(cronJobs.id, cronJobId), isNull(cronJobs.deletedAt)))
+          .limit(1);
+        if (!current) throw new CronJobUpdateConflictError();
+
+        registerRollback({ previous: current });
+        if (current.bullJobKey) {
+          await taskQueue.removeRepeatableByKey(current.bullJobKey);
+        }
+
+        const [deletedJob] = await tx
+          .update(cronJobs)
+          .set({
+            deletedAt: new Date(),
+            enabled: false,
+            updatedAt: nextCronJobUpdateVersion(current.updatedAt),
+          })
+          .where(cronJobUpdateCondition(current.id, current.updatedAt))
+          .returning();
+        if (!deletedJob) throw new CronJobUpdateConflictError();
+        return deletedJob;
+      }),
+    compensateCronJobQueue,
+    logCronJobCompensationFailure(cronJobId),
+  );
+
 type CronJobUpdatePatch = {
   title?: string;
   payload?: Record<string, unknown>;
@@ -212,161 +302,119 @@ type CronJobUpdatePatch = {
 export const updateCronJob = async (
   snapshot: CronJobRow,
   patch: CronJobUpdatePatch,
-) => db.transaction(async (tx) => {
-  await tx.execute(sql`select pg_advisory_xact_lock(hashtextextended(${snapshot.id}, 0))`);
-  const [current] = await tx
-    .select()
-    .from(cronJobs)
-    .where(and(eq(cronJobs.id, snapshot.id), isNull(cronJobs.deletedAt)))
-    .limit(1);
-  if (!current) throw new CronJobUpdateConflictError();
-  assertCronJobUpdateVersion(current.updatedAt, snapshot.updatedAt ?? new Date(0));
+) =>
+  runCronJobQueueTransaction(
+    (registerRollback) =>
+      db.transaction(async (tx) => {
+        await tx.execute(
+          sql`select pg_advisory_xact_lock(hashtextextended(${snapshot.id}, 0))`,
+        );
+        const [current] = await tx
+          .select()
+          .from(cronJobs)
+          .where(and(eq(cronJobs.id, snapshot.id), isNull(cronJobs.deletedAt)))
+          .limit(1);
+        if (!current) throw new CronJobUpdateConflictError();
+        assertCronJobUpdateVersion(
+          current.updatedAt,
+          snapshot.updatedAt ?? new Date(0),
+        );
 
-  const next = {
-    ...current,
-    ...patch,
-  };
-  const changesReschedule =
-    patch.payload !== undefined ||
-    patch.cronExpression !== undefined ||
-    patch.timezone !== undefined;
+        const next = { ...current, ...patch };
+        const changesReschedule =
+          patch.payload !== undefined ||
+          patch.cronExpression !== undefined ||
+          patch.timezone !== undefined;
+        const needsSchedule =
+          next.enabled &&
+          (changesReschedule || (patch.enabled === true && !current.enabled));
 
-  const needsSchedule = next.enabled && (
-    changesReschedule
-    || (patch.enabled === true && !current.enabled)
-  );
-
-  if (needsSchedule) {
-    const [updatedConfig] = await tx
-      .update(cronJobs)
-      .set({
-        ...(patch.title !== undefined ? { title: patch.title } : {}),
-        ...(patch.payload !== undefined ? { payload: patch.payload } : {}),
-        ...(patch.cronExpression !== undefined ? { cronExpression: patch.cronExpression } : {}),
-        ...(patch.timezone !== undefined ? { timezone: patch.timezone } : {}),
-        enabled: true,
-        updatedAt: nextCronJobUpdateVersion(current.updatedAt),
-      })
-      .where(cronJobUpdateCondition(current.id, current.updatedAt))
-      .returning();
-    if (!updatedConfig) throw new CronJobUpdateConflictError();
-
-    let nextBullJobKey: string | null = null;
-    try {
-      nextBullJobKey = await scheduleCronJobRepeat(
-        current.id,
-        current.bullJobKey,
-        cronJobScheduleData(updatedConfig),
-      );
-      const [updatedJob] = await tx
-        .update(cronJobs)
-        .set({
-          bullJobKey: nextBullJobKey,
-          enabled: true,
-          updatedAt: nextCronJobUpdateVersion(updatedConfig.updatedAt),
-        })
-        .where(cronJobUpdateCondition(current.id, updatedConfig.updatedAt))
-        .returning();
-      if (!updatedJob) throw new CronJobUpdateConflictError();
-      return updatedJob;
-    } catch (error) {
-      if (nextBullJobKey) {
-        await taskQueue.removeRepeatableByKey(nextBullJobKey).catch((cleanupError) => {
-          logger.warn("[CronJob] failed to remove partially scheduled repeat job", { cronJobId: current.id, error: cleanupError });
-        });
-      }
-      const [rolledBack] = await tx
-        .update(cronJobs)
-        .set({
-          title: current.title,
-          payload: current.payload,
-          cronExpression: current.cronExpression,
-          timezone: current.timezone,
-          bullJobKey: current.bullJobKey,
-          enabled: current.enabled,
-          updatedAt: nextCronJobUpdateVersion(updatedConfig.updatedAt),
-        })
-        .where(cronJobUpdateCondition(current.id, updatedConfig.updatedAt))
-        .returning();
-      if (!rolledBack) logger.warn("[CronJob] failed to roll back cron job after reschedule failure", { cronJobId: current.id });
-      if (rolledBack && current.enabled) {
-        try {
-          const restoredBullJobKey = await scheduleCronJobRepeat(current.id, "", cronJobScheduleData(current));
-          const [restoredJob] = await tx
+        if (needsSchedule) {
+          const [updatedConfig] = await tx
             .update(cronJobs)
             .set({
-              bullJobKey: restoredBullJobKey,
+              ...(patch.title !== undefined ? { title: patch.title } : {}),
+              ...(patch.payload !== undefined ? { payload: patch.payload } : {}),
+              ...(patch.cronExpression !== undefined
+                ? { cronExpression: patch.cronExpression }
+                : {}),
+              ...(patch.timezone !== undefined
+                ? { timezone: patch.timezone }
+                : {}),
               enabled: true,
-              updatedAt: nextCronJobUpdateVersion(rolledBack.updatedAt),
+              updatedAt: nextCronJobUpdateVersion(current.updatedAt),
             })
-            .where(cronJobUpdateCondition(current.id, rolledBack.updatedAt))
+            .where(cronJobUpdateCondition(current.id, current.updatedAt))
             .returning();
-          if (!restoredJob) {
-            await taskQueue.removeRepeatableByKey(restoredBullJobKey);
-          }
-        } catch (restoreError) {
-          logger.warn("[CronJob] failed to restore previous repeat job after reschedule failure", { cronJobId: current.id, error: restoreError });
+          if (!updatedConfig) throw new CronJobUpdateConflictError();
+
+          const rollback: CronJobQueueRollback = { previous: current };
+          registerRollback(rollback);
+          const nextBullJobKey = await scheduleCronJobRepeat(
+            current.id,
+            current.bullJobKey,
+            cronJobScheduleData(updatedConfig),
+          );
+          rollback.replacementBullJobKey = nextBullJobKey;
+
+          const [updatedJob] = await tx
+            .update(cronJobs)
+            .set({
+              bullJobKey: nextBullJobKey,
+              enabled: true,
+              updatedAt: nextCronJobUpdateVersion(updatedConfig.updatedAt),
+            })
+            .where(cronJobUpdateCondition(current.id, updatedConfig.updatedAt))
+            .returning();
+          if (!updatedJob) throw new CronJobUpdateConflictError();
+          return updatedJob;
         }
-      }
-      throw error;
-    }
-  }
 
-  if (patch.enabled === false && current.enabled) {
-    const [disabledJob] = await tx
-      .update(cronJobs)
-      .set({
-        ...(patch.title !== undefined ? { title: patch.title } : {}),
-        ...(patch.payload !== undefined ? { payload: patch.payload } : {}),
-        ...(patch.cronExpression !== undefined ? { cronExpression: patch.cronExpression } : {}),
-        ...(patch.timezone !== undefined ? { timezone: patch.timezone } : {}),
-        enabled: false,
-        updatedAt: nextCronJobUpdateVersion(current.updatedAt),
-      })
-      .where(cronJobUpdateCondition(current.id, current.updatedAt))
-      .returning();
-    if (!disabledJob) throw new CronJobUpdateConflictError();
+        if (patch.enabled === false && current.enabled) {
+          const [disabledJob] = await tx
+            .update(cronJobs)
+            .set({
+              ...(patch.title !== undefined ? { title: patch.title } : {}),
+              ...(patch.payload !== undefined ? { payload: patch.payload } : {}),
+              ...(patch.cronExpression !== undefined
+                ? { cronExpression: patch.cronExpression }
+                : {}),
+              ...(patch.timezone !== undefined
+                ? { timezone: patch.timezone }
+                : {}),
+              enabled: false,
+              updatedAt: nextCronJobUpdateVersion(current.updatedAt),
+            })
+            .where(cronJobUpdateCondition(current.id, current.updatedAt))
+            .returning();
+          if (!disabledJob) throw new CronJobUpdateConflictError();
 
-    try {
-      if (current.bullJobKey) {
-        await taskQueue.removeRepeatableByKey(current.bullJobKey);
-      }
-      return disabledJob;
-    } catch (error) {
-      await tx
-        .update(cronJobs)
-        .set({
-          title: current.title,
-          payload: current.payload,
-          cronExpression: current.cronExpression,
-          timezone: current.timezone,
-          bullJobKey: current.bullJobKey,
-          enabled: current.enabled,
-          updatedAt: nextCronJobUpdateVersion(disabledJob.updatedAt),
-        })
-        .where(cronJobUpdateCondition(current.id, disabledJob.updatedAt))
-        .catch((rollbackError) => {
-          logger.warn("[CronJob] failed to roll back cron job after disable failure", {
-            cronJobId: current.id,
-            error: rollbackError,
-          });
-        });
-      throw error;
-    }
-  }
+          registerRollback({ previous: current });
+          if (current.bullJobKey) {
+            await taskQueue.removeRepeatableByKey(current.bullJobKey);
+          }
+          return disabledJob;
+        }
 
-  const [updatedJob] = await tx
-    .update(cronJobs)
-    .set({
-      ...(patch.title !== undefined ? { title: patch.title } : {}),
-      ...(patch.payload !== undefined ? { payload: patch.payload } : {}),
-      ...(patch.cronExpression !== undefined ? { cronExpression: patch.cronExpression } : {}),
-      ...(patch.timezone !== undefined ? { timezone: patch.timezone } : {}),
-      ...(patch.enabled !== undefined ? { enabled: patch.enabled } : {}),
-      updatedAt: nextCronJobUpdateVersion(current.updatedAt),
-    })
-    .where(cronJobUpdateCondition(current.id, current.updatedAt))
-    .returning();
-  if (!updatedJob) throw new CronJobUpdateConflictError();
-  return updatedJob;
-});
+        const [updatedJob] = await tx
+          .update(cronJobs)
+          .set({
+            ...(patch.title !== undefined ? { title: patch.title } : {}),
+            ...(patch.payload !== undefined ? { payload: patch.payload } : {}),
+            ...(patch.cronExpression !== undefined
+              ? { cronExpression: patch.cronExpression }
+              : {}),
+            ...(patch.timezone !== undefined
+              ? { timezone: patch.timezone }
+              : {}),
+            ...(patch.enabled !== undefined ? { enabled: patch.enabled } : {}),
+            updatedAt: nextCronJobUpdateVersion(current.updatedAt),
+          })
+          .where(cronJobUpdateCondition(current.id, current.updatedAt))
+          .returning();
+        if (!updatedJob) throw new CronJobUpdateConflictError();
+        return updatedJob;
+      }),
+    compensateCronJobQueue,
+    logCronJobCompensationFailure(snapshot.id),
+  );
