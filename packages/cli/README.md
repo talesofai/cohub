@@ -121,6 +121,25 @@ cohub -s <spaceId> spaces sessions rename <sessionId> "<new title>"
 
 Use `spaces prompt --session <sessionId>` to send to a Chat.
 
+## Space turns
+
+List recent turns across all visible Sessions in a Space:
+
+```bash
+cohub -s <spaceId> spaces turns ls
+cohub -s <spaceId> spaces turns ls --author others --limit 50 --json
+cohub -s <spaceId> spaces turns ls --session <sessionId>
+```
+
+Use `pageInfo.nextCursor` with `--cursor` to load older pages. Use a previous
+`snapshotCursor` with `--after` and an explicit `--before` boundary to query
+newer turns:
+
+```bash
+cohub -s <spaceId> spaces turns ls --cursor <nextCursor> --json
+cohub -s <spaceId> spaces turns ls --after <snapshotCursor> --before <snapshotAt> --json
+```
+
 ## Boards
 
 Board commands use the selected Space and support `-h` at every level:

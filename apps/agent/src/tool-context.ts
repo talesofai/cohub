@@ -20,6 +20,7 @@ export type ToolExecutionContext = {
   turnSeq?: number;
   anchorUserMessageId?: string | null;
   llmRound?: number;
+  model?: { provider: string; id: string } | null;
   toolCallId?: string;
   actorUserId?: string | null;
   executionToken?: string | null;

@@ -75,6 +75,7 @@ import {
 import { delegatedPromptAuthFromWorkSession, promptAuthContextFromWorkSession } from "../../prompt-auth-context.js";
 import { buildSessionTurnResponse } from "../../session-turn-response.js";
 import { getSessionTurnById, hydrateTurnAuthorProfiles } from "../../session-turns.js";
+import { InvalidSpaceTurnListQueryError, listSpaceTurns } from "../../space-turns.js";
 import { dispatchTurnUpdated } from "../../session-output.js";
 import { enqueueAgentTurnJob } from "../../agent-turn-queue.js";
 import { requestAgentTurnAbort } from "../../agent-turn-abort.js";
@@ -2157,6 +2158,50 @@ router.post("/:id/sessions", async (c) => {
   });
 
   return c.json({ ok: true, session });
+});
+
+router.get("/:id/turns", async (c) => {
+  const user = getOptionalAuth(c);
+  const spaceId = c.req.param("id");
+  if (!requireValidId(spaceId)) return c.json({ message: "space not found" }, 404);
+  if (!(await hasPermission(user, "session.view", { spaceId }))) return authzDenied(c);
+
+  const sessionId = c.req.query("sessionId")?.trim() || null;
+  if (sessionId && !requireValidId(sessionId)) return c.json({ message: "invalid sessionId" }, 400);
+
+  const isMember = user?.uuid
+    ? (await getSpaceMemberRole(spaceId, user.uuid)) !== null
+    : false;
+  let accessibleSessionIds: string[] | null = null;
+  if (!isMember) {
+    const sessions = sessionId
+      ? [await getSpaceSessionById(sessionId)].filter(
+        (session): session is NonNullable<typeof session> => session?.spaceId === spaceId,
+      )
+      : await db.select().from(spaceSessions).where(eq(spaceSessions.spaceId, spaceId));
+    const visibleSessions = await filterSessionsByPermission(user, "session.view", spaceId, sessions);
+    accessibleSessionIds = visibleSessions.map((session) => session.id);
+  }
+
+  const rawLimit = c.req.query("limit");
+  try {
+    return c.json(await listSpaceTurns({
+      spaceId,
+      userUuid: user?.uuid ?? null,
+      author: (c.req.query("author") ?? "any") as "any" | "self" | "others",
+      after: c.req.query("after") ?? null,
+      before: c.req.query("before") ?? null,
+      cursor: c.req.query("cursor") ?? null,
+      limit: rawLimit === undefined ? undefined : Number(rawLimit),
+      sessionId,
+      accessibleSessionIds,
+    }));
+  } catch (error) {
+    if (error instanceof InvalidSpaceTurnListQueryError) {
+      return c.json({ message: error.message }, 400);
+    }
+    throw error;
+  }
 });
 
 router.get("/:id/sessions", async (c) => {

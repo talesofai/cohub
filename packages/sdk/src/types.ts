@@ -5,6 +5,9 @@ import type {
   SessionTurnIndexItem,
   SessionTurnRecord,
   SessionTurnSegmentRecord,
+  SpaceTurnAuthorFilter as ProtocolSpaceTurnAuthorFilter,
+  SpaceTurnListItem as ProtocolSpaceTurnListItem,
+  SpaceTurnsResponse as ProtocolSpaceTurnsResponse,
 } from "@cohub/protocol/model";
 import type {
   ModelStatusEntry,
@@ -68,6 +71,10 @@ export type {
   DiscordChannelConfig,
   FeishuChannelConfig,
 } from "@cohub/protocol/gateway/types";
+
+export type SpaceTurnAuthorFilter = ProtocolSpaceTurnAuthorFilter;
+export type SpaceTurnListItem = ProtocolSpaceTurnListItem;
+export type SpaceTurnsResponse = ProtocolSpaceTurnsResponse;
 
 export type ApiError = {
   message: string;

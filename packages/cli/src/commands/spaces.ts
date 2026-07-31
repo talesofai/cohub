@@ -10,6 +10,7 @@ import { createClient } from "../client.js";
 import { table, json as outJson, jsonRequested, ok, error, handleHttp } from "../output.js";
 import { resolveSpace } from "../space.js";
 import { registerSpaceCommerce } from "./space-commerce.js";
+import { registerSpaceTurns } from "./space-turns.js";
 
 type ModOptions = {
   json?: boolean;
@@ -662,6 +663,9 @@ export function registerSpaces(program: Command): void {
 
   // ── spaces sessions ──
   registerSessions(spacesCmd);
+
+  // ── spaces turns ──
+  registerSpaceTurns(spacesCmd);
 
   // ── spaces members ──
   registerMembers(spacesCmd);

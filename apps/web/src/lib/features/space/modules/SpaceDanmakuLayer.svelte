@@ -1,7 +1,7 @@
 <script lang="ts">
 import { onMount } from "svelte";
 import UserAvatar from "$lib/components/UserAvatar.svelte";
-import { buildSpaceSessionRoute } from "$lib/space-routes";
+import { buildSpaceSessionTurnRoute } from "$lib/space-routes";
 import type { SpaceDanmakuController } from "./space-danmaku-controller.svelte";
 
 type Props = {
@@ -12,6 +12,16 @@ type Props = {
 let { controller, spaceId, hidden = false }: Props = $props();
 
 const items = $derived(controller.items);
+
+function formatAge(value: string) {
+	const elapsedMs = Date.now() - new Date(value).getTime();
+	if (!Number.isFinite(elapsedMs) || elapsedMs < 60_000) return "now";
+	const minutes = Math.floor(elapsedMs / 60_000);
+	if (minutes < 60) return `${minutes}m`;
+	const hours = Math.floor(minutes / 60);
+	if (hours < 24) return `${hours}h`;
+	return `${Math.floor(hours / 24)}d`;
+}
 
 // Respect prefers-reduced-motion: render a calm fade-in-place instead of the
 // horizontal fly-through. Initialized synchronously to avoid a first-frame flash.
@@ -32,7 +42,7 @@ onMount(() => {
 </script>
 
 {#if !hidden && items.length > 0}
-	<div class="danmaku-layer" class:reduced={reducedMotion} aria-hidden="true">
+	<div class="danmaku-layer" class:reduced={reducedMotion}>
 		{#each items as item (item.id)}
 			<div
 				class="danmaku-item"
@@ -40,8 +50,9 @@ onMount(() => {
 			>
 				<a
 					class="danmaku-pill"
-					href={buildSpaceSessionRoute(spaceId, item.sessionId)}
-					title="Open in {item.authorName}'s chat"
+					href={buildSpaceSessionTurnRoute(spaceId, item.sessionId, item.sequence)}
+					title="Open this message in {item.authorName}'s chat"
+					aria-label="Open {item.authorName}'s message in its chat"
 				>
 					<UserAvatar
 						name={item.authorName}
@@ -52,6 +63,9 @@ onMount(() => {
 					<span class="danmaku-name">{item.authorName}</span>
 					<span class="danmaku-sep" aria-hidden="true">·</span>
 					<span class="danmaku-text">{item.text}</span>
+					{#if item.source === "catchup"}
+						<span class="danmaku-age">{formatAge(item.createdAt)}</span>
+					{/if}
 				</a>
 			</div>
 		{/each}
@@ -111,7 +125,8 @@ onMount(() => {
 			color-mix(in srgb, var(--brand) 12%, transparent);
 	}
 
-	.danmaku-item:hover {
+	.danmaku-item:hover,
+	.danmaku-item:focus-within {
 		animation-play-state: paused;
 	}
 
@@ -147,6 +162,13 @@ onMount(() => {
 		text-overflow: ellipsis;
 		white-space: nowrap;
 		min-width: 0;
+	}
+
+	.danmaku-age {
+		flex-shrink: 0;
+		font-size: 10px;
+		font-variant-numeric: tabular-nums;
+		color: var(--text-placeholder);
 	}
 
 	/* Reduced motion: no horizontal travel, just a gentle fade in place

@@ -13,8 +13,12 @@ export type DanmakuItem = {
 	id: string;
 	text: string;
 	sessionId: string;
+	sequence: number;
+	userUuid: string;
 	authorName: string;
 	avatarUrl: string | null;
+	createdAt: string;
+	source: "live" | "catchup";
 	lane: number;
 	durationMs: number;
 };
@@ -23,21 +27,27 @@ export type DanmakuPushInput = {
 	id: string;
 	text: string;
 	sessionId: string;
+	sequence: number;
 	userUuid: string;
 	authorName: string;
 	avatarUrl: string | null;
+	createdAt: string;
+	source: "live" | "catchup";
 };
 
 // ─── Tuning ──────────────────────────────────────────────────────────
-// Conservative defaults — the feature should hint at activity, never demand
-// attention.
-const DESKTOP_LANES = 5;
+// Keep the workspace lively without allowing bursts to become visual noise.
+const DESKTOP_LANES = 10;
 const MOBILE_LANES = 3;
-const DESKTOP_DURATION_MS = 9000;
+const DESKTOP_DURATION_MS = 7500;
 const MOBILE_DURATION_MS = 7000;
-const MAX_VISIBLE = 8; // hard cap of items on screen at once
+const DESKTOP_MAX_VISIBLE = 14;
+const MOBILE_MAX_VISIBLE = 5;
 const THROTTLE_MS = 1500; // min gap between shown items per user
 const LANE_GAP_MS = 250; // extra spacing before reusing a lane
+const DESKTOP_CATCHUP_GAP_MS = 450;
+const MOBILE_CATCHUP_GAP_MS = 850;
+const CATCHUP_RETRY_MS = 180;
 const TEXT_LIMIT = 120;
 const DEDUP_MAX = 256;
 const CHAR_PX = 9; // rough avg glyph width for lane timing estimation
@@ -114,6 +124,8 @@ export function createSpaceDanmakuController() {
 	const seenIds: string[] = [];
 	const seenSet = new Set<string>();
 	const timers = new Map<string, ReturnType<typeof setTimeout>>();
+	let catchupQueue: DanmakuPushInput[] = [];
+	let catchupTimer: ReturnType<typeof setTimeout> | null = null;
 
 	function dismiss(id: string) {
 		items = items.filter((it) => it.id !== id);
@@ -123,38 +135,39 @@ export function createSpaceDanmakuController() {
 	function clear() {
 		for (const timer of timers.values()) clearTimeout(timer);
 		timers.clear();
+		if (catchupTimer) clearTimeout(catchupTimer);
+		catchupTimer = null;
+		catchupQueue = [];
 		items = [];
 	}
 
-	function push(input: DanmakuPushInput) {
-		// 1. Dedup — never show the same turn twice (also guards WS recovery
-		//    replays).
-		if (seenSet.has(input.id)) return;
-		seenSet.add(input.id);
-		seenIds.push(input.id);
+	function reserveSeen(id: string) {
+		if (seenSet.has(id)) return false;
+		seenSet.add(id);
+		seenIds.push(id);
 		if (seenIds.length > DEDUP_MAX) {
 			const oldest = seenIds.shift();
 			if (oldest) seenSet.delete(oldest);
 		}
+		return true;
+	}
 
-		// 2. Per-user throttle — anchor to last *shown* time so a steady
-		//    discussion produces a calm trickle rather than a flood.
+	function tryShow(
+		input: DanmakuPushInput,
+		options: { throttle: boolean },
+	): "shown" | "busy" | "dropped" {
+		const text = truncate(input.text);
+		if (!text) return "dropped";
+
 		const now = Date.now();
 		const lastShown = lastShownPerUser.get(input.userUuid) ?? 0;
-		if (now - lastShown < THROTTLE_MS) return;
+		if (options.throttle && now - lastShown < THROTTLE_MS) return "dropped";
 
-		// 3. Capacity — drop new items once the screen is full (restraint).
-		if (items.length >= MAX_VISIBLE) return;
-
-		const text = truncate(input.text);
-		if (!text) return;
-
-		// 4. Lane assignment — pick the earliest-available lane; if every
-		//    lane is still occupied, drop the item rather than overlap.
 		const mobile = isMobileViewport();
+		const maxVisible = mobile ? MOBILE_MAX_VISIBLE : DESKTOP_MAX_VISIBLE;
+		if (items.length >= maxVisible) return "busy";
 		const laneCount = mobile ? MOBILE_LANES : DESKTOP_LANES;
 		const duration = mobile ? MOBILE_DURATION_MS : DESKTOP_DURATION_MS;
-
 		let bestLane = 0;
 		let bestTime = laneNextAvailable[0];
 		for (let i = 1; i < laneCount; i++) {
@@ -163,30 +176,59 @@ export function createSpaceDanmakuController() {
 				bestLane = i;
 			}
 		}
-		if (bestTime > now) return; // all lanes busy → drop for restraint
+		if (bestTime > now) return "busy";
 
-		// 5. Commit — reserve the lane for long enough that this item's tail
-		//    clears the right edge before the lane is reused.
 		const width = viewportWidth();
 		const itemWidth = estimateItemWidth(text);
-		const speed = (width + itemWidth) / duration; // px / ms
-		const enterTime = itemWidth / speed; // ms for tail to clear right edge
+		const speed = (width + itemWidth) / duration;
+		const enterTime = itemWidth / speed;
 		laneNextAvailable[bestLane] = now + enterTime + LANE_GAP_MS;
 		lastShownPerUser.set(input.userUuid, now);
 
-		const item: DanmakuItem = {
-			id: input.id,
-			text,
-			sessionId: input.sessionId,
-			authorName: input.authorName,
-			avatarUrl: input.avatarUrl,
-			lane: bestLane,
-			durationMs: duration,
-		};
-		items = [...items, item];
-
+		items = [
+			...items,
+			{
+				...input,
+				text,
+				lane: bestLane,
+				durationMs: duration,
+			},
+		];
 		const timer = setTimeout(() => dismiss(input.id), duration + 200);
 		timers.set(input.id, timer);
+		return "shown";
+	}
+
+	function push(input: DanmakuPushInput) {
+		if (!reserveSeen(input.id)) return false;
+		return tryShow(input, { throttle: true }) === "shown";
+	}
+
+	function scheduleCatchup(delayMs = 0) {
+		if (catchupTimer || catchupQueue.length === 0) return;
+		catchupTimer = setTimeout(() => {
+			catchupTimer = null;
+			const next = catchupQueue[0];
+			if (!next) return;
+			const result = tryShow(next, { throttle: false });
+			if (result !== "busy") catchupQueue = catchupQueue.slice(1);
+			const gapMs = isMobileViewport()
+				? MOBILE_CATCHUP_GAP_MS
+				: DESKTOP_CATCHUP_GAP_MS;
+			scheduleCatchup(result === "shown" ? gapMs : CATCHUP_RETRY_MS);
+		}, delayMs);
+	}
+
+	function enqueueCatchup(inputs: DanmakuPushInput[]) {
+		const acceptedIds: string[] = [];
+		for (const input of inputs) {
+			if (input.source !== "catchup" || !truncate(input.text)) continue;
+			if (!reserveSeen(input.id)) continue;
+			catchupQueue.push(input);
+			acceptedIds.push(input.id);
+		}
+		scheduleCatchup();
+		return acceptedIds;
 	}
 
 	function dispose() {
@@ -202,6 +244,7 @@ export function createSpaceDanmakuController() {
 			return items;
 		},
 		push,
+		enqueueCatchup,
 		clear,
 		dispose,
 	};

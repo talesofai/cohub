@@ -73,6 +73,8 @@ import type {
   SpaceRecord,
   SpaceRole,
   SpaceSessionsResponse,
+  SpaceTurnAuthorFilter,
+  SpaceTurnsResponse,
   CreateSpaceSessionInput,
   CreateSpaceInput,
   SpaceConfigInput,
@@ -773,6 +775,37 @@ export class SessionClient {
 
   on(type: SessionEventName, handler: (event: WebsocketEventPayload) => void) {
     return this.realtime.on(type, handler);
+  }
+}
+
+export type SpaceTurnListOptions = {
+  author?: SpaceTurnAuthorFilter;
+  after?: string | null;
+  before?: string | null;
+  cursor?: string | null;
+  limit?: number;
+  sessionId?: string | null;
+};
+
+export class SpaceTurnsApi {
+  constructor(
+    private readonly transport: HttpTransport,
+    private readonly spaceId: string,
+  ) {}
+
+  list(options: SpaceTurnListOptions = {}, customFetch?: Fetch) {
+    const params = new URLSearchParams();
+    if (options.author) params.set("author", options.author);
+    if (options.after) params.set("after", options.after);
+    if (options.before) params.set("before", options.before);
+    if (options.cursor) params.set("cursor", options.cursor);
+    if (options.limit !== undefined) params.set("limit", String(options.limit));
+    if (options.sessionId) params.set("sessionId", options.sessionId);
+    const query = params.toString();
+    return this.transport.request<SpaceTurnsResponse>(
+      `/api/spaces/${this.spaceId}/turns${query ? `?${query}` : ""}`,
+      { fetch: customFetch },
+    );
   }
 }
 
@@ -1850,6 +1883,7 @@ function createSpaceCheckpointsApi(transport: HttpTransport, spaceId: string): S
 export class SpaceClient {
   readonly files: SpaceFilesApi;
   readonly sessions: SpaceSessionsApi;
+  readonly turns: SpaceTurnsApi;
   readonly members: SpaceMembersApi;
   readonly presence: SpacePresenceApi;
   readonly access: SpaceAccessApi;
@@ -1871,6 +1905,7 @@ export class SpaceClient {
   ) {
     this.files = new SpaceFilesApi(transport, id);
     this.sessions = new SpaceSessionsApi(transport, id, websocketClient);
+    this.turns = new SpaceTurnsApi(transport, id);
     this.members = new SpaceMembersApi(transport, id);
     this.presence = new SpacePresenceApi(transport, id);
     this.access = new SpaceAccessApi(transport, id);

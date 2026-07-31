@@ -171,6 +171,26 @@ export type SessionTurnIndexItem = {
   errorMessage: string | null;
 };
 
+export type SpaceTurnAuthorFilter = "any" | "self" | "others";
+
+export type SpaceTurnListItem = SessionTurnIndexItem & {
+  session: {
+    id: string;
+    title: string | null;
+    source: string | null;
+  };
+};
+
+export type SpaceTurnsResponse = {
+  turns: SpaceTurnListItem[];
+  snapshotAt: string;
+  snapshotCursor: string;
+  pageInfo: {
+    hasMore: boolean;
+    nextCursor: string | null;
+  };
+};
+
 export type SessionTurnRecord = {
   id: string;
   sessionId: string;

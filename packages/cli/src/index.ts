@@ -52,6 +52,7 @@ Common commands:
   cohub sandbox up ./my-project
   cohub search "release notes"
   cohub -s <space-id> boards inspect <board-id>
+  cohub -s <space-id> spaces turns ls --author others
   cohub -s <space-id> spaces sessions turns ls <session-id>
   cohub -s <space-id> spaces files ls
   cohub -s <space-id> works publish demo --file dist/index.html

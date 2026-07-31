@@ -214,7 +214,7 @@ export async function hydrateTurnAuthorProfiles(turns: SessionTurnRecord[]) {
   });
 }
 
-type SessionTurnIndexRow = {
+export type SessionTurnIndexRow = {
   id: string;
   sessionId: string;
   sequence: number;
@@ -235,7 +235,7 @@ type SessionTurnIndexRow = {
   errorMessage: string | null;
 };
 
-const toTurnIndexItem = (row: SessionTurnIndexRow): SessionTurnIndexItem => ({
+export const toTurnIndexItem = (row: SessionTurnIndexRow): SessionTurnIndexItem => ({
   id: row.id,
   sessionId: row.sessionId,
   sequence: row.sequence,
@@ -256,7 +256,7 @@ const toTurnIndexItem = (row: SessionTurnIndexRow): SessionTurnIndexItem => ({
   errorMessage: previewText(row.errorMessage, 220),
 });
 
-const hydrateTurnIndexAuthorProfiles = async (turns: SessionTurnIndexItem[]) => {
+export const hydrateTurnIndexAuthorProfiles = async (turns: SessionTurnIndexItem[]) => {
   const userUuids = turns
     .map((turn) => turn.userUuid)
     .filter((value): value is string => Boolean(value));

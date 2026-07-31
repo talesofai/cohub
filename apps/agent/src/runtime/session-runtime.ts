@@ -543,6 +543,7 @@ function createStreamFn(getRuntime: () => { modelRegistry: CohubModelRegistry; u
     const round = (toolCtx?.llmRound ?? 0) + 1;
     if (toolCtx) {
       toolCtx.llmRound = round;
+      toolCtx.model = { provider: model.provider, id: model.id };
     }
     const metrics = toolCtx?.metrics;
     if (metrics) {

@@ -486,6 +486,10 @@ function createRemoteBashOperations(): BashOperations {
                 ...(env ?? {}),
                 ...(ctx?.env ?? {}),
                 ...(ctx?.generationPolicy ? { [GENERATION_POLICY_ENV_KEY]: encodeGenerationPolicy(ctx.generationPolicy) } : {}),
+                ...(ctx?.model ? {
+                  COHUB_MODEL_PROVIDER: ctx.model.provider,
+                  COHUB_MODEL_ID: ctx.model.id,
+                } : {}),
                 ...(ctx?.spaceId ? { COHUB_SPACE_ID: ctx.spaceId } : {}),
                 ...(ctx?.sessionId ? { COHUB_SESSION_ID: ctx.sessionId } : {}),
                 ...(ctx?.turnId ? { COHUB_TURN_ID: ctx.turnId } : {}),

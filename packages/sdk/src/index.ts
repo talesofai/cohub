@@ -125,6 +125,7 @@ export type {
   SessionSubscriptionHandlers,
   SpaceChannelBindingRecord,
   SpaceEventName,
+  SpaceTurnListOptions,
   WebSocketConnectionState,
 } from "./apis/spaces.js";
 export { BoardClient, BoardTransactionError } from "./apis/spaces.js";

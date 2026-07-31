@@ -138,6 +138,10 @@ import {
 	withBootstrapCacheTimeout,
 } from "./modules/space-bootstrap-controller.svelte";
 import {
+	rememberSpaceDanmakuTurn,
+	runSpaceDanmakuCatchup,
+} from "./modules/space-danmaku-catchup";
+import {
 	createSpaceDanmakuController,
 	extractDanmakuText,
 } from "./modules/space-danmaku-controller.svelte";
@@ -784,6 +788,51 @@ $effect(() => {
 let appliedFsSourceKey: string | null = null;
 const spacePresence = createSpacePresenceController(() => spaceId);
 const danmakuController = createSpaceDanmakuController();
+let danmakuCatchupTimer: ReturnType<typeof setTimeout> | null = null;
+let danmakuCatchupInFlight: Promise<unknown> | null = null;
+
+function danmakuUserKey() {
+	return authStore.userUuid ?? "anonymous";
+}
+
+function canRunDanmakuCatchup() {
+	return (
+		pageMounted &&
+		typeof document !== "undefined" &&
+		document.visibilityState === "visible" &&
+		document.hasFocus() &&
+		isDanmakuEnabled() &&
+		!previewImmersiveMode
+	);
+}
+
+function scheduleDanmakuCatchup(delayMs = 450) {
+	if (!canRunDanmakuCatchup() || danmakuCatchupTimer) return;
+	const scheduledSpaceId = spaceId;
+	danmakuCatchupTimer = setTimeout(() => {
+		danmakuCatchupTimer = null;
+		if (!canRunDanmakuCatchup() || spaceId !== scheduledSpaceId) return;
+		if (danmakuCatchupInFlight) return;
+		const run = runSpaceDanmakuCatchup({
+			spaceId: scheduledSpaceId,
+			userKey: danmakuUserKey(),
+			activeSessionId,
+			fetchLimit: 100,
+			playLimit: isMobile ? 40 : 100,
+			fetchTurns: (options) => sdk.space(scheduledSpaceId).turns.list(options),
+			enqueue: (items) =>
+				spaceId === scheduledSpaceId && canRunDanmakuCatchup()
+					? danmakuController.enqueueCatchup(items)
+					: [],
+		}).catch((error) => {
+			console.warn("[space] Failed to load message catch-up:", error);
+		});
+		danmakuCatchupInFlight = run.finally(() => {
+			danmakuCatchupInFlight = null;
+		});
+	}, delayMs);
+}
+
 const spaceRealtime = createSpaceRealtimeController({
 	onTransportOpen: () => sessionChat.onTransportOpen(),
 	onConnectionOpened: () => {
@@ -794,6 +843,7 @@ const spaceRealtime = createSpaceRealtimeController({
 		void sessionChat.onConnectionRecovered();
 		previewWorksLoadedFor = null;
 		dispatchWorksChanged({ spaceId });
+		scheduleDanmakuCatchup();
 	},
 	onHidden: () => {
 		sessionChat.onVisibilityChanged(false);
@@ -801,6 +851,7 @@ const spaceRealtime = createSpaceRealtimeController({
 	onVisible: () => {
 		// Host owns list + active-session tail refresh (single path).
 		sessionChat.onVisibilityChanged(true);
+		scheduleDanmakuCatchup();
 	},
 	onOnline: () => {
 		fileWorkspace.retryFailedInlineFiles();
@@ -1388,7 +1439,9 @@ async function handleWsEvent(payload: ChannelEnvelope) {
 			const turn = payload.payload.turn as
 				| {
 						id?: unknown;
+						sequence?: unknown;
 						userUuid?: unknown;
+						createdAt?: unknown;
 						authorProfile?: {
 							displayName?: unknown;
 							avatarUrl?: unknown;
@@ -1400,7 +1453,7 @@ async function handleWsEvent(payload: ChannelEnvelope) {
 			if (
 				senderUuid &&
 				senderUuid !== authStore.userUuid &&
-				isDanmakuEnabled()
+				canRunDanmakuCatchup()
 			) {
 				const text = extractDanmakuText(turn);
 				if (text) {
@@ -1411,14 +1464,26 @@ async function handleWsEvent(payload: ChannelEnvelope) {
 							: "") || fallbackUserName(senderUuid);
 					const avatarUrl =
 						ap && typeof ap.avatarUrl === "string" ? ap.avatarUrl : null;
-					danmakuController.push({
-						id: typeof turn?.id === "string" ? turn.id : payload.id,
-						text,
-						sessionId: targetSessionId,
-						userUuid: senderUuid,
-						authorName,
-						avatarUrl,
-					});
+					const turnId = typeof turn?.id === "string" ? turn.id : payload.id;
+					const sequence =
+						typeof turn?.sequence === "number" ? turn.sequence : null;
+					if (sequence !== null) {
+						danmakuController.push({
+							id: turnId,
+							text,
+							sessionId: targetSessionId,
+							sequence,
+							userUuid: senderUuid,
+							authorName,
+							avatarUrl,
+							createdAt:
+								typeof turn?.createdAt === "string"
+									? turn.createdAt
+									: new Date(payload.timestamp).toISOString(),
+							source: "live",
+						});
+						rememberSpaceDanmakuTurn(danmakuUserKey(), spaceId, turnId);
+					}
 				}
 			}
 		}
@@ -2043,7 +2108,11 @@ onMount(() => {
 		},
 	);
 	const offDanmakuPrefs = subscribeDanmakuPrefs((enabled) => {
-		if (!enabled) danmakuController.clear();
+		if (!enabled) {
+			danmakuController.clear();
+			return;
+		}
+		scheduleDanmakuCatchup();
 	});
 	// Preload model catalogs so the selector is ready immediately
 	void sessionChat.loadModelsCatalog();
@@ -2071,8 +2140,13 @@ onMount(() => {
 		void fileWorkspace.flushInlineFiles();
 	};
 	const handleVisibilityChange = () => {
-		if (document.visibilityState === "hidden") flushInlineFiles();
+		if (document.visibilityState === "hidden") {
+			flushInlineFiles();
+			return;
+		}
+		scheduleDanmakuCatchup();
 	};
+	const handleWindowFocus = () => scheduleDanmakuCatchup();
 	window.addEventListener("resize", handlePreviewWindowResize);
 	// Re-expand preview when the workspace body width changes (e.g. sidebar
 	// collapse transition settling) so Focus mode reaches its true max width.
@@ -2084,9 +2158,11 @@ onMount(() => {
 	window.addEventListener("keydown", handleFileKeyboardSave);
 	window.addEventListener("keydown", handleResourceActionMenuKeydown);
 	window.addEventListener("blur", flushInlineFiles);
+	window.addEventListener("focus", handleWindowFocus);
 	document.addEventListener("visibilitychange", handleVisibilityChange);
 	document.addEventListener("click", handleResourceActionMenuClickOutside);
 	scheduleStatusRefresh();
+	scheduleDanmakuCatchup();
 	return () => {
 		if (activeSessionId)
 			sessionChat.captureCurrentScrollAnchor(activeSessionId);
@@ -2116,8 +2192,11 @@ onMount(() => {
 		window.removeEventListener("keydown", handleFileKeyboardSave);
 		window.removeEventListener("keydown", handleResourceActionMenuKeydown);
 		window.removeEventListener("blur", flushInlineFiles);
+		window.removeEventListener("focus", handleWindowFocus);
 		document.removeEventListener("visibilitychange", handleVisibilityChange);
 		document.removeEventListener("click", handleResourceActionMenuClickOutside);
+		if (danmakuCatchupTimer) clearTimeout(danmakuCatchupTimer);
+		danmakuCatchupTimer = null;
 		rightSidebarResizeCleanup?.();
 		immersiveChatResizeCleanup?.();
 		previewLayout.dispose();
@@ -2126,6 +2205,9 @@ onMount(() => {
 	};
 });
 function resetSpaceScopedState(currentSpaceId: string) {
+	if (danmakuCatchupTimer) clearTimeout(danmakuCatchupTimer);
+	danmakuCatchupTimer = null;
+	danmakuController.clear();
 	activateSpaceStyle(currentSpaceId);
 	// Chat-scoped state (sessions/turns/tasks/scroll/generation/share) lives on host.
 	sessionChat.enterSpace(currentSpaceId);
@@ -2207,7 +2289,19 @@ $effect(() => {
 // Immersive preview takes over the viewport — clear any in-flight danmaku so
 // they never overlay a full-screen preview.
 $effect(() => {
-	if (previewImmersiveMode) danmakuController.clear();
+	if (previewImmersiveMode) {
+		danmakuController.clear();
+		return;
+	}
+	if (pageMounted) untrack(() => scheduleDanmakuCatchup());
+});
+$effect(() => {
+	const currentSpaceId = spaceId;
+	const currentUserKey = danmakuUserKey();
+	if (!pageMounted) return;
+	void currentSpaceId;
+	void currentUserKey;
+	untrack(() => scheduleDanmakuCatchup());
 });
 $effect(() => {
 	if (
