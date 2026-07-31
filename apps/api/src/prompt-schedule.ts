@@ -14,6 +14,14 @@ export type ValidatedPromptSchedule =
   | { mode: "at"; scheduledAt: Date }
   | { mode: "repeat"; cronExpression: string; timezone: string; nextRun: Date };
 
+const isRecord = (value: unknown): value is Record<string, unknown> =>
+  typeof value === "object" && value !== null && !Array.isArray(value);
+
+const assertOnlyKeys = (value: Record<string, unknown>, allowedKeys: readonly string[]) => {
+  const unexpectedKey = Object.keys(value).find((key) => !allowedKeys.includes(key));
+  if (unexpectedKey) throw new Error(`schedule.${unexpectedKey} is not allowed`);
+};
+
 const hasExplicitTimezone = (value: string) => /(?:Z|[+-]\d{2}:\d{2})$/i.test(value.trim());
 
 const validateTimezone = (timezone: string) => {
@@ -57,22 +65,36 @@ const validateRepeatSchedule = (input: { cronExpression: string; timezone: strin
 };
 
 export function validatePromptSchedule(
-  value: SpacePromptSchedule | null | undefined,
+  value: unknown,
   now = Date.now(),
 ): ValidatedPromptSchedule {
-  const schedule = value ?? { mode: "immediate" as const };
-  if (schedule.mode === undefined || schedule.mode === "immediate") {
+  if (value === null || value === undefined) return { mode: "immediate" };
+  if (!isRecord(value)) throw new Error("schedule must be an object");
+
+  const schedule = value;
+  if (schedule.mode === undefined) {
+    assertOnlyKeys(schedule, []);
+    return { mode: "immediate" };
+  }
+  if (schedule.mode === "immediate") {
+    assertOnlyKeys(schedule, ["mode"]);
     return { mode: "immediate" };
   }
   if (schedule.mode === "delay") {
-    const delayMs = Number(schedule.delayMs);
-    if (!Number.isSafeInteger(delayMs) || delayMs <= 0) {
+    assertOnlyKeys(schedule, ["mode", "delayMs"]);
+    const delayMs = schedule.delayMs;
+    if (typeof delayMs !== "number" || !Number.isSafeInteger(delayMs) || delayMs <= 0) {
       throw new Error("delayMs must be a positive integer, e.g. 600000");
     }
-    return { mode: "delay", delayMs, scheduledAt: new Date(now + delayMs) };
+    const scheduledAt = new Date(now + delayMs);
+    if (Number.isNaN(scheduledAt.getTime())) {
+      throw new Error("delayMs is too large to schedule");
+    }
+    return { mode: "delay", delayMs, scheduledAt };
   }
   if (schedule.mode === "at") {
-    if (!schedule.sendAt?.trim()) {
+    assertOnlyKeys(schedule, ["mode", "sendAt"]);
+    if (typeof schedule.sendAt !== "string" || !schedule.sendAt.trim()) {
       throw new Error("sendAt is required, e.g. 2026-05-09T10:00:00+08:00");
     }
     return { mode: "at", scheduledAt: parseScheduledAt(schedule.sendAt, now) };
@@ -81,11 +103,17 @@ export function validatePromptSchedule(
     throw new Error("schedule.mode must be one of: immediate, delay, at, repeat");
   }
 
-  const cronExpression = schedule.cronExpression?.trim();
+  assertOnlyKeys(schedule, ["mode", "cronExpression", "timezone"]);
+
+  const cronExpression = typeof schedule.cronExpression === "string"
+    ? schedule.cronExpression.trim()
+    : "";
   if (!cronExpression) {
     throw new Error("cronExpression is required, e.g. 0 9 * * *");
   }
-  const timezone = schedule.timezone?.trim();
+  const timezone = typeof schedule.timezone === "string"
+    ? schedule.timezone.trim()
+    : "";
   if (!timezone) {
     throw new Error("timezone is required, e.g. Asia/Shanghai");
   }

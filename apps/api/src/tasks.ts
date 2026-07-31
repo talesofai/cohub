@@ -14,6 +14,10 @@ import {
   CronJobUpdateConflictError,
   nextCronJobUpdateVersion,
 } from "./cron-job-concurrency.js";
+import {
+  findCronJobQueueEntries,
+  isCronJobQueueStateCurrent,
+} from "./cron-job-queue-state.js";
 
 
 const logger = createLogger({ serviceName: "cohub-api" });
@@ -143,7 +147,10 @@ const cronJobScheduleData = (job: CronJobRow): CronJobScheduleData => ({
 
 type CronJobRow = typeof cronJobs.$inferSelect;
 
-export async function reconcileCronJobQueue(cronJobId: string) {
+export async function reconcileCronJobQueue(
+  cronJobId: string,
+  options: { verifyQueueState?: boolean } = {},
+) {
   return db.transaction(async (tx) => {
     await tx.execute(
       sql`select pg_advisory_xact_lock(hashtextextended(${cronJobId}, 0))`,
@@ -153,9 +160,23 @@ export async function reconcileCronJobQueue(cronJobId: string) {
       .from(cronJobs)
       .where(eq(cronJobs.id, cronJobId))
       .limit(1);
-    if (!current || current.queueSyncedVersion === current.scheduleVersion) return current ?? null;
+    if (!current) return null;
 
-    if (current.bullJobKey) await taskQueue.removeRepeatableByKey(current.bullJobKey);
+    let repeatableJobs: Awaited<ReturnType<typeof taskQueue.getRepeatableJobs>> | null = null;
+    if (current.queueSyncedVersion === current.scheduleVersion) {
+      if (!options.verifyQueueState) return current;
+      repeatableJobs = await taskQueue.getRepeatableJobs(0, -1, true);
+      if (isCronJobQueueStateCurrent(current, repeatableJobs)) return current;
+    }
+
+    const staleKeys = new Set<string>();
+    if (current.bullJobKey) staleKeys.add(current.bullJobKey);
+    if (repeatableJobs) {
+      for (const entry of findCronJobQueueEntries(current, repeatableJobs)) {
+        staleKeys.add(entry.key);
+      }
+    }
+    await Promise.all([...staleKeys].map((key) => taskQueue.removeRepeatableByKey(key)));
     const nextBullJobKey = current.enabled && !current.deletedAt
       ? await scheduleCronJobRepeat(current.id, cronJobScheduleData(current))
       : "";
@@ -282,16 +303,39 @@ export async function reconcilePendingCronJobQueues(limit = 100) {
     .where(ne(cronJobs.queueSyncedVersion, cronJobs.scheduleVersion))
     .orderBy(cronJobs.updatedAt)
     .limit(limit);
+  const remaining = Math.max(0, limit - pending.length);
+  const syncedActive = remaining > 0
+    ? await db
+        .select()
+        .from(cronJobs)
+        .where(and(
+          eq(cronJobs.enabled, true),
+          isNull(cronJobs.deletedAt),
+          eq(cronJobs.queueSyncedVersion, cronJobs.scheduleVersion),
+        ))
+    : [];
+  const repeatableJobs = syncedActive.length > 0
+    ? await taskQueue.getRepeatableJobs(0, -1, true)
+    : [];
+  const drifted = syncedActive
+    .filter((job) => !isCronJobQueueStateCurrent(job, repeatableJobs))
+    .slice(0, remaining);
+
   let failed = 0;
-  for (const { id } of pending) {
+  for (const candidate of [
+    ...pending.map(({ id }) => ({ id, verifyQueueState: false })),
+    ...drifted.map(({ id }) => ({ id, verifyQueueState: true })),
+  ]) {
     try {
-      await reconcileCronJobQueue(id);
+      await reconcileCronJobQueue(candidate.id, {
+        verifyQueueState: candidate.verifyQueueState,
+      });
     } catch (error) {
       failed += 1;
-      logCronJobQueueSyncFailure(id)(error);
+      logCronJobQueueSyncFailure(candidate.id)(error);
     }
   }
-  return { pending: pending.length, failed };
+  return { pending: pending.length + drifted.length, failed };
 }
 
 export function startCronJobQueueReconciler(intervalMs = 30_000) {

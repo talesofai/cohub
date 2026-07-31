@@ -6,6 +6,7 @@ const now = Date.parse("2026-07-30T00:00:00.000Z");
 
 test("prompt schedules are fully validated before execution", () => {
   assert.deepEqual(validatePromptSchedule(undefined, now), { mode: "immediate" });
+  assert.deepEqual(validatePromptSchedule({}, now), { mode: "immediate" });
   assert.deepEqual(validatePromptSchedule({ mode: "delay", delayMs: 60_000 }, now), {
     mode: "delay",
     delayMs: 60_000,
@@ -22,11 +23,22 @@ test("prompt schedules are fully validated before execution", () => {
 });
 
 test("invalid schedules fail before callers perform writes", () => {
+  assert.throws(() => validatePromptSchedule("delay", now), /must be an object/);
+  assert.throws(() => validatePromptSchedule([], now), /must be an object/);
+  assert.throws(() => validatePromptSchedule({ delayMs: 60_000 }, now), /delayMs is not allowed/);
   assert.throws(
     () => validatePromptSchedule({ mode: "invalid" } as never, now),
     /schedule.mode/,
   );
+  assert.throws(
+    () => validatePromptSchedule({ mode: "delay", delayMs: true }, now),
+    /positive integer/,
+  );
   assert.throws(() => validatePromptSchedule({ mode: "delay", delayMs: 0 }, now), /positive integer/);
+  assert.throws(
+    () => validatePromptSchedule({ mode: "delay", delayMs: Number.MAX_SAFE_INTEGER }, now),
+    /too large/,
+  );
   assert.throws(() => validatePromptSchedule({ mode: "at", sendAt: "2026-07-30T00:02:00" }, now), /timezone/);
   assert.throws(() => validatePromptSchedule({ mode: "at", sendAt: "2026-07-29T23:59:00Z" }, now), /future/);
   assert.throws(
