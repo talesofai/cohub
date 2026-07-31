@@ -10,23 +10,48 @@ export type CronJobQueueExpectation = {
   deletedAt: Date | null;
 };
 
+export type CronJobQueueIndex = {
+  byId: ReadonlyMap<string, readonly RepeatableJob[]>;
+  byKey: ReadonlyMap<string, RepeatableJob>;
+};
+
 const repeatJobId = (cronJobId: string) => `cron-${cronJobId}`;
+
+export function indexCronJobQueueEntries(
+  repeatableJobs: readonly RepeatableJob[],
+): CronJobQueueIndex {
+  const byId = new Map<string, RepeatableJob[]>();
+  const byKey = new Map<string, RepeatableJob>();
+  for (const job of repeatableJobs) {
+    byKey.set(job.key, job);
+    if (!job.id) continue;
+    const entries = byId.get(job.id);
+    if (entries) entries.push(job);
+    else byId.set(job.id, [job]);
+  }
+  return { byId, byKey };
+}
 
 export function findCronJobQueueEntries(
   cronJob: Pick<CronJobQueueExpectation, "id" | "bullJobKey">,
-  repeatableJobs: readonly RepeatableJob[],
+  queueIndex: CronJobQueueIndex,
 ) {
   const jobId = repeatJobId(cronJob.id);
-  return repeatableJobs.filter((job) =>
-    job.id === jobId || Boolean(cronJob.bullJobKey && job.key === cronJob.bullJobKey),
-  );
+  const entries = [...(queueIndex.byId.get(jobId) ?? [])];
+  const storedEntry = cronJob.bullJobKey
+    ? queueIndex.byKey.get(cronJob.bullJobKey)
+    : undefined;
+  if (storedEntry && !entries.some((entry) => entry.key === storedEntry.key)) {
+    entries.push(storedEntry);
+  }
+  return entries;
 }
 
 export function isCronJobQueueStateCurrent(
   cronJob: CronJobQueueExpectation,
-  repeatableJobs: readonly RepeatableJob[],
+  queueIndex: CronJobQueueIndex,
 ) {
-  const entries = findCronJobQueueEntries(cronJob, repeatableJobs);
+  const entries = findCronJobQueueEntries(cronJob, queueIndex);
   if (!cronJob.enabled || cronJob.deletedAt) {
     return cronJob.bullJobKey === "" && entries.length === 0;
   }

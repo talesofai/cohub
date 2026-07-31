@@ -16,6 +16,7 @@ import {
 } from "./cron-job-concurrency.js";
 import {
   findCronJobQueueEntries,
+  indexCronJobQueueEntries,
   isCronJobQueueStateCurrent,
 } from "./cron-job-queue-state.js";
 
@@ -162,17 +163,19 @@ export async function reconcileCronJobQueue(
       .limit(1);
     if (!current) return null;
 
-    let repeatableJobs: Awaited<ReturnType<typeof taskQueue.getRepeatableJobs>> | null = null;
+    let queueIndex = null;
     if (current.queueSyncedVersion === current.scheduleVersion) {
       if (!options.verifyQueueState) return current;
-      repeatableJobs = await taskQueue.getRepeatableJobs(0, -1, true);
-      if (isCronJobQueueStateCurrent(current, repeatableJobs)) return current;
+      queueIndex = indexCronJobQueueEntries(
+        await taskQueue.getRepeatableJobs(0, -1, true),
+      );
+      if (isCronJobQueueStateCurrent(current, queueIndex)) return current;
     }
 
     const staleKeys = new Set<string>();
     if (current.bullJobKey) staleKeys.add(current.bullJobKey);
-    if (repeatableJobs) {
-      for (const entry of findCronJobQueueEntries(current, repeatableJobs)) {
+    if (queueIndex) {
+      for (const entry of findCronJobQueueEntries(current, queueIndex)) {
         staleKeys.add(entry.key);
       }
     }
@@ -314,11 +317,13 @@ export async function reconcilePendingCronJobQueues(limit = 100) {
           eq(cronJobs.queueSyncedVersion, cronJobs.scheduleVersion),
         ))
     : [];
-  const repeatableJobs = syncedActive.length > 0
-    ? await taskQueue.getRepeatableJobs(0, -1, true)
-    : [];
+  const queueIndex = indexCronJobQueueEntries(
+    syncedActive.length > 0
+      ? await taskQueue.getRepeatableJobs(0, -1, true)
+      : [],
+  );
   const drifted = syncedActive
-    .filter((job) => !isCronJobQueueStateCurrent(job, repeatableJobs))
+    .filter((job) => !isCronJobQueueStateCurrent(job, queueIndex))
     .slice(0, remaining);
 
   let failed = 0;

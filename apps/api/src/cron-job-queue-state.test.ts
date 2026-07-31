@@ -3,6 +3,7 @@ import { test } from "node:test";
 import type { RepeatableJob } from "bullmq";
 import {
   findCronJobQueueEntries,
+  indexCronJobQueueEntries,
   isCronJobQueueStateCurrent,
   type CronJobQueueExpectation,
 } from "./cron-job-queue-state.js";
@@ -27,21 +28,48 @@ const queueEntry: RepeatableJob = {
 };
 
 test("cron queue state requires one exact live repeat job", () => {
-  assert.equal(isCronJobQueueStateCurrent(cronJob, [queueEntry]), true);
-  assert.equal(isCronJobQueueStateCurrent(cronJob, []), false);
-  assert.equal(isCronJobQueueStateCurrent(cronJob, [{ ...queueEntry, pattern: "30 9 * * *" }]), false);
-  assert.equal(isCronJobQueueStateCurrent(cronJob, [{ ...queueEntry, tz: "UTC" }]), false);
-  assert.equal(isCronJobQueueStateCurrent(cronJob, [{ ...queueEntry, name: "run_command" }]), false);
+  assert.equal(isCronJobQueueStateCurrent(cronJob, indexCronJobQueueEntries([queueEntry])), true);
+  assert.equal(isCronJobQueueStateCurrent(cronJob, indexCronJobQueueEntries([])), false);
   assert.equal(
-    isCronJobQueueStateCurrent(cronJob, [queueEntry, { ...queueEntry, key: "orphan-key" }]),
+    isCronJobQueueStateCurrent(
+      cronJob,
+      indexCronJobQueueEntries([{ ...queueEntry, pattern: "30 9 * * *" }]),
+    ),
+    false,
+  );
+  assert.equal(
+    isCronJobQueueStateCurrent(cronJob, indexCronJobQueueEntries([{ ...queueEntry, tz: "UTC" }])),
+    false,
+  );
+  assert.equal(
+    isCronJobQueueStateCurrent(
+      cronJob,
+      indexCronJobQueueEntries([{ ...queueEntry, name: "run_command" }]),
+    ),
+    false,
+  );
+  assert.equal(
+    isCronJobQueueStateCurrent(
+      cronJob,
+      indexCronJobQueueEntries([queueEntry, { ...queueEntry, key: "orphan-key" }]),
+    ),
     false,
   );
 });
 
 test("disabled cron jobs are current only after queue metadata is cleared", () => {
-  assert.equal(isCronJobQueueStateCurrent({ ...cronJob, enabled: false }, [queueEntry]), false);
   assert.equal(
-    isCronJobQueueStateCurrent({ ...cronJob, enabled: false, bullJobKey: "" }, []),
+    isCronJobQueueStateCurrent(
+      { ...cronJob, enabled: false },
+      indexCronJobQueueEntries([queueEntry]),
+    ),
+    false,
+  );
+  assert.equal(
+    isCronJobQueueStateCurrent(
+      { ...cronJob, enabled: false, bullJobKey: "" },
+      indexCronJobQueueEntries([]),
+    ),
     true,
   );
 });
@@ -49,5 +77,6 @@ test("disabled cron jobs are current only after queue metadata is cleared", () =
 test("cron queue entry lookup includes stored and orphaned repeat keys", () => {
   const orphan = { ...queueEntry, key: "orphan-key" };
   const unrelated = { ...queueEntry, key: "other-key", id: "cron-other-id" };
-  assert.deepEqual(findCronJobQueueEntries(cronJob, [queueEntry, orphan, unrelated]), [queueEntry, orphan]);
+  const queueIndex = indexCronJobQueueEntries([queueEntry, orphan, unrelated]);
+  assert.deepEqual(findCronJobQueueEntries(cronJob, queueIndex), [queueEntry, orphan]);
 });
