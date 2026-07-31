@@ -444,7 +444,7 @@ export const getSessionTurnById = async (sessionId: string, turnId: string) => {
 export const buildIntermediateObjectsForTurn = async (input: { spaceId: string; sessionId: string; turnId: string }) => {
   const rows = await db.select().from(sessionMessages).where(and(
     eq(sessionMessages.sessionId, input.sessionId),
-    sql`${sessionMessages.meta}->>'turnId' = ${input.turnId}`,
+    eq(sessionMessages.turnId, input.turnId),
   )).orderBy(asc(sessionMessages.sequence), asc(sessionMessages.createdAt));
 
   const intermediateRows = rows.filter((row) => {
@@ -614,8 +614,8 @@ const finalizeInterruptedTurn = async (input: {
   if (existing.status === "interrupted" && !shouldPromoteSteerSummary && !shouldFillInterruptedContent) return toTurnRecord(existing);
   const rows = await db.select().from(sessionMessages).where(and(
     eq(sessionMessages.sessionId, input.sessionId),
+    eq(sessionMessages.turnId, input.turnId),
     eq(sessionMessages.role, "assistant"),
-    sql`${sessionMessages.meta}->>'turnId' = ${input.turnId}`,
   )).orderBy(desc(sessionMessages.sequence)).limit(1);
   const last = rows[0] ?? null;
   const intermediate = await buildIntermediateObjectsForTurn(input).catch((error) => {

@@ -443,7 +443,7 @@ const writeTurnObjects = async (files: Array<{ objectKey: string; value: unknown
 const buildIntermediateObjectsForTurn = async (input: { spaceId: string; sessionId: string; turnId: string }) => {
   const rows = await db.select().from(sessionMessages).where(and(
     eq(sessionMessages.sessionId, input.sessionId),
-    sql`${sessionMessages.meta}->>'turnId' = ${input.turnId}`,
+    eq(sessionMessages.turnId, input.turnId),
   )).orderBy(asc(sessionMessages.sequence), asc(sessionMessages.createdAt));
 
   const intermediateRows = rows.filter((row) => {
@@ -717,7 +717,11 @@ async function finalizeInterruptedTurn(input: { spaceId: string; sessionId: stri
   const [existing] = await db.select().from(sessionTurns).where(and(eq(sessionTurns.id, input.turnId), eq(sessionTurns.sessionId, input.sessionId))).limit(1);
   if (!existing) return { turn: null, messages: [] };
   if (!["running", "abort_requested", "interrupted"].includes(existing.status)) return { turn: toTurnRecord(existing), messages: [] };
-  const [last] = await db.select().from(sessionMessages).where(and(eq(sessionMessages.sessionId, input.sessionId), eq(sessionMessages.role, "assistant"), sql`${sessionMessages.meta}->>'turnId' = ${input.turnId}`)).orderBy(desc(sessionMessages.sequence)).limit(1);
+  const [last] = await db.select().from(sessionMessages).where(and(
+    eq(sessionMessages.sessionId, input.sessionId),
+    eq(sessionMessages.turnId, input.turnId),
+    eq(sessionMessages.role, "assistant"),
+  )).orderBy(desc(sessionMessages.sequence)).limit(1);
   const intermediate = await buildIntermediateObjectsForTurn(input);
   const completedAt = new Date();
   const completedAtIso = completedAt.toISOString();
@@ -811,10 +815,12 @@ export async function persistCompactionEvent(
 
   try {
     await db.transaction(async (tx) => {
+      const anchorTurnId = input.firstKeptTurnId ?? input.ownerTurnId;
       const [anchorByEntry] = await tx.select({ id: sessionMessages.id, sequence: sessionMessages.sequence })
         .from(sessionMessages)
         .where(and(
           eq(sessionMessages.sessionId, input.sessionId),
+          anchorTurnId ? eq(sessionMessages.turnId, anchorTurnId) : undefined,
           sql`${sessionMessages.meta}->>'agentSessionEntryId' = ${input.firstKeptEntryId}`,
         ))
         .limit(1);
@@ -827,7 +833,7 @@ export async function persistCompactionEvent(
           .from(sessionMessages)
           .where(and(
             eq(sessionMessages.sessionId, input.sessionId),
-            sql`${sessionMessages.meta}->>'turnId' = ${input.firstKeptTurnId}`,
+            eq(sessionMessages.turnId, input.firstKeptTurnId),
           ))
           .orderBy(asc(sessionMessages.sequence))
           .limit(1);
@@ -869,8 +875,8 @@ export async function persistCompactionEvent(
           ordinal: sql<number>`count(*)::int + 1`,
         }).from(sessionMessages).where(and(
           eq(sessionMessages.sessionId, input.sessionId),
+          eq(sessionMessages.turnId, input.ownerTurnId),
           sql`${sessionMessages.meta}->>'messageKind' = 'compacted'`,
-          sql`coalesce(${sessionMessages.turnId}::text, ${sessionMessages.meta}->>'turnId') = ${input.ownerTurnId}`,
         ));
         ordinalInTurn = ordinalRow?.ordinal ?? 1;
       }

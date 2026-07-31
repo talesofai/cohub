@@ -25,10 +25,8 @@ import type { ContentBlock } from "@cohub/protocol/core";
  * upserts by identity) and safe to re-run, so it doubles as disaster recovery
  * when live double-writes miss an event.
  *
- * Turn content is loaded efficiently: assistant messages are fetched by
- * session_id (indexed) for the batch's sessions, then filtered to the batch's
- * turn ids in process. Avoids an unindexed `meta->>'turnId'` scan that would
- * seq-scan the full messages table on large deployments.
+ * Turn content is loaded efficiently through the indexed turn_id column while
+ * retaining the session_id predicate as an integrity boundary.
  *
  * Usage:
  *   tsx scripts/backfill-resource-references.ts \
@@ -281,10 +279,8 @@ async function main() {
 
       // Aggregate assistant content across all messages in each turn so tool
       // calls from intermediate steps are not lost (matches the live indexer).
-      // Query path: session_id (indexed) + role + turnId filter. The session_id
-      // predicate keeps the plan on the messages index; the turnId filter then
-      // drops sibling turns so we never materialize whole-session histories
-      // (which OOMs on busy sessions when batching by turn id alone).
+      // Query by indexed turn_id and retain session_id as an integrity boundary,
+      // so busy session histories are never materialized as a whole.
       const turnIds = rows.map((row) => row.id);
       const sessionIds = [...new Set(rows.map((row) => row.sessionId))];
       const assistantContentByTurn = new Map<string, ContentBlock[]>();
@@ -292,15 +288,15 @@ async function main() {
       if (sessionIds.length > 0 && turnIds.length > 0) {
         const messageRows = await db
           .select({
-            turnId: sql<string>`${schema.sessionMessages.meta}->>'turnId'`,
+            turnId: schema.sessionMessages.turnId,
             content: schema.sessionMessages.content,
           })
           .from(schema.sessionMessages)
           .where(
             and(
               inArray(schema.sessionMessages.sessionId, sessionIds),
+              inArray(schema.sessionMessages.turnId, turnIds),
               eq(schema.sessionMessages.role, "assistant"),
-              inArray(sql`${schema.sessionMessages.meta}->>'turnId'`, turnIds),
             ),
           );
 

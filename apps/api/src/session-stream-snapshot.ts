@@ -122,8 +122,8 @@ const toSnapshotIntermediateMessage = (
 const listPersistedIntermediateMessages = async (input: { sessionId: string; turnId: string }) => {
   const rows = await db.select().from(sessionMessages).where(and(
     eq(sessionMessages.sessionId, input.sessionId),
+    eq(sessionMessages.turnId, input.turnId),
     sql`${sessionMessages.role} <> 'user'`,
-    sql`${sessionMessages.meta}->>'turnId' = ${input.turnId}`,
     sql`coalesce(${sessionMessages.meta}->>'messageKind', '') not in ('assistant_final', 'assistant_error')`,
   )).orderBy(asc(sessionMessages.sequence), asc(sessionMessages.createdAt));
   const ordinals = resolvePersistedIntermediateOrdinals(rows);
