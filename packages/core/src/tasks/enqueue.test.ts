@@ -184,3 +184,32 @@ test("stable task retries enqueue only the payload that won the database insert"
 
   assert.deepEqual(queuedPayloads, [winner, winner]);
 });
+
+test("stable task retries return the scheduled time that won the database insert", async () => {
+  const taskDb = createTaskDb();
+  const firstScheduledAt = new Date("2026-08-01T00:00:00.000Z");
+  const first = await enqueueTaskRun({
+    db: taskDb.db,
+    payload,
+    options: {
+      jobId: "scheduled-prompt-1",
+      idempotencyFingerprint: "fingerprint-a",
+      scheduledAt: firstScheduledAt,
+    },
+    enqueue: async () => ({ id: "scheduled-prompt-1" }),
+  });
+  taskDb.markCompleted();
+  const retry = await enqueueTaskRun({
+    db: taskDb.db,
+    payload,
+    options: {
+      jobId: "scheduled-prompt-1",
+      idempotencyFingerprint: "fingerprint-a",
+      scheduledAt: new Date("2026-08-01T00:00:10.000Z"),
+    },
+    enqueue: async () => ({ id: "scheduled-prompt-1" }),
+  });
+
+  assert.equal(first.scheduledAt?.toISOString(), firstScheduledAt.toISOString());
+  assert.equal(retry.scheduledAt?.toISOString(), firstScheduledAt.toISOString());
+});

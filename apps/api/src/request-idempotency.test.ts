@@ -4,6 +4,7 @@ import {
   createGenerationTaskJobId,
   createRequestFingerprint,
   createRepeatPromptCronJobIdempotencyKey,
+  createScheduledPromptScheduleIdentity,
   createScheduledPromptTaskJobId,
   createSessionlessPromptSessionId,
 } from "./request-idempotency.js";
@@ -73,5 +74,21 @@ test("request fingerprints canonicalize object key order independently of the id
   assert.notEqual(
     createRequestFingerprint({ model: "image-model" }),
     createRequestFingerprint({ model: "other-model" }),
+  );
+});
+
+test("delay schedule fingerprints use the stable relative delay", () => {
+  const first = createRequestFingerprint({
+    schedule: createScheduledPromptScheduleIdentity({ mode: "delay", delayMs: 60_000 }),
+  });
+  const retry = createRequestFingerprint({
+    schedule: createScheduledPromptScheduleIdentity({ mode: "delay", delayMs: 60_000 }),
+  });
+  assert.equal(first, retry);
+  assert.notEqual(
+    first,
+    createRequestFingerprint({
+      schedule: createScheduledPromptScheduleIdentity({ mode: "delay", delayMs: 120_000 }),
+    }),
   );
 });

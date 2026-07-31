@@ -5,6 +5,16 @@ const createIdempotencyDigest = (value: unknown) =>
 
 export const createRequestFingerprint = createIdempotencyDigest;
 
+export function createScheduledPromptScheduleIdentity(
+  schedule:
+    | { mode: "delay"; delayMs: number }
+    | { mode: "at"; scheduledAt: Date },
+) {
+  return schedule.mode === "delay"
+    ? { mode: schedule.mode, delayMs: schedule.delayMs }
+    : { mode: schedule.mode, scheduledAt: schedule.scheduledAt.toISOString() };
+}
+
 function createDeterministicUuid(value: unknown) {
   const hex = createIdempotencyDigest(value);
   const variant = ((Number.parseInt(hex[16] ?? "0", 16) & 0x3) | 0x8).toString(16);

@@ -62,6 +62,20 @@ async function runMigrate() {
     // 执行 migration
     // drizzle 会自动比对 __drizzle_migrations 中的 hash，只执行未跑过的 SQL
     await migrate(db, { migrationsFolder: "./drizzle/v2" });
+    // This index is built outside Drizzle's transaction so a large session_turns
+    // table stays writable while queued-turn recovery is deployed.
+    const invalidIndexRows = await client`
+      SELECT indexrelid::regclass::text AS name
+      FROM pg_index
+      WHERE indexrelid = to_regclass('v2.v2_idx_session_turns_queued_session')
+        AND NOT indisvalid
+    ` as postgres.Row[];
+    if (invalidIndexRows.length > 0) {
+      await client`DROP INDEX CONCURRENTLY IF EXISTS v2.v2_idx_session_turns_queued_session`;
+    }
+    await client`CREATE INDEX CONCURRENTLY IF NOT EXISTS v2_idx_session_turns_queued_session
+      ON v2.session_turns (session_id)
+      WHERE status = 'queued'`;
     logger.info("[Migration] V2 migrations completed successfully.");
   } catch (error) {
     logger.error("[Migration] V2 migration failed:", error);

@@ -3,6 +3,7 @@ import { test } from "node:test";
 import { MAX_PROMPT_SYSTEM_INSTRUCTIONS_LENGTH } from "@cohub/protocol";
 import {
 	applySystemInstructionsUpdate,
+	buildCronjobUpdatePatch,
 	buildPromptSystemInstructionsInput,
 	buildSendMessagePayload,
 	validateCronjobForm,
@@ -29,6 +30,59 @@ test("cron edits preserve, replace, or explicitly clear hidden turn instructions
 		content: [{ type: "text", text: "After" }],
 		systemInstructions: null,
 	});
+	assert.deepEqual(
+		applySystemInstructionsUpdate(
+			{ ...visiblePayload, systemInstructions: "Keep me" },
+			"",
+			false,
+		),
+		{
+			content: [{ type: "text", text: "After" }],
+			systemInstructions: "Keep me",
+		},
+	);
+});
+
+test("cron updates send only fields that actually changed", () => {
+	const detail = {
+		id: "cron-1",
+		userUuid: "user-1",
+		title: "Daily report",
+		taskType: "send_message",
+		payload: {
+			content: [{ type: "text", text: "Report" }],
+			systemInstructions: "Keep me",
+		},
+		cronExpression: "0 9 * * *",
+		timezone: "UTC",
+		bullJobKey: "job-1",
+		scheduleVersion: 1,
+		queueSyncedVersion: 1,
+		spaceId: "space-1",
+		sessionId: null,
+		enabled: true,
+		deletedAt: null,
+		createdAt: "2026-01-01T00:00:00.000Z",
+		updatedAt: "2026-01-02T00:00:00.000Z",
+		queueSyncStatus: "synced" as const,
+		hasSystemInstructions: true,
+	};
+	assert.deepEqual(
+		buildCronjobUpdatePatch({
+			detail,
+			title: "Renamed",
+			cronExpression: detail.cronExpression,
+			timezone: detail.timezone,
+			payload: {
+				systemInstructions: "Keep me",
+				content: [{ text: "Report", type: "text" }],
+			},
+		}),
+		{
+			expectedUpdatedAt: detail.updatedAt,
+			title: "Renamed",
+		},
+	);
 });
 
 test("scheduled prompt creation normalizes and validates turn instructions", () => {

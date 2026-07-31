@@ -1,4 +1,5 @@
 import { MAX_PROMPT_SYSTEM_INSTRUCTIONS_LENGTH } from "@cohub/protocol";
+import type { CronJobRecord, CronJobUpdatePatch } from "@neta-art/cohub";
 import type { ModelThinkingLevel } from "$lib/model-catalog";
 import { asRecord } from "../space-utils";
 
@@ -117,7 +118,6 @@ export function applySystemInstructionsUpdate(
 	}
 	const normalized = replacement.trim();
 	if (normalized) next.systemInstructions = normalized;
-	else delete next.systemInstructions;
 	return next;
 }
 
@@ -133,6 +133,43 @@ export function cronjobModelLabel(model: CronjobSelectedModel | null) {
 
 export function defaultTimezone() {
 	return Intl.DateTimeFormat().resolvedOptions().timeZone || "UTC";
+}
+
+function stableStringify(value: unknown): string {
+	if (Array.isArray(value)) return `[${value.map(stableStringify).join(",")}]`;
+	if (value && typeof value === "object") {
+		return `{${Object.entries(value as Record<string, unknown>)
+			.filter(([, nested]) => nested !== undefined)
+			.sort(([left], [right]) => left.localeCompare(right))
+			.map(
+				([key, nested]) => `${JSON.stringify(key)}:${stableStringify(nested)}`,
+			)
+			.join(",")}}`;
+	}
+	return JSON.stringify(value) ?? "null";
+}
+
+export function buildCronjobUpdatePatch(input: {
+	detail: CronJobRecord;
+	title: string;
+	cronExpression: string;
+	timezone: string;
+	payload: Record<string, unknown>;
+}): CronJobUpdatePatch {
+	const title = input.title.trim();
+	const cronExpression = input.cronExpression.trim();
+	const timezone = input.timezone.trim();
+	return {
+		expectedUpdatedAt: input.detail.updatedAt,
+		...(title !== input.detail.title ? { title } : {}),
+		...(cronExpression !== input.detail.cronExpression
+			? { cronExpression }
+			: {}),
+		...(timezone !== input.detail.timezone ? { timezone } : {}),
+		...(stableStringify(input.payload) !== stableStringify(input.detail.payload)
+			? { payload: input.payload }
+			: {}),
+	};
 }
 
 export function validateCronjobForm(input: {

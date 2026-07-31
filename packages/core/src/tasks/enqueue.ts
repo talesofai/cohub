@@ -76,7 +76,13 @@ export async function enqueueTaskRun<Job = unknown>(input: EnqueueTaskRunInput<J
 
   const shouldEnqueue = Boolean(insertedTaskRun)
     || (taskRun.startedAt == null && (taskRun.status === "pending" || taskRun.status === "failed"));
-  if (!shouldEnqueue) return { job: null, taskRunId: taskRun.id };
+  if (!shouldEnqueue) {
+    return {
+      job: null,
+      taskRunId: taskRun.id,
+      scheduledAt: taskRun.scheduledAt,
+    };
+  }
 
   try {
     // A conflicting stable job id always resumes the payload that won the DB insert.
@@ -100,7 +106,11 @@ export async function enqueueTaskRun<Job = unknown>(input: EnqueueTaskRunInput<J
       : [];
     const enqueuedTaskRun = recoveredTaskRun ?? insertedTaskRun;
     if (enqueuedTaskRun) await input.onTaskCreated?.(enqueuedTaskRun);
-    return { job, taskRunId: taskRun.id };
+    return {
+      job,
+      taskRunId: taskRun.id,
+      scheduledAt: taskRun.scheduledAt,
+    };
   } catch (error) {
     await input.db.update(taskRuns).set({
       status: "failed",

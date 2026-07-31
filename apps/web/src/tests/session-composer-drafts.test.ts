@@ -7,6 +7,7 @@ import {
 import {
 	createComposerSubmissionFingerprint,
 	resolveComposerClientMessageId,
+	resolvePendingComposerSubmission,
 } from "../lib/stores/session-composer-submission.ts";
 
 class MemoryStorage implements Storage {
@@ -59,12 +60,14 @@ test("composer drafts preserve per-turn system instructions", () => {
 			systemInstructions: "Return only the final prompt",
 			retryClientMessageId: "request-1",
 			retryRequestFingerprint: "fingerprint-1",
+			pendingSubmission: null,
 		});
 		assert.deepEqual(readSessionComposerDraft("draft"), {
 			text: "Create an image prompt",
 			systemInstructions: "Return only the final prompt",
 			retryClientMessageId: "request-1",
 			retryRequestFingerprint: "fingerprint-1",
+			pendingSubmission: null,
 		});
 
 		writeSessionComposerDraft("instructions-only", {
@@ -72,6 +75,7 @@ test("composer drafts preserve per-turn system instructions", () => {
 			systemInstructions: "Keep this draft",
 			retryClientMessageId: null,
 			retryRequestFingerprint: null,
+			pendingSubmission: null,
 		});
 		assert.equal(
 			readSessionComposerDraft("instructions-only").systemInstructions,
@@ -87,7 +91,91 @@ test("composer drafts preserve per-turn system instructions", () => {
 			systemInstructions: "",
 			retryClientMessageId: null,
 			retryRequestFingerprint: null,
+			pendingSubmission: null,
 		});
+	} finally {
+		if (previousWindow)
+			Object.defineProperty(globalThis, "window", previousWindow);
+		else delete (globalThis as { window?: Window }).window;
+		if (previousStorage)
+			Object.defineProperty(globalThis, "localStorage", previousStorage);
+		else delete (globalThis as { localStorage?: Storage }).localStorage;
+	}
+});
+
+test("composer drafts preserve and validate a final retry payload", () => {
+	const previousWindow = Object.getOwnPropertyDescriptor(globalThis, "window");
+	const previousStorage = Object.getOwnPropertyDescriptor(
+		globalThis,
+		"localStorage",
+	);
+	const storage = new MemoryStorage();
+	Object.defineProperty(globalThis, "window", {
+		configurable: true,
+		value: {},
+	});
+	Object.defineProperty(globalThis, "localStorage", {
+		configurable: true,
+		value: storage,
+	});
+
+	try {
+		const pendingSubmission = {
+			spaceId: "space-1",
+			sessionId: "session-1",
+			content: [
+				{ type: "text" as const, text: "Use /home/oai/share/file.txt" },
+				{
+					type: "image" as const,
+					source: { type: "url" as const, url: "https://cdn.test/image.png" },
+				},
+			],
+			text: "Use /home/oai/share/file.txt",
+			model: "model-1",
+			provider: "provider-1",
+			thinkingLevel: "low",
+			systemInstructions: "Keep it short",
+			generationPolicy: null,
+			clientMessageId: "request-1",
+			requestFingerprint: "fingerprint-1",
+		};
+		writeSessionComposerDraft("retry", {
+			text: "Draft with uploaded references",
+			systemInstructions: "Keep it short",
+			retryClientMessageId: "request-1",
+			retryRequestFingerprint: "fingerprint-1",
+			pendingSubmission,
+		});
+		const draft = readSessionComposerDraft("retry");
+		assert.deepEqual(draft.pendingSubmission, pendingSubmission);
+		assert.equal(
+			resolvePendingComposerSubmission({
+				draft,
+				text: draft.text,
+				systemInstructions: draft.systemInstructions,
+				spaceId: "space-1",
+				sessionId: "session-1",
+				model: "model-1",
+				provider: "provider-1",
+				thinkingLevel: "low",
+				generationPolicy: null,
+			}),
+			draft.pendingSubmission,
+		);
+		assert.equal(
+			resolvePendingComposerSubmission({
+				draft,
+				text: `${draft.text} edited`,
+				systemInstructions: draft.systemInstructions,
+				spaceId: "space-1",
+				sessionId: "session-1",
+				model: "model-1",
+				provider: "provider-1",
+				thinkingLevel: "low",
+				generationPolicy: null,
+			}),
+			null,
+		);
 	} finally {
 		if (previousWindow)
 			Object.defineProperty(globalThis, "window", previousWindow);

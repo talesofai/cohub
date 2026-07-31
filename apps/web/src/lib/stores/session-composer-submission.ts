@@ -1,3 +1,8 @@
+import type {
+	ComposerPendingSubmission,
+	SessionComposerDraft,
+} from "./session-composer-drafts";
+
 function stableStringify(value: unknown): string {
 	if (Array.isArray(value)) return `[${value.map(stableStringify).join(",")}]`;
 	if (value && typeof value === "object") {
@@ -30,4 +35,34 @@ export function resolveComposerClientMessageId(input: {
 		input.retryRequestFingerprint === input.requestFingerprint
 		? input.retryClientMessageId
 		: input.randomUUID();
+}
+
+export function resolvePendingComposerSubmission(input: {
+	draft: SessionComposerDraft | null;
+	text: string;
+	systemInstructions: string;
+	spaceId: string;
+	sessionId: string | null;
+	model: string | null;
+	provider: string | null;
+	thinkingLevel: string | null;
+	generationPolicy: unknown;
+}): ComposerPendingSubmission | null {
+	const pending = input.draft?.pendingSubmission;
+	if (
+		!pending ||
+		input.draft?.text !== input.text ||
+		input.draft.systemInstructions !== input.systemInstructions ||
+		pending.spaceId !== input.spaceId ||
+		pending.sessionId !== input.sessionId ||
+		pending.model !== input.model ||
+		pending.provider !== input.provider ||
+		pending.thinkingLevel !== input.thinkingLevel ||
+		pending.systemInstructions !== (input.systemInstructions || null) ||
+		stableStringify(pending.generationPolicy) !==
+			stableStringify(input.generationPolicy)
+	) {
+		return null;
+	}
+	return pending;
 }

@@ -1,10 +1,28 @@
+import type { ContentBlock } from "@cohub/protocol/core";
+import type { GenerationPolicy } from "@cohub/protocol/generation";
+
 const DRAFT_TTL_MS = 30 * 24 * 60 * 60 * 1000;
+
+export type ComposerPendingSubmission = {
+	spaceId: string;
+	sessionId: string | null;
+	content: ContentBlock[];
+	text: string;
+	model: string | null;
+	provider: string | null;
+	thinkingLevel: string | null;
+	systemInstructions: string | null;
+	generationPolicy: GenerationPolicy | null;
+	clientMessageId: string;
+	requestFingerprint: string;
+};
 
 type ComposerDraftRecord = {
 	text: string;
 	systemInstructions: string;
 	retryClientMessageId: string | null;
 	retryRequestFingerprint: string | null;
+	pendingSubmission: ComposerPendingSubmission | null;
 	updatedAt: number;
 };
 
@@ -35,7 +53,54 @@ const emptyDraft = (): SessionComposerDraft => ({
 	systemInstructions: "",
 	retryClientMessageId: null,
 	retryRequestFingerprint: null,
+	pendingSubmission: null,
 });
+
+function optionalString(value: unknown) {
+	return typeof value === "string" ? value : value === null ? null : undefined;
+}
+
+function parsePendingSubmission(
+	value: unknown,
+): ComposerPendingSubmission | null {
+	if (!value || typeof value !== "object" || Array.isArray(value)) return null;
+	const record = value as Record<string, unknown>;
+	const sessionId = optionalString(record.sessionId);
+	const model = optionalString(record.model);
+	const provider = optionalString(record.provider);
+	const thinkingLevel = optionalString(record.thinkingLevel);
+	const systemInstructions = optionalString(record.systemInstructions);
+	if (
+		typeof record.spaceId !== "string" ||
+		sessionId === undefined ||
+		!Array.isArray(record.content) ||
+		typeof record.text !== "string" ||
+		model === undefined ||
+		provider === undefined ||
+		thinkingLevel === undefined ||
+		systemInstructions === undefined ||
+		typeof record.clientMessageId !== "string" ||
+		!record.clientMessageId.trim() ||
+		typeof record.requestFingerprint !== "string" ||
+		!record.requestFingerprint.trim()
+	) {
+		return null;
+	}
+	return {
+		spaceId: record.spaceId,
+		sessionId,
+		content: record.content as ContentBlock[],
+		text: record.text,
+		model,
+		provider,
+		thinkingLevel,
+		systemInstructions,
+		generationPolicy: (record.generationPolicy ??
+			null) as GenerationPolicy | null,
+		clientMessageId: record.clientMessageId.trim(),
+		requestFingerprint: record.requestFingerprint.trim(),
+	};
+}
 
 export function readSessionComposerDraft(key: string): SessionComposerDraft {
 	if (!canUseLocalStorage()) return emptyDraft();
@@ -63,6 +128,7 @@ export function readSessionComposerDraft(key: string): SessionComposerDraft {
 				record.retryRequestFingerprint.trim()
 					? record.retryRequestFingerprint.trim()
 					: null,
+			pendingSubmission: parsePendingSubmission(record.pendingSubmission),
 		};
 	} catch {
 		safeRemoveItem(key);
@@ -79,7 +145,8 @@ export function writeSessionComposerDraft(
 		if (
 			!draft.text.trim() &&
 			!draft.systemInstructions.trim() &&
-			!draft.retryClientMessageId
+			!draft.retryClientMessageId &&
+			!draft.pendingSubmission
 		) {
 			safeRemoveItem(key);
 			return;
@@ -89,6 +156,7 @@ export function writeSessionComposerDraft(
 			systemInstructions: draft.systemInstructions,
 			retryClientMessageId: draft.retryClientMessageId,
 			retryRequestFingerprint: draft.retryRequestFingerprint,
+			pendingSubmission: draft.pendingSubmission,
 			updatedAt: Date.now(),
 		};
 		localStorage.setItem(key, JSON.stringify(record));

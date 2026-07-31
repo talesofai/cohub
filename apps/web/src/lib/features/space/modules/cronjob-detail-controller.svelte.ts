@@ -1,4 +1,5 @@
 import {
+	type CreateSpacePromptInput,
 	type CronJobRecord,
 	HttpError,
 	type TaskRunRecord,
@@ -15,10 +16,16 @@ import {
 	buildSpaceCronjobRoute,
 	buildSpaceNewSessionRoute,
 } from "$lib/space-routes";
+import { authStore } from "$lib/stores/auth.svelte";
 import { modelsCatalogStore } from "$lib/stores/models-catalog.svelte";
+import {
+	createComposerSubmissionFingerprint,
+	resolveComposerClientMessageId,
+} from "$lib/stores/session-composer-submission";
 import { mergeCachedCronJobTaskRuns } from "$lib/stores/task-runs-cache";
 import {
 	applySystemInstructionsUpdate,
+	buildCronjobUpdatePatch,
 	buildPromptSystemInstructionsInput,
 	buildSendMessagePayload,
 	defaultTimezone,
@@ -103,6 +110,11 @@ export function createCronjobDetailController(options: {
 	let newModel = $state<SelectedModel | null>(null);
 	let newSubmitting = $state(false);
 	let newError = $state("");
+	let newRequestFingerprint: string | null = null;
+	let newClientMessageId: string | null = null;
+	const canEditSchedule = $derived(
+		Boolean(detail && authStore.userUuid === detail.userUuid),
+	);
 
 	function notify(job: CronJobRecord | null) {
 		options.onDetailLoaded?.(job);
@@ -207,6 +219,8 @@ export function createCronjobDetailController(options: {
 		newSystemInstructions = "";
 		newModel = firstCatalogModel;
 		newError = "";
+		newRequestFingerprint = null;
+		newClientMessageId = null;
 	}
 
 	function syncFormFromDetail() {
@@ -423,18 +437,26 @@ export function createCronjobDetailController(options: {
 		formError = "";
 		clearQueueSyncPoll();
 		try {
-			const payload = applySystemInstructionsUpdate(
-				buildSendMessagePayload(detail.payload, formPrompt, formModel),
-				formSystemInstructions,
-				formClearSystemInstructions,
-			);
-			const { job } = await sdk.cronJobs.update(detail.id, {
-				expectedUpdatedAt: formExpectedUpdatedAt,
-				title: formTitle.trim(),
-				cronExpression: formExpression.trim(),
-				timezone: formTimezone.trim(),
+			const payload = canEditSchedule
+				? applySystemInstructionsUpdate(
+						buildSendMessagePayload(detail.payload, formPrompt, formModel),
+						formSystemInstructions,
+						formClearSystemInstructions,
+					)
+				: detail.payload;
+			const patch = buildCronjobUpdatePatch({
+				detail,
+				title: formTitle,
+				cronExpression: formExpression,
+				timezone: formTimezone,
 				payload,
 			});
+			if (Object.keys(patch).length === 1) {
+				editMode = false;
+				return;
+			}
+			patch.expectedUpdatedAt = formExpectedUpdatedAt;
+			const { job } = await sdk.cronJobs.update(detail.id, patch);
 			detail = job;
 			notify(job);
 			scheduleQueueSyncPoll(job);
@@ -484,7 +506,7 @@ export function createCronjobDetailController(options: {
 		newSubmitting = true;
 		newError = "";
 		try {
-			const response = await sdk.space(options.getSpaceId()).prompt({
+			const request = {
 				title: newTitle.trim(),
 				content: [{ type: "text", text: newPrompt.trim() }],
 				provider: newModel?.provider ?? null,
@@ -498,9 +520,25 @@ export function createCronjobDetailController(options: {
 					cronExpression: newExpression.trim(),
 					timezone: newTimezone.trim(),
 				},
+			} satisfies CreateSpacePromptInput;
+			const requestFingerprint =
+				await createComposerSubmissionFingerprint(request);
+			const clientMessageId = resolveComposerClientMessageId({
+				retryClientMessageId: newClientMessageId,
+				retryRequestFingerprint: newRequestFingerprint,
+				requestFingerprint,
+				randomUUID: () => crypto.randomUUID(),
+			});
+			newRequestFingerprint = requestFingerprint;
+			newClientMessageId = clientMessageId;
+			const response = await sdk.space(options.getSpaceId()).prompt({
+				...request,
+				clientMessageId,
 			});
 			if (response.mode !== "repeat")
 				throw new Error("Failed to create scheduled prompt");
+			newRequestFingerprint = null;
+			newClientMessageId = null;
 			notifyCronjobsUpdated();
 			await goto(
 				buildSpaceCronjobRoute(options.getSpaceId(), response.cronJobId),
@@ -604,6 +642,9 @@ export function createCronjobDetailController(options: {
 		},
 		get detail() {
 			return detail;
+		},
+		get canEditSchedule() {
+			return canEditSchedule;
 		},
 		get detailLoading() {
 			return detailLoading;

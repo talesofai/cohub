@@ -1,0 +1,2 @@
+-- Built with CREATE INDEX CONCURRENTLY by src/db/migrate.ts after the
+-- transactional Drizzle migrations complete.

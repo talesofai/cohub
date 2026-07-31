@@ -774,6 +774,9 @@ export const sessionTurns = v2.table(
   },
   (table) => ({
     sessionIdx: index("v2_idx_session_turns_session_id").on(table.sessionId),
+    queuedSessionIdx: index("v2_idx_session_turns_queued_session")
+      .on(table.sessionId)
+      .where(sql`${table.status} = 'queued'`),
     sessionSequenceUniqueIdx: uniqueIndex("v2_uq_session_turns_session_sequence").on(
       table.sessionId,
       table.sequence,

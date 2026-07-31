@@ -32,6 +32,7 @@ import type {
 } from "$lib/components/SessionTaskTray.svelte";
 import {
 	buildComposerTextContentBlock,
+	type ComposerAttachment,
 	type ComposerFileAttachment,
 	type ComposerImageAttachment,
 } from "$lib/composer-attachments";
@@ -81,6 +82,7 @@ import {
 import {
 	createComposerSubmissionFingerprint,
 	resolveComposerClientMessageId,
+	resolvePendingComposerSubmission,
 } from "$lib/stores/session-composer-submission";
 import { sessionGenerationStore } from "$lib/stores/session-generation.svelte";
 import {
@@ -306,6 +308,7 @@ export function createSessionChatHost(options: SessionChatHostOptions) {
 	);
 
 	let activeComposerDraftKey = $state<string | null>(null);
+	let activeComposerRetryAttachmentSignature = "";
 	let composerDraftSaveTimer: ReturnType<typeof setTimeout> | null = null;
 	let preserveComposerDraftOnNextKeyChange = false;
 	const input = $derived(composer.input);
@@ -676,6 +679,7 @@ export function createSessionChatHost(options: SessionChatHostOptions) {
 						key,
 						composer.input,
 						composer.systemInstructions,
+						composerAttachmentSignature(composer.attachments),
 					);
 					writeSessionComposerDraft(key, {
 						text: composer.input,
@@ -693,25 +697,36 @@ export function createSessionChatHost(options: SessionChatHostOptions) {
 						systemInstructions: "",
 						retryClientMessageId: null,
 						retryRequestFingerprint: null,
+						pendingSubmission: null,
 					};
 			composer.input = draft.text;
 			composer.systemInstructions = draft.systemInstructions;
+			activeComposerRetryAttachmentSignature = composerAttachmentSignature(
+				composer.attachments,
+			);
 		});
 	});
 	$effect(() => {
 		const key = activeComposerDraftKey;
 		const text = input;
 		const instructions = systemInstructions;
+		const attachmentSignature = composerAttachmentSignature(attachments);
 		if (!key) return;
 		if (sending) return;
 		clearComposerDraftSaveTimer();
 		composerDraftSaveTimer = setTimeout(() => {
-			const retryIdentity = composerDraftRetryIdentity(key, text, instructions);
+			const retryIdentity = composerDraftRetryIdentity(
+				key,
+				text,
+				instructions,
+				attachmentSignature,
+			);
 			writeSessionComposerDraft(key, {
 				text,
 				systemInstructions: instructions,
 				...retryIdentity,
 			});
+			activeComposerRetryAttachmentSignature = attachmentSignature;
 			composerDraftSaveTimer = null;
 		}, 400);
 		return clearComposerDraftSaveTimer;
@@ -1104,6 +1119,7 @@ export function createSessionChatHost(options: SessionChatHostOptions) {
 			activeComposerDraftKey,
 			composer.input,
 			composer.systemInstructions,
+			composerAttachmentSignature(composer.attachments),
 		);
 		writeSessionComposerDraft(activeComposerDraftKey, {
 			text: composer.input,
@@ -1116,14 +1132,32 @@ export function createSessionChatHost(options: SessionChatHostOptions) {
 		key: string,
 		text: string,
 		instructions: string,
+		attachmentSignature: string,
 	) {
 		const current = readSessionComposerDraft(key);
 		const matches =
-			current.text === text && current.systemInstructions === instructions;
+			current.text === text &&
+			current.systemInstructions === instructions &&
+			attachmentSignature === activeComposerRetryAttachmentSignature;
 		return {
 			retryClientMessageId: matches ? current.retryClientMessageId : null,
 			retryRequestFingerprint: matches ? current.retryRequestFingerprint : null,
+			pendingSubmission: matches ? current.pendingSubmission : null,
 		};
+	}
+
+	function composerAttachmentSignature(items: ComposerAttachment[]) {
+		return JSON.stringify(
+			items.map((item) => ({
+				id: item.id,
+				kind: item.kind,
+				name: item.name,
+				size: item.size,
+				...(item.kind === "image"
+					? { uploadedUrl: item.uploadedUrl ?? null }
+					: {}),
+			})),
+		);
 	}
 
 	function clearActiveComposerDraft() {
@@ -2937,182 +2971,222 @@ export function createSessionChatHost(options: SessionChatHostOptions) {
 		let uploadedImageUrls = new Map<string, string>();
 		let optimisticTurn: SessionTurnRecord | null = null;
 		let hasActiveTurn = false;
+		const submissionGenerationPolicy = buildTurnGenerationPolicy();
+		const retryDraft = submissionDraftKey
+			? readSessionComposerDraft(submissionDraftKey)
+			: null;
+		const retryAttachmentsUnchanged =
+			composerAttachmentSignature(pendingAttachments) ===
+			activeComposerRetryAttachmentSignature;
+		let pendingSubmission = resolvePendingComposerSubmission({
+			draft: retryAttachmentsUnchanged ? retryDraft : null,
+			text: pendingInput,
+			systemInstructions: pendingSystemInstructions,
+			spaceId: opSpaceId,
+			sessionId,
+			model: model?.id ?? null,
+			provider: model?.provider ?? null,
+			thinkingLevel: activeSessionThinkingLevel ?? null,
+			generationPolicy: submissionGenerationPolicy,
+		});
 		try {
-			const fileAttachments = attachments.filter(
-				(attachment): attachment is ComposerFileAttachment =>
-					attachment.kind === "file",
-			);
-			const imageAttachments = attachments.filter(
-				(attachment): attachment is ComposerImageAttachment =>
-					attachment.kind === "image",
-			);
-			hadFileUpload = fileAttachments.length > 0;
-			hadImageUpload = imageAttachments.length > 0;
-			if (fileAttachments.length > 0) composer.setUploading("file");
-			if (imageAttachments.length > 0) composer.setUploading("image");
-
-			// Client uploads once to durable public storage.
-			// With space, server materializes from those URLs into sandbox (no second client upload).
-			const [fileDurableUrls, imageUpload] = await Promise.all([
-				uploadComposerFileDurables(opSpaceId, sessionId, fileAttachments),
-				uploadComposerImageDurables(opSpaceId, sessionId, imageAttachments),
-			]);
-			const imageUrls = imageUpload.urls;
-			const demotedImageIds = imageUpload.demotedIds;
-			const demotedImageFileUrls = imageUpload.fileUrls;
-			const durableFileUrls = [
-				...fileDurableUrls.values(),
-				...demotedImageFileUrls.values(),
-			];
-
-			const materializeSource = [
-				...fileAttachments.flatMap((attachment) => {
-					const url = fileDurableUrls.get(attachment.id);
-					if (!url) return [];
-					return [
-						{
-							name: attachment.name,
-							relativePath: attachment.relativePath,
-							size: attachment.size,
-							mimeType: attachment.mediaType,
-							downloadUrl: url,
-						},
-					];
-				}),
-				...imageAttachments.flatMap((attachment) => {
-					const url =
-						imageUrls.get(attachment.id) ??
-						demotedImageFileUrls.get(attachment.id);
-					if (!url) return [];
-					return [
-						{
-							name: attachment.name,
-							relativePath: attachment.name,
-							size: attachment.size,
-							mimeType: attachment.mediaType,
-							downloadUrl: url,
-						},
-					];
-				}),
-			];
-			const sandboxPaths =
-				materializeSource.length > 0
-					? await materializeDurableUrlsToSandbox(
-							opSpaceId,
-							sessionId,
-							materializeSource,
-						).catch((error) => {
-							// Durable URL is enough without sandbox.
-							console.warn("[composer] sandbox materialize skipped", error);
-							return [] as string[];
-						})
-					: [];
-
-			// Per-attachment delivery: each binary must have durable URL (image or file).
-			// Sandbox is additive; durable is the always-on channel without space.
-			const undelivered = [
-				...fileAttachments.filter(
-					(attachment) => !fileDurableUrls.has(attachment.id),
-				),
-				...imageAttachments.filter(
-					(attachment) =>
-						!imageUrls.has(attachment.id) &&
-						!demotedImageFileUrls.has(attachment.id),
-				),
-			];
-			if (undelivered.length > 0) {
-				const names = undelivered
-					.map((attachment) => attachment.name)
-					.slice(0, 3)
-					.join(", ");
-				const more =
-					undelivered.length > 3 ? ` +${undelivered.length - 3} more` : "";
-				throw new Error(
-					`Failed to upload ${undelivered.length} attachment${undelivered.length === 1 ? "" : "s"}: ${names}${more}`,
+			if (pendingSubmission) {
+				content = pendingSubmission.content;
+				text = pendingSubmission.text;
+				clientMessageId = pendingSubmission.clientMessageId;
+				submissionFingerprint = pendingSubmission.requestFingerprint;
+				uploadCompleted = true;
+			} else {
+				const fileAttachments = attachments.filter(
+					(attachment): attachment is ComposerFileAttachment =>
+						attachment.kind === "file",
 				);
-			}
-			uploadedImageUrls = imageUrls;
-			uploadCompleted = true;
-			const userText = input.trim();
-			if (disposed || spaceId !== opSpaceId) {
-				// Host left this space while upload was in flight — drop results.
-				return;
-			}
-			const pendingViewportContexts = viewport.takeSendSnapshot();
-			// Prefer sandbox paths when available; otherwise durable public URLs.
-			const referenceText = sandboxPaths.length
-				? buildFileReferencesText(sandboxPaths)
-				: [
-						buildFileReferencesText(durableFileUrls),
-						buildImageReferencesText([...imageUrls.values()]),
-					]
-						.filter(Boolean)
-						.join("\n\n");
-			uploadedReferenceText = referenceText;
-			text = [userText, referenceText].filter(Boolean).join("\n\n");
-			const attachmentBlocks: ContentBlock[] = attachments.flatMap(
-				(attachment) => {
-					if (attachment.kind === "file") return [];
-					if (attachment.kind === "text")
-						return [buildComposerTextContentBlock(attachment)];
-					// Image specialization only: durable URL → image content block.
-					// Demoted images keep durable file URL in text refs, no image block.
-					if (demotedImageIds.has(attachment.id)) return [];
-					const url = imageUrls.get(attachment.id);
-					if (!url) return [];
-					return [
-						{
-							type: "image",
-							source: {
-								type: "url",
-								url,
-							},
-							_meta: {
-								filename: attachment.name,
-								mediaType: attachment.mediaType,
-								size: attachment.size,
-							},
-						} satisfies ContentBlock,
-					];
-				},
-			);
-			const viewportBlock = buildViewportContentBlock(pendingViewportContexts);
-			const mentions = extractSpaceMentionsFromText(text);
-			content = [
-				...(text
-					? [
+				const imageAttachments = attachments.filter(
+					(attachment): attachment is ComposerImageAttachment =>
+						attachment.kind === "image",
+				);
+				hadFileUpload = fileAttachments.length > 0;
+				hadImageUpload = imageAttachments.length > 0;
+				if (fileAttachments.length > 0) composer.setUploading("file");
+				if (imageAttachments.length > 0) composer.setUploading("image");
+
+				// Client uploads once to durable public storage.
+				// With space, server materializes from those URLs into sandbox (no second client upload).
+				const [fileDurableUrls, imageUpload] = await Promise.all([
+					uploadComposerFileDurables(opSpaceId, sessionId, fileAttachments),
+					uploadComposerImageDurables(opSpaceId, sessionId, imageAttachments),
+				]);
+				const imageUrls = imageUpload.urls;
+				const demotedImageIds = imageUpload.demotedIds;
+				const demotedImageFileUrls = imageUpload.fileUrls;
+				const durableFileUrls = [
+					...fileDurableUrls.values(),
+					...demotedImageFileUrls.values(),
+				];
+
+				const materializeSource = [
+					...fileAttachments.flatMap((attachment) => {
+						const url = fileDurableUrls.get(attachment.id);
+						if (!url) return [];
+						return [
 							{
-								type: "text",
-								text,
-								_meta: mentions.length > 0 ? { mentions } : undefined,
-							} satisfies ContentBlock,
+								name: attachment.name,
+								relativePath: attachment.relativePath,
+								size: attachment.size,
+								mimeType: attachment.mediaType,
+								downloadUrl: url,
+							},
+						];
+					}),
+					...imageAttachments.flatMap((attachment) => {
+						const url =
+							imageUrls.get(attachment.id) ??
+							demotedImageFileUrls.get(attachment.id);
+						if (!url) return [];
+						return [
+							{
+								name: attachment.name,
+								relativePath: attachment.name,
+								size: attachment.size,
+								mimeType: attachment.mediaType,
+								downloadUrl: url,
+							},
+						];
+					}),
+				];
+				const sandboxPaths =
+					materializeSource.length > 0
+						? await materializeDurableUrlsToSandbox(
+								opSpaceId,
+								sessionId,
+								materializeSource,
+							).catch((error) => {
+								// Durable URL is enough without sandbox.
+								console.warn("[composer] sandbox materialize skipped", error);
+								return [] as string[];
+							})
+						: [];
+
+				// Per-attachment delivery: each binary must have durable URL (image or file).
+				// Sandbox is additive; durable is the always-on channel without space.
+				const undelivered = [
+					...fileAttachments.filter(
+						(attachment) => !fileDurableUrls.has(attachment.id),
+					),
+					...imageAttachments.filter(
+						(attachment) =>
+							!imageUrls.has(attachment.id) &&
+							!demotedImageFileUrls.has(attachment.id),
+					),
+				];
+				if (undelivered.length > 0) {
+					const names = undelivered
+						.map((attachment) => attachment.name)
+						.slice(0, 3)
+						.join(", ");
+					const more =
+						undelivered.length > 3 ? ` +${undelivered.length - 3} more` : "";
+					throw new Error(
+						`Failed to upload ${undelivered.length} attachment${undelivered.length === 1 ? "" : "s"}: ${names}${more}`,
+					);
+				}
+				uploadedImageUrls = imageUrls;
+				uploadCompleted = true;
+				const userText = input.trim();
+				if (disposed || spaceId !== opSpaceId) {
+					// Host left this space while upload was in flight — drop results.
+					return;
+				}
+				const pendingViewportContexts = viewport.takeSendSnapshot();
+				// Prefer sandbox paths when available; otherwise durable public URLs.
+				const referenceText = sandboxPaths.length
+					? buildFileReferencesText(sandboxPaths)
+					: [
+							buildFileReferencesText(durableFileUrls),
+							buildImageReferencesText([...imageUrls.values()]),
 						]
-					: []),
-				...(viewportBlock ? [viewportBlock] : []),
-				...attachmentBlocks,
-			];
-			const submissionGenerationPolicy = buildTurnGenerationPolicy();
-			submissionFingerprint = await createComposerSubmissionFingerprint({
-				spaceId: opSpaceId,
-				sessionId,
-				content,
-				model: model?.id ?? null,
-				provider: model?.provider ?? null,
-				thinkingLevel: activeSessionThinkingLevel ?? null,
-				systemInstructions: pendingSystemInstructions || null,
-				generationPolicy: submissionGenerationPolicy,
-				accessMode: "full_access",
-				intent: "followup",
-			});
-			const retryDraft = submissionDraftKey
-				? readSessionComposerDraft(submissionDraftKey)
-				: null;
-			clientMessageId = resolveComposerClientMessageId({
-				retryClientMessageId: retryDraft?.retryClientMessageId ?? null,
-				retryRequestFingerprint: retryDraft?.retryRequestFingerprint ?? null,
-				requestFingerprint: submissionFingerprint,
-				randomUUID: () => crypto.randomUUID(),
-			});
+							.filter(Boolean)
+							.join("\n\n");
+				uploadedReferenceText = referenceText;
+				text = [userText, referenceText].filter(Boolean).join("\n\n");
+				const attachmentBlocks: ContentBlock[] = attachments.flatMap(
+					(attachment) => {
+						if (attachment.kind === "file") return [];
+						if (attachment.kind === "text")
+							return [buildComposerTextContentBlock(attachment)];
+						// Image specialization only: durable URL → image content block.
+						// Demoted images keep durable file URL in text refs, no image block.
+						if (demotedImageIds.has(attachment.id)) return [];
+						const url = imageUrls.get(attachment.id);
+						if (!url) return [];
+						return [
+							{
+								type: "image",
+								source: {
+									type: "url",
+									url,
+								},
+								_meta: {
+									filename: attachment.name,
+									mediaType: attachment.mediaType,
+									size: attachment.size,
+								},
+							} satisfies ContentBlock,
+						];
+					},
+				);
+				const viewportBlock = buildViewportContentBlock(
+					pendingViewportContexts,
+				);
+				const mentions = extractSpaceMentionsFromText(text);
+				content = [
+					...(text
+						? [
+								{
+									type: "text",
+									text,
+									_meta: mentions.length > 0 ? { mentions } : undefined,
+								} satisfies ContentBlock,
+							]
+						: []),
+					...(viewportBlock ? [viewportBlock] : []),
+					...attachmentBlocks,
+				];
+				const nextSubmissionFingerprint =
+					await createComposerSubmissionFingerprint({
+						spaceId: opSpaceId,
+						sessionId,
+						content,
+						model: model?.id ?? null,
+						provider: model?.provider ?? null,
+						thinkingLevel: activeSessionThinkingLevel ?? null,
+						systemInstructions: pendingSystemInstructions || null,
+						generationPolicy: submissionGenerationPolicy,
+						accessMode: "full_access",
+						intent: "followup",
+					});
+				const nextClientMessageId = resolveComposerClientMessageId({
+					retryClientMessageId: retryDraft?.retryClientMessageId ?? null,
+					retryRequestFingerprint: retryDraft?.retryRequestFingerprint ?? null,
+					requestFingerprint: nextSubmissionFingerprint,
+					randomUUID: () => crypto.randomUUID(),
+				});
+				submissionFingerprint = nextSubmissionFingerprint;
+				clientMessageId = nextClientMessageId;
+				pendingSubmission = {
+					spaceId: opSpaceId,
+					sessionId,
+					content,
+					text,
+					model: model?.id ?? null,
+					provider: model?.provider ?? null,
+					thinkingLevel: activeSessionThinkingLevel ?? null,
+					systemInstructions: pendingSystemInstructions || null,
+					generationPolicy: submissionGenerationPolicy,
+					clientMessageId: nextClientMessageId,
+					requestFingerprint: nextSubmissionFingerprint,
+				};
+			}
 
 			// Clear input immediately so it disappears from the composer at the same
 			// time the optimistic turn appears in the list — avoids the awkward "stuck"
@@ -3125,6 +3199,7 @@ export function createSessionChatHost(options: SessionChatHostOptions) {
 					systemInstructions: pendingSystemInstructions,
 					retryClientMessageId: clientMessageId,
 					retryRequestFingerprint: submissionFingerprint,
+					pendingSubmission,
 				});
 			}
 
@@ -3300,6 +3375,7 @@ export function createSessionChatHost(options: SessionChatHostOptions) {
 				systemInstructions: pendingSystemInstructions,
 				retryClientMessageId: clientMessageId,
 				retryRequestFingerprint: submissionFingerprint,
+				pendingSubmission,
 			});
 			// Restore UI only if we still own the originating space/session context.
 			if (disposed || spaceId !== opSpaceId) {
@@ -3334,6 +3410,16 @@ export function createSessionChatHost(options: SessionChatHostOptions) {
 					pendingSystemInstructions,
 				);
 			}
+			activeComposerRetryAttachmentSignature = composerAttachmentSignature(
+				composer.attachments,
+			);
+			writeSessionComposerDraft(failedDraftKey, {
+				text: failedDraftText,
+				systemInstructions: pendingSystemInstructions,
+				retryClientMessageId: clientMessageId,
+				retryRequestFingerprint: submissionFingerprint,
+				pendingSubmission,
+			});
 			preserveComposerDraftOnNextKeyChange = isNewChat && sessionId != null;
 			if ((hadFileUpload || hadImageUpload) && !uploadCompleted) {
 				composer.markAttachmentUploadsFailed();

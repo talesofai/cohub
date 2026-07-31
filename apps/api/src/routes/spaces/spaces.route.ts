@@ -55,6 +55,7 @@ import { cronJobQueueSyncStatus } from "../../cron-job-queue-state.js";
 import {
   createRepeatPromptCronJobIdempotencyKey,
   createRequestFingerprint,
+  createScheduledPromptScheduleIdentity,
   createScheduledPromptTaskJobId,
   createSessionlessPromptSessionId,
 } from "../../request-idempotency.js";
@@ -2010,11 +2011,11 @@ router.post("/:id/prompt", async (c) => {
           provider: body.provider ?? null,
           thinkingLevel: promptThinkingLevel ?? null,
           labelIds: promptLabelIds,
-          schedule: { mode: promptSchedule.mode, scheduledAt: scheduledAt.toISOString() },
+          schedule: createScheduledPromptScheduleIdentity(promptSchedule),
         })
       : null;
     try {
-      const { taskRunId } = await enqueueTask({
+      const { taskRunId, scheduledAt: persistedScheduledAt } = await enqueueTask({
         type: "send_message",
         spaceId,
         sessionId: sessionId ?? undefined,
@@ -2025,7 +2026,12 @@ router.post("/:id/prompt", async (c) => {
         scheduledAt,
         ...(jobId ? { jobId, idempotencyFingerprint } : {}),
       });
-      return c.json({ mode: promptSchedule.mode, taskRunId, scheduledAt: scheduledAt.toISOString(), sessionId });
+      return c.json({
+        mode: promptSchedule.mode,
+        taskRunId,
+        scheduledAt: (persistedScheduledAt ?? scheduledAt).toISOString(),
+        sessionId,
+      });
     } catch (error) {
       if (error instanceof TaskIdempotencyConflictError) {
         return c.json({ message: "clientMessageId was reused with a different scheduled prompt", code: "prompt_idempotency_conflict" }, 409);
