@@ -59,3 +59,12 @@ test("restoreRemoteImageUrls leaves real base64 images untouched", () => {
   };
   assert.deepEqual(restoreRemoteImageUrls(payload), payload);
 });
+
+test("restoreRemoteImageUrls preserves nested AbortSignal instances", () => {
+  const signal = new AbortController().signal;
+  const payload = { config: { abortSignal: signal } };
+  const restored = restoreRemoteImageUrls(payload) as typeof payload;
+
+  assert.equal(restored.config.abortSignal, signal);
+  assert.equal(typeof restored.config.abortSignal.addEventListener, "function");
+});

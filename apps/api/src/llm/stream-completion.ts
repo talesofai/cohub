@@ -95,6 +95,9 @@ export function restoreRemoteImageUrls(payload: unknown): unknown {
   }
   if (!payload || typeof payload !== "object") return payload;
 
+  const prototype = Object.getPrototypeOf(payload);
+  if (prototype !== Object.prototype && prototype !== null) return payload;
+
   const record = payload as Record<string, unknown>;
 
   // OpenAI-compatible: { type: "image_url", image_url: { url: "data:..." } | "data:..." }
