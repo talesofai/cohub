@@ -78,6 +78,7 @@ export function createCronjobDetailController(options: {
 	let toggleError = $state("");
 	let editMode = $state(false);
 	let formTitle = $state("");
+	let formExpectedUpdatedAt = $state("");
 	let formExpression = $state("");
 	let formTimezone = $state("");
 	let formPrompt = $state("");
@@ -204,6 +205,7 @@ export function createCronjobDetailController(options: {
 		if (!detail) return;
 		const prompt = promptTextFromPayload(detail.payload);
 		formTitle = detail.title;
+		formExpectedUpdatedAt = detail.updatedAt;
 		formExpression = detail.cronExpression;
 		formTimezone = detail.timezone || defaultTimezone();
 		formPrompt = prompt.text;
@@ -413,7 +415,7 @@ export function createCronjobDetailController(options: {
 				formClearSystemInstructions,
 			);
 			const { job } = await sdk.cronJobs.update(detail.id, {
-				expectedUpdatedAt: detail.updatedAt,
+				expectedUpdatedAt: formExpectedUpdatedAt,
 				title: formTitle.trim(),
 				cronExpression: formExpression.trim(),
 				timezone: formTimezone.trim(),
@@ -433,6 +435,7 @@ export function createCronjobDetailController(options: {
 					detail = job;
 					notify(job);
 					scheduleQueueSyncPoll(job);
+					formExpectedUpdatedAt = job.updatedAt;
 				} catch (reloadError) {
 					formError = `Your edits were kept, but the latest version could not be loaded: ${reloadError instanceof Error ? reloadError.message : "Unknown error"}`;
 					return;

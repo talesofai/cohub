@@ -170,6 +170,11 @@ export async function reconcileCronJobQueue(
   if (!current) return null;
 
   let queueIndex = options.queueIndex ?? null;
+  if (!queueIndex && (!current.enabled || current.deletedAt)) {
+    queueIndex = indexCronJobQueueEntries(
+      await taskQueue.getRepeatableJobs(0, -1, true),
+    );
+  }
   if (current.queueSyncedVersion === current.scheduleVersion) {
     if (!options.verifyQueueState) return current;
     queueIndex ??= indexCronJobQueueEntries(
