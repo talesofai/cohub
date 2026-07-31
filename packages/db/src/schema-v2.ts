@@ -779,11 +779,6 @@ export const sessionTurns = v2.table(
       table.sequence,
     ),
     userUuidIdx: index("v2_idx_session_turns_user_uuid").on(table.userUuid),
-    clientMessageIdx: index("v2_idx_session_turns_client_message").on(
-      table.sessionId,
-      table.userUuid,
-      sql`(${table.meta} ->> 'clientMessageId')`,
-    ).where(sql`${table.meta} ? 'clientMessageId'`),
     createdAtIdx: index("v2_idx_session_turns_created_at").on(table.createdAt),
     userTextSearchIdx: index("v2_idx_session_turns_user_text_trgm").using("gin", table.userText.op("gin_trgm_ops")),
   }),

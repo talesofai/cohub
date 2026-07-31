@@ -1,1 +1,0 @@
-CREATE INDEX "v2_idx_session_turns_client_message" ON "v2"."session_turns" USING btree ("session_id","user_uuid",("meta" ->> 'clientMessageId')) WHERE "v2"."session_turns"."meta" ? 'clientMessageId';

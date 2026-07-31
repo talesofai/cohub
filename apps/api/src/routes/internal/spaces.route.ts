@@ -23,6 +23,7 @@ import {
   parsePromptEnv,
   parsePromptSystemInstructions,
   PromptEnvValidationError,
+  SessionPromptIdempotencyConflictError,
   PromptSystemInstructionsValidationError,
 } from "@cohub/core/sessions";
 import { verifyWorkSessionToken } from "../../work-sessions.js";
@@ -454,6 +455,9 @@ router.post("/:spaceId/sessions/:sessionId/prompt", async (c) => {
   } catch (error) {
     if (error instanceof SandboxNotReadyError) return c.json({ message: "sandbox is not ready" }, 503);
     if (error instanceof BillingAccessBlockedError) return c.json(serializeBillingBlocked(error), 402);
+    if (error instanceof SessionPromptIdempotencyConflictError) {
+      return c.json({ message: error.message, code: error.code }, 409);
+    }
     throw error as Error;
   }
 });

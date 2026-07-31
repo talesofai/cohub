@@ -7,7 +7,7 @@ import type { SessionTurnIntent } from "@cohub/protocol/model";
 import { sessionTurnSegments, sessionTurns, spaceSessions, spaces } from "@cohub/db";
 import { sanitizePostgresJsonValue } from "../content/sanitize.js";
 import { addSessionParticipantMeta, initializeSessionParticipantsMeta } from "./session-meta.js";
-import { submitSessionPrompt, type ExpandedPromptTemplate, type ExpandedSkillCommand, expandPromptContent, type SubmitSessionPromptHooks, type SubmitSessionPromptInput } from "./prompt.js";
+import { SessionPromptIdempotencyConflictError, submitSessionPrompt, type ExpandedPromptTemplate, type ExpandedSkillCommand, expandPromptContent, type SubmitSessionPromptHooks, type SubmitSessionPromptInput } from "./prompt.js";
 
 export type PromptTemplateService = {
   expand(text: string, options?: { userId?: string | null; spaceId?: string | null }): Promise<ExpandedPromptTemplate | null>;
@@ -108,6 +108,7 @@ export function createSessionServices(input: {
   const injectTrace = input.injectTrace ?? (() => ({}));
   const getRequestId = input.getRequestId ?? (() => null);
   const logger = input.logger ?? console;
+  const skillService = input.skillService;
 
   async function ensureRootSessionTurnSegment(sessionId: string) {
     await input.db.insert(sessionTurnSegments).values({
@@ -186,7 +187,19 @@ export function createSessionServices(input: {
           eq(sessionTurns.userUuid, turnInput.userUuid),
           sql`${sessionTurns.meta} ->> 'clientMessageId' = ${clientMessageId}`,
         )).limit(1);
-        if (existing) return { row: existing, spaceId: sessionRow.spaceId, idempotent: true };
+        if (existing) {
+          const existingMeta = existing.meta && typeof existing.meta === "object" && !Array.isArray(existing.meta)
+            ? existing.meta as Record<string, unknown>
+            : {};
+          const existingFingerprint = typeof existingMeta.requestFingerprint === "string"
+            ? existingMeta.requestFingerprint
+            : null;
+          const requestFingerprint = typeof meta.requestFingerprint === "string" ? meta.requestFingerprint : null;
+          if (existingFingerprint && requestFingerprint && existingFingerprint !== requestFingerprint) {
+            throw new SessionPromptIdempotencyConflictError();
+          }
+          return { row: existing, spaceId: sessionRow.spaceId, idempotent: true };
+        }
       }
       const [seqRow] = await tx.select({ max: sql<number>`coalesce(max(${sessionTurns.sequence}), 0)::int` }).from(sessionTurns).where(eq(sessionTurns.sessionId, turnInput.sessionId));
       const [localSegment] = await tx.select({ fromSequence: sessionTurnSegments.fromSequence }).from(sessionTurnSegments).where(and(
@@ -224,7 +237,7 @@ export function createSessionServices(input: {
         id: row.id,
         idempotent: true,
         userMessageId: typeof existingMeta.userMessageId === "string" ? existingMeta.userMessageId : undefined,
-        ...(row.status === "failed" && typeof existingMeta.enqueueFailedAt === "string"
+        ...((row.status === "queued" || (row.status === "failed" && typeof existingMeta.enqueueFailedAt === "string"))
           ? {
               enqueueRecovery: {
                 content: row.userContent,
@@ -271,7 +284,8 @@ export function createSessionServices(input: {
     return {
       id: existing.id,
       userMessageId,
-      ...(enqueueFailed
+      requestFingerprint: typeof meta.requestFingerprint === "string" ? meta.requestFingerprint : null,
+      ...((existing.status === "queued" || enqueueFailed)
         ? {
             enqueueRecovery: {
               content: existing.userContent,
@@ -299,7 +313,13 @@ export function createSessionServices(input: {
       eq(sessionTurns.status, "failed"),
       sql`${sessionTurns.meta} ? 'enqueueFailedAt'`,
     )).returning({ id: sessionTurns.id });
-    return Boolean(recovered);
+    if (recovered) return true;
+    const [queued] = await input.db.select({ id: sessionTurns.id }).from(sessionTurns).where(and(
+      eq(sessionTurns.id, turnInput.turnId),
+      eq(sessionTurns.sessionId, turnInput.sessionId),
+      eq(sessionTurns.status, "queued"),
+    )).limit(1);
+    return Boolean(queued);
   }
 
   async function failSessionTurn(turnInput: { sessionId: string; turnId: string; errorMessage: string }) {
@@ -313,7 +333,7 @@ export function createSessionServices(input: {
     }).where(and(
       eq(sessionTurns.id, turnInput.turnId),
       eq(sessionTurns.sessionId, turnInput.sessionId),
-      inArray(sessionTurns.status, ["queued", "running", "abort_requested"]),
+      eq(sessionTurns.status, "queued"),
     )).returning();
     return row ?? null;
   }
@@ -397,8 +417,8 @@ export function createSessionServices(input: {
     return submitSessionPrompt({
       randomUUID,
       expandPromptTemplate: ({ text, userId, spaceId }) => input.promptTemplateService.expand(text, { userId, spaceId }),
-      expandSkillCommand: input.skillService
-        ? ({ text, userId, spaceId }) => input.skillService!.expand(text, { userId, spaceId })
+      expandSkillCommand: skillService
+        ? ({ text, userId, spaceId }) => skillService.expand(text, { userId, spaceId })
         : undefined,
       createSessionTurn,
       findSessionTurnByClientMessageId,
@@ -416,8 +436,8 @@ export function createSessionServices(input: {
   }) {
     return expandPromptContent({
       expandPromptTemplate: ({ text, userId, spaceId }) => input.promptTemplateService.expand(text, { userId, spaceId }),
-      expandSkillCommand: input.skillService
-        ? ({ text, userId, spaceId }) => input.skillService!.expand(text, { userId, spaceId })
+      expandSkillCommand: skillService
+        ? ({ text, userId, spaceId }) => skillService.expand(text, { userId, spaceId })
         : undefined,
     }, promptInput);
   }

@@ -55,9 +55,11 @@ import { cronJobQueueSyncStatus } from "../../cron-job-queue-state.js";
 import {
   createRepeatPromptCronJobIdempotencyKey,
   createRequestFingerprint,
+  createScheduledPromptTaskJobId,
   createSessionlessPromptSessionId,
 } from "../../request-idempotency.js";
 import { RUN_COMMAND_TASK_TYPE } from "@cohub/core/commands";
+import { TaskIdempotencyConflictError } from "@cohub/core/tasks";
 import { sanitizePostgresJsonValue } from "@cohub/core/content/sanitize";
 import { assignLabelsToSession, getPinnedSpaceIds, parseLabelRefs, resolveLabelPaths, resolveOrCreateLabelPaths } from "@cohub/core/labels";
 import { assignSessionSourceSystemLabel } from "@cohub/core/labels/session-source";
@@ -76,6 +78,7 @@ import {
   parsePromptEnv,
   parsePromptSystemInstructions,
   PromptEnvValidationError,
+  SessionPromptIdempotencyConflictError,
   PromptSystemInstructionsValidationError,
 } from "@cohub/core/sessions";
 import { delegatedPromptAuthFromWorkSession, promptAuthContextFromWorkSession } from "../../prompt-auth-context.js";
@@ -1969,6 +1972,9 @@ router.post("/:id/prompt", async (c) => {
           503,
         );
       }
+      if (error instanceof SessionPromptIdempotencyConflictError) {
+        return c.json({ message: error.message, code: error.code }, 409);
+      }
       const inputError = promptInputError(error);
       if (inputError) {
         return c.json(
@@ -1980,34 +1986,52 @@ router.post("/:id/prompt", async (c) => {
     }
   }
 
-  if (promptSchedule.mode === "delay") {
+  if (promptSchedule.mode === "delay" || promptSchedule.mode === "at") {
     const { scheduledAt } = promptSchedule;
-    const { taskRunId } = await enqueueTask({
-      type: "send_message",
-      spaceId,
-      sessionId: sessionId ?? undefined,
+    const jobId = createScheduledPromptTaskJobId({
       userId: user.uuid,
-      data: taskData,
-    }, {
-      delay: Math.max(0, scheduledAt.getTime() - Date.now()),
-      scheduledAt,
-    });
-    return c.json({ mode: "delay", taskRunId, scheduledAt: scheduledAt.toISOString(), sessionId });
-  }
-
-  if (promptSchedule.mode === "at") {
-    const { scheduledAt } = promptSchedule;
-    const { taskRunId } = await enqueueTask({
-      type: "send_message",
       spaceId,
-      sessionId: sessionId ?? undefined,
-      userId: user.uuid,
-      data: taskData,
-    }, {
-      delay: Math.max(0, scheduledAt.getTime() - Date.now()),
-      scheduledAt,
+      sessionId,
+      clientMessageId: requestedClientMessageId,
     });
-    return c.json({ mode: "at", taskRunId, scheduledAt: scheduledAt.toISOString(), sessionId });
+    const idempotencyFingerprint = requestedClientMessageId
+      ? createRequestFingerprint({
+          spaceId,
+          sessionId,
+          content,
+          generationPolicy,
+          intent: promptIntent,
+          accessMode,
+          env: promptEnv,
+          systemInstructions,
+          source,
+          title: body.title ?? null,
+          model: body.model ?? null,
+          provider: body.provider ?? null,
+          thinkingLevel: promptThinkingLevel ?? null,
+          labelIds: promptLabelIds,
+          schedule: { mode: promptSchedule.mode, scheduledAt: scheduledAt.toISOString() },
+        })
+      : null;
+    try {
+      const { taskRunId } = await enqueueTask({
+        type: "send_message",
+        spaceId,
+        sessionId: sessionId ?? undefined,
+        userId: user.uuid,
+        data: taskData,
+      }, {
+        delay: Math.max(0, scheduledAt.getTime() - Date.now()),
+        scheduledAt,
+        ...(jobId ? { jobId, idempotencyFingerprint } : {}),
+      });
+      return c.json({ mode: promptSchedule.mode, taskRunId, scheduledAt: scheduledAt.toISOString(), sessionId });
+    } catch (error) {
+      if (error instanceof TaskIdempotencyConflictError) {
+        return c.json({ message: "clientMessageId was reused with a different scheduled prompt", code: "prompt_idempotency_conflict" }, 409);
+      }
+      throw error;
+    }
   }
 
   const cronTitle = body.title?.trim() || "scheduled prompt";

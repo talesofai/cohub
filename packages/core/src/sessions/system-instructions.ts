@@ -29,9 +29,10 @@ export function sanitizePromptMetaForClient(
   if (!value || typeof value !== "object" || Array.isArray(value)) return null;
 
   const meta = value as Record<string, unknown>;
-  if (!Object.hasOwn(meta, "systemInstructions")) return meta;
+  if (!Object.hasOwn(meta, "systemInstructions") && !Object.hasOwn(meta, "requestFingerprint")) return meta;
 
   const publicMeta = { ...meta };
   delete publicMeta.systemInstructions;
+  delete publicMeta.requestFingerprint;
   return Object.keys(publicMeta).length > 0 ? publicMeta : null;
 }

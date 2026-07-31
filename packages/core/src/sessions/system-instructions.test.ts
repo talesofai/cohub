@@ -29,9 +29,10 @@ test("prompt system instructions reject invalid or oversized values", () => {
   );
 });
 
-test("client prompt metadata omits system instructions without mutating stored metadata", () => {
+test("client prompt metadata omits private prompt fields without mutating stored metadata", () => {
   const stored = {
     systemInstructions: "Do not expose this instruction",
+    requestFingerprint: "internal-fingerprint",
     clientMessageId: "message_1",
     billing: { status: "allowed_with_debt" },
   };
@@ -41,6 +42,7 @@ test("client prompt metadata omits system instructions without mutating stored m
     billing: { status: "allowed_with_debt" },
   });
   assert.equal(stored.systemInstructions, "Do not expose this instruction");
+  assert.equal(stored.requestFingerprint, "internal-fingerprint");
   assert.equal(sanitizePromptMetaForClient({ systemInstructions: "private" }), null);
   assert.equal(sanitizePromptMetaForClient(null), null);
   assert.equal(sanitizePromptMetaForClient([]), null);

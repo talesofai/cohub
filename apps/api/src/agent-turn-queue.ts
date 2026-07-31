@@ -41,7 +41,9 @@ export async function enqueueAgentTurnJob(
     attempts: 2,
     backoff: { type: "fixed", delay: 1000 },
     removeOnComplete: true,
-    removeOnFail: defaultJobRetention.removeOnFail,
+    // Queued session turns are the durable outbox. A retained failed wakeup
+    // would block the reconciler from recreating this stable job id.
+    removeOnFail: true,
     ...options,
   });
 }

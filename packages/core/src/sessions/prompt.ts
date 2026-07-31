@@ -1,4 +1,5 @@
 import { BillingAccessBlockedError, type BillingAccessDecision, type BillingUsageGate } from "@cohub/billing";
+import { createHash } from "node:crypto";
 import type { ContentBlock } from "@cohub/protocol/core";
 import type { GenerationPolicy } from "@cohub/protocol/generation";
 import type { SessionTurnIntent } from "@cohub/protocol/model";
@@ -163,6 +164,15 @@ export type SubmitSessionPromptHooks = {
   }) => Promise<void>;
 };
 
+export class SessionPromptIdempotencyConflictError extends Error {
+  readonly code = "session_prompt_idempotency_conflict";
+
+  constructor() {
+    super("Session prompt idempotency key was reused with a different request.");
+    this.name = "SessionPromptIdempotencyConflictError";
+  }
+}
+
 export type ExpandedPromptTemplate = {
   renderedText: string;
   template: {
@@ -198,6 +208,7 @@ export type SessionPromptDependencies = {
   }): Promise<{
     id: string;
     userMessageId: string;
+    requestFingerprint?: string | null;
     enqueueRecovery?: {
       content: ContentBlock[];
       meta: Record<string, unknown>;
@@ -290,6 +301,99 @@ function normalizePromptModelProvider(input: Pick<SubmitSessionPromptInput, "mod
   };
 }
 
+function stableStringify(value: unknown): string {
+  if (Array.isArray(value)) return `[${value.map(stableStringify).join(",")}]`;
+  if (value && typeof value === "object") {
+    return `{${Object.entries(value as Record<string, unknown>)
+      .filter(([, nested]) => nested !== undefined)
+      .sort(([left], [right]) => left.localeCompare(right))
+      .map(([key, nested]) => `${JSON.stringify(key)}:${stableStringify(nested)}`)
+      .join(",")}}`;
+  }
+  return JSON.stringify(value) ?? "null";
+}
+
+function normalizePromptAuthForFingerprint(auth: unknown) {
+  if (!auth || typeof auth !== "object" || Array.isArray(auth)) return null;
+  const record = auth as Record<string, unknown>;
+  const normalizeScopes = (value: unknown) => Array.isArray(value)
+    ? value.filter((item): item is string => typeof item === "string").map((item) => item.trim()).filter(Boolean).sort()
+    : [];
+  return {
+    type: typeof record.type === "string" ? record.type : null,
+    source: typeof record.source === "string" ? record.source : null,
+    actorUserId: typeof record.actorUserId === "string" ? record.actorUserId : null,
+    workId: typeof record.workId === "string" ? record.workId : null,
+    spaceId: typeof record.spaceId === "string" ? record.spaceId : null,
+    scopes: normalizeScopes(record.scopes),
+    workScopes: normalizeScopes(record.workScopes),
+    viewerScopes: normalizeScopes(record.viewerScopes),
+    workViewerGrantId: typeof record.workViewerGrantId === "string" ? record.workViewerGrantId : null,
+  };
+}
+
+function normalizePromptContextForFingerprint(context: SubmitSessionPromptContext | null | undefined) {
+  if (!context) return null;
+  const record = context as Record<string, unknown>;
+  const kind = context.kind;
+  const auth = normalizePromptAuthForFingerprint(record.auth);
+  if (kind === "space_hook") {
+    return {
+      kind,
+      taskRunId: context.taskRunId,
+      hookPath: context.hookPath,
+      eventId: context.eventId,
+      eventType: context.eventType,
+      eventActorUserId: context.eventActorUserId ?? null,
+      env: context.env ?? null,
+    };
+  }
+  if (kind === "channel") {
+    return {
+      kind,
+      provider: context.provider,
+      spaceChannelId: context.spaceChannelId,
+      externalConversationId: context.externalConversationId ?? null,
+      externalMessageId: context.externalMessageId,
+      providerContext: context.providerContext ?? null,
+    };
+  }
+  if (kind === "scheduled_task") {
+    return { kind, taskRunId: context.taskRunId, cronJobId: context.cronJobId ?? null, auth };
+  }
+  if (kind === "background_bash_task") {
+    return {
+      kind,
+      taskRunId: context.taskRunId,
+      auth,
+      origin: context.origin
+        ? { ...context.origin, requestId: undefined }
+        : null,
+    };
+  }
+  return { kind, auth };
+}
+
+export function createSessionPromptFingerprint(input: SubmitSessionPromptInput): string {
+  const modelProvider = normalizePromptModelProvider(input);
+  return createHash("sha256").update(stableStringify({
+    spaceId: input.spaceId,
+    sessionId: input.sessionId,
+    userId: input.userId,
+    content: input.content,
+    source: input.source.trim(),
+    model: modelProvider.model,
+    provider: modelProvider.provider,
+    thinkingLevel: input.thinkingLevel?.trim() || null,
+    generationPolicy: input.generationPolicy ?? null,
+    accessMode: input.accessMode ?? "full_access",
+    env: input.env ?? null,
+    systemInstructions: input.systemInstructions ?? null,
+    intent: input.intent ?? "followup",
+    context: normalizePromptContextForFingerprint(input.context),
+  })).digest("hex");
+}
+
 export const expandPromptContent = async (
   deps: Pick<SessionPromptDependencies, "expandPromptTemplate" | "expandSkillCommand">,
   input: {
@@ -349,6 +453,8 @@ export const expandPromptContent = async (
   return { content, promptTemplate, skillUsage };
 };
 
+const VALID_THINKING_LEVELS = new Set(["off", "minimal", "low", "medium", "high", "xhigh", "max"]);
+
 export const submitSessionPrompt = async (
   deps: SessionPromptDependencies,
   input: SubmitSessionPromptInput,
@@ -360,6 +466,10 @@ export const submitSessionPrompt = async (
   if (!clientMessageId) throw new Error("clientMessageId is required");
   if (!Array.isArray(input.content) || input.content.length === 0) throw new Error("content is required");
   const systemInstructions = parsePromptSystemInstructions(input.systemInstructions);
+  const requestFingerprint = createSessionPromptFingerprint({
+    ...input,
+    systemInstructions,
+  });
 
   const recoverIdempotentTurn = async (turn: {
     id: string;
@@ -374,20 +484,7 @@ export const submitSessionPrompt = async (
     if (!recovered) return;
     const { content, meta } = turn.enqueueRecovery;
     try {
-      await hooks.beforeEnqueue?.({
-        turnId: turn.id,
-        userMessageId: turn.userMessageId,
-        content,
-        meta,
-      });
-      await deps.enqueueSpacePrompt({
-        spaceId: input.spaceId,
-        sessionId: input.sessionId,
-        turnId: turn.id,
-        userMessageId: turn.userMessageId,
-        content,
-        meta,
-      });
+      await hooks.beforeEnqueue?.({ turnId: turn.id, userMessageId: turn.userMessageId, content, meta });
     } catch (error) {
       await deps.failSessionTurn({
         sessionId: input.sessionId,
@@ -396,6 +493,14 @@ export const submitSessionPrompt = async (
       }).catch(() => undefined);
       throw error;
     }
+    await deps.enqueueSpacePrompt({
+      spaceId: input.spaceId,
+      sessionId: input.sessionId,
+      turnId: turn.id,
+      userMessageId: turn.userMessageId,
+      content,
+      meta,
+    });
   };
 
   const existingTurn = await deps.findSessionTurnByClientMessageId({
@@ -404,6 +509,9 @@ export const submitSessionPrompt = async (
     clientMessageId,
   });
   if (existingTurn) {
+    if (existingTurn.requestFingerprint && existingTurn.requestFingerprint !== requestFingerprint) {
+      throw new SessionPromptIdempotencyConflictError();
+    }
     await recoverIdempotentTurn(existingTurn);
     return { turnId: existingTurn.id, userMessageId: existingTurn.userMessageId };
   }
@@ -436,7 +544,6 @@ export const submitSessionPrompt = async (
   const turnIntent: SessionTurnIntent = isDirectShellCommand ? "steer" : (input.intent ?? "followup");
   const userMessageId = deps.randomUUID();
   const modelProvider = normalizePromptModelProvider(input);
-const VALID_THINKING_LEVELS = new Set(["off", "minimal", "low", "medium", "high", "xhigh", "max"]);
 
   const requestedThinkingLevel = typeof input.thinkingLevel === "string" && VALID_THINKING_LEVELS.has(input.thinkingLevel.trim()) ? input.thinkingLevel.trim() : undefined;
   const billingDecision: BillingAccessDecision | null = isDirectShellCommand
@@ -457,6 +564,7 @@ const VALID_THINKING_LEVELS = new Set(["off", "minimal", "low", "medium", "high"
     source: input.source,
     userId,
     clientMessageId,
+    requestFingerprint,
     userMessageId,
     intent: inputIntent,
     dispatchIntent: turnIntent,
@@ -481,6 +589,7 @@ const VALID_THINKING_LEVELS = new Set(["off", "minimal", "low", "medium", "high"
     intent: turnIntent,
     meta: baseMeta,
   }).catch((error: unknown) => {
+    if (error instanceof SessionPromptIdempotencyConflictError) throw error;
     throw new SubmitSessionPromptError("failed to create session turn", error);
   });
 
@@ -504,14 +613,6 @@ const VALID_THINKING_LEVELS = new Set(["off", "minimal", "low", "medium", "high"
 
   try {
     await hooks.beforeEnqueue?.({ turnId, userMessageId, content, meta });
-    await deps.enqueueSpacePrompt({
-      spaceId: input.spaceId,
-      sessionId: input.sessionId,
-      turnId,
-      userMessageId,
-      content,
-      meta,
-    });
   } catch (error) {
     await deps.failSessionTurn({
       sessionId: input.sessionId,
@@ -521,6 +622,14 @@ const VALID_THINKING_LEVELS = new Set(["off", "minimal", "low", "medium", "high"
 
     throw error;
   }
+  await deps.enqueueSpacePrompt({
+    spaceId: input.spaceId,
+    sessionId: input.sessionId,
+    turnId,
+    userMessageId,
+    content,
+    meta,
+  });
 
   return { turnId, userMessageId };
 };

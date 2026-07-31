@@ -42,6 +42,21 @@ export function createRepeatPromptCronJobIdempotencyKey(input: {
   ]);
 }
 
+export function createScheduledPromptTaskJobId(input: {
+  userId: string;
+  spaceId: string;
+  sessionId: string | null;
+  clientMessageId: string | null;
+}) {
+  if (!input.clientMessageId) return undefined;
+  return `space-prompt-${createIdempotencyDigest([
+    input.userId,
+    input.spaceId,
+    input.sessionId,
+    input.clientMessageId,
+  ]).slice(0, 48)}`;
+}
+
 function stableStringify(value: unknown): string {
   if (Array.isArray(value)) return `[${value.map(stableStringify).join(",")}]`;
   if (value && typeof value === "object") {

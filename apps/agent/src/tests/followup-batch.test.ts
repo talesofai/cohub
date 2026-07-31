@@ -57,6 +57,38 @@ test("followup batches never cross actor or delegated authorization boundaries",
   assert.deepEqual(getMergeableFollowupPrefix(queued.slice(1)).map(({ id }) => id), ["2"]);
 });
 
+test("followup batches ignore websocket tracing identity", () => {
+  const context = (requestId: string, connectionId: string) => ({
+    kind: "websocket",
+    requestId,
+    connectionId,
+    auth: {
+      type: "delegated_prompt",
+      source: "work_session",
+      actorUserId: "user-1",
+      spaceId: "space-1",
+      scopes: ["space.read"],
+      exp: 4_000_000_000,
+      delegatedAt: requestId,
+    },
+  });
+  const queued = [
+    turn("1", "A", { meta: { context: context("request-1", "connection-1") } }),
+    turn("2", "A", { meta: { context: context("request-2", "connection-2") } }),
+  ];
+
+  assert.deepEqual(getMergeableFollowupPrefix(queued).map(({ id }) => id), ["1", "2"]);
+});
+
+test("followup batches keep space hook environments isolated", () => {
+  const queued = [
+    turn("1", "A", { meta: { context: { kind: "space_hook", env: { COHUB_HOOK_EVENT: "one" } } } }),
+    turn("2", "A", { meta: { context: { kind: "space_hook", env: { COHUB_HOOK_EVENT: "two" } } } }),
+  ];
+
+  assert.deepEqual(getMergeableFollowupPrefix(queued).map(({ id }) => id), ["1"]);
+});
+
 test("followup batches keep runtime model and tool configuration isolated", () => {
   const first = turn("1", "A", {
     meta: {

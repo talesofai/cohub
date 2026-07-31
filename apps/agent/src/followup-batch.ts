@@ -21,6 +21,37 @@ function stableStringify(value: unknown): string {
   return JSON.stringify(value) ?? "null";
 }
 
+function normalizedStringList(value: unknown): string[] {
+  if (!Array.isArray(value)) return [];
+  return value
+    .filter((item): item is string => typeof item === "string")
+    .map((item) => item.trim())
+    .filter(Boolean)
+    .sort();
+}
+
+function getExecutionContextProfile(value: unknown) {
+  const context = asRecord(value);
+  const auth = asRecord(context.auth);
+  const authProfile = Object.keys(auth).length === 0
+    ? null
+    : {
+        type: auth.type ?? null,
+        source: auth.source ?? null,
+        actorUserId: auth.actorUserId ?? null,
+        workId: auth.workId ?? null,
+        spaceId: auth.spaceId ?? null,
+        scopes: normalizedStringList(auth.scopes),
+        workScopes: normalizedStringList(auth.workScopes),
+        viewerScopes: normalizedStringList(auth.viewerScopes),
+        workViewerGrantId: auth.workViewerGrantId ?? null,
+      };
+  return {
+    auth: authProfile,
+    hookEnv: context.kind === "space_hook" ? context.env ?? null : null,
+  };
+}
+
 function getExecutionProfile(turn: FollowupTurn): string {
   const meta = asRecord(turn.meta);
   return stableStringify({
@@ -38,7 +69,7 @@ function getExecutionProfile(turn: FollowupTurn): string {
       ? meta.systemInstructions.trim() || null
       : null,
     billing: meta.billing ?? null,
-    context: meta.context ?? null,
+    context: getExecutionContextProfile(meta.context),
   });
 }
 

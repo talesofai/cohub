@@ -4,6 +4,7 @@ import {
   createGenerationTaskJobId,
   createRequestFingerprint,
   createRepeatPromptCronJobIdempotencyKey,
+  createScheduledPromptTaskJobId,
   createSessionlessPromptSessionId,
 } from "./request-idempotency.js";
 
@@ -33,6 +34,22 @@ test("repeat prompt identities are scoped by payer, space, and target session", 
   assert.notEqual(createRepeatPromptCronJobIdempotencyKey({ ...input, spaceId: "space-b" }), key);
   assert.notEqual(createRepeatPromptCronJobIdempotencyKey({ ...input, sessionId: "session-b" }), key);
   assert.notEqual(createRepeatPromptCronJobIdempotencyKey({ ...input, userId: "user-b" }), key);
+});
+
+test("one-off scheduled prompt identities are scoped by payer, space, and target session", () => {
+  const input = {
+    userId: "user-a",
+    spaceId: "space-a",
+    sessionId: "session-a",
+    clientMessageId: "schedule-a",
+  };
+  const jobId = createScheduledPromptTaskJobId(input);
+
+  assert.equal(createScheduledPromptTaskJobId(input), jobId);
+  assert.notEqual(createScheduledPromptTaskJobId({ ...input, userId: "user-b" }), jobId);
+  assert.notEqual(createScheduledPromptTaskJobId({ ...input, spaceId: "space-b" }), jobId);
+  assert.notEqual(createScheduledPromptTaskJobId({ ...input, sessionId: "session-b" }), jobId);
+  assert.equal(createScheduledPromptTaskJobId({ ...input, clientMessageId: null }), undefined);
 });
 
 test("generation job identity is stable for one user and client key", () => {
