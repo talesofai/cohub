@@ -4,6 +4,7 @@ import { BoardAwarenessClientPayloadSchema } from "./src/realtime/board-awarenes
 import { wsClientEventSchema } from "./src/realtime/schema.js";
 import {
 	getRealtimeBoardRoom,
+	getRealtimeSessionRoom,
 	normalizeRealtimeRooms,
 	parseRealtimeRoom,
 } from "./src/realtime/types.js";
@@ -25,6 +26,15 @@ test("Board rooms normalize alongside Space and user rooms", () => {
 		]),
 		[`board:${boardId}`, `space:${spaceId}`],
 	);
+});
+
+test("Session rooms are explicit resource rooms", () => {
+	const sessionId = "33333333-3333-4333-8333-333333333333";
+	assert.equal(getRealtimeSessionRoom(sessionId), `session:${sessionId}`);
+	assert.deepEqual(parseRealtimeRoom(`session:${sessionId}`), {
+		kind: "session",
+		id: sessionId,
+	});
 });
 
 test("Board awareness validates bounded state and gesture updates", () => {

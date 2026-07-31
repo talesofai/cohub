@@ -175,14 +175,17 @@ function accessForSessions() {
 async function openChatSession(input: {
 	spaceId: string;
 	sessionId: string;
-	session?: SessionRecord | null;
+	session?: SessionRecord | UserSessionListItem | null;
 	turnSequence?: number | null;
 }) {
 	const { spaceId, sessionId, session, turnSequence = null } = input;
 	spaceBox.current = spaceId;
 	sessionChat.enterSpace(spaceId);
-	if (session) {
-		sessionChat.upsertSessionRecord(session);
+	if (
+		session &&
+		(!("accessLevel" in session) || session.accessLevel !== "summary")
+	) {
+		sessionChat.upsertSessionRecord(session as SessionRecord);
 	}
 	sessionChat.syncContext({
 		spaceId,

@@ -192,13 +192,22 @@ export function createUserSessionListController() {
 
 		const existing = findById(sessionId);
 		if (existing) {
-			upsertSession({
-				...existing,
-				spaceId: existing.spaceId || spaceId,
-				latestMessageText: preview ?? existing.latestMessageText,
-				lastMessageAt: completedAt,
-				updatedAt: completedAt,
-			});
+			upsertSession(
+				existing.accessLevel === "summary"
+					? {
+							...existing,
+							spaceId: existing.spaceId || spaceId,
+							lastMessageAt: completedAt,
+							updatedAt: completedAt,
+						}
+					: {
+							...existing,
+							spaceId: existing.spaceId || spaceId,
+							latestMessageText: preview ?? existing.latestMessageText,
+							lastMessageAt: completedAt,
+							updatedAt: completedAt,
+						},
+			);
 		}
 		// Always reconcile with server so unknown / participant sessions appear.
 		scheduleRealtimeRefresh();

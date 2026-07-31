@@ -10,7 +10,9 @@ import { Hono } from "hono";
 import { bindAllActiveSpaceChannelsToGateway, handleInboundEvent, resolveChannelInboundForEventWithLock } from "../../channels.js";
 import { hasPermission } from "../../permissions.js";
 import { ensureInternalRequest, getOptionalAuth, getRequestPrincipal, requireValidId } from "../../lib/middleware.js";
-import { getSpaceById } from "../../space-sessions.js";
+import { getSpaceById, getSpaceSessionById } from "../../space-sessions.js";
+import { canReadSessionResource } from "../../owner-resource-access.js";
+import { spaceRoomReadPermission } from "../../realtime-room-access.js";
 import { getSpaceSandboxBySpaceId, updateSpaceSandbox } from "../../space-sandboxes.js";
 import { normalizeSandboxLifecycleStatus, normalizeSandboxRuntimeStatus } from "@cohub/sandbox-controller";
 import {
@@ -138,6 +140,23 @@ router.post("/authorize-realtime-rooms", async (c) => {
       continue;
     }
 
+    if (parsed.kind === "session") {
+      const session = await getSpaceSessionById(parsed.id);
+      const allowed = session
+        ? await canReadSessionResource(
+            principal,
+            session,
+            (permission, permissionContext) => hasPermission(user, permission, permissionContext),
+          ).catch((error) => {
+            logger.warn("[RealtimeRooms] failed to authorize Session room", { room, userId: user.uuid, error });
+            return false;
+          })
+        : false;
+      if (allowed) accepted.push(normalizedRoom);
+      else rejected.push({ room, code: "FORBIDDEN", message: "Missing Session view permission" });
+      continue;
+    }
+
     if (parsed.kind === "board") {
       const [board] = await db
         .select({ spaceId: boards.spaceId })
@@ -155,14 +174,18 @@ router.post("/authorize-realtime-rooms", async (c) => {
       continue;
     }
 
-    const allowed = await hasPermission(user, "space.view", { spaceId: parsed.id }).catch((error) => {
+    // Space rooms include Space-wide Session and Turn events. Scoped principals
+    // must opt into that broad read surface explicitly; owner-bound Work reads
+    // use session:<id> rooms instead.
+    const roomPermission = spaceRoomReadPermission(principal);
+    const allowed = await hasPermission(user, roomPermission, { spaceId: parsed.id }).catch((error) => {
       logger.warn("[RealtimeRooms] failed to authorize room", { room, userId: user.uuid, error });
       return false;
     });
     if (allowed) {
       accepted.push(normalizedRoom);
     } else {
-      rejected.push({ room, code: "FORBIDDEN", message: "Missing space.view permission" });
+      rejected.push({ room, code: "FORBIDDEN", message: `Missing ${roomPermission} permission` });
     }
   }
 

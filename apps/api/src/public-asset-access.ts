@@ -1,4 +1,5 @@
 import type { RequestPrincipal } from "./lib/middleware.js";
+import type { Permission } from "@cohub/core/permissions";
 import type { CreatePublicAssetUploadInput } from "./public-asset-storage.js";
 
 export function resolvePublicAssetUploadActor(
@@ -11,7 +12,7 @@ export function resolvePublicAssetUploadActor(
   if (
     principal?.type === "work_session"
     && input.purpose === "chat_attachment"
-    && input.spaceId === principal.workSession.spaceId
+    && (!input.spaceId || input.spaceId === principal.workSession.spaceId)
   ) {
     return {
       userUuid: principal.workSession.userUuid,
@@ -19,4 +20,13 @@ export function resolvePublicAssetUploadActor(
     };
   }
   return null;
+}
+
+export async function canUploadWorkChatAttachment(
+  checkPermission: (permission: Permission) => Promise<boolean>,
+  options: { hasBoundSession: boolean },
+): Promise<boolean> {
+  if (await checkPermission("generation.create")) return true;
+  return options.hasBoundSession
+    && await checkPermission("session.prompt.readonly");
 }

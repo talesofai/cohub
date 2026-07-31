@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
 import type { AuthUser, RequestPrincipal } from "../lib/middleware.js";
-import { resolvePublicAssetUploadActor } from "../public-asset-access.js";
+import { canUploadWorkChatAttachment, resolvePublicAssetUploadActor } from "../public-asset-access.js";
 
 const account = { uuid: "viewer-1" } as AuthUser;
 const work: RequestPrincipal = {
@@ -38,9 +38,28 @@ describe("public asset upload principal isolation", () => {
       resolvePublicAssetUploadActor(work, { purpose: "chat_attachment", spaceId: "space-1" }),
       { userUuid: account.uuid, workSpaceId: "space-1" },
     );
+    assert.deepEqual(
+      resolvePublicAssetUploadActor(work, { purpose: "chat_attachment" }),
+      { userUuid: account.uuid, workSpaceId: "space-1" },
+    );
     assert.equal(resolvePublicAssetUploadActor(work, { purpose: "user_avatar", spaceId: "space-1" }), null);
     assert.equal(resolvePublicAssetUploadActor(work, { purpose: "chat_attachment", spaceId: "space-2" }), null);
-    assert.equal(resolvePublicAssetUploadActor(work, { purpose: "chat_attachment" }), null);
+  });
+
+  it("accepts either prompt or generation consent for Work chat attachments", async () => {
+    assert.equal(await canUploadWorkChatAttachment(async () => false, { hasBoundSession: true }), false);
+    assert.equal(await canUploadWorkChatAttachment(
+      async (permission) => permission === "session.prompt.readonly",
+      { hasBoundSession: true },
+    ), true);
+    assert.equal(await canUploadWorkChatAttachment(
+      async (permission) => permission === "generation.create",
+      { hasBoundSession: false },
+    ), true);
+    assert.equal(await canUploadWorkChatAttachment(
+      async (permission) => permission === "session.prompt.readonly",
+      { hasBoundSession: false },
+    ), false);
   });
 
   it("rejects preview and execution principals even when their UUID matches", () => {

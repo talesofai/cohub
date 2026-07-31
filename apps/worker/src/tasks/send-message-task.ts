@@ -4,7 +4,7 @@ import type { TaskPayload } from "@cohub/protocol/task";
 import { registerTask } from "./registry.js";
 import { assignLabelsToSession } from "@cohub/core/labels";
 import { assignSessionSourceSystemLabel } from "@cohub/core/labels/session-source";
-import { getPromptAuthScopes, parsePromptEnv, type PromptAccessMode, type PromptAuthContext, type PromptEnv, type SubmitSessionPromptContext } from "@cohub/core/sessions";
+import { parsePromptEnv, type PromptAccessMode, type PromptAuthContext, type PromptEnv, type SubmitSessionPromptContext } from "@cohub/core/sessions";
 import type { SessionTurnIntent } from "@cohub/protocol/model";
 import { getPromptTemplateService } from "../prompt-templates.js";
 import { getSkillService } from "../skills.js";
@@ -12,6 +12,9 @@ import { getSessionDomainServices } from "../session-services.js";
 import { createLogger } from "@cohub/infra/logging";
 import { db } from "../db.js";
 import { dispatchLabelAssignmentsUpdated } from "../label-events.js";
+import { workViewerGrants } from "@cohub/db";
+import { and, eq } from "drizzle-orm";
+import { resolveScheduledPromptAuth } from "../work-viewer-prompt-auth.js";
 
 const MAX_TASK_SOURCE_LENGTH = 255;
 
@@ -29,11 +32,27 @@ const sessionPromptService = getSessionDomainServices({
   skillService: getSkillService(),
 });
 
-function sanitizeTaskPromptAuth(auth: PromptAuthContext | null | undefined, input: { spaceId: string; userId: string }) {
-  if (auth?.type !== "delegated_prompt" || auth.spaceId !== input.spaceId) return null;
-  if (auth.actorUserId !== input.userId) return null;
-  if (getPromptAuthScopes(auth, input.spaceId).length === 0) return null;
-  return auth;
+async function loadWorkViewerGrant(input: {
+  grantId: string;
+  workId: string;
+  spaceId: string;
+  viewerUserUuid: string;
+}) {
+  const [grant] = await db
+    .select({
+      scopes: workViewerGrants.scopes,
+      expiresAt: workViewerGrants.expiresAt,
+      revokedAt: workViewerGrants.revokedAt,
+    })
+    .from(workViewerGrants)
+    .where(and(
+      eq(workViewerGrants.id, input.grantId),
+      eq(workViewerGrants.workId, input.workId),
+      eq(workViewerGrants.spaceId, input.spaceId),
+      eq(workViewerGrants.viewerUserUuid, input.viewerUserUuid),
+    ))
+    .limit(1);
+  return grant ?? null;
 }
 
 const sendMessageHandler = async (job: import("bullmq").Job, context?: { taskRunId: string }) => {
@@ -64,6 +83,16 @@ const sendMessageHandler = async (job: import("bullmq").Job, context?: { taskRun
 
   const taskRunId = (context?.taskRunId ?? String(job.id ?? "")).trim();
   if (!taskRunId) throw new Error("taskRunId is required for send_message task");
+
+  const promptAccessMode = accessMode ?? "full_access";
+  const promptPermission = promptAccessMode === "read_only"
+    ? "session.prompt.readonly"
+    : "session.prompt.fullaccess";
+  const promptAuth = await resolveScheduledPromptAuth(
+    auth ?? null,
+    { spaceId, userId, requiredPermission: promptPermission },
+    loadWorkViewerGrant,
+  );
 
   const promptEnv = parsePromptEnv(env);
   const source = normalizeTaskSource(payloadSource);
@@ -97,14 +126,14 @@ const sendMessageHandler = async (job: import("bullmq").Job, context?: { taskRun
     provider: provider ?? null,
     thinkingLevel: thinkingLevel ?? null,
     generationPolicy: generationPolicy ?? null,
-    accessMode: accessMode ?? "full_access",
+    accessMode: promptAccessMode,
     env: promptEnv,
     intent: intent ?? null,
     context: {
       kind: "scheduled_task",
       taskRunId,
       cronJobId: payload.cronJobId ?? null,
-      auth: sanitizeTaskPromptAuth(auth ?? null, { spaceId, userId }),
+      auth: promptAuth,
     } satisfies SubmitSessionPromptContext,
   });
 

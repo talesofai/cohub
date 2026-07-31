@@ -7,7 +7,9 @@ import {
   requireValidId,
   useAuth,
 } from "../lib/middleware.js";
-import { resolvePublicAssetUploadActor } from "../public-asset-access.js";
+import { canUploadWorkChatAttachment, resolvePublicAssetUploadActor } from "../public-asset-access.js";
+import { canBindGenerationToSession } from "../owner-resource-access.js";
+import { getSpaceSessionById } from "../space-sessions.js";
 import {
   consumePublicAssetUploadQuota,
   createPublicAssetUploadPlan,
@@ -35,9 +37,31 @@ router.post("/uploads", async (c) => {
 
   const actor = resolvePublicAssetUploadActor(getRequestPrincipal(c), body);
   if (!actor) return authzDenied(c);
+  const workSpaceId = actor.workSpaceId;
+  const spaceId = body.spaceId ?? workSpaceId ?? undefined;
+  let hasBoundSession = false;
+  if (workSpaceId && body.sessionId) {
+    if (!requireValidId(body.sessionId)) return c.json({ message: "session not found" }, 404);
+    const session = await getSpaceSessionById(body.sessionId);
+    if (
+      !session
+      || session.spaceId !== workSpaceId
+      || !(await canBindGenerationToSession(
+        getRequestPrincipal(c),
+        session,
+        (permission, context) => hasPermission(user, permission, context),
+      ))
+    ) {
+      return c.json({ message: "session not found" }, 404);
+    }
+    hasBoundSession = true;
+  }
   if (
-    actor.workSpaceId
-    && !(await hasPermission(user, "generation.create", { spaceId: actor.workSpaceId }))
+    workSpaceId
+    && !(await canUploadWorkChatAttachment(
+      (permission) => hasPermission(user, permission, { spaceId: workSpaceId }),
+      { hasBoundSession },
+    ))
   ) {
     return authzDenied(c);
   }
@@ -48,7 +72,8 @@ router.post("/uploads", async (c) => {
   }
 
   // Account spaceId/sessionId fields are association hints. Work uploads are
-  // restricted to their bound Space and an active generation viewer grant.
+  // restricted to their bound Space, owner sessions, and an active prompt or
+  // generation viewer grant.
   // Rate limits: avatar 60/h; chat image specialization 300/h (demotes to file on failure).
 
   try {
@@ -56,7 +81,7 @@ router.post("/uploads", async (c) => {
       purpose: body.purpose,
       uploadProtocol: body.uploadProtocol,
       userUuid: actor.userUuid,
-      spaceId: body.spaceId,
+      spaceId,
       sessionId: body.sessionId,
       file: body.file,
     });

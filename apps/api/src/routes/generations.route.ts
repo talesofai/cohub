@@ -60,6 +60,7 @@ router.post("/", async (c) => {
   }
 
   const request = parsed.data;
+  const principal = getRequestPrincipal(c);
   if (!(await hasPermission(user, "generation.create", { spaceId: request.spaceId }))) return authzDenied(c);
 
   const sessionId = request.sessionId?.trim() || null;
@@ -71,7 +72,7 @@ router.post("/", async (c) => {
       return generationError(c, 404, "generation_session_not_found", "Generation session not found in this space.");
     }
     if (!(await canBindGenerationToSession(
-      getRequestPrincipal(c),
+      principal,
       session,
       (permission, context) => hasPermission(user, permission, context),
     ))) return authzDenied(c);
@@ -177,6 +178,7 @@ router.post("/", async (c) => {
         parameters,
         meta,
         modelDiscount,
+        ...(principal?.type === "work_session" ? { workId: principal.workSession.workId } : {}),
       },
     }, {
       attempts: 1,

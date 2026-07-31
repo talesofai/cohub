@@ -4,6 +4,7 @@ import { requireValidId, useAccountAuth, useAuth } from "../../lib/middleware.js
 import { getSpaceById } from "../../space-sessions.js";
 import { hasPermission, getRoleForSpaceUser } from "../../permissions.js";
 import type { SpaceRole } from "@cohub/db";
+import { projectSpaceInvitation } from "../../space-invitation-view.js";
 
 const VALID_ROLES: SpaceRole[] = ["host", "builder", "guest"];
 const DEFAULT_TTL_SECONDS = 7 * 24 * 60 * 60; // 7 days
@@ -93,6 +94,7 @@ router.get("/", async (c) => {
   if (!(await hasPermission(user, "member.view", { spaceId }))) {
     return c.json({ message: "forbidden" }, 403);
   }
+  const canManage = await hasPermission(user, "member.manage", { spaceId });
 
   // Scan for invite keys belonging to this space
   const spaceInviteKey = `${INVITE_PREFIX}:space:${spaceId}`;
@@ -111,15 +113,15 @@ router.get("/", async (c) => {
     const data = await redisCommandClient.hgetall(key);
     const ttl = await redisCommandClient.ttl(key);
 
-    invitations.push({
+    invitations.push(projectSpaceInvitation({
       token,
       role: data.role as SpaceRole,
-      status: data.status,
+      status: data.status ?? "unknown",
       useCount: Number.parseInt(data.use_count ?? "0", 10),
       maxUses: Number.parseInt(data.max_uses ?? "0", 10) || null,
       createdAt: data.created_at ?? null,
       expiresInSeconds: ttl > 0 ? ttl : null,
-    });
+    }, canManage));
   }
 
   return c.json({ items: invitations });

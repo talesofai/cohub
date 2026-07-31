@@ -1167,7 +1167,6 @@ router.get("/by-slug/:username/:slug", async (c) => {
   return c.json({
     id: space.id,
     name: space.name,
-    slug: space.slug,
     accessLevel: "minimal" as const,
   });
 });

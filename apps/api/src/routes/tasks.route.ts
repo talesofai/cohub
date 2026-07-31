@@ -1,7 +1,7 @@
 import { Hono } from "hono";
 import { db } from "../db/index.js";
 import { taskRuns } from "@cohub/db";
-import { eq, and, desc, inArray, lt, or } from "drizzle-orm";
+import { eq, and, desc, inArray, lt, or, sql, type SQL } from "drizzle-orm";
 import { getOptionalAuth, getRequestPrincipal, useAuth, requireValidId, authzDenied } from "../lib/middleware.js";
 import { hasPermission } from "../permissions.js";
 import { taskQueue } from "../tasks.js";
@@ -26,7 +26,7 @@ function buildTaskCursor(run: { createdAt: Date | string | null; id: string } | 
 }
 
 function applyTaskFilters(input: {
-  conditions: ReturnType<typeof eq>[];
+  conditions: SQL[];
   sessionId?: string;
   cronJobId?: string;
   taskType?: string;
@@ -137,9 +137,9 @@ router.get("/", async (c) => {
   const cursorValue = parseTaskCursor(cursor);
   if (cursorValue === "invalid") return c.json({ message: "invalid cursor" }, 400);
 
-  if (spaceId) {
+  if (spaceId && principal?.type !== "work_session") {
     if (!(await hasPermission(user, "taskrun.view", { spaceId, sessionId: sessionId ?? undefined }))) return authzDenied(c);
-    const conditions = [eq(taskRuns.spaceId, spaceId)];
+    const conditions: SQL[] = [eq(taskRuns.spaceId, spaceId)];
     applyTaskFilters({ conditions, sessionId, cronJobId, taskType, status, cursor: cursorValue });
     const rows = await db
       .select()
@@ -149,7 +149,7 @@ router.get("/", async (c) => {
       .limit(limit + 1);
     const runs = await hydrateTaskRunUserProfiles(rows.slice(0, limit), {
       sanitizeForList: true,
-      viewerUserId: userId,
+      viewerUserId: principal?.type === "user" ? userId : null,
     });
     return c.json({ runs, pageInfo: { hasMore: rows.length > limit, nextCursor: rows.length > limit ? buildTaskCursor(runs.at(-1)) : null } });
   }
@@ -158,14 +158,18 @@ router.get("/", async (c) => {
 
   const ownerScope = ownerTaskListScope(principal);
   if (!ownerScope || ownerScope.userUuid !== userId) return authzDenied(c);
+  if (spaceId && ownerScope.spaceId !== spaceId) return authzDenied(c);
   if (
     ownerScope.requiresGenerationGrant
     && ownerScope.spaceId
     && !(await hasPermission(user, "generation.create", { spaceId: ownerScope.spaceId }))
   ) return authzDenied(c);
 
-  const conditions = [eq(taskRuns.userUuid, userId)];
+  const conditions: SQL[] = [eq(taskRuns.userUuid, userId)];
   if (ownerScope.spaceId) conditions.push(eq(taskRuns.spaceId, ownerScope.spaceId));
+  if (ownerScope.workId) {
+    conditions.push(sql`${taskRuns.payload} -> 'data' ->> 'workId' = ${ownerScope.workId}`);
+  }
   const ownerTaskType = ownerTaskListTaskType(ownerScope, taskType);
   if (ownerTaskType === null) {
     return c.json({ runs: [], pageInfo: { hasMore: false, nextCursor: null } });
@@ -186,7 +190,7 @@ router.get("/", async (c) => {
     .limit(limit + 1);
   const runs = await hydrateTaskRunUserProfiles(rows.slice(0, limit), {
     sanitizeForList: true,
-    viewerUserId: userId,
+    viewerUserId: principal?.type === "user" ? userId : null,
   });
 
   return c.json({ runs, pageInfo: { hasMore: rows.length > limit, nextCursor: rows.length > limit ? buildTaskCursor(runs.at(-1)) : null } });
@@ -211,7 +215,9 @@ router.get("/:taskId", async (c) => {
   }
 
   const job = await taskQueue.getJob(run.jobId).catch(() => null);
-  const [hydratedRun] = await hydrateTaskRunUserProfiles([run], { viewerUserId: user?.uuid });
+  const [hydratedRun] = await hydrateTaskRunUserProfiles([run], {
+    viewerUserId: principal?.type === "user" ? user?.uuid : null,
+  });
   return c.json({ run: hydratedRun, progress: job?.progress ?? null });
 });
 

@@ -22,6 +22,7 @@ import type {
 import type { PlannedGatewayOutboundCommand } from "@cohub/protocol/gateway";
 import {
   getRealtimeBoardRoom,
+  getRealtimeSessionRoom,
   getRealtimeSpaceRoom,
   getRealtimeUserRoom,
   getSessionTurnPatchStreamKey,
@@ -47,6 +48,10 @@ import { markChannelDegraded, touchChannelOutbound } from "./channel-health.js";
 import { handleAsrWebSocketConnection } from "./asr/session.js";
 import { handleRelayControlConnection, handleRelayDataConnection, handleRelayPeerConnection } from "./relay/index.js";
 import {
+  isRealtimeAuthExpired,
+  realtimeConnectionTtlSeconds,
+} from "./realtime-auth-lifetime.js";
+import {
   createPubSubRedisClient,
   redisCommandClient,
   REALTIME_OUTBOUND_CHANNEL,
@@ -60,6 +65,9 @@ type WsConnectionContext = {
   userName?: string;
   userAvatarUrl?: string;
   token?: string;
+  principalType?: "user" | "work_session";
+  authExpiresAtMs?: number;
+  lastRoomAuthorizationAt: number;
   capabilities: Set<string>;
   rooms: Set<RealtimeRoom>;
   presenceMetaBySpace: Map<string, Record<string, unknown> | null>;
@@ -207,6 +215,11 @@ const unsubscribeConnectionFromAllRooms = (ctx: WsConnectionContext) => {
 };
 
 const persistWsConnection = async (ctx: WsConnectionContext) => {
+  const ttlSeconds = realtimeConnectionTtlSeconds(
+    ctx.authExpiresAtMs,
+    WS_CONNECTION_TTL_SECONDS,
+  );
+  if (ttlSeconds <= 0) return;
   await redisCommandClient.set(getWsConnectionKey(ctx.connectionId), JSON.stringify({
     connectionId: ctx.connectionId,
     userId: ctx.userId ?? null,
@@ -214,9 +227,10 @@ const persistWsConnection = async (ctx: WsConnectionContext) => {
     userAvatarUrl: ctx.userAvatarUrl ?? null,
     capabilities: [...ctx.capabilities],
     rooms: [...ctx.rooms],
+    authExpiresAtMs: ctx.authExpiresAtMs ?? null,
     connectedAt: Date.now(),
     nodeId: process.env.POD_NAME || process.env.HOSTNAME || "unknown",
-  }), "EX", WS_CONNECTION_TTL_SECONDS);
+  }), "EX", ttlSeconds);
 };
 
 const cleanupWsConnection = async (ctx: WsConnectionContext | undefined) => {
@@ -447,7 +461,12 @@ const parseWsJson = (value: string): WsClientEvent => {
 };
 
 const touchWsConnection = async (ctx: WsConnectionContext) => {
-  await redisCommandClient.expire(getWsConnectionKey(ctx.connectionId), WS_CONNECTION_TTL_SECONDS).catch(() => undefined);
+  const ttlSeconds = realtimeConnectionTtlSeconds(
+    ctx.authExpiresAtMs,
+    WS_CONNECTION_TTL_SECONDS,
+  );
+  if (ttlSeconds <= 0) return;
+  await redisCommandClient.expire(getWsConnectionKey(ctx.connectionId), ttlSeconds).catch(() => undefined);
   const spaceIds = [...ctx.rooms]
     .map(getSpaceIdFromRoom)
     .filter((spaceId): spaceId is string => Boolean(spaceId));
@@ -491,7 +510,11 @@ const setCachedRoomAuth = (authToken: string, room: RealtimeRoom, value: { accep
   });
 };
 
-const authorizeRoomsForConnection = async (ctx: WsConnectionContext, rooms: RealtimeRoom[]) => {
+const authorizeRoomsForConnection = async (
+  ctx: WsConnectionContext,
+  rooms: RealtimeRoom[],
+  bypassCache = false,
+) => {
   if (!ctx.token) throw new Error("authentication required");
 
   const accepted: RealtimeRoom[] = [];
@@ -499,7 +522,7 @@ const authorizeRoomsForConnection = async (ctx: WsConnectionContext, rooms: Real
   const misses: RealtimeRoom[] = [];
 
   for (const room of rooms) {
-    const cached = getCachedRoomAuth(ctx.token, room);
+    const cached = bypassCache ? null : getCachedRoomAuth(ctx.token, room);
     if (!cached) {
       misses.push(room);
       continue;
@@ -526,6 +549,36 @@ const startWsConnectionSweeper = () => {
   setInterval(async () => {
     const now = Date.now();
     for (const [connectionId, ctx] of wsConnections.entries()) {
+      if (isRealtimeAuthExpired(ctx.authExpiresAtMs, now)) {
+        const socket = wsSockets.get(connectionId);
+        if (socket && socket.readyState === socket.OPEN) {
+          socket.close(4003, "authentication expired");
+        }
+        await cleanupWsConnection(ctx);
+        continue;
+      }
+      if (
+        ctx.token
+        && ctx.rooms.size > 0
+        && now - ctx.lastRoomAuthorizationAt >= ROOM_AUTH_CACHE_TTL_MS
+      ) {
+        const currentRooms = [...ctx.rooms];
+        const roomAuth = await authorizeRoomsForConnection(ctx, currentRooms, true).catch((error) => {
+          logger.warn("[Gateway] failed to reauthorize realtime rooms", {
+            connectionId,
+            error,
+          });
+          return null;
+        });
+        if (roomAuth) {
+          const accepted = new Set(roomAuth.rooms);
+          for (const room of currentRooms) {
+            if (!accepted.has(room)) unsubscribeConnectionFromRoom(ctx, room);
+          }
+          ctx.lastRoomAuthorizationAt = now;
+          await persistWsConnection(ctx);
+        }
+      }
       const raw = await redisCommandClient.get(getWsConnectionKey(connectionId)).catch(() => null);
       if (raw) continue;
       const socket = wsSockets.get(connectionId);
@@ -542,9 +595,14 @@ const resolveRealtimeRoomsForEnvelope = (payload: GatewayWsBroadcastPayload): Re
   const explicitRooms = normalizeRealtimeRooms(Array.isArray(payload.rooms) ? payload.rooms : []);
   if (explicitRooms.length > 0) return explicitRooms;
 
+  const resourceRooms: RealtimeRoom[] = [];
   if (typeof payload.spaceId === "string" && payload.spaceId.trim()) {
-    return [getRealtimeSpaceRoom(payload.spaceId.trim())];
+    resourceRooms.push(getRealtimeSpaceRoom(payload.spaceId.trim()));
   }
+  if (typeof payload.sessionId === "string" && payload.sessionId.trim()) {
+    resourceRooms.push(getRealtimeSessionRoom(payload.sessionId.trim()));
+  }
+  if (resourceRooms.length > 0) return resourceRooms;
 
   const task = payloadRecord.task;
   if (task && typeof task === "object") {
@@ -567,10 +625,16 @@ async function fanOutBroadcastToLocalSockets(payload: GatewayWsBroadcastPayload)
 
   const deliverConnection = (connectionId: string) => {
     if (deliveredConnectionIds.has(connectionId)) return;
+    const ctx = wsConnections.get(connectionId);
     const socket = wsSockets.get(connectionId);
     if (!socket) return;
+    if (isRealtimeAuthExpired(ctx?.authExpiresAtMs)) {
+      if (socket.readyState === socket.OPEN) socket.close(4003, "authentication expired");
+      void cleanupWsConnection(ctx);
+      return;
+    }
     deliveredConnectionIds.add(connectionId);
-    sendWsRealtime(socket, wsConnections.get(connectionId), envelope);
+    sendWsRealtime(socket, ctx, envelope);
   };
 
   for (const room of resolveRealtimeRoomsForEnvelope(payload)) {
@@ -628,6 +692,7 @@ const submitWebsocketSessionMessage = async (ctx: WsConnectionContext, requestId
   }
 
   if (!ctx.userId) throw new WsClientInputError("authentication required");
+  if (!ctx.principalType) throw new WsClientInputError("authentication required");
   if (!spaceId || !sessionId) throw new WsClientInputError("spaceId and sessionId are required");
   if (content.length === 0) throw new WsClientInputError("content is required");
 
@@ -637,6 +702,7 @@ const submitWebsocketSessionMessage = async (ctx: WsConnectionContext, requestId
     sessionId,
     userId: ctx.userId,
     authToken: ctx.token,
+    principalType: ctx.principalType,
     clientMessageId,
     content,
     source: "websocket",
@@ -852,6 +918,8 @@ async function main() {
     const connectionId = randomUUID();
     const ctx: WsConnectionContext = {
       connectionId,
+      authExpiresAtMs: undefined,
+      lastRoomAuthorizationAt: 0,
       capabilities: new Set(),
       rooms: new Set(),
       presenceMetaBySpace: new Map(),
@@ -888,6 +956,12 @@ async function main() {
         const message = parseWsJson(raw);
         requestId = typeof message.requestId === "string" ? message.requestId : undefined;
 
+        if (ctx.token && isRealtimeAuthExpired(ctx.authExpiresAtMs)) {
+          socket.close(4003, "authentication expired");
+          await cleanupWsConnection(ctx);
+          return;
+        }
+
         if (message.type === "ping") {
           await touchWsConnection(ctx);
           sendWsEnvelope(socket, buildRealtimeEnvelope({
@@ -918,6 +992,11 @@ async function main() {
           ctx.userName = typeof result.user.nick_name === "string" ? result.user.nick_name : undefined;
           ctx.userAvatarUrl = typeof result.user.avatar_url === "string" ? result.user.avatar_url : undefined;
           ctx.token = token;
+          ctx.principalType = result.principalType;
+          ctx.authExpiresAtMs = result.tokenExpiresAt === null
+            ? undefined
+            : result.tokenExpiresAt * 1000;
+          ctx.lastRoomAuthorizationAt = Date.now();
           ctx.capabilities = new Set(
             Array.isArray(message.payload.capabilities)
               ? message.payload.capabilities.filter((value) => typeof value === "string" && value.trim())

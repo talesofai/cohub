@@ -1,4 +1,6 @@
-import type { SessionRecord } from "@neta-art/cohub";
+import type { SessionRecord, UserSessionListItem } from "@neta-art/cohub";
+
+type MergeableSession = SessionRecord | UserSessionListItem;
 
 function hasOwn<T extends object, K extends PropertyKey>(
 	value: T,
@@ -18,7 +20,15 @@ function hasOwn<T extends object, K extends PropertyKey>(
 export function mergeSessionRecord(
 	existing: SessionRecord | undefined | null,
 	incoming: SessionRecord,
-): SessionRecord {
+): SessionRecord;
+export function mergeSessionRecord(
+	existing: UserSessionListItem | undefined | null,
+	incoming: UserSessionListItem,
+): UserSessionListItem;
+export function mergeSessionRecord(
+	existing: MergeableSession | undefined | null,
+	incoming: MergeableSession,
+): MergeableSession {
 	if (!existing) return incoming;
 	return {
 		...existing,
@@ -33,15 +43,33 @@ export function mergeSessionRecord(
 		participantProfiles: hasOwn(incoming, "participantProfiles")
 			? incoming.participantProfiles
 			: existing.participantProfiles,
-	};
+	} as MergeableSession;
 }
 
+export function mergeSessionRecords(sessions: SessionRecord[]): SessionRecord[];
 export function mergeSessionRecords(
-	sessions: SessionRecord[],
-): SessionRecord[] {
-	const byId = new Map<string, SessionRecord>();
+	sessions: UserSessionListItem[],
+): UserSessionListItem[];
+export function mergeSessionRecords(
+	sessions: MergeableSession[],
+): MergeableSession[] {
+	const byId = new Map<string, MergeableSession>();
 	for (const session of sessions) {
-		byId.set(session.id, mergeSessionRecord(byId.get(session.id), session));
+		const existing = byId.get(session.id);
+		byId.set(session.id, {
+			...existing,
+			...session,
+			meta: hasOwn(session, "meta") ? session.meta : existing?.meta,
+			userProfile: hasOwn(session, "userProfile")
+				? session.userProfile
+				: existing?.userProfile,
+			participantUserUuids: hasOwn(session, "participantUserUuids")
+				? session.participantUserUuids
+				: existing?.participantUserUuids,
+			participantProfiles: hasOwn(session, "participantProfiles")
+				? session.participantProfiles
+				: existing?.participantProfiles,
+		} as MergeableSession);
 	}
 	return Array.from(byId.values());
 }

@@ -6,7 +6,7 @@ import * as schema from "@cohub/db";
 import { db } from "../db/index.js";
 import { config } from "../config.js";
 import { getRequestPrincipal, getWorkSessionPrincipal, requireValidId, useAccountAuth, useAuth, authzDenied, type AuthUser } from "../lib/middleware.js";
-import { ensureCurrentUserProfile, publicUserProfile, resolveCurrentUserEmail, updateCurrentUserProfile, LogtoUserRequiredError, UsernameClearError, UsernameConflictError, UsernameReservedError, validateUsername } from "../user-profiles.js";
+import { ensureCurrentUserProfile, fallbackPublicUserProfile, getProfilesByUuids, resolveCurrentUserEmail, updateCurrentUserProfile, LogtoUserRequiredError, UsernameClearError, UsernameConflictError, UsernameReservedError, validateUsername } from "../user-profiles.js";
 import {
   filterSessionsByPermission,
   getSpaceMemberRole,
@@ -90,22 +90,25 @@ router.get("/", async (c) => {
   if (user instanceof Response) return user;
   const principal = getRequestPrincipal(c);
   if (principal?.type !== "user" && principal?.type !== "work_session") return authzDenied(c);
-  const profile = await ensureCurrentUserProfile(user);
   if (principal.type === "work_session") {
+    const profile = (await getProfilesByUuids([user.uuid])).get(user.uuid)
+      ?? fallbackPublicUserProfile(user.uuid);
     return c.json({
       uuid: user.uuid,
-      profile: publicUserProfile(profile),
-      email: null,
+      profile,
       principalType: principal.type,
       spaceId: principal.workSession.spaceId,
+      tokenExpiresAt: principal.workSession.exp,
     });
   }
+  const profile = await ensureCurrentUserProfile(user);
   return c.json({
     uuid: user.uuid,
     profile,
     email: await resolveCurrentUserEmail(user),
     principalType: principal.type,
     spaceId: null,
+    tokenExpiresAt: typeof user.tokenExpiresAt === "number" ? user.tokenExpiresAt : null,
   });
 });
 
@@ -205,8 +208,9 @@ router.get("/rules", async (c) => {
 
 /**
  * Cross-space recent sessions for the account identity.
- * Gate: `user.session.list`. Work sessions always include their own sessions;
- * participant sessions still require the original Work's `session.view` scope.
+ * Gate: `user.session.list`. Work sessions always include their own sessions.
+ * Participant sessions and full list records require `session.view` in each
+ * Session's exact Space.
  * Ordinary account tokens retain membership / access-policy visibility.
  */
 async function listVisibleUserSessions(
@@ -327,8 +331,18 @@ router.get("/sessions", async (c) => {
     const { sessions, pageInfo } = await listVisibleUserSessions(user, { limit, cursor, ownerOnly });
     const hydratedSessions = await hydrateSessionParticipantProfiles(sessions);
     const withSpaces = await attachSessionSpaceSummaries(hydratedSessions);
+    const projectedSessions = workSession
+      ? await Promise.all(withSpaces.map(async (session) => (
+          await hasPermission(user, "session.view", {
+            spaceId: session.spaceId,
+            sessionId: session.id,
+          })
+            ? session
+            : ownerSessionSummary(session)
+        )))
+      : withSpaces;
     return c.json({
-      sessions: workSession ? withSpaces.map(ownerSessionSummary) : withSpaces,
+      sessions: projectedSessions,
       pageInfo,
     });
   } catch (error) {

@@ -1079,7 +1079,8 @@ async function createInvite() {
 	}
 }
 
-async function copyInviteLink(token: string) {
+async function copyInviteLink(token: string | undefined) {
+	if (!token) return false;
 	const url = `${window.location.origin}/invite/${token}`;
 	try {
 		if (navigator.clipboard?.writeText) {
@@ -1107,7 +1108,8 @@ async function copyInviteLink(token: string) {
 	}
 }
 
-async function revokeInvite(token: string) {
+async function revokeInvite(token: string | undefined) {
+	if (!token) return;
 	if (!canManageSpaceMembers) return;
 	if (!window.confirm("Revoke this invitation link? It will no longer work."))
 		return;
@@ -1687,7 +1689,7 @@ $effect(() => {
 								<p class="mt-3 text-[12px] text-text-tertiary">No invite links.</p>
 							{:else if invitations.length > 0}
 								<div class="mt-3 divide-y divide-border-subtle rounded-md border border-border-subtle">
-									{#each invitations as invitation (invitation.token)}
+									{#each invitations as invitation (`${invitation.token ?? "summary"}:${invitation.role}:${invitation.createdAt ?? ""}`)}
 										<div class="flex items-center justify-between gap-3 px-3 py-2.5">
 											<div class="min-w-0 flex-1">
 												<div class="flex flex-wrap items-center gap-2">
@@ -1696,7 +1698,7 @@ $effect(() => {
 												</div>
 												<div class="mt-0.5 text-[10px] text-text-placeholder">{invitation.status === 'active' ? formatInviteExpiry(invitation.expiresInSeconds) : invitation.status === 'revoked' ? 'Revoked' : 'All uses exhausted'}</div>
 											</div>
-											{#if invitation.status === 'active'}
+										{#if invitation.status === 'active' && invitation.token && canManageSpaceMembers}
 												<div class="flex shrink-0 items-center gap-0.5">
 													<button type="button" title="Copy invite link" onclick={() => { void copyInviteLink(invitation.token); }} class="inline-flex h-8 w-8 items-center justify-center rounded-[5px] text-text-tertiary transition-colors hover:bg-bg-hover hover:text-text-primary">{#if copiedInviteToken === invitation.token}<Check class="h-3.5 w-3.5 text-status-running" />{:else}<Copy class="h-3.5 w-3.5" />{/if}</button>
 													<button type="button" title="Revoke invite" onclick={() => { void revokeInvite(invitation.token); }} class="inline-flex h-8 w-8 items-center justify-center rounded-[5px] text-text-tertiary transition-colors hover:bg-error-bg hover:text-error-soft"><Trash2 class="h-3.5 w-3.5" /></button>

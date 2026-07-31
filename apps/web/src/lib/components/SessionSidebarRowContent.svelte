@@ -1,5 +1,5 @@
 <script lang="ts">
-import type { SessionRecord } from "@neta-art/cohub";
+import type { UserSessionListItem } from "@neta-art/cohub";
 import UserAvatar from "$lib/components/UserAvatar.svelte";
 import type { ModelCatalogItem } from "$lib/model-catalog";
 import { getSessionSidebarActivity } from "$lib/session-sidebar-activity";
@@ -16,7 +16,7 @@ const {
 	modelsCatalog,
 	showSourceBadge = false,
 }: {
-	session: SessionRecord;
+	session: UserSessionListItem;
 	title: string;
 	isMobile?: boolean;
 	modelsCatalog?: ModelCatalogItem[] | null;
@@ -85,7 +85,7 @@ function getInitials(name: string) {
 	);
 }
 
-function getSessionParticipants(session: SessionRecord): Participant[] {
+function getSessionParticipants(session: UserSessionListItem): Participant[] {
 	const participants: Participant[] = [];
 	const seen = new Set<string>();
 	const addProfile = (

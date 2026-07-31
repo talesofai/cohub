@@ -18,6 +18,7 @@ export {
   WS_COMPACT_STREAM_CAPABILITY,
   WS_ROOM_SUBSCRIPTION_CAPABILITY,
   getRealtimeBoardRoom,
+  getRealtimeSessionRoom,
   getRealtimeSpaceRoom,
   getRealtimeUserRoom,
   getSessionTurnPatchStreamKey,

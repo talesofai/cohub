@@ -1,5 +1,5 @@
 import type { ContentBlock, Usage } from "@cohub/protocol/core";
-import { getRealtimeSpaceRoom } from "@cohub/protocol/realtime/types";
+import { getRealtimeSessionRoom } from "@cohub/protocol/realtime/types";
 import type {
   MessageRecord,
   SessionTurnRecord,
@@ -447,7 +447,7 @@ export class SessionGenerationStreamClient {
     let recoveryAborted = false;
     let bufferedEvents: WebsocketEventPayload[] = [];
     let bufferedEventsReplayed = false;
-    const releaseRoom = this.websocketClient.retainRooms([getRealtimeSpaceRoom(this.spaceId)]);
+    const releaseRoom = this.websocketClient.retainRooms([getRealtimeSessionRoom(this.sessionId)]);
     const unsubscribe = this.websocketClient.on("event", (event) => {
       if (event.spaceId !== this.spaceId || event.sessionId !== this.sessionId) {
         return;

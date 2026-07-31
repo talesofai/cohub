@@ -31,6 +31,8 @@ import {
   isPrivateNetworkAddress,
   requireValidId,
 } from "../../lib/middleware.js";
+import { canWriteSessionResource } from "../../owner-resource-access.js";
+import { resolveInternalPromptActor, type InternalPromptPrincipalType } from "../../internal-prompt-auth.js";
 
 
 const logger = createLogger({ serviceName: "cohub-api" });
@@ -384,6 +386,7 @@ router.post("/:spaceId/sessions/:sessionId/prompt", async (c) => {
       content: ContentBlock[];
       userId?: string | null;
       authToken?: string | null;
+      principalType?: InternalPromptPrincipalType | null;
       clientMessageId?: string | null;
       source?: string | null;
       model?: string | null;
@@ -399,6 +402,9 @@ router.post("/:spaceId/sessions/:sessionId/prompt", async (c) => {
   }
   const userId = body.userId?.trim();
   if (!userId) return c.json({ message: "userId is required" }, 400);
+  if (body.principalType !== "user" && body.principalType !== "work_session") {
+    return c.json({ message: "principalType is required" }, 400);
+  }
   const accessMode = body.accessMode ?? "full_access";
   if (accessMode !== "read_only" && accessMode !== "full_access") {
     return c.json({ message: "accessMode must be one of: read_only, full_access" }, 400);
@@ -407,12 +413,21 @@ router.post("/:spaceId/sessions/:sessionId/prompt", async (c) => {
   const promptThinkingLevel = typeof body.thinkingLevel === "string" && body.thinkingLevel.trim() && VALID_THINKING_LEVELS.has(body.thinkingLevel.trim()) ? body.thinkingLevel.trim() : body.thinkingLevel === undefined || body.thinkingLevel === null ? undefined : null;
   if (promptThinkingLevel === null) return c.json({ message: "thinkingLevel must be one of: off, minimal, low, medium, high, xhigh, max" }, 400);
   const promptPermission = accessMode === "read_only" ? "session.prompt.readonly" : "session.prompt.fullaccess";
-  const workSession = body.authToken ? verifyWorkSessionToken(body.authToken) : null;
-  const permissionSubject = workSession && workSession.userUuid === userId
-    ? ({ uuid: userId, workSession } as { uuid: string; workSession: typeof workSession })
-    : { uuid: userId };
-  const promptAuth = workSession?.userUuid === userId ? promptAuthContextFromWorkSession(workSession, spaceId) : null;
-  if (!(await hasPermission(permissionSubject, promptPermission, { spaceId, sessionId }))) {
+  const actor = resolveInternalPromptActor({
+    principalType: body.principalType,
+    userId,
+    authToken: body.authToken?.trim() ?? "",
+  }, verifyWorkSessionToken);
+  if (!actor) return c.json({ message: "forbidden" }, 403);
+  const promptAuth = actor.workSession
+    ? promptAuthContextFromWorkSession(actor.workSession, spaceId)
+    : null;
+  if (!(await canWriteSessionResource(
+    actor.principal,
+    session,
+    promptPermission,
+    (permission, context) => hasPermission(actor.permissionSubject, permission, context),
+  ))) {
     return c.json({ message: "forbidden" }, 403);
   }
   const clientMessageId = body.clientMessageId?.trim();

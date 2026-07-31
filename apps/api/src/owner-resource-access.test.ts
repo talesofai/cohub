@@ -13,9 +13,9 @@ import {
 } from "./owner-resource-access.js";
 
 const user = (uuid = "viewer-1"): OwnerResourcePrincipal => ({ type: "user", user: { uuid } });
-const work = (uuid = "viewer-1", spaceId = "space-1"): OwnerResourcePrincipal => ({
+const work = (uuid = "viewer-1", spaceId = "space-1", workId = "work-1"): OwnerResourcePrincipal => ({
   type: "work_session",
-  workSession: { userUuid: uuid, spaceId },
+  workSession: { userUuid: uuid, spaceId, workId },
 });
 const preview = (uuid = "viewer-1", spaceId = "space-1"): OwnerResourcePrincipal => ({
   type: "preview_session",
@@ -58,7 +58,7 @@ describe("owner-bound Work resource access", () => {
     assert.equal(await canBindGenerationToSession(execution(), session, async () => false), false);
   });
 
-  it("binds Work session writes to the viewer owner unless broad read is also granted", async () => {
+  it("never upgrades read access into cross-owner Work writes", async () => {
     const promptOnly = async (permission: string) => permission === "session.prompt.fullaccess";
     const promptAndBroadRead = async (permission: string) => (
       permission === "session.prompt.fullaccess" || permission === "session.view"
@@ -80,11 +80,17 @@ describe("owner-bound Work resource access", () => {
       session,
       "session.prompt.fullaccess",
       promptAndBroadRead,
-    ), true);
+    ), false);
   });
 
   it("reads owner generation tasks only with the active Work generation grant", async () => {
-    const task = { taskType: "generation", spaceId: "space-1", sessionId: "session-1", userUuid: "viewer-1" };
+    const task = {
+      taskType: "generation",
+      spaceId: "space-1",
+      sessionId: "session-1",
+      userUuid: "viewer-1",
+      payload: { data: { workId: "work-1" } },
+    };
     assert.equal(await canReadTaskResource(user(), task, async () => false), true);
     assert.equal(await canReadTaskResource(
       work(),
@@ -93,9 +99,24 @@ describe("owner-bound Work resource access", () => {
     ), true);
     assert.equal(await canReadTaskResource(work(), task, async () => false), false);
     assert.equal(await canReadTaskResource(
+      work("viewer-1", "space-1", "work-2"),
+      task,
+      async (permission) => permission === "generation.create",
+    ), false);
+    assert.equal(await canReadTaskResource(
       work("viewer-1", "space-2"),
       task,
       async (permission) => permission === "generation.create",
+    ), false);
+    assert.equal(await canReadTaskResource(
+      work(),
+      { ...task, taskType: "run_command" },
+      async (permission) => permission === "taskrun.view",
+    ), false);
+    assert.equal(await canReadTaskResource(
+      work(),
+      { ...task, userUuid: "viewer-2" },
+      async (permission) => permission === "taskrun.view",
     ), false);
     assert.equal(await canReadTaskResource(preview(), task, async () => false), false);
     assert.equal(await canReadTaskResource(execution(), task, async () => false), false);
@@ -116,11 +137,13 @@ describe("owner-bound Work resource access", () => {
     assert.deepEqual(accountScope, {
       userUuid: "viewer-1",
       spaceId: null,
+      workId: null,
       requiresGenerationGrant: false,
     });
     assert.deepEqual(workScope, {
       userUuid: "viewer-1",
       spaceId: "space-1",
+      workId: "work-1",
       requiresGenerationGrant: true,
     });
     assert.ok(accountScope);
@@ -159,10 +182,10 @@ describe("owner-bound Work resource access", () => {
       externalSessionId: "external-1",
       meta: { secret: "value" },
     });
-    assert.equal(summary.meta, null);
-    assert.equal(summary.externalSessionId, null);
-    assert.equal(summary.latestMessageText, null);
-    assert.equal(summary.lastMessageId, null);
+    assert.equal("meta" in summary, false);
+    assert.equal("externalSessionId" in summary, false);
+    assert.equal("latestMessageText" in summary, false);
+    assert.equal("lastMessageId" in summary, false);
     assert.deepEqual(summary.participantUserUuids, []);
     assert.deepEqual(summary.participantProfiles, []);
     assert.equal(JSON.stringify(summary).includes("private prompt"), false);

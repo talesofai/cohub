@@ -193,7 +193,10 @@ router.get("/:id/runs", async (c) => {
     .limit(limit + 1);
   const runs = rows
     .slice(0, limit)
-    .map((run) => sanitizeTaskRunPricingForViewer(run, user?.uuid));
+    .map((run) => sanitizeTaskRunPricingForViewer(
+      run,
+      principal?.type === "user" ? principal.user.uuid : null,
+    ));
 
   return c.json({
     runs,

@@ -16,6 +16,7 @@ export type RealtimeAuthResult =
       ok: true;
       user: GatewayAuthUser & { uuid: string };
       principalType: "user" | "work_session";
+      tokenExpiresAt: number | null;
     }
   | {
       ok: false;
@@ -50,6 +51,7 @@ export const authenticateRealtimeToken = async (input: { token: string }): Promi
       ok: true,
       user,
       principalType: "user",
+      tokenExpiresAt: typeof user.tokenExpiresAt === "number" ? user.tokenExpiresAt : null,
     };
   } catch (error) {
     const status = error instanceof AuthorizationError ? error.status : 401;
@@ -84,6 +86,7 @@ export const authenticateRealtimeToken = async (input: { token: string }): Promi
   const data = await parseJson<{
     uuid?: string;
     principalType?: "user" | "work_session";
+    tokenExpiresAt?: number | null;
     profile?: { displayName?: string | null; avatarUrl?: string | null };
   }>(response);
   if (!data?.uuid || (data.principalType !== "user" && data.principalType !== "work_session")) {
@@ -104,6 +107,7 @@ export const authenticateRealtimeToken = async (input: { token: string }): Promi
       avatar_url: data.profile?.avatarUrl ?? undefined,
     },
     principalType: data.principalType,
+    tokenExpiresAt: typeof data.tokenExpiresAt === "number" ? data.tokenExpiresAt : null,
   };
 };
 
@@ -216,6 +220,7 @@ export const submitInternalSessionPrompt = async (input: {
   sessionId: string;
   userId: string;
   authToken?: string | null;
+  principalType: "user" | "work_session";
   clientMessageId: string;
   content: ContentBlock[];
   source: string;
@@ -236,6 +241,7 @@ export const submitInternalSessionPrompt = async (input: {
       content: input.content,
       userId: input.userId,
       authToken: input.authToken ?? null,
+      principalType: input.principalType,
       clientMessageId: input.clientMessageId,
       source: input.source,
       model: input.model ?? null,

@@ -146,14 +146,28 @@ export type SpacePresenceSnapshot = {
   updatedAt: string;
 };
 
-export type MeResponse = {
+export type AccountMeResponse = {
   uuid: string;
   profile: UserProfile;
   email: string | null;
-  principalType?: "user" | "work_session";
-  /** Space bound into a Work token; null for a normal account token. */
-  spaceId?: string | null;
+  principalType?: "user";
+  spaceId?: null;
+  /** Verified token expiry in epoch seconds. */
+  tokenExpiresAt?: number | null;
 };
+
+export type WorkViewerMeResponse = {
+  uuid: string;
+  profile: PublicUserProfile;
+  principalType: "work_session";
+  /** Space bound into the verified Work token. */
+  spaceId: string;
+  /** Verified Work token expiry in epoch seconds. */
+  tokenExpiresAt: number;
+  email?: never;
+};
+
+export type MeResponse = AccountMeResponse | WorkViewerMeResponse;
 
 export type BillingPluginStatus = {
   provider: "disabled" | "talesofai";
@@ -1034,25 +1048,28 @@ export type SpaceSessionsResponse = {
 
 export type UserSessionSpaceSummary = {
   id: string;
-  name: string;
+  name: string | null;
   slug: string | null;
   publicProfile?: SpacePublicProfile | null;
 };
 
-export type UserSessionSummary = SessionRecord & {
+export type UserSessionSummary = Omit<
+  SessionRecord,
+  "externalSessionId" | "meta" | "latestMessageText" | "lastMessageId"
+> & {
   accessLevel: "summary";
-  externalSessionId: null;
-  meta: null;
-  latestMessageText: null;
-  lastMessageId: null;
+  externalSessionId?: never;
+  meta?: never;
+  latestMessageText?: never;
+  lastMessageId?: never;
   space?: UserSessionSpaceSummary | null;
 };
 
 /** Cross-space session list item returned by `GET /api/me/sessions`. */
-export type UserSessionListItem = SessionRecord & {
-  accessLevel?: "summary";
+export type UserSessionListItem = (SessionRecord & {
+  accessLevel?: never;
   space?: UserSessionSpaceSummary | null;
-};
+}) | UserSessionSummary;
 
 export type UserSessionsResponse = {
   sessions: UserSessionListItem[];
@@ -1590,7 +1607,8 @@ export type ReferralDashboard = {
 // ─── Invitation types ───
 
 export type SpaceInvitation = {
-  token: string;
+  /** Bearer credential, present only for viewers with member.manage. */
+  token?: string;
   role: SpaceRole;
   status: "active" | "revoked" | "exhausted";
   useCount: number;

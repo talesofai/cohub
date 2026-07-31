@@ -22,21 +22,23 @@ export const AGENT_REALTIME_PATCH_CHANNEL = "pubsub:realtime:agent_patches";
 
 export type RealtimeRoom =
   | `space:${string}`
+  | `session:${string}`
   | `user:${string}`
   | `board:${string}`;
 
 export const getRealtimeSpaceRoom = (spaceId: string): RealtimeRoom => `space:${spaceId}`;
+export const getRealtimeSessionRoom = (sessionId: string): RealtimeRoom => `session:${sessionId}`;
 export const getRealtimeUserRoom = (userId: string): RealtimeRoom => `user:${userId}`;
 export const getRealtimeBoardRoom = (boardId: string): RealtimeRoom => `board:${boardId}`;
 
-export const parseRealtimeRoom = (room: string): { kind: "space" | "user" | "board"; id: string } | null => {
+export const parseRealtimeRoom = (room: string): { kind: "space" | "session" | "user" | "board"; id: string } | null => {
   const trimmed = room.trim();
   const separatorIndex = trimmed.indexOf(":");
   if (separatorIndex <= 0) return null;
   const kind = trimmed.slice(0, separatorIndex);
   const id = trimmed.slice(separatorIndex + 1).trim();
   if (!id) return null;
-  if (kind !== "space" && kind !== "user" && kind !== "board") return null;
+  if (kind !== "space" && kind !== "session" && kind !== "user" && kind !== "board") return null;
   return { kind, id };
 };
 

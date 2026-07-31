@@ -21,7 +21,9 @@ function tailText(value: unknown, limit = 420) {
 	return trimmed.length > limit ? `…${trimmed.slice(-limit)}` : trimmed;
 }
 
-export function getSessionTitle(session: SessionRecord): string {
+export function getSessionTitle(
+	session: Pick<SessionRecord, "title"> & { latestMessageText?: string | null },
+): string {
 	const candidates = [session.title, session.latestMessageText];
 	for (const candidate of candidates) {
 		const normalized = candidate

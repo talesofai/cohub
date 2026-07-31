@@ -194,7 +194,8 @@ router.get("/", async (c) => {
         CASE
           WHEN s.user_uuid = ${user.uuid} OR sm.user_id IS NOT NULL THEN 1.0::double precision
           ELSE 0.0::double precision
-        END AS membership_priority_score
+        END AS membership_priority_score,
+        (s.user_uuid = ${user.uuid} OR sm.user_id IS NOT NULL) AS viewer_has_member_access
       FROM v2.spaces s
       LEFT JOIN v2.space_members sm
         ON sm.space_id = s.id AND sm.user_id = ${user.uuid}
@@ -221,6 +222,37 @@ router.get("/", async (c) => {
         sp.membership_priority_score
       FROM v2.space_sessions sess
       JOIN visible_spaces sp ON sp.id = sess.space_id
+      WHERE
+        sp.viewer_has_member_access
+        OR sess.user_uuid = ${user.uuid}
+        OR EXISTS (
+          SELECT 1
+          FROM v2.access_policies session_policy
+          WHERE session_policy.resource_type = 'session'
+            AND session_policy.resource_id = sess.id
+            AND (
+              session_policy.signed_in_user_role IS NOT NULL
+              OR session_policy.anonymous_user_role IS NOT NULL
+            )
+        )
+        OR (
+          NOT EXISTS (
+            SELECT 1
+            FROM v2.access_policies session_policy
+            WHERE session_policy.resource_type = 'session'
+              AND session_policy.resource_id = sess.id
+          )
+          AND EXISTS (
+            SELECT 1
+            FROM v2.access_policies space_policy
+            WHERE space_policy.resource_type = 'space'
+              AND space_policy.resource_id = sess.space_id
+              AND (
+                space_policy.signed_in_user_role IS NOT NULL
+                OR space_policy.anonymous_user_role IS NOT NULL
+              )
+          )
+        )
     ),
     space_results AS (
       SELECT

@@ -24,6 +24,8 @@ export type AuthUserProfile = {
   organizationId?: string;
   scopes?: string[];
   audience?: string[];
+  /** Verified JWT `exp` claim, in epoch seconds. */
+  tokenExpiresAt?: number;
   [key: string]: unknown;
 };
 
@@ -136,5 +138,6 @@ export async function verifyUserAccessToken(input: {
     scopes: scopeClaims(payload),
     audience: audienceClaims(payload.aud),
     email: stringClaim(payload, "email"),
+    tokenExpiresAt: payload.exp,
   };
 }

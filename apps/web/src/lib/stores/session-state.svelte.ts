@@ -39,7 +39,7 @@ class UnreadTracker {
 	}
 
 	isUnread(
-		session: SessionRecord,
+		session: Pick<SessionRecord, "id">,
 		latestItemId: string | null | undefined,
 	): boolean {
 		if (!latestItemId) return false;
