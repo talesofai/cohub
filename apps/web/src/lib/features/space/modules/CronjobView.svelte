@@ -1,4 +1,5 @@
 <script lang="ts">
+import { MAX_PROMPT_SYSTEM_INSTRUCTIONS_LENGTH } from "@cohub/protocol";
 import type { CronJobRecord, UserProfile } from "@neta-art/cohub";
 import {
 	Check,
@@ -268,7 +269,10 @@ function payloadProviderLabel(payload: unknown) {
 											<label class="block text-[10px] font-medium uppercase tracking-wider text-text-tertiary" for="cronjob-edit-system-instructions">Turn instructions</label>
 											{#if cronjobDetail.hasSystemInstructions}<span class="text-[11px] font-medium text-brand">Configured</span>{/if}
 										</div>
-										<textarea id="cronjob-edit-system-instructions" bind:value={cronjob.formSystemInstructions} rows="4" placeholder={cronjobDetail.hasSystemInstructions ? 'Replace configured instructions' : 'Optional'} disabled={cronjob.formClearSystemInstructions} class="w-full resize-y rounded-[6px] border border-border-subtle bg-bg-input px-3 py-2 text-[13px] leading-6 text-text-primary transition-colors placeholder:text-text-placeholder focus:border-brand/50 focus:outline-none disabled:opacity-45"></textarea>
+										<textarea id="cronjob-edit-system-instructions" bind:value={cronjob.formSystemInstructions} rows="4" maxlength={MAX_PROMPT_SYSTEM_INSTRUCTIONS_LENGTH} placeholder={cronjobDetail.hasSystemInstructions ? 'Replace configured instructions' : 'Optional'} disabled={cronjob.formClearSystemInstructions} class="w-full resize-y rounded-[6px] border border-border-subtle bg-bg-input px-3 py-2 text-[13px] leading-6 text-text-primary transition-colors placeholder:text-text-placeholder focus:border-brand/50 focus:outline-none disabled:opacity-45"></textarea>
+										{#if cronjob.formSystemInstructions.length >= MAX_PROMPT_SYSTEM_INSTRUCTIONS_LENGTH - 1_000}
+											<div class="text-right text-[11px] tabular-nums text-text-placeholder">{cronjob.formSystemInstructions.length.toLocaleString()} / {MAX_PROMPT_SYSTEM_INSTRUCTIONS_LENGTH.toLocaleString()}</div>
+										{/if}
 										{#if cronjobDetail.hasSystemInstructions}
 											<label class="inline-flex min-h-8 items-center gap-2 text-[12px] text-text-secondary"><input type="checkbox" bind:checked={cronjob.formClearSystemInstructions} class="h-4 w-4 accent-brand" /><span>Clear configured instructions</span></label>
 										{/if}
