@@ -459,6 +459,9 @@ export function createCronjobDetailController(options: {
 				return;
 			}
 			formError = error instanceof Error ? error.message : "Failed to save";
+			if (detail?.queueSyncStatus === "pending") {
+				scheduleQueueSyncPoll(detail);
+			}
 		} finally {
 			formSubmitting = false;
 		}
