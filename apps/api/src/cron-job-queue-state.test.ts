@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 import type { RepeatableJob } from "bullmq";
 import {
+  cronJobQueueSyncStatus,
   cronJobRepeatVersionedId,
   findCronJobQueueEntries,
   indexCronJobQueueEntries,
@@ -14,30 +15,25 @@ const cronJob: CronJobQueueExpectation = {
   taskType: "send_message",
   cronExpression: "0 9 * * *",
   timezone: "Asia/Shanghai",
-  bullJobKey: "repeat-key",
+  bullJobKey: "cron-cron-id-v2",
   enabled: true,
   deletedAt: null,
   scheduleVersion: 2,
 };
 
 const queueEntry: RepeatableJob = {
-  key: "repeat-key",
+  key: cronJobRepeatVersionedId(cronJob.id, cronJob.scheduleVersion),
   name: "send_message",
-  id: "cron-cron-id",
   endDate: null,
   tz: "Asia/Shanghai",
   pattern: "0 9 * * *",
 };
 
 test("cron queue state requires one exact live repeat job", () => {
-  assert.equal(isCronJobQueueStateCurrent(cronJob, indexCronJobQueueEntries([queueEntry])), false);
   assert.equal(
     isCronJobQueueStateCurrent(
       cronJob,
-      indexCronJobQueueEntries([{
-        ...queueEntry,
-        id: cronJobRepeatVersionedId(cronJob.id, cronJob.scheduleVersion),
-      }]),
+      indexCronJobQueueEntries([queueEntry]),
     ),
     true,
   );
@@ -52,10 +48,7 @@ test("cron queue state requires one exact live repeat job", () => {
   assert.equal(
     isCronJobQueueStateCurrent(
       cronJob,
-      indexCronJobQueueEntries([{
-        ...queueEntry,
-        id: cronJobRepeatVersionedId(cronJob.id, cronJob.scheduleVersion - 1),
-      }]),
+      indexCronJobQueueEntries([{ ...queueEntry, key: cronJobRepeatVersionedId(cronJob.id, 1) }]),
     ),
     false,
   );
@@ -73,7 +66,10 @@ test("cron queue state requires one exact live repeat job", () => {
   assert.equal(
     isCronJobQueueStateCurrent(
       cronJob,
-      indexCronJobQueueEntries([queueEntry, { ...queueEntry, key: "orphan-key" }]),
+      indexCronJobQueueEntries([
+        queueEntry,
+        { ...queueEntry, key: cronJobRepeatVersionedId(cronJob.id, 1) },
+      ]),
     ),
     false,
   );
@@ -97,8 +93,31 @@ test("disabled cron jobs are current only after queue metadata is cleared", () =
 });
 
 test("cron queue entry lookup includes stored and orphaned repeat keys", () => {
-  const orphan = { ...queueEntry, key: "orphan-key" };
-  const unrelated = { ...queueEntry, key: "other-key", id: "cron-other-id" };
+  const orphan = { ...queueEntry, key: cronJobRepeatVersionedId(cronJob.id, 1) };
+  const unrelated = { ...queueEntry, key: cronJobRepeatVersionedId("other-id", 1) };
   const queueIndex = indexCronJobQueueEntries([queueEntry, orphan, unrelated]);
-  assert.deepEqual(findCronJobQueueEntries(cronJob, queueIndex), [queueEntry, orphan]);
+  assert.deepEqual(
+    findCronJobQueueEntries(cronJob, queueIndex),
+    [queueEntry, orphan],
+  );
+});
+
+test("legacy hash-backed repeat jobs are found by their stored key and upgraded", () => {
+  const legacyEntry: RepeatableJob = { ...queueEntry, key: "legacy-hash" };
+  const legacyCronJob = { ...cronJob, bullJobKey: legacyEntry.key };
+  const queueIndex = indexCronJobQueueEntries([legacyEntry]);
+
+  assert.deepEqual(findCronJobQueueEntries(legacyCronJob, queueIndex), [legacyEntry]);
+  assert.equal(isCronJobQueueStateCurrent(legacyCronJob, queueIndex), false);
+});
+
+test("cron queue sync status reflects the persisted desired version", () => {
+  assert.equal(
+    cronJobQueueSyncStatus({ scheduleVersion: 3, queueSyncedVersion: 3 }),
+    "synced",
+  );
+  assert.equal(
+    cronJobQueueSyncStatus({ scheduleVersion: 3, queueSyncedVersion: 2 }),
+    "pending",
+  );
 });

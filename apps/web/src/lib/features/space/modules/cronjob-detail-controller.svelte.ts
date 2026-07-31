@@ -89,6 +89,7 @@ export function createCronjobDetailController(options: {
 	let formError = $state("");
 	let copiedId = $state(false);
 	let copiedTimer: ReturnType<typeof setTimeout> | null = null;
+	let queueSyncPollTimer: ReturnType<typeof setTimeout> | null = null;
 	let routeStateKey = "";
 	let modelSelectorOpen = $state(false);
 	let modelSelectorTarget = $state<"new" | "edit">("new");
@@ -103,6 +104,43 @@ export function createCronjobDetailController(options: {
 
 	function notify(job: CronJobRecord | null) {
 		options.onDetailLoaded?.(job);
+	}
+
+	function isCurrentDetailRequest(cronjobId: string) {
+		return (
+			options.getMode() === "detail" && options.getCronjobId() === cronjobId
+		);
+	}
+
+	function clearQueueSyncPoll() {
+		if (queueSyncPollTimer) clearTimeout(queueSyncPollTimer);
+		queueSyncPollTimer = null;
+	}
+
+	function scheduleQueueSyncPoll(job: CronJobRecord) {
+		clearQueueSyncPoll();
+		if (job.queueSyncStatus !== "pending") return;
+		queueSyncPollTimer = setTimeout(
+			() => void refreshQueueSyncStatus(job.id),
+			5_000,
+		);
+	}
+
+	async function refreshQueueSyncStatus(cronjobId: string) {
+		try {
+			const { job } = await sdk.cronJobs.get(cronjobId);
+			if (!isCurrentDetailRequest(cronjobId)) return;
+			detail = job;
+			notify(job);
+			scheduleQueueSyncPoll(job);
+		} catch {
+			if (
+				isCurrentDetailRequest(cronjobId) &&
+				detail?.queueSyncStatus === "pending"
+			) {
+				scheduleQueueSyncPoll(detail);
+			}
+		}
 	}
 
 	function modelFromPayload(payload: unknown): SelectedModel | null {
@@ -140,6 +178,7 @@ export function createCronjobDetailController(options: {
 	}
 
 	function resetDetailState() {
+		clearQueueSyncPoll();
 		detail = null;
 		notify(null);
 		detailError = null;
@@ -223,8 +262,7 @@ export function createCronjobDetailController(options: {
 		const requestSpaceId = options.getSpaceId();
 		const isCurrentRequest = () =>
 			options.getSpaceId() === requestSpaceId &&
-			options.getMode() === "detail" &&
-			options.getCronjobId() === targetCronjobId;
+			isCurrentDetailRequest(targetCronjobId);
 		detailLoading = true;
 		detailError = null;
 		toggleError = "";
@@ -234,6 +272,7 @@ export function createCronjobDetailController(options: {
 			detail = job;
 			notify(job);
 			syncFormFromDetail();
+			scheduleQueueSyncPoll(job);
 		} catch (error) {
 			if (!isCurrentRequest()) return;
 			detail = null;
@@ -306,6 +345,7 @@ export function createCronjobDetailController(options: {
 			);
 			detail = job;
 			notify(job);
+			scheduleQueueSyncPoll(job);
 			notifyCronjobsUpdated();
 			syncFormFromDetail();
 		} catch (error) {
@@ -331,6 +371,7 @@ export function createCronjobDetailController(options: {
 		toggleError = "";
 		try {
 			await sdk.cronJobs.delete(deletedCronjobId);
+			clearQueueSyncPoll();
 			detail = null;
 			notify(null);
 			runs = [];
@@ -380,6 +421,7 @@ export function createCronjobDetailController(options: {
 			});
 			detail = job;
 			notify(job);
+			scheduleQueueSyncPoll(job);
 			editMode = false;
 			syncFormFromDetail();
 			notifyCronjobsUpdated();
@@ -390,6 +432,7 @@ export function createCronjobDetailController(options: {
 					if (options.getCronjobId() !== cronjobId) return;
 					detail = job;
 					notify(job);
+					scheduleQueueSyncPoll(job);
 				} catch (reloadError) {
 					formError = `Your edits were kept, but the latest version could not be loaded: ${reloadError instanceof Error ? reloadError.message : "Unknown error"}`;
 					return;
@@ -496,6 +539,7 @@ export function createCronjobDetailController(options: {
 		routeStateKey = stateKey;
 		if (mode === "detail" && cronjobId) {
 			// Clear stale detail immediately so parent callbacks don't see old data
+			clearQueueSyncPoll();
 			detail = null;
 			notify(null);
 			resetRuns();
@@ -529,6 +573,7 @@ export function createCronjobDetailController(options: {
 	}
 
 	function dispose() {
+		clearQueueSyncPoll();
 		if (copiedTimer) clearTimeout(copiedTimer);
 		copiedTimer = null;
 	}

@@ -1,13 +1,14 @@
 import { COHUB_TASKS_QUEUE, createBullmqQueue, defaultJobRetention } from "@cohub/infra/bullmq";
 import type { JobsOptions } from "bullmq";
 import { enqueueTaskRun } from "@cohub/core/tasks";
-import { and, eq, gte, isNull, lt, ne, sql } from "drizzle-orm";
+import { and, eq, gt, gte, isNull, lt, ne, sql } from "drizzle-orm";
 import { config } from "./config.js";
 import { db } from "./db/index.js";
 import { cronJobs } from "@cohub/db";
 import type { TaskPayload, TaskScheduleConfig } from "@cohub/protocol/task";
 import { GENERATION_TASK_TYPE } from "@cohub/protocol/generation";
 import { dispatchTaskCreated } from "./realtime-events.js";
+import { redisCommandClient } from "./redis.js";
 import { createLogger } from "@cohub/infra/logging";
 import {
   assertCronJobUpdateVersion,
@@ -124,7 +125,11 @@ async function scheduleCronJobRepeat(
     jobData.taskType,
     taskPayload,
     {
-      repeat: { pattern: jobData.cronExpression, tz: jobData.timezone },
+      repeat: {
+        key: cronJobRepeatVersionedId(cronJobId, jobData.scheduleVersion),
+        pattern: jobData.cronExpression,
+        tz: jobData.timezone,
+      },
       jobId: cronJobRepeatVersionedId(cronJobId, jobData.scheduleVersion),
       ...defaultJobRetention,
       attempts: 3,
@@ -306,7 +311,10 @@ export const updateCronJob = async (
   });
 
   if (scheduleChanged) {
-    await reconcileCronJobQueue(snapshot.id).catch(logCronJobQueueSyncFailure(snapshot.id));
+    return await reconcileCronJobQueue(snapshot.id).catch((error) => {
+      logCronJobQueueSyncFailure(snapshot.id)(error);
+      return updatedJob;
+    }) ?? updatedJob;
   }
   return updatedJob;
 };
@@ -316,61 +324,126 @@ export async function reconcilePendingCronJobQueues(limit = 100) {
     .select({ id: cronJobs.id })
     .from(cronJobs)
     .where(ne(cronJobs.queueSyncedVersion, cronJobs.scheduleVersion))
-    .orderBy(cronJobs.updatedAt)
+    .orderBy(cronJobs.updatedAt, cronJobs.id)
     .limit(limit);
-  const remaining = Math.max(0, limit - pending.length);
-  const syncedActive = remaining > 0
-    ? await db
-        .select()
-        .from(cronJobs)
-        .where(and(
-          eq(cronJobs.enabled, true),
-          isNull(cronJobs.deletedAt),
-          eq(cronJobs.queueSyncedVersion, cronJobs.scheduleVersion),
-        ))
-    : [];
+
+  let failed = 0;
+  for (const candidate of pending) {
+    try {
+      await reconcileCronJobQueue(candidate.id);
+    } catch (error) {
+      failed += 1;
+      logCronJobQueueSyncFailure(candidate.id)(error);
+    }
+  }
+  return { pending: pending.length, failed };
+}
+
+const CRON_JOB_DRIFT_LEASE_KEY = "cohub:cron-jobs:drift-scan:lease";
+const CRON_JOB_DRIFT_CURSOR_KEY = "cohub:cron-jobs:drift-scan:cursor";
+const CRON_JOB_DRIFT_LEASE_MS = 4 * 60_000;
+
+export async function reconcileCronJobQueueDrift(limit = 100) {
+  const acquired = await redisCommandClient.set(
+    CRON_JOB_DRIFT_LEASE_KEY,
+    `${process.pid}:${Date.now()}`,
+    "PX",
+    CRON_JOB_DRIFT_LEASE_MS,
+    "NX",
+  );
+  if (acquired !== "OK") return { checked: 0, drifted: 0, failed: 0, skipped: true };
+
+  const cursor = await redisCommandClient.get(CRON_JOB_DRIFT_CURSOR_KEY);
+  const conditions = [
+    eq(cronJobs.enabled, true),
+    isNull(cronJobs.deletedAt),
+    eq(cronJobs.queueSyncedVersion, cronJobs.scheduleVersion),
+  ];
+  if (cursor) conditions.push(gt(cronJobs.id, cursor));
+  const candidates = await db
+    .select()
+    .from(cronJobs)
+    .where(and(...conditions))
+    .orderBy(cronJobs.id)
+    .limit(limit);
+
   const queueIndex = indexCronJobQueueEntries(
-    syncedActive.length > 0
+    candidates.length > 0
       ? await taskQueue.getRepeatableJobs(0, -1, true)
       : [],
   );
-  const drifted = syncedActive
-    .filter((job) => !isCronJobQueueStateCurrent(job, queueIndex))
-    .slice(0, remaining);
-
+  const drifted = candidates.filter(
+    (job) => !isCronJobQueueStateCurrent(job, queueIndex),
+  );
   let failed = 0;
-  for (const candidate of [
-    ...pending.map(({ id }) => ({ id, verifyQueueState: false })),
-    ...drifted.map(({ id }) => ({ id, verifyQueueState: true })),
-  ]) {
+  for (const candidate of drifted) {
     try {
       await reconcileCronJobQueue(candidate.id, {
-        verifyQueueState: candidate.verifyQueueState,
-        ...(candidate.verifyQueueState ? { queueIndex } : {}),
+        verifyQueueState: true,
+        queueIndex,
       });
     } catch (error) {
       failed += 1;
       logCronJobQueueSyncFailure(candidate.id)(error);
     }
   }
-  return { pending: pending.length + drifted.length, failed };
+
+  const lastCandidate = candidates.at(-1);
+  if (lastCandidate && candidates.length === limit) {
+    await redisCommandClient.set(CRON_JOB_DRIFT_CURSOR_KEY, lastCandidate.id);
+  } else {
+    await redisCommandClient.del(CRON_JOB_DRIFT_CURSOR_KEY);
+  }
+  return {
+    checked: candidates.length,
+    drifted: drifted.length,
+    failed,
+    skipped: false,
+  };
 }
 
-export function startCronJobQueueReconciler(intervalMs = 30_000) {
-  let running = false;
-  const run = async () => {
-    if (running) return;
-    running = true;
+export function startCronJobQueueReconciler(
+  intervalMs = 30_000,
+  driftIntervalMs = 5 * 60_000,
+) {
+  let pendingRunning = false;
+  let driftRunning = false;
+  const runPending = async () => {
+    if (pendingRunning) return;
+    pendingRunning = true;
     try {
       await reconcilePendingCronJobQueues();
     } catch (error) {
       logger.error("[CronJob] failed to scan pending queue syncs", { error });
     } finally {
-      running = false;
+      pendingRunning = false;
     }
   };
-  void run();
-  const interval = setInterval(() => void run(), Math.max(1_000, intervalMs));
-  interval.unref();
-  return () => clearInterval(interval);
+  const runDrift = async () => {
+    if (driftRunning) return;
+    driftRunning = true;
+    try {
+      await reconcileCronJobQueueDrift();
+    } catch (error) {
+      logger.error("[CronJob] failed to scan queue drift", { error });
+    } finally {
+      driftRunning = false;
+    }
+  };
+  void runPending();
+  void runDrift();
+  const pendingInterval = setInterval(
+    () => void runPending(),
+    Math.max(1_000, intervalMs),
+  );
+  const driftInterval = setInterval(
+    () => void runDrift(),
+    Math.max(1_000, driftIntervalMs),
+  );
+  pendingInterval.unref();
+  driftInterval.unref();
+  return () => {
+    clearInterval(pendingInterval);
+    clearInterval(driftInterval);
+  };
 }

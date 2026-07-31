@@ -50,6 +50,7 @@ import {
 import { syncSpaceChannelConfigCache, getSpaceChannelsBySpaceId, bindSpaceChannelsToGateway, unbindSpaceChannelFromGateway, updateSpaceChannelConfig } from "../../channels.js";
 import { fallbackBoundChannelHealth, getChannelHealthMap } from "../../channel-health.js";
 import { createCronJob, enqueueTask } from "../../tasks.js";
+import { cronJobQueueSyncStatus } from "../../cron-job-queue-state.js";
 import { RUN_COMMAND_TASK_TYPE } from "@cohub/core/commands";
 import { sanitizePostgresJsonValue } from "@cohub/core/content/sanitize";
 import { assignLabelsToSession, getPinnedSpaceIds, parseLabelRefs, resolveLabelPaths, resolveOrCreateLabelPaths } from "@cohub/core/labels";
@@ -1995,13 +1996,15 @@ router.post("/:id/prompt", async (c) => {
     sessionId,
   });
 
+  const queueSyncStatus = cronJobQueueSyncStatus(cronJob);
   return c.json({
     mode: "repeat",
     cronJobId: cronJob.id,
     nextRunAt: promptSchedule.nextRun.toISOString(),
     timezone: promptSchedule.timezone,
     sessionId,
-  });
+    queueSyncStatus,
+  }, queueSyncStatus === "pending" ? 202 : 200);
 });
 
 router.post("/:id/sessions/:sessionId/turns/:turnId/steer", async (c) => {

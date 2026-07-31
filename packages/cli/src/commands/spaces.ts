@@ -7,7 +7,7 @@ import type { ContentBlock, LabelListItem, LabelResourceType } from "@neta-art/c
 import type { Command } from "commander";
 import { uploadAvatarAsset, uploadChatImageAsset } from "../avatar.js";
 import { createClient } from "../client.js";
-import { table, json as outJson, jsonRequested, ok, error, handleHttp } from "../output.js";
+import { table, json as outJson, jsonRequested, ok, warn, error, handleHttp } from "../output.js";
 import { resolveSpace } from "../space.js";
 import { registerSpaceCommerce } from "./space-commerce.js";
 import { registerSpaceTurns } from "./space-turns.js";
@@ -308,7 +308,12 @@ async function sendPrompt(command: Command, words: string[], opts: PromptOptions
     });
     if (jsonRequested(opts)) return outJson(result);
     if (result.mode === "immediate") return ok(`Prompt sent — sessionId: ${result.session.id}, turnId: ${result.turn.id}`);
-    if (result.mode === "repeat") return ok(`Prompt scheduled — cronJobId: ${result.cronJobId}, nextRunAt: ${result.nextRunAt}`);
+    if (result.mode === "repeat") {
+      if (result.queueSyncStatus === "pending") {
+        return warn(`Prompt saved, but queue sync is pending — cronJobId: ${result.cronJobId}`);
+      }
+      return ok(`Prompt scheduled — cronJobId: ${result.cronJobId}, nextRunAt: ${result.nextRunAt}`);
+    }
     return ok(`Prompt scheduled — taskRunId: ${result.taskRunId}, scheduledAt: ${result.scheduledAt}`);
   } catch (e: unknown) {
     handleHttp(e);

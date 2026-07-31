@@ -237,6 +237,12 @@ function payloadProviderLabel(payload: unknown) {
 										<span class="h-1.5 w-1.5 rounded-full {cronjobDetail.enabled ? 'bg-status-running' : 'bg-text-placeholder'}"></span>
 										{cronjobDetail.enabled ? 'Active' : 'Paused'}
 									</span>
+									{#if cronjobDetail.queueSyncStatus === 'pending'}
+										<span class="inline-flex items-center gap-1.5 rounded-[5px] bg-warning-bg px-2 py-1 text-[11px] font-medium text-warning-soft">
+											<Loader2 class="h-3 w-3 animate-spin" />
+											Queue sync pending
+										</span>
+									{/if}
 									{@render UserMetaItem(cronjobDetail.userProfile, cronjobDetail.userUuid)}
 									<button type="button" class="inline-flex min-h-6 min-w-0 max-w-full items-center gap-1.5 font-mono text-[11px] text-text-placeholder transition-colors hover:text-text-secondary" onclick={() => void cronjob.copyId(cronjobDetail!.id)} title="Copy cronjob ID">
 										<span class="truncate">{cronjobDetail.id}</span>

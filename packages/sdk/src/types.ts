@@ -1078,6 +1078,7 @@ export type CreateSpacePromptResponse =
       nextRunAt: string;
       timezone: string;
       sessionId: string | null;
+      queueSyncStatus: CronJobQueueSyncStatus;
     };
 
 export type {
@@ -1093,6 +1094,8 @@ export type {
 } from "@cohub/protocol";
 
 export type CronJobPayload = Record<string, unknown>;
+
+export type CronJobQueueSyncStatus = "synced" | "pending";
 
 export type SendMessageCronJobPayload = CronJobPayload & {
   content: ContentBlock[];
@@ -1136,6 +1139,7 @@ export type CronJobRecord<TPayload extends CronJobPayload = CronJobPayload> = {
   cronExpression: string;
   timezone: string;
   bullJobKey: string;
+  queueSyncStatus: CronJobQueueSyncStatus;
   spaceId: string | null;
   sessionId: string | null;
   enabled: boolean;

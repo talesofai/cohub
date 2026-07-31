@@ -11,6 +11,8 @@ export type CronJobQueueExpectation = {
   scheduleVersion: number;
 };
 
+export type CronJobQueueSyncStatus = "synced" | "pending";
+
 export type CronJobQueueIndex = {
   byOwnerId: ReadonlyMap<string, readonly RepeatableJob[]>;
   byKey: ReadonlyMap<string, RepeatableJob>;
@@ -23,8 +25,15 @@ export const cronJobRepeatVersionedId = (
   scheduleVersion: number,
 ) => `${cronJobRepeatOwnerId(cronJobId)}-v${scheduleVersion}`;
 
-const repeatJobOwnerId = (repeatJobId: string) =>
-  repeatJobId.replace(/-v\d+$/, "");
+const repeatJobOwnerId = (repeatJobKey: string) =>
+  repeatJobKey.match(/^(cron-.+)-v\d+$/)?.[1] ?? null;
+
+export const cronJobQueueSyncStatus = (
+  cronJob: Pick<CronJobQueueExpectation, "scheduleVersion"> & {
+    queueSyncedVersion: number;
+  },
+): CronJobQueueSyncStatus =>
+  cronJob.queueSyncedVersion === cronJob.scheduleVersion ? "synced" : "pending";
 
 export function indexCronJobQueueEntries(
   repeatableJobs: readonly RepeatableJob[],
@@ -33,8 +42,8 @@ export function indexCronJobQueueEntries(
   const byKey = new Map<string, RepeatableJob>();
   for (const job of repeatableJobs) {
     byKey.set(job.key, job);
-    if (!job.id) continue;
-    const ownerId = repeatJobOwnerId(job.id);
+    const ownerId = repeatJobOwnerId(job.key);
+    if (!ownerId) continue;
     const entries = byOwnerId.get(ownerId);
     if (entries) entries.push(job);
     else byOwnerId.set(ownerId, [job]);
@@ -68,8 +77,12 @@ export function isCronJobQueueStateCurrent(
   if (!cronJob.bullJobKey || entries.length !== 1) return false;
 
   const [entry] = entries;
+  const expectedKey = cronJobRepeatVersionedId(
+    cronJob.id,
+    cronJob.scheduleVersion,
+  );
   return entry?.key === cronJob.bullJobKey
-    && entry.id === cronJobRepeatVersionedId(cronJob.id, cronJob.scheduleVersion)
+    && entry.key === expectedKey
     && entry.name === cronJob.taskType
     && entry.pattern === cronJob.cronExpression
     && entry.tz === cronJob.timezone;

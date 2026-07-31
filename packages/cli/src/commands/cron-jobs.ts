@@ -1,7 +1,17 @@
 import { readFileSync } from "node:fs";
 import type { Command } from "commander";
 import { createClient } from "../client.js";
-import { table, json as outJson, jsonRequested, ok, error, handleHttp } from "../output.js";
+import { table, json as outJson, jsonRequested, ok, warn, error, handleHttp } from "../output.js";
+
+function reportQueueMutation(
+  job: { id: string; queueSyncStatus: "synced" | "pending" },
+  successMessage: string,
+) {
+  if (job.queueSyncStatus === "pending") {
+    return warn(`Cron job saved, but queue sync is pending: ${job.id}`);
+  }
+  ok(successMessage);
+}
 
 function readJsonObject(pathOrJson: string): Record<string, unknown> {
   const raw = pathOrJson.trim().startsWith("{") ? pathOrJson : readFileSync(pathOrJson, "utf8");
@@ -30,6 +40,7 @@ export function registerCronJobs(program: Command): void {
           { key: "taskType", label: "Type" },
           { key: "cronExpression", label: "Schedule" },
           { key: "enabled", label: "Enabled" },
+          { key: "queueSyncStatus", label: "Queue Sync" },
           { key: "spaceId", label: "Space" },
         ]);
       } catch (e: unknown) {
@@ -54,6 +65,7 @@ export function registerCronJobs(program: Command): void {
           { key: "timezone", label: "Timezone" },
           { key: "hasSystemInstructions", label: "Turn Instructions" },
           { key: "enabled", label: "Enabled" },
+          { key: "queueSyncStatus", label: "Queue Sync" },
           { key: "spaceId", label: "Space" },
         ]);
       } catch (e: unknown) {
@@ -84,7 +96,7 @@ export function registerCronJobs(program: Command): void {
           expectedUpdatedAt: current.updatedAt,
         });
         if (jsonRequested(opts)) return outJson(result);
-        ok(`Cron job updated: ${result.job.id}`);
+        reportQueueMutation(result.job, `Cron job updated: ${result.job.id}`);
       } catch (e: unknown) {
         if (e instanceof Error && /ENOENT|Unexpected token|JSON/.test(e.message)) {
           error("Invalid payload", e.message);
@@ -115,8 +127,11 @@ export function registerCronJobs(program: Command): void {
       const client = createClient();
       try {
         const { job: current } = await client.cronJobs.get(id);
-        await client.cronJobs.toggle(id, enabled, current.updatedAt);
-        ok(`Cron job ${enabled ? "enabled" : "disabled"}: ${id}`);
+        const result = await client.cronJobs.toggle(id, enabled, current.updatedAt);
+        reportQueueMutation(
+          result.job,
+          `Cron job ${enabled ? "enabled" : "disabled"}: ${id}`,
+        );
       } catch (e: unknown) {
         handleHttp(e);
       }

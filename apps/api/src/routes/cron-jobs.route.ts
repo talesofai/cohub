@@ -20,6 +20,7 @@ import {
   CronJobUpdateVersionError,
   parseCronJobExpectedUpdatedAt,
 } from "../cron-job-concurrency.js";
+import { cronJobQueueSyncStatus } from "../cron-job-queue-state.js";
 
 const router = new Hono();
 const { CronExpressionParser } = cronParser;
@@ -37,12 +38,15 @@ async function hydrateCronJobUserProfiles<T extends {
   userUuid: string;
   taskType: string;
   payload: unknown;
+  scheduleVersion: number;
+  queueSyncedVersion: number;
 }>(jobs: T[]) {
   const profiles = await getProfilesByUuids(jobs.map((job) => job.userUuid));
   return jobs.map((job) => {
     const sanitized = sanitizeScheduledPromptForClient(job);
     return {
       ...sanitized,
+      queueSyncStatus: cronJobQueueSyncStatus(job),
       userProfile: profiles.get(job.userUuid) ?? fallbackPublicUserProfile(job.userUuid),
     };
   });
@@ -334,7 +338,10 @@ router.patch("/:id", async (c) => {
   try {
     const updatedJob = await updateCronJob(job, patch);
     const [hydrated] = await hydrateCronJobUserProfiles([updatedJob]);
-    return c.json({ ok: true, job: hydrated });
+    return c.json(
+      { ok: true, job: hydrated },
+      hydrated?.queueSyncStatus === "pending" ? 202 : 200,
+    );
   } catch (error) {
     if (error instanceof CronJobUpdateConflictError) {
       return c.json({ code: error.code, message: error.message }, 409);

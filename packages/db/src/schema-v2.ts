@@ -1151,6 +1151,9 @@ export const cronJobs = v2.table(
     spaceIdx: index("v2_idx_cron_jobs_space_id").on(table.spaceId),
     enabledIdx: index("v2_idx_cron_jobs_enabled").on(table.enabled),
     createdAtIdx: index("v2_idx_cron_jobs_created_at").on(table.createdAt),
+    queueSyncPendingIdx: index("v2_idx_cron_jobs_queue_sync_pending")
+      .on(table.updatedAt, table.id)
+      .where(sql`${table.queueSyncedVersion} <> ${table.scheduleVersion}`),
   }),
 );
 

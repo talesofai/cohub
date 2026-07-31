@@ -1786,6 +1786,28 @@
           "concurrently": false,
           "method": "btree",
           "with": {}
+        },
+        "v2_idx_cron_jobs_queue_sync_pending": {
+          "name": "v2_idx_cron_jobs_queue_sync_pending",
+          "columns": [
+            {
+              "expression": "updated_at",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "where": "\"v2\".\"cron_jobs\".\"queue_synced_version\" <> \"v2\".\"cron_jobs\".\"schedule_version\"",
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
         }
       },
       "foreignKeys": {},

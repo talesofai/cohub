@@ -57,6 +57,10 @@ export function ok(msg: string): void {
   console.log(`\n  ✓ ${msg}\n`);
 }
 
+export function warn(msg: string): void {
+  process.stderr.write(`\n  ! ${msg}\n\n`);
+}
+
 export function error(msg: string, detail?: string): never {
   process.stderr.write(`\n  ✗ ${msg}\n`);
   if (detail) process.stderr.write(`    ${detail}\n`);
