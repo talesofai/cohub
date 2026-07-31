@@ -20,6 +20,7 @@ import { verifyWorkSessionToken, type WorkSessionPrincipal } from "./work-sessio
 import { assertRequiredConfig, config } from "./config.js";
 
 import router from "./routes/index.js";
+import { startCronJobQueueReconciler } from "./tasks.js";
 
 const logger = createLogger({ serviceName: "cohub-api" });
 // ── Hono app ─────────────────────────────────────────────────────────────────
@@ -196,6 +197,7 @@ configureBillingRuntime({
   config,
   redis: (await import("./redis.js")).redisCommandClient,
 });
+startCronJobQueueReconciler();
 const server = serve({
   fetch: app.fetch,
   port,

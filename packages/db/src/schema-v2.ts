@@ -1137,6 +1137,8 @@ export const cronJobs = v2.table(
     cronExpression: varchar("cron_expression", { length: 100 }).notNull(),
     timezone: varchar("timezone", { length: 50 }).notNull().default("Asia/Shanghai"),
     bullJobKey: varchar("bull_job_key", { length: 500 }).notNull(),
+    scheduleVersion: integer("schedule_version").notNull().default(1),
+    queueSyncedVersion: integer("queue_synced_version").notNull().default(0),
     spaceId: uuid("space_id"),
     sessionId: uuid("session_id"),
     enabled: boolean("enabled").notNull().default(true),

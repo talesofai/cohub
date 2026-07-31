@@ -4,9 +4,10 @@ import { recordJobFailure } from "@cohub/infra/bullmq";
 import type { TaskPayload } from "@cohub/protocol/task";
 import { and, eq, ne } from "drizzle-orm";
 import { db } from "../db.js";
-import { taskRuns } from "@cohub/db";
+import { cronJobs, taskRuns } from "@cohub/db";
 import { dispatchTaskCreated, dispatchTaskUpdated } from "../realtime-events.js";
 import { createLogger } from "@cohub/infra/logging";
+import { getCronJobSkipReason } from "./cron-job-execution.js";
 
 
 const logger = createLogger({ serviceName: "cohub-worker" });
@@ -129,7 +130,30 @@ export const registerTask = (type: string, handler: TaskHandler) => {
     }
 
     try {
-      const result = await handler(job, { taskRunId });
+      const cronJobId = payload.cronJobId?.trim();
+      const [cronJob] = cronJobId
+        ? await db
+            .select({
+              enabled: cronJobs.enabled,
+              deletedAt: cronJobs.deletedAt,
+              bullJobKey: cronJobs.bullJobKey,
+              scheduleVersion: cronJobs.scheduleVersion,
+              queueSyncedVersion: cronJobs.queueSyncedVersion,
+            })
+            .from(cronJobs)
+            .where(eq(cronJobs.id, cronJobId))
+            .limit(1)
+        : [];
+      const cronSkipReason = cronJobId
+        ? getCronJobSkipReason({
+            payloadVersion: payload.cronJobVersion,
+            repeatJobKey: job.repeatJobKey,
+            current: cronJob ?? null,
+          })
+        : null;
+      const result = cronSkipReason
+        ? { skipped: true, reason: cronSkipReason }
+        : await handler(job, { taskRunId });
 
       const [taskRun] = await db
         .update(taskRuns)

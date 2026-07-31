@@ -157,6 +157,15 @@ let blurCloseTimer: number | null = null;
 let selectionChangeBound = false;
 let isComposerExpanded = $state(false);
 let showSystemInstructions = $state(false);
+let hadSystemInstructions = false;
+
+$effect(() => {
+	const hasSystemInstructions = Boolean(systemInstructions.trim());
+	if (hasSystemInstructions && !hadSystemInstructions) {
+		showSystemInstructions = true;
+	}
+	hadSystemInstructions = hasSystemInstructions;
+});
 let hasTextareaOverflow = $state(false);
 let voiceClient: VoiceInputClient | null = null;
 let voicePrefix = "";
@@ -1414,7 +1423,7 @@ $effect(() => {
 
 							<button
 								type="button"
-								class={`relative flex h-11 w-11 shrink-0 items-center justify-center rounded-full transition-colors hover:bg-bg-hover hover:text-text-primary focus-visible:ring-2 focus-visible:ring-brand/50 disabled:cursor-not-allowed disabled:opacity-50 sm:h-8.5 sm:w-8.5 ${showSystemInstructions || systemInstructions.trim() ? 'text-text-primary' : 'text-text-tertiary'}`}
+								class={`relative flex h-11 shrink-0 items-center justify-center gap-1.5 rounded-full transition-colors hover:bg-bg-hover hover:text-text-primary focus-visible:ring-2 focus-visible:ring-brand/50 disabled:cursor-not-allowed disabled:opacity-50 sm:h-8.5 ${systemInstructions.trim() && !showSystemInstructions ? 'w-auto px-2.5' : 'w-11 sm:w-8.5'} ${showSystemInstructions || systemInstructions.trim() ? 'text-text-primary' : 'text-text-tertiary'}`}
 								onclick={() => {
 									showSystemInstructions = !showSystemInstructions;
 								}}
@@ -1424,8 +1433,8 @@ $effect(() => {
 								aria-pressed={showSystemInstructions}
 							>
 								<Settings2 class="h-4 w-4" />
-								{#if systemInstructions.trim()}
-									<span class="absolute right-1.5 top-1.5 h-1.5 w-1.5 rounded-full bg-brand" aria-hidden="true"></span>
+								{#if systemInstructions.trim() && !showSystemInstructions}
+									<span class="whitespace-nowrap text-[11px] font-medium">Instructions active</span>
 								{/if}
 							</button>
 

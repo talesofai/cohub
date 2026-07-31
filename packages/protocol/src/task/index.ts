@@ -7,6 +7,7 @@ export interface TaskPayload {
   turnId?: string;
   userId?: string;
   cronJobId?: string;
+  cronJobVersion?: number;
   data?: Record<string, unknown>;
 }
 

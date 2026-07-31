@@ -9,7 +9,6 @@ import {
   validatePublicIdentifierAssignment,
 } from "@cohub/protocol/public-identifiers";
 import { normalizeGenerationPolicy } from "@cohub/protocol/generation";
-import * as cronParser from "cron-parser";
 import { db } from "../../db/index.js";
 import {
   userChannels,
@@ -89,13 +88,17 @@ import { redisCommandClient } from "../../redis.js";
 import { featureGateResponse } from "../../lib/feature-gate.js";
 import { billingBlockedResponse } from "../../lib/billing-blocked.js";
 import { applyRequestSourceToMeta, getRequestSource, resolveSessionSourceFromRequest } from "../../lib/request-source.js";
+import {
+  validatePromptSchedule,
+  type SpacePromptSchedule,
+  type ValidatedPromptSchedule,
+} from "../../prompt-schedule.js";
 
 
 const logger = createLogger({ serviceName: "cohub-api" });
 const getSpaceSaveCheckpointLockKey = (spaceId: string) => `cohub:space:${spaceId}:save-checkpoint`;
 
 const router = new Hono();
-const { CronExpressionParser } = cronParser;
 
 type SpaceRouteSessionRecord = NonNullable<Awaited<ReturnType<typeof getSpaceSessionById>>>;
 
@@ -111,12 +114,6 @@ async function buildSpacePromptTurnResponse(session: SpaceRouteSessionRecord | n
   const response = session ? await buildSessionTurnResponse(session, turnId) : null;
   return response ? { mode: "immediate" as const, ...response } : null;
 }
-
-type SpacePromptSchedule =
-  | { mode?: "immediate" }
-  | { mode: "delay"; delayMs?: number }
-  | { mode: "at"; sendAt?: string }
-  | { mode: "repeat"; cronExpression?: string; timezone?: string };
 
 type PromptAccessMode = "read_only" | "full_access";
 
@@ -479,8 +476,6 @@ const mergeSpaceConfig = (space: typeof spaces.$inferSelect, patch: SpaceConfigI
     config: nextConfig,
   };
 };
-const hasExplicitTimezone = (value: string) => /(?:Z|[+-]\d{2}:\d{2})$/i.test(value.trim());
-
 function validatePromptContentBlocks(content: unknown): content is ContentBlock[] {
   if (!Array.isArray(content) || content.length === 0) return false;
   return content.every((block) => block && typeof block === "object" && !Array.isArray(block) && typeof (block as { type?: unknown }).type === "string");
@@ -503,46 +498,6 @@ function promptInputError(error: unknown): string | null {
   }
   return null;
 }
-
-const isPositiveSafeInteger = (value: number) => Number.isSafeInteger(value) && value > 0;
-
-const validateTimezone = (timezone: string) => {
-  try {
-    new Intl.DateTimeFormat("en-US", { timeZone: timezone }).format(new Date());
-    return true;
-  } catch {
-    return false;
-  }
-};
-
-const parseScheduledAt = (sendAt: string) => {
-  const trimmed = sendAt.trim();
-  if (!hasExplicitTimezone(trimmed)) {
-    throw new Error("sendAt must include timezone, e.g. 2026-05-09T10:00:00+08:00 or 2026-05-09T02:00:00Z");
-  }
-  const scheduledAt = new Date(trimmed);
-  if (Number.isNaN(scheduledAt.getTime())) {
-    throw new Error("sendAt must be a valid ISO 8601 datetime, e.g. 2026-05-09T10:00:00+08:00");
-  }
-  if (scheduledAt.getTime() <= Date.now()) throw new Error("sendAt must be in the future");
-  return scheduledAt;
-};
-
-const validateRepeatSchedule = (input: { cronExpression: string; timezone: string }) => {
-  const cronExpression = input.cronExpression.trim();
-  const timezone = input.timezone.trim();
-  if (cronExpression.split(/\s+/).length !== 5) {
-    throw new Error("cronExpression must have 5 fields, e.g. 0 9 * * *");
-  }
-  if (!validateTimezone(timezone)) throw new Error("timezone must be an IANA timezone, e.g. Asia/Shanghai or UTC");
-  const interval = CronExpressionParser.parse(cronExpression, { tz: timezone });
-  const nextRun = interval.next().toDate();
-  const secondRun = interval.next().toDate();
-  if (secondRun.getTime() - nextRun.getTime() < 60_000) {
-    throw new Error("cron interval must be at least 1 minute");
-  }
-  return { cronExpression, timezone, nextRun };
-};
 
 // ── Provisioning params builder ──────────────────────────────────────────────
 
@@ -1863,17 +1818,33 @@ router.post("/:id/prompt", async (c) => {
     promptSession = session;
   }
 
-  const schedule = body.schedule ?? { mode: "immediate" as const };
-  const mode = schedule.mode ?? "immediate";
-  if (!["immediate", "delay", "at", "repeat"].includes(mode)) {
-    return c.json({ message: "schedule.mode must be one of: immediate, delay, at, repeat" }, 400);
-  }
-
   const generationPolicy = body.generationPolicy === undefined || body.generationPolicy === null
     ? null
     : normalizeGenerationPolicy(body.generationPolicy);
   if (body.generationPolicy !== undefined && body.generationPolicy !== null && !generationPolicy) {
     return c.json({ message: "generationPolicy is invalid" }, 400);
+  }
+
+  let promptEnv: Record<string, string> | null = null;
+  let systemInstructions: string | null = null;
+  try {
+    promptEnv = parsePromptEnv(body.env);
+    systemInstructions = parsePromptSystemInstructions(body.systemInstructions);
+  } catch (error) {
+    if (error instanceof PromptEnvValidationError) return c.json({ message: error.message }, 400);
+    if (error instanceof PromptSystemInstructionsValidationError) return c.json({ message: error.message }, 400);
+    throw error;
+  }
+
+  let promptSchedule: ValidatedPromptSchedule;
+  try {
+    promptSchedule = validatePromptSchedule(body.schedule);
+  } catch (error) {
+    return c.json({
+      message: error instanceof Error
+        ? error.message.replace(/\.$/, "")
+        : "invalid schedule",
+    }, 400);
   }
 
   let promptLabelIds: string[] = [];
@@ -1890,16 +1861,6 @@ router.post("/:id/prompt", async (c) => {
     return c.json({ message: error instanceof Error ? error.message : String(error) }, 400);
   }
 
-  let promptEnv: Record<string, string> | null = null;
-  let systemInstructions: string | null = null;
-  try {
-    promptEnv = parsePromptEnv(body.env);
-    systemInstructions = parsePromptSystemInstructions(body.systemInstructions);
-  } catch (error) {
-    if (error instanceof PromptEnvValidationError) return c.json({ message: error.message }, 400);
-    if (error instanceof PromptSystemInstructionsValidationError) return c.json({ message: error.message }, 400);
-    throw error;
-  }
   const content = body.content;
   const clientMessageId = body.clientMessageId?.trim() || crypto.randomUUID();
   const source = resolveSessionSourceFromRequest(c, typeof body.source === "string" ? body.source : null);
@@ -1923,7 +1884,7 @@ router.post("/:id/prompt", async (c) => {
     ...(scheduledAuth ? { auth: scheduledAuth } : {}),
   };
 
-  if (mode === "immediate") {
+  if (promptSchedule.mode === "immediate") {
     if (!sessionId) {
       promptSession = await createInitialSpaceSession({
         spaceId,
@@ -2000,12 +1961,8 @@ router.post("/:id/prompt", async (c) => {
     }
   }
 
-  if (mode === "delay") {
-    const delayMs = Number((schedule as { delayMs?: number }).delayMs);
-    if (!isPositiveSafeInteger(delayMs)) {
-      return c.json({ message: "delayMs must be a positive integer, e.g. 600000" }, 400);
-    }
-    const scheduledAt = new Date(Date.now() + delayMs);
+  if (promptSchedule.mode === "delay") {
+    const { delayMs, scheduledAt } = promptSchedule;
     const { taskRunId } = await enqueueTask({
       type: "send_message",
       spaceId,
@@ -2016,15 +1973,8 @@ router.post("/:id/prompt", async (c) => {
     return c.json({ mode: "delay", taskRunId, scheduledAt: scheduledAt.toISOString(), sessionId });
   }
 
-  if (mode === "at") {
-    const sendAt = (schedule as { sendAt?: string }).sendAt;
-    if (!sendAt?.trim()) return c.json({ message: "sendAt is required, e.g. 2026-05-09T10:00:00+08:00" }, 400);
-    let scheduledAt: Date;
-    try {
-      scheduledAt = parseScheduledAt(sendAt);
-    } catch (error) {
-      return c.json({ message: error instanceof Error ? error.message.toLowerCase().replace(/\.$/, "") : "invalid sendAt" }, 400);
-    }
+  if (promptSchedule.mode === "at") {
+    const { scheduledAt } = promptSchedule;
     const { taskRunId } = await enqueueTask({
       type: "send_message",
       spaceId,
@@ -2035,22 +1985,12 @@ router.post("/:id/prompt", async (c) => {
     return c.json({ mode: "at", taskRunId, scheduledAt: scheduledAt.toISOString(), sessionId });
   }
 
-  const repeat = schedule as { cronExpression?: string; timezone?: string };
-  if (!repeat.cronExpression?.trim()) return c.json({ message: "cronExpression is required, e.g. 0 9 * * *" }, 400);
-  if (!repeat.timezone?.trim()) return c.json({ message: "timezone is required, e.g. Asia/Shanghai" }, 400);
-  let parsedRepeat: { cronExpression: string; timezone: string; nextRun: Date };
-  try {
-    parsedRepeat = validateRepeatSchedule({ cronExpression: repeat.cronExpression, timezone: repeat.timezone });
-  } catch (error) {
-    return c.json({ message: error instanceof Error ? error.message.toLowerCase().replace(/\.$/, "") : "invalid repeat schedule" }, 400);
-  }
-
   const cronJob = await createCronJob({
     userId: user.uuid,
     title: body.title?.trim() || "scheduled prompt",
     taskType: "send_message",
     payload: taskData,
-    schedule: { pattern: parsedRepeat.cronExpression, timezone: parsedRepeat.timezone },
+    schedule: { pattern: promptSchedule.cronExpression, timezone: promptSchedule.timezone },
     spaceId,
     sessionId,
   });
@@ -2058,8 +1998,8 @@ router.post("/:id/prompt", async (c) => {
   return c.json({
     mode: "repeat",
     cronJobId: cronJob.id,
-    nextRunAt: parsedRepeat.nextRun.toISOString(),
-    timezone: parsedRepeat.timezone,
+    nextRunAt: promptSchedule.nextRun.toISOString(),
+    timezone: promptSchedule.timezone,
     sessionId,
   });
 });
