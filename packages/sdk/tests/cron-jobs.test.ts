@@ -3,7 +3,7 @@ import { test } from "node:test";
 import { CronJobsApi } from "../src/apis/cron-jobs.js";
 import type { HttpTransport } from "../src/transport.js";
 
-test("cron updates send the caller's optimistic concurrency version", async () => {
+test("cron updates support optional optimistic concurrency versions", async () => {
   const requests: Array<{ path: string; body: Record<string, unknown> }> = [];
   const transport = {
     request: async (path: string, init: RequestInit) => {
@@ -21,6 +21,8 @@ test("cron updates send the caller's optimistic concurrency version", async () =
     title: "Updated title",
   });
   await api.toggle("cron-1", false, "2026-07-31T12:01:00.000Z");
+  await api.update("cron-2", { title: "Compatible update" });
+  await api.toggle("cron-2", true);
 
   assert.deepEqual(requests, [
     {
@@ -36,6 +38,14 @@ test("cron updates send the caller's optimistic concurrency version", async () =
         enabled: false,
         expectedUpdatedAt: "2026-07-31T12:01:00.000Z",
       },
+    },
+    {
+      path: "/api/cron-jobs/cron-2",
+      body: { title: "Compatible update" },
+    },
+    {
+      path: "/api/cron-jobs/cron-2",
+      body: { enabled: true },
     },
   ]);
 });

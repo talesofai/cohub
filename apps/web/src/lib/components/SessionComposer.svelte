@@ -1169,7 +1169,7 @@ $effect(() => {
 						</label>
 						<button
 							type="button"
-							class="flex h-6 w-6 shrink-0 items-center justify-center rounded-full text-text-placeholder transition-colors hover:bg-bg-hover hover:text-text-primary"
+							class="flex h-11 w-11 shrink-0 items-center justify-center rounded-full text-text-placeholder transition-colors hover:bg-bg-hover hover:text-text-primary focus-visible:ring-2 focus-visible:ring-brand/50 sm:h-6 sm:w-6"
 							onclick={() => {
 								showSystemInstructions = false;
 							}}
@@ -1186,7 +1186,7 @@ $effect(() => {
 						maxlength={MAX_PROMPT_SYSTEM_INSTRUCTIONS_LENGTH}
 						rows="2"
 						placeholder="Instructions for this turn"
-						class="block max-h-28 min-h-12 w-full resize-y bg-transparent text-[12px] leading-5 text-text-primary outline-none placeholder:text-text-placeholder disabled:cursor-not-allowed disabled:opacity-60"
+						class="block max-h-28 min-h-12 w-full resize-y rounded-sm bg-transparent text-[12px] leading-5 text-text-primary outline-none placeholder:text-text-placeholder focus-visible:ring-2 focus-visible:ring-brand/50 disabled:cursor-not-allowed disabled:opacity-60"
 					></textarea>
 					{#if systemInstructions.length >= MAX_PROMPT_SYSTEM_INSTRUCTIONS_LENGTH - 1_000}
 						<div class="mt-1 text-right text-[10px] tabular-nums text-text-placeholder">
@@ -1414,7 +1414,7 @@ $effect(() => {
 
 							<button
 								type="button"
-								class={`relative flex h-8.5 w-8.5 shrink-0 items-center justify-center rounded-full transition-colors hover:bg-bg-hover hover:text-text-primary disabled:cursor-not-allowed disabled:opacity-50 ${showSystemInstructions || systemInstructions.trim() ? 'text-text-primary' : 'text-text-tertiary'}`}
+								class={`relative flex h-11 w-11 shrink-0 items-center justify-center rounded-full transition-colors hover:bg-bg-hover hover:text-text-primary focus-visible:ring-2 focus-visible:ring-brand/50 disabled:cursor-not-allowed disabled:opacity-50 sm:h-8.5 sm:w-8.5 ${showSystemInstructions || systemInstructions.trim() ? 'text-text-primary' : 'text-text-tertiary'}`}
 								onclick={() => {
 									showSystemInstructions = !showSystemInstructions;
 								}}

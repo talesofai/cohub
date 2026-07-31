@@ -44,8 +44,8 @@ export class CronJobsApi {
     });
   }
 
-  toggle(id: string, enabled: boolean, expectedUpdatedAt: string) {
-    return this.update(id, { enabled, expectedUpdatedAt });
+  toggle(id: string, enabled: boolean, expectedUpdatedAt?: string) {
+    return this.update(id, { enabled, ...(expectedUpdatedAt ? { expectedUpdatedAt } : {}) });
   }
 
   runs(cronJobId: string, options: CronJobRunsOptions = {}) {

@@ -1,7 +1,7 @@
 import { COHUB_TASKS_QUEUE, createBullmqQueue, defaultJobRetention } from "@cohub/infra/bullmq";
 import type { JobsOptions } from "bullmq";
 import { enqueueTaskRun } from "@cohub/core/tasks";
-import { and, eq, gte, isNull, lt } from "drizzle-orm";
+import { and, eq, gte, isNull, lt, sql } from "drizzle-orm";
 import { config } from "./config.js";
 import { db } from "./db/index.js";
 import { cronJobs } from "@cohub/db";
@@ -10,6 +10,7 @@ import { GENERATION_TASK_TYPE } from "@cohub/protocol/generation";
 import { dispatchTaskCreated } from "./realtime-events.js";
 import { createLogger } from "@cohub/infra/logging";
 import {
+  assertCronJobUpdateVersion,
   CronJobUpdateConflictError,
   nextCronJobUpdateVersion,
 } from "./cron-job-concurrency.js";
@@ -209,9 +210,18 @@ type CronJobUpdatePatch = {
 };
 
 export const updateCronJob = async (
-  current: CronJobRow,
+  snapshot: CronJobRow,
   patch: CronJobUpdatePatch,
-) => {
+) => db.transaction(async (tx) => {
+  await tx.execute(sql`select pg_advisory_xact_lock(hashtextextended(${snapshot.id}, 0))`);
+  const [current] = await tx
+    .select()
+    .from(cronJobs)
+    .where(and(eq(cronJobs.id, snapshot.id), isNull(cronJobs.deletedAt)))
+    .limit(1);
+  if (!current) throw new CronJobUpdateConflictError();
+  assertCronJobUpdateVersion(current.updatedAt, snapshot.updatedAt ?? new Date(0));
+
   const next = {
     ...current,
     ...patch,
@@ -227,7 +237,7 @@ export const updateCronJob = async (
   );
 
   if (needsSchedule) {
-    const [updatedConfig] = await db
+    const [updatedConfig] = await tx
       .update(cronJobs)
       .set({
         ...(patch.title !== undefined ? { title: patch.title } : {}),
@@ -248,7 +258,7 @@ export const updateCronJob = async (
         current.bullJobKey,
         cronJobScheduleData(updatedConfig),
       );
-      const [updatedJob] = await db
+      const [updatedJob] = await tx
         .update(cronJobs)
         .set({
           bullJobKey: nextBullJobKey,
@@ -265,7 +275,7 @@ export const updateCronJob = async (
           logger.warn("[CronJob] failed to remove partially scheduled repeat job", { cronJobId: current.id, error: cleanupError });
         });
       }
-      const [rolledBack] = await db
+      const [rolledBack] = await tx
         .update(cronJobs)
         .set({
           title: current.title,
@@ -282,7 +292,7 @@ export const updateCronJob = async (
       if (rolledBack && current.enabled) {
         try {
           const restoredBullJobKey = await scheduleCronJobRepeat(current.id, "", cronJobScheduleData(current));
-          const [restoredJob] = await db
+          const [restoredJob] = await tx
             .update(cronJobs)
             .set({
               bullJobKey: restoredBullJobKey,
@@ -303,7 +313,7 @@ export const updateCronJob = async (
   }
 
   if (patch.enabled === false && current.enabled) {
-    const [disabledJob] = await db
+    const [disabledJob] = await tx
       .update(cronJobs)
       .set({
         ...(patch.title !== undefined ? { title: patch.title } : {}),
@@ -323,7 +333,7 @@ export const updateCronJob = async (
       }
       return disabledJob;
     } catch (error) {
-      await db
+      await tx
         .update(cronJobs)
         .set({
           title: current.title,
@@ -345,7 +355,7 @@ export const updateCronJob = async (
     }
   }
 
-  const [updatedJob] = await db
+  const [updatedJob] = await tx
     .update(cronJobs)
     .set({
       ...(patch.title !== undefined ? { title: patch.title } : {}),
@@ -359,4 +369,4 @@ export const updateCronJob = async (
     .returning();
   if (!updatedJob) throw new CronJobUpdateConflictError();
   return updatedJob;
-};
+});

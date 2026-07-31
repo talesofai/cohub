@@ -4,7 +4,13 @@ import type { TaskPayload } from "@cohub/protocol/task";
 import { registerTask } from "./registry.js";
 import { assignLabelsToSession } from "@cohub/core/labels";
 import { assignSessionSourceSystemLabel } from "@cohub/core/labels/session-source";
-import { getPromptAuthScopes, type PromptAccessMode, type PromptAuthContext, type PromptEnv, type SubmitSessionPromptContext } from "@cohub/core/sessions";
+import {
+  getPromptAuthScopes,
+  type PromptAccessMode,
+  type PromptAuthContext,
+  type PromptEnv,
+  type SubmitSessionPromptContext,
+} from "@cohub/core/sessions";
 import type { SessionTurnIntent } from "@cohub/protocol/model";
 import { getPromptTemplateService } from "../prompt-templates.js";
 import { getSkillService } from "../skills.js";
@@ -12,7 +18,10 @@ import { getSessionDomainServices } from "../session-services.js";
 import { createLogger } from "@cohub/infra/logging";
 import { db } from "../db.js";
 import { dispatchLabelAssignmentsUpdated } from "../label-events.js";
-import { buildScheduledSendMessagePromptInput } from "./send-message-prompt.js";
+import {
+  buildScheduledSendMessagePromptInput,
+  parseScheduledSendMessagePromptOptions,
+} from "./send-message-prompt.js";
 
 const MAX_TASK_SOURCE_LENGTH = 255;
 
@@ -67,6 +76,10 @@ const sendMessageHandler = async (job: import("bullmq").Job, context?: { taskRun
   const taskRunId = (context?.taskRunId ?? String(job.id ?? "")).trim();
   if (!taskRunId) throw new Error("taskRunId is required for send_message task");
 
+  const {
+    env: promptEnv,
+    systemInstructions: promptSystemInstructions,
+  } = parseScheduledSendMessagePromptOptions({ env, systemInstructions });
   const source = normalizeTaskSource(payloadSource);
   const targetSessionId = sessionId?.trim() || null;
   const createdSession = targetSessionId ? null : await sessionPromptService.registerCronjobSession(spaceId, { source, title: title ?? null, userUuid: userId });
@@ -99,8 +112,8 @@ const sendMessageHandler = async (job: import("bullmq").Job, context?: { taskRun
     thinkingLevel: thinkingLevel ?? null,
     generationPolicy: generationPolicy ?? null,
     accessMode: accessMode ?? "full_access",
-    env,
-    systemInstructions,
+    env: promptEnv,
+    systemInstructions: promptSystemInstructions,
     intent: intent ?? null,
     context: {
       kind: "scheduled_task",

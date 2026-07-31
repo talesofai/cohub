@@ -9,6 +9,16 @@ import type { ContentBlock } from "@cohub/protocol/core";
 import type { GenerationPolicy } from "@cohub/protocol/generation";
 import type { SessionTurnIntent } from "@cohub/protocol/model";
 
+export function parseScheduledSendMessagePromptOptions(input: {
+  env?: unknown;
+  systemInstructions?: unknown;
+}) {
+  return {
+    env: parsePromptEnv(input.env),
+    systemInstructions: parsePromptSystemInstructions(input.systemInstructions),
+  };
+}
+
 export function buildScheduledSendMessagePromptInput(input: {
   spaceId: string;
   sessionId: string;
@@ -38,8 +48,8 @@ export function buildScheduledSendMessagePromptInput(input: {
     thinkingLevel: input.thinkingLevel ?? null,
     generationPolicy: input.generationPolicy ?? null,
     accessMode: input.accessMode ?? "full_access",
-    env: parsePromptEnv(input.env),
-    systemInstructions: parsePromptSystemInstructions(input.systemInstructions),
+    env: input.env ?? null,
+    systemInstructions: input.systemInstructions ?? null,
     intent: input.intent ?? null,
     context: input.context,
   };

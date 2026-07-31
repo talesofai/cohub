@@ -254,19 +254,21 @@ router.patch("/:id", async (c) => {
   const body = await c.req.json<Record<string, unknown>>().catch(() => null);
   if (!body || typeof body !== "object" || Array.isArray(body)) return c.json({ message: "invalid json body" }, 400);
   if ("taskType" in body) return c.json({ message: "taskType cannot be changed" }, 400);
-  try {
-    assertCronJobUpdateVersion(
-      job.updatedAt,
-      parseCronJobExpectedUpdatedAt(body.expectedUpdatedAt),
-    );
-  } catch (error) {
-    if (error instanceof CronJobUpdateVersionError) {
-      return c.json({ message: error.message }, 400);
+  if (body.expectedUpdatedAt !== undefined) {
+    try {
+      assertCronJobUpdateVersion(
+        job.updatedAt,
+        parseCronJobExpectedUpdatedAt(body.expectedUpdatedAt),
+      );
+    } catch (error) {
+      if (error instanceof CronJobUpdateVersionError) {
+        return c.json({ message: error.message }, 400);
+      }
+      if (error instanceof CronJobUpdateConflictError) {
+        return c.json({ code: error.code, message: error.message }, 409);
+      }
+      throw error;
     }
-    if (error instanceof CronJobUpdateConflictError) {
-      return c.json({ code: error.code, message: error.message }, 409);
-    }
-    throw error;
   }
 
   const patch: {

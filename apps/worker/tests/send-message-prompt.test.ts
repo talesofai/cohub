@@ -1,8 +1,28 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { buildScheduledSendMessagePromptInput } from "../src/tasks/send-message-prompt.js";
+import {
+  buildScheduledSendMessagePromptInput,
+  parseScheduledSendMessagePromptOptions,
+} from "../src/tasks/send-message-prompt.js";
 
-test("scheduled send_message forwards normalized turn instructions", () => {
+test("scheduled send_message validates private prompt options before dispatch", () => {
+  assert.deepEqual(
+    parseScheduledSendMessagePromptOptions({
+      env: { REPORT_FORMAT: "finance" },
+      systemInstructions: "  Use the finance reporting format.  ",
+    }),
+    {
+      env: { REPORT_FORMAT: "finance" },
+      systemInstructions: "Use the finance reporting format.",
+    },
+  );
+  assert.throws(
+    () => parseScheduledSendMessagePromptOptions({ env: { "BAD-NAME": "x" } }),
+    /env name/,
+  );
+});
+
+test("scheduled send_message forwards validated turn instructions", () => {
   const prompt = buildScheduledSendMessagePromptInput({
     spaceId: "space-1",
     sessionId: "session-1",
@@ -10,7 +30,7 @@ test("scheduled send_message forwards normalized turn instructions", () => {
     clientMessageId: "cron:cron-1:run:run-1",
     content: [{ type: "text", text: "Run the report" }],
     source: "scheduled_task",
-    systemInstructions: "  Use the finance reporting format.  ",
+    systemInstructions: "Use the finance reporting format.",
     context: {
       kind: "scheduled_task",
       taskRunId: "run-1",

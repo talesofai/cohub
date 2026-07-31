@@ -385,9 +385,17 @@ export function createCronjobDetailController(options: {
 			notifyCronjobsUpdated();
 		} catch (error) {
 			if (error instanceof HttpError && error.code === "cron_job_conflict") {
-				await loadDetail(cronjobId);
+				try {
+					const { job } = await sdk.cronJobs.get(cronjobId);
+					if (options.getCronjobId() !== cronjobId) return;
+					detail = job;
+					notify(job);
+				} catch (reloadError) {
+					formError = `Your edits were kept, but the latest version could not be loaded: ${reloadError instanceof Error ? reloadError.message : "Unknown error"}`;
+					return;
+				}
 				formError =
-					"This scheduled prompt changed elsewhere. The latest version has been reloaded.";
+					"This scheduled prompt changed elsewhere. Your edits were kept; review and save again.";
 				return;
 			}
 			formError = error instanceof Error ? error.message : "Failed to save";
