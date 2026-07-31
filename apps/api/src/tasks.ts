@@ -17,11 +17,11 @@ import {
 } from "./cron-job-concurrency.js";
 import {
   cronJobRepeatVersionedId,
-  findCronJobQueueEntries,
   indexCronJobQueueEntries,
   isCronJobQueueStateCurrent,
   type CronJobQueueIndex,
 } from "./cron-job-queue-state.js";
+import { reconcileCronJobQueueRecord } from "./cron-job-queue-reconciler.js";
 
 
 const logger = createLogger({ serviceName: "cohub-api" });
@@ -162,64 +162,44 @@ export async function reconcileCronJobQueue(
     queueIndex?: CronJobQueueIndex;
   } = {},
 ) {
-  const [current] = await db
-    .select()
-    .from(cronJobs)
-    .where(eq(cronJobs.id, cronJobId))
-    .limit(1);
-  if (!current) return null;
-
-  let queueIndex = options.queueIndex ?? null;
-  if (!queueIndex && (!current.enabled || current.deletedAt)) {
-    queueIndex = indexCronJobQueueEntries(
-      await taskQueue.getRepeatableJobs(0, -1, true),
-    );
-  }
-  if (current.queueSyncedVersion === current.scheduleVersion) {
-    if (!options.verifyQueueState) return current;
-    queueIndex ??= indexCronJobQueueEntries(
-      await taskQueue.getRepeatableJobs(0, -1, true),
-    );
-    if (isCronJobQueueStateCurrent(current, queueIndex)) return current;
-  }
-
-  const staleKeys = new Set<string>();
-  if (current.bullJobKey) staleKeys.add(current.bullJobKey);
-  if (queueIndex) {
-    for (const entry of findCronJobQueueEntries(current, queueIndex)) {
-      staleKeys.add(entry.key);
-    }
-  }
-  await Promise.all([...staleKeys].map((key) => taskQueue.removeRepeatableByKey(key)));
-
-  const nextBullJobKey = current.enabled && !current.deletedAt
-    ? await scheduleCronJobRepeat(current.id, cronJobScheduleData(current))
-    : "";
-
-  const [synced] = await db
-    .update(cronJobs)
-    .set({
-      bullJobKey: nextBullJobKey,
-      queueSyncedVersion: current.scheduleVersion,
-    })
-    .where(and(
-      eq(cronJobs.id, current.id),
-      eq(cronJobs.scheduleVersion, current.scheduleVersion),
-    ))
-    .returning();
-  if (!synced) {
-    if (nextBullJobKey) {
-      await taskQueue.removeRepeatableByKey(nextBullJobKey).catch((cleanupError) => {
-        logger.warn("[CronJob] failed to remove stale versioned repeat", {
-          cronJobId,
-          repeatJobKey: nextBullJobKey,
-          cleanupError,
-        });
+  return reconcileCronJobQueueRecord(cronJobId, {
+    load: async (id) => {
+      const [current] = await db
+        .select()
+        .from(cronJobs)
+        .where(eq(cronJobs.id, id))
+        .limit(1);
+      return current ?? null;
+    },
+    list: () => taskQueue.getRepeatableJobs(0, -1, true),
+    remove: (repeatJobKey) => taskQueue.removeRepeatableByKey(repeatJobKey),
+    schedule: (current) => scheduleCronJobRepeat(
+      current.id,
+      cronJobScheduleData(current),
+    ),
+    markSynced: async (current, repeatJobKey) => {
+      const [synced] = await db
+        .update(cronJobs)
+        .set({
+          bullJobKey: repeatJobKey,
+          queueSyncedVersion: current.scheduleVersion,
+        })
+        .where(and(
+          eq(cronJobs.id, current.id),
+          eq(cronJobs.scheduleVersion, current.scheduleVersion),
+        ))
+        .returning();
+      return synced ?? null;
+    },
+    createConflictError: () => new CronJobUpdateConflictError(),
+    onConflictCleanupFailure: (cleanupError, repeatJobKey) => {
+      logger.warn("[CronJob] failed to remove stale versioned repeat", {
+        cronJobId,
+        repeatJobKey,
+        cleanupError,
       });
-    }
-    throw new CronJobUpdateConflictError();
-  }
-  return synced;
+    },
+  }, options);
 }
 
 const logCronJobQueueSyncFailure = (cronJobId: string) => (error: unknown) => {
