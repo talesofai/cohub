@@ -5,13 +5,15 @@ import { cronJobs, taskRuns } from "@cohub/db";
 import { eq, and, isNull, desc, lt, or } from "drizzle-orm";
 import { sanitizePostgresJsonValue } from "@cohub/core/content/sanitize";
 import { PromptSystemInstructionsValidationError } from "@cohub/core/sessions";
+import { resolveLabelPaths } from "@cohub/core/labels";
 import { getOptionalAuth, useAuth, requireValidId, authzDenied } from "../lib/middleware.js";
 import { hasPermission } from "../permissions.js";
 import { removeCronJob, updateCronJob } from "../tasks.js";
 import { fallbackPublicUserProfile, getProfilesByUuids } from "../user-profiles.js";
 import {
   prepareScheduledPromptPayloadUpdate,
-  sanitizeScheduledPromptForClient,
+  sanitizeCronJobForClient,
+  sanitizeTaskRunForClient,
   sanitizeTaskRunPricingForViewer,
 } from "../task-run-privacy.js";
 import {
@@ -21,6 +23,10 @@ import {
   parseCronJobExpectedUpdatedAt,
 } from "../cron-job-concurrency.js";
 import { cronJobQueueSyncStatus } from "../cron-job-queue-state.js";
+import {
+  ScheduledPromptPayloadValidationError,
+  validateScheduledSendMessagePayload,
+} from "../scheduled-prompt-payload.js";
 
 const router = new Hono();
 const { CronExpressionParser } = cronParser;
@@ -43,7 +49,7 @@ async function hydrateCronJobUserProfiles<T extends {
 }>(jobs: T[]) {
   const profiles = await getProfilesByUuids(jobs.map((job) => job.userUuid));
   return jobs.map((job) => {
-    const sanitized = sanitizeScheduledPromptForClient(job);
+    const sanitized = sanitizeCronJobForClient(job);
     return {
       ...sanitized,
       queueSyncStatus: cronJobQueueSyncStatus(job),
@@ -124,6 +130,39 @@ function buildTaskCursor(run: { createdAt: Date | string | null; id: string } | 
   return `${createdAt}|${run.id}`;
 }
 
+async function authorizeScheduledSendMessagePayload(input: {
+  user: Exclude<ReturnType<typeof useAuth>, Response>;
+  job: typeof cronJobs.$inferSelect;
+  payload: Record<string, unknown>;
+}) {
+  const validated = validateScheduledSendMessagePayload(input.payload);
+  const targetSessionId = typeof validated.payload.sessionId === "string" ? validated.payload.sessionId : null;
+  if (targetSessionId !== input.job.sessionId) return "payload.sessionId cannot change the cron job target session";
+
+  const auth = validated.payload.auth;
+  if (auth !== undefined) {
+    if (!isRecord(auth) || auth.type !== "delegated_prompt" || typeof auth.exp !== "number" || auth.exp * 1000 <= Date.now()) {
+      return "scheduled prompt authorization is invalid or expired";
+    }
+  }
+
+  if (!input.job.spaceId) return null;
+  const promptPermission = validated.accessMode === "read_only" ? "session.prompt.readonly" : "session.prompt.fullaccess";
+  if (!(await hasPermission(input.user, promptPermission, { spaceId: input.job.spaceId, sessionId: input.job.sessionId ?? undefined }))) {
+    return "forbidden";
+  }
+  if (validated.labelPaths.length > 0) {
+    if (!(await hasPermission(input.user, "space.label.assign", { spaceId: input.job.spaceId, sessionId: input.job.sessionId ?? undefined }))) {
+      return "forbidden";
+    }
+    const resolved = await resolveLabelPaths({ db, spaceId: input.job.spaceId, paths: validated.labelPaths });
+    if (resolved.missingPaths.length > 0 && !(await hasPermission(input.user, "space.label.manage", { spaceId: input.job.spaceId }))) {
+      return "forbidden";
+    }
+  }
+  return null;
+}
+
 router.get("/", async (c) => {
   const spaceId = c.req.query("spaceId") ?? null;
   const user = spaceId ? getOptionalAuth(c) : useAuth(c);
@@ -202,7 +241,7 @@ router.get("/:id/runs", async (c) => {
   const runs = rows
     .slice(0, limit)
     .map((run) => sanitizeTaskRunPricingForViewer(
-      sanitizeScheduledPromptForClient(run),
+      sanitizeTaskRunForClient(run),
       user?.uuid,
     ));
 
@@ -303,13 +342,19 @@ router.patch("/:id", async (c) => {
     if (!isRecord(body.payload)) return c.json({ message: "payload must be an object" }, 400);
     if (Object.hasOwn(body.payload, "auth")) return c.json({ message: "payload.auth is server-managed" }, 400);
     try {
-      patch.payload = prepareScheduledPromptPayloadUpdate({
+      const nextPayload = prepareScheduledPromptPayloadUpdate({
         taskType: job.taskType,
         currentPayload: job.payload,
         nextPayload: sanitizePostgresJsonValue(body.payload) as Record<string, unknown>,
       });
+      if (job.taskType === "send_message") {
+        const validated = validateScheduledSendMessagePayload(nextPayload);
+        patch.payload = validated.payload;
+      } else {
+        patch.payload = nextPayload;
+      }
     } catch (error) {
-      if (error instanceof PromptSystemInstructionsValidationError) {
+      if (error instanceof PromptSystemInstructionsValidationError || error instanceof ScheduledPromptPayloadValidationError) {
         return c.json({ message: error.message }, 400);
       }
       throw error;
@@ -336,6 +381,23 @@ router.patch("/:id", async (c) => {
   if ("enabled" in body) {
     if (typeof body.enabled !== "boolean") return c.json({ message: "enabled must be a boolean" }, 400);
     patch.enabled = body.enabled;
+  }
+
+  const promptExecutionMayStart = job.taskType === "send_message"
+    && (patch.payload !== undefined || patch.cronExpression !== undefined || patch.timezone !== undefined || patch.enabled === true);
+  if (promptExecutionMayStart) {
+    try {
+      const payload = patch.payload ?? (isRecord(job.payload) ? job.payload : null);
+      if (!payload) return c.json({ message: "stored send_message payload is invalid" }, 400);
+      const authorizationError = await authorizeScheduledSendMessagePayload({ user, job, payload });
+      if (authorizationError === "forbidden") return authzDenied(c);
+      if (authorizationError) return c.json({ message: authorizationError }, 400);
+    } catch (error) {
+      if (error instanceof PromptSystemInstructionsValidationError || error instanceof ScheduledPromptPayloadValidationError) {
+        return c.json({ message: error.message }, 400);
+      }
+      throw error;
+    }
   }
 
   if (Object.keys(patch).length === 0) return c.json({ message: "no changes provided" }, 400);

@@ -32,3 +32,19 @@ test("realtime system instructions validate their normalized value", () => {
     },
   }));
 });
+
+test("realtime client message IDs use the same bounds as HTTP prompts", () => {
+  const parsed = wsClientEventSchema.parse({
+    ...baseEvent,
+    payload: { ...baseEvent.payload, clientMessageId: " request-1 " },
+  });
+  assert.equal(parsed.payload.clientMessageId, "request-1");
+  assert.throws(() => wsClientEventSchema.parse({
+    ...baseEvent,
+    payload: { ...baseEvent.payload, clientMessageId: "   " },
+  }));
+  assert.throws(() => wsClientEventSchema.parse({
+    ...baseEvent,
+    payload: { ...baseEvent.payload, clientMessageId: "x".repeat(256) },
+  }));
+});

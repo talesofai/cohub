@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { validatePromptSchedule } from "./prompt-schedule.js";
+import { validatePromptSchedule, validateWorkSessionPromptSchedule } from "./prompt-schedule.js";
 
 const now = Date.parse("2026-07-30T00:00:00.000Z");
 
@@ -57,4 +57,12 @@ test("invalid schedules fail before callers perform writes", () => {
     () => validatePromptSchedule({ mode: "repeat", cronExpression: "0 9 * * *", timezone: "Not/AZone" }, now),
     /IANA timezone/,
   );
+});
+
+test("work-session schedules cannot outlive their authorization", () => {
+  const delay = validatePromptSchedule({ mode: "delay", delayMs: 60_000 }, now);
+  assert.doesNotThrow(() => validateWorkSessionPromptSchedule(delay, now + 120_000));
+  assert.throws(() => validateWorkSessionPromptSchedule(delay, now + 60_000), /before the work session/);
+  const repeat = validatePromptSchedule({ mode: "repeat", cronExpression: "0 9 * * *", timezone: "Asia/Shanghai" }, now);
+  assert.throws(() => validateWorkSessionPromptSchedule(repeat, now + 60_000), /repeat schedules/);
 });

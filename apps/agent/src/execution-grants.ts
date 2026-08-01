@@ -10,6 +10,7 @@ export async function createAgentExecutionToken(input: {
   turnId: string | null;
   source: string;
   scopes?: string[];
+  authorizationMode?: "account" | "restricted";
 }) {
   const grant = await service.createExecutionGrant({
     actorUserId: input.actorUserId,
@@ -18,6 +19,7 @@ export async function createAgentExecutionToken(input: {
     turnId: input.turnId,
     source: input.source,
     scopes: input.scopes,
+    authorizationMode: input.authorizationMode,
   });
   return grant.token;
 }

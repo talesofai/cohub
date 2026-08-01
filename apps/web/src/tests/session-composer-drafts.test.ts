@@ -1,6 +1,10 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import {
+	buildViewportContentBlock,
+	type ViewportContext,
+} from "@cohub/protocol";
+import {
 	readSessionComposerDraft,
 	writeSessionComposerDraft,
 } from "../lib/stores/session-composer-drafts.ts";
@@ -159,6 +163,7 @@ test("composer drafts preserve and validate a final retry payload", () => {
 				provider: "provider-1",
 				thinkingLevel: "low",
 				generationPolicy: null,
+				viewportContexts: [],
 			}),
 			draft.pendingSubmission,
 		);
@@ -173,6 +178,7 @@ test("composer drafts preserve and validate a final retry payload", () => {
 				provider: "provider-1",
 				thinkingLevel: "low",
 				generationPolicy: null,
+				viewportContexts: [],
 			}),
 			null,
 		);
@@ -184,6 +190,68 @@ test("composer drafts preserve and validate a final retry payload", () => {
 			Object.defineProperty(globalThis, "localStorage", previousStorage);
 		else delete (globalThis as { localStorage?: Storage }).localStorage;
 	}
+});
+
+test("composer retry rejects a persisted payload when viewport context changes", () => {
+	const fileViewport: ViewportContext = {
+		kind: "file",
+		path: "src/app.ts",
+		visibleLines: { start: 10, end: 20 },
+	};
+	const viewportBlock = buildViewportContentBlock([fileViewport]);
+	if (!viewportBlock) throw new Error("viewport block was not created");
+	const pendingSubmission = {
+		spaceId: "space-1",
+		sessionId: "session-1",
+		content: [{ type: "text" as const, text: "Review this" }, viewportBlock],
+		text: "Review this",
+		model: null,
+		provider: null,
+		thinkingLevel: null,
+		systemInstructions: null,
+		generationPolicy: null,
+		clientMessageId: "request-1",
+		requestFingerprint: "fingerprint-1",
+	};
+	const draft = {
+		text: "Review this",
+		systemInstructions: "",
+		retryClientMessageId: "request-1",
+		retryRequestFingerprint: "fingerprint-1",
+		pendingSubmission,
+	};
+	const input = {
+		draft,
+		text: draft.text,
+		systemInstructions: draft.systemInstructions,
+		spaceId: "space-1",
+		sessionId: "session-1",
+		model: null,
+		provider: null,
+		thinkingLevel: null,
+		generationPolicy: null,
+	};
+
+	assert.equal(
+		resolvePendingComposerSubmission({
+			...input,
+			viewportContexts: [fileViewport],
+		}),
+		pendingSubmission,
+	);
+	assert.equal(
+		resolvePendingComposerSubmission({ ...input, viewportContexts: [] }),
+		null,
+	);
+	assert.equal(
+		resolvePendingComposerSubmission({
+			...input,
+			viewportContexts: [
+				{ ...fileViewport, visibleLines: { start: 21, end: 30 } },
+			],
+		}),
+		null,
+	);
 });
 
 test("composer submission identity is reused only for the exact semantic request", async () => {

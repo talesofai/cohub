@@ -185,6 +185,38 @@ test("stable task retries enqueue only the payload that won the database insert"
   assert.deepEqual(queuedPayloads, [winner, winner]);
 });
 
+test("stable task recovery retries an existing failed queue job before adding another", async () => {
+  const taskDb = createTaskDb();
+  const recoveredJob = { id: "generation-request-retry" };
+  let enqueueCalls = 0;
+  let recoverCalls = 0;
+  const input = {
+    db: taskDb.db,
+    payload,
+    options: { jobId: "generation-request-retry", idempotencyFingerprint: "fingerprint-a" },
+    enqueue: async () => {
+      enqueueCalls += 1;
+      return { id: "generation-request-retry" };
+    },
+    recoverFailedQueueJob: async (jobId: string) => {
+      recoverCalls += 1;
+      assert.equal(jobId, "generation-request-retry");
+      return recoveredJob;
+    },
+  };
+
+  await enqueueTaskRun(input);
+  taskDb.markCompleted();
+  taskDb.getStored()!.status = "failed";
+  taskDb.getStored()!.startedAt = null;
+
+  const recovered = await enqueueTaskRun(input);
+  assert.equal(recovered.job, recoveredJob);
+  assert.equal(enqueueCalls, 1);
+  assert.equal(recoverCalls, 1);
+  assert.equal(taskDb.getStored()?.status, "pending");
+});
+
 test("stable task retries return the scheduled time that won the database insert", async () => {
   const taskDb = createTaskDb();
   const firstScheduledAt = new Date("2026-08-01T00:00:00.000Z");

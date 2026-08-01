@@ -2,14 +2,13 @@ import type { ContentBlock } from "@cohub/protocol/core";
 import type { GenerationPolicy } from "@cohub/protocol/generation";
 import type { TaskPayload } from "@cohub/protocol/task";
 import { registerTask } from "./registry.js";
-import { assignLabelsToSession, parseLabelRefs, resolveOrCreateLabelPaths } from "@cohub/core/labels";
+import { parseLabelRefs } from "@cohub/core/labels";
 import { assignSessionSourceSystemLabel } from "@cohub/core/labels/session-source";
-import {
-  getPromptAuthScopes,
-  type PromptAccessMode,
-  type PromptAuthContext,
-  type PromptEnv,
-  type SubmitSessionPromptContext,
+import type {
+  PromptAccessMode,
+  PromptAuthContext,
+  PromptEnv,
+  SubmitSessionPromptContext,
 } from "@cohub/core/sessions";
 import type { SessionTurnIntent } from "@cohub/protocol/model";
 import { getPromptTemplateService } from "../prompt-templates.js";
@@ -21,6 +20,7 @@ import { dispatchLabelAssignmentsUpdated } from "../label-events.js";
 import {
   buildScheduledSendMessagePromptInput,
   parseScheduledSendMessagePromptOptions,
+  requireScheduledPromptAuth,
   scheduledPromptSessionId,
 } from "./send-message-prompt.js";
 
@@ -40,17 +40,10 @@ const sessionPromptService = getSessionDomainServices({
   skillService: getSkillService(),
 });
 
-function sanitizeTaskPromptAuth(auth: PromptAuthContext | null | undefined, input: { spaceId: string; userId: string }) {
-  if (auth?.type !== "delegated_prompt" || auth.spaceId !== input.spaceId) return null;
-  if (auth.actorUserId !== input.userId) return null;
-  if (getPromptAuthScopes(auth, input.spaceId).length === 0) return null;
-  return auth;
-}
-
 const sendMessageHandler = async (job: import("bullmq").Job, context?: { taskRunId: string }) => {
   const payload = job.data as TaskPayload;
   const spaceId = payload.spaceId;
-  const { content, sessionId, title, source: payloadSource, model, provider, thinkingLevel, clientMessageId, generationPolicy, accessMode, intent, labelIds, labelRefs, auth, env, systemInstructions } = (payload.data ?? {}) as {
+  const { content, sessionId, title, source: payloadSource, model, provider, thinkingLevel, clientMessageId, generationPolicy, accessMode, intent, labelRefs, auth, env, systemInstructions } = (payload.data ?? {}) as {
     content?: ContentBlock[];
     sessionId?: string;
     title?: string;
@@ -62,7 +55,6 @@ const sendMessageHandler = async (job: import("bullmq").Job, context?: { taskRun
     generationPolicy?: GenerationPolicy | null;
     accessMode?: PromptAccessMode | null;
     intent?: SessionTurnIntent | null;
-    labelIds?: string[];
     labelRefs?: string[];
     auth?: PromptAuthContext | null;
     env?: PromptEnv | null;
@@ -77,6 +69,8 @@ const sendMessageHandler = async (job: import("bullmq").Job, context?: { taskRun
 
   const taskRunId = (context?.taskRunId ?? String(job.id ?? "")).trim();
   if (!taskRunId) throw new Error("taskRunId is required for send_message task");
+  const promptAuth = requireScheduledPromptAuth(auth ?? null, { spaceId, userId });
+  const scheduledLabelPaths = parseLabelRefs(labelRefs);
 
   const {
     env: promptEnv,
@@ -96,25 +90,6 @@ const sendMessageHandler = async (job: import("bullmq").Job, context?: { taskRun
   const promptSessionId = targetSessionId ?? createdSession?.id;
   if (!promptSessionId) throw new Error("sessionId is required for send_message task");
 
-  const scheduledLabelIds = [...new Set(labelIds ?? [])];
-  if (labelRefs && labelRefs.length > 0) {
-    const resolved = await resolveOrCreateLabelPaths({
-      db,
-      spaceId,
-      paths: parseLabelRefs(labelRefs),
-      userId,
-    });
-    scheduledLabelIds.push(...resolved.labelIds);
-  }
-  if (scheduledLabelIds.length > 0) {
-    await assignLabelsToSession({
-      db,
-      spaceId,
-      sessionId: promptSessionId,
-      labelIds: [...new Set(scheduledLabelIds)],
-      userId,
-    });
-  }
   if (createdSession) {
     await assignSessionSourceSystemLabel({ db, spaceId, sessionId: promptSessionId, source }).then(() =>
       dispatchLabelAssignmentsUpdated({ spaceId, resourceType: "session", resourceRef: promptSessionId, sessionId: promptSessionId }),
@@ -138,11 +113,12 @@ const sendMessageHandler = async (job: import("bullmq").Job, context?: { taskRun
     env: promptEnv,
     systemInstructions: promptSystemInstructions,
     intent: intent ?? null,
+    sessionLabelPaths: scheduledLabelPaths,
     context: {
       kind: "scheduled_task",
       taskRunId,
       cronJobId: payload.cronJobId ?? null,
-      auth: sanitizeTaskPromptAuth(auth ?? null, { spaceId, userId }),
+      auth: promptAuth,
     } satisfies SubmitSessionPromptContext,
   }));
 

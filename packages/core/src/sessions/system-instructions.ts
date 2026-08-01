@@ -34,12 +34,14 @@ export function sanitizePromptMetaForClient(
     Object.hasOwn(meta, "systemInstructions")
     || Object.hasOwn(meta, "requestFingerprint")
     || Object.hasOwn(meta, "env")
+    || Object.hasOwn(meta, "billing")
   ) {
     publicMeta = { ...meta };
   }
   delete publicMeta.systemInstructions;
   delete publicMeta.requestFingerprint;
   delete publicMeta.env;
+  delete publicMeta.billing;
 
   if (publicMeta.context && typeof publicMeta.context === "object" && !Array.isArray(publicMeta.context)) {
     const context = publicMeta.context as Record<string, unknown>;

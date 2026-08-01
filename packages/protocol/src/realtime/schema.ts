@@ -8,7 +8,7 @@ export type * from "./types.js";
 const contentBlockMetaSchema = z.record(z.string(), z.unknown());
 const realtimeRoomSchema = z.string().regex(/^(space|user|board):[^:]+$/);
 
-export const contentBlockSchema = z.discriminatedUnion("type", [
+export const contentBlockSchema: z.ZodType<ContentBlock> = z.lazy(() => z.discriminatedUnion("type", [
   z.object({
     type: z.literal("text"),
     text: z.string(),
@@ -44,7 +44,7 @@ export const contentBlockSchema = z.discriminatedUnion("type", [
   z.object({
     type: z.literal("tool_result"),
     tool_use_id: z.string(),
-    content: z.union([z.string(), z.array(z.unknown())]),
+    content: z.union([z.string(), z.array(contentBlockSchema)]),
     is_error: z.boolean().optional(),
     _meta: contentBlockMetaSchema.optional(),
   }),
@@ -54,7 +54,7 @@ export const contentBlockSchema = z.discriminatedUnion("type", [
     text: z.string(),
     _meta: contentBlockMetaSchema.optional(),
   }),
-]) as z.ZodType<ContentBlock>;
+]));
 
 export const wsClientEventSchema = z.discriminatedUnion("type", [
   z.object({
@@ -85,7 +85,7 @@ export const wsClientEventSchema = z.discriminatedUnion("type", [
     payload: z.object({
       spaceId: z.string().uuid(),
       sessionId: z.string().uuid(),
-      clientMessageId: z.string().optional(),
+      clientMessageId: z.string().transform((value) => value.trim()).pipe(z.string().min(1).max(255)).optional(),
       content: z.array(contentBlockSchema).min(1),
       model: z.string().optional(),
       provider: z.string().optional(),

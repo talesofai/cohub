@@ -26,6 +26,7 @@ export type ExecutionAuthPrincipal = {
   turnId: string | null;
   source: string;
   scopes: string[];
+  authorizationMode: "account" | "restricted";
   expiresAt: number;
 };
 
@@ -44,6 +45,7 @@ function toExecutionAuthPrincipal(grant: ExecutionGrantPayload): ExecutionAuthPr
     turnId: grant.turnId,
     source: grant.source,
     scopes: grant.scopes ?? [],
+    authorizationMode: grant.authorizationMode ?? (grant.scopes && grant.scopes.length > 0 ? "restricted" : "account"),
     expiresAt: grant.exp * 1000,
   };
 }

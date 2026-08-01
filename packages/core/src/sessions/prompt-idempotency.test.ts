@@ -168,6 +168,68 @@ test("a queued idempotent turn is re-enqueued without moving it to failed on an 
   assert.equal(failCalls, 0);
 });
 
+test("a failure before enqueue is retried without creating or enqueuing another turn", async () => {
+  const input = {
+    spaceId: "space-id",
+    sessionId: "session-id",
+    userId: "user-id",
+    clientMessageId: "stable-message-id",
+    content: [{ type: "text" as const, text: "same request" }],
+    source: "public_api" as const,
+  };
+  let stored: {
+    id: string;
+    userMessageId: string;
+    requestFingerprint: string;
+    enqueueRecovery?: { content: typeof input.content; meta: Record<string, unknown> };
+  } | null = null;
+  let createCalls = 0;
+  let enqueueCalls = 0;
+  let shouldFailPreparation = true;
+  const deps: SessionPromptDependencies = {
+    randomUUID: () => "user-message-id",
+    findSessionTurnByClientMessageId: async () => stored,
+    recoverSessionTurnForEnqueue: async () => Boolean(stored?.enqueueRecovery),
+    expandPromptTemplate: async () => null,
+    createSessionTurn: async ({ meta }) => {
+      createCalls += 1;
+      stored = {
+        id: "turn-id",
+        userMessageId: "user-message-id",
+        requestFingerprint: String(meta.requestFingerprint),
+      };
+      return { id: stored.id, userMessageId: stored.userMessageId };
+    },
+    enqueueSpacePrompt: async () => { enqueueCalls += 1; },
+    failSessionTurn: async ({ errorMessage }) => {
+      if (!stored) throw new Error("missing stored turn");
+      stored.enqueueRecovery = {
+        content: input.content,
+        meta: {
+          clientMessageId: input.clientMessageId,
+          requestFingerprint: stored.requestFingerprint,
+          errorMessage,
+          turnId: stored.id,
+        },
+      };
+    },
+  };
+  const beforeEnqueue = async () => {
+    if (!shouldFailPreparation) return;
+    shouldFailPreparation = false;
+    throw new Error("label assignment unavailable");
+  };
+
+  await assert.rejects(() => submitSessionPrompt(deps, input, { beforeEnqueue }), /label assignment unavailable/);
+  assert.equal(createCalls, 1);
+  assert.equal(enqueueCalls, 0);
+
+  const result = await submitSessionPrompt(deps, input, { beforeEnqueue });
+  assert.deepEqual(result, { turnId: "turn-id", userMessageId: "user-message-id" });
+  assert.equal(createCalls, 1);
+  assert.equal(enqueueCalls, 1);
+});
+
 test("prompt fingerprints ignore websocket tracing identity but preserve execution settings", () => {
   const base = {
     spaceId: "space-id",
@@ -188,5 +250,25 @@ test("prompt fingerprints ignore websocket tracing identity but preserve executi
   assert.notEqual(
     createSessionPromptFingerprint(base),
     createSessionPromptFingerprint({ ...base, accessMode: "read_only" }),
+  );
+});
+
+test("prompt fingerprints include route-owned persistent side effects", () => {
+  const base = {
+    spaceId: "space-id",
+    sessionId: "session-id",
+    userId: "user-id",
+    clientMessageId: "stable-message-id",
+    content: [{ type: "text" as const, text: "same request" }],
+    source: "public_api" as const,
+    idempotencyContext: { title: "Initial session", labelRefs: ["design", "research"] },
+  };
+  assert.notEqual(
+    createSessionPromptFingerprint(base),
+    createSessionPromptFingerprint({ ...base, idempotencyContext: { title: "Other title", labelRefs: ["design", "research"] } }),
+  );
+  assert.notEqual(
+    createSessionPromptFingerprint(base),
+    createSessionPromptFingerprint({ ...base, idempotencyContext: { title: "Initial session", labelRefs: ["other"] } }),
   );
 });

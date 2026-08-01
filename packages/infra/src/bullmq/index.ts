@@ -100,6 +100,33 @@ export const defaultCriticalJobOptions = {
   ...defaultJobRetention,
 } satisfies JobsOptions;
 
+type RetryableQueueJob = {
+  getState(): Promise<string>;
+  retry(): Promise<void>;
+};
+
+type RetryableQueue<Job extends RetryableQueueJob> = {
+  getJob(jobId: string): Promise<Job | undefined>;
+};
+
+/** Requeue a retained failed job without creating a second job for the same durable task. */
+export async function retryFailedQueueJob<Job extends RetryableQueueJob>(
+  queue: RetryableQueue<Job>,
+  jobId: string,
+): Promise<Job | null> {
+  const job = await queue.getJob(jobId);
+  if (!job || await job.getState() !== "failed") return null;
+
+  try {
+    await job.retry();
+    return job;
+  } catch (error) {
+    const state = await job.getState().catch(() => null);
+    if (state === "waiting" || state === "active" || state === "delayed") return job;
+    throw error;
+  }
+}
+
 export const createQueueTelemetry = (serviceName: string) =>
   new BullMQOtel({ tracerName: serviceName });
 

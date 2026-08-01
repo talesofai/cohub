@@ -14,6 +14,18 @@ export type ValidatedPromptSchedule =
   | { mode: "at"; scheduledAt: Date }
   | { mode: "repeat"; cronExpression: string; timezone: string; nextRun: Date };
 
+export function validateWorkSessionPromptSchedule(schedule: ValidatedPromptSchedule, authorizationExpiresAtMs: number) {
+  if (schedule.mode === "repeat") {
+    throw new Error("repeat schedules are not available from a work session");
+  }
+  if (
+    (schedule.mode === "delay" || schedule.mode === "at")
+    && schedule.scheduledAt.getTime() >= authorizationExpiresAtMs
+  ) {
+    throw new Error("scheduled prompt must run before the work session authorization expires");
+  }
+}
+
 const isRecord = (value: unknown): value is Record<string, unknown> =>
   typeof value === "object" && value !== null && !Array.isArray(value);
 

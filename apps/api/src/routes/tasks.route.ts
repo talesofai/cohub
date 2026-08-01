@@ -6,7 +6,7 @@ import { getOptionalAuth, useAuth, requireValidId, authzDenied } from "../lib/mi
 import { hasPermission } from "../permissions.js";
 import { taskQueue } from "../tasks.js";
 import { fallbackPublicUserProfile, getProfilesByUuids } from "../user-profiles.js";
-import { sanitizeScheduledPromptForClient, sanitizeTaskRunPricingForViewer } from "../task-run-privacy.js";
+import { sanitizeTaskRunForClient, sanitizeTaskRunPricingForViewer } from "../task-run-privacy.js";
 
 const router = new Hono();
 
@@ -104,7 +104,7 @@ function hydrateTaskRunUserProfiles<T extends {
   return getProfilesByUuids(userUuids).then((profiles) =>
     runs.map((run) => {
       const privateRun = sanitizeTaskRunPricingForViewer(
-        sanitizeScheduledPromptForClient(run),
+        sanitizeTaskRunForClient(run),
         options?.viewerUserId,
       );
       const sanitized = options?.sanitizeForList ? sanitizeTaskRunForList(privateRun) : privateRun;

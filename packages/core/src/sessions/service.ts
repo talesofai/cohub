@@ -6,6 +6,7 @@ import type { ContentBlock } from "@cohub/protocol/core";
 import type { SessionTurnIntent } from "@cohub/protocol/model";
 import { sessionTurnSegments, sessionTurns, spaceSessions, spaces } from "@cohub/db";
 import { sanitizePostgresJsonValue } from "../content/sanitize.js";
+import { assignLabelsToSession, resolveOrCreateLabelPaths, type LabelPath } from "../labels/index.js";
 import { addSessionParticipantMeta, initializeSessionParticipantsMeta } from "./session-meta.js";
 import { SessionPromptIdempotencyConflictError, submitSessionPrompt, type ExpandedPromptTemplate, type ExpandedSkillCommand, expandPromptContent, type SubmitSessionPromptHooks, type SubmitSessionPromptInput } from "./prompt.js";
 
@@ -170,6 +171,7 @@ export function createSessionServices(input: {
     userContent: ContentBlock[];
     intent: SessionTurnIntent;
     meta: Record<string, unknown>;
+    sessionLabelPaths?: LabelPath[];
   }) {
     const userContent = sanitizePostgresJsonValue(turnInput.userContent);
     const meta = sanitizePostgresJsonValue(turnInput.meta);
@@ -226,6 +228,21 @@ export function createSessionServices(input: {
         model,
         meta,
       }).returning();
+      if (row && turnInput.sessionLabelPaths && turnInput.sessionLabelPaths.length > 0) {
+        const { labelIds } = await resolveOrCreateLabelPaths({
+          db: tx,
+          spaceId: sessionRow.spaceId,
+          paths: turnInput.sessionLabelPaths,
+          userId: turnInput.userUuid,
+        });
+        await assignLabelsToSession({
+          db: tx,
+          spaceId: sessionRow.spaceId,
+          sessionId: turnInput.sessionId,
+          labelIds,
+          userId: turnInput.userUuid,
+        });
+      }
       return { row, spaceId: sessionRow.spaceId, idempotent: false };
     });
     if (!row) throw new Error("failed to create session turn");

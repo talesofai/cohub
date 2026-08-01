@@ -15,6 +15,7 @@ type CachedWorkSessionPrincipal = WorkSessionPrincipal & {
 type ScopedExecutionPrincipal = {
   spaceId: string;
   scopes?: Permission[];
+  authorizationMode?: "account" | "restricted";
 };
 
 const permissionStore = createBatchDrizzlePermissionStore(db);
@@ -34,7 +35,9 @@ const getUserWorkSession = (user: AuthUserProfile | null): CachedWorkSessionPrin
 const getUserExecution = (user: AuthUserProfile | null): ScopedExecutionPrincipal | null => {
   const execution = (user as (AuthUserProfile & { execution?: ScopedExecutionPrincipal }) | null)?.execution;
   if (!execution || !Array.isArray(execution.scopes)) return null;
-  return execution;
+  const scopes = normalizePermissionScopes(execution.scopes);
+  const isRestricted = execution.authorizationMode === "restricted" || (execution.authorizationMode === undefined && scopes.length > 0);
+  return isRestricted ? { ...execution, scopes, authorizationMode: "restricted" } : null;
 };
 
 const getUserPreviewSession = (user: AuthUserProfile | null): PreviewSessionPrincipal | null => {
@@ -99,6 +102,8 @@ export async function hasPermission(
   if (isUserLevelPermission(permission)) {
     const workSession = getUserWorkSession(user);
     if (workSession) return hasActiveViewerGrantPermission(workSession, permission);
+    const execution = getUserExecution(user);
+    if (execution) return scopeListHasPermission(execution.scopes ?? [], permission);
     return Boolean(user?.uuid);
   }
 
@@ -107,7 +112,9 @@ export async function hasPermission(
   const previewSession = getUserPreviewSession(user);
   if (previewSession) return hasPreviewSessionPermission(previewSession, permission, context.spaceId);
   const execution = getUserExecution(user);
-  if (execution?.spaceId === context.spaceId && scopeListHasPermission(normalizePermissionScopes(execution.scopes ?? []), permission)) return true;
+  if (execution) {
+    return execution.spaceId === context.spaceId && scopeListHasPermission(execution.scopes ?? [], permission);
+  }
   return hasSharedPermission({
     store: permissionStore,
     user,

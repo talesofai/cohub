@@ -1111,7 +1111,7 @@ export type SendMessageCronJobPayload = CronJobPayload & {
   model?: string;
   provider?: string;
   thinkingLevel?: ModelThinkingLevel | null;
-  labelIds?: string[];
+  labelRefs?: string[];
 };
 
 export type CronJobUpdatePatch<TPayload extends CronJobPayload = CronJobPayload> = {

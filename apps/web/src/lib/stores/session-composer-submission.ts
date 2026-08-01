@@ -1,3 +1,8 @@
+import {
+	buildViewportContentBlock,
+	isViewportContentBlock,
+	type ViewportContext,
+} from "@cohub/protocol";
 import type {
 	ComposerPendingSubmission,
 	SessionComposerDraft,
@@ -47,8 +52,13 @@ export function resolvePendingComposerSubmission(input: {
 	provider: string | null;
 	thinkingLevel: string | null;
 	generationPolicy: unknown;
+	viewportContexts: ViewportContext[];
 }): ComposerPendingSubmission | null {
 	const pending = input.draft?.pendingSubmission;
+	const pendingViewportBlocks =
+		pending?.content.filter(isViewportContentBlock) ?? [];
+	const viewportBlock = buildViewportContentBlock(input.viewportContexts);
+	const currentViewportBlocks = viewportBlock ? [viewportBlock] : [];
 	if (
 		!pending ||
 		input.draft?.text !== input.text ||
@@ -60,7 +70,9 @@ export function resolvePendingComposerSubmission(input: {
 		pending.thinkingLevel !== input.thinkingLevel ||
 		pending.systemInstructions !== (input.systemInstructions || null) ||
 		stableStringify(pending.generationPolicy) !==
-			stableStringify(input.generationPolicy)
+			stableStringify(input.generationPolicy) ||
+		stableStringify(pendingViewportBlocks) !==
+			stableStringify(currentViewportBlocks)
 	) {
 		return null;
 	}

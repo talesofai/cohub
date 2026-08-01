@@ -1,4 +1,4 @@
-import { COHUB_TASKS_QUEUE, createBullmqQueue, defaultJobRetention } from "@cohub/infra/bullmq";
+import { COHUB_TASKS_QUEUE, createBullmqQueue, defaultJobRetention, retryFailedQueueJob } from "@cohub/infra/bullmq";
 import type { JobsOptions } from "bullmq";
 import { enqueueTaskRun } from "@cohub/core/tasks";
 import { and, eq, gt, gte, isNotNull, isNull, lt, ne, or, sql } from "drizzle-orm";
@@ -47,6 +47,7 @@ export const enqueueTask = async (
   payload,
   options: opts,
   enqueue: (name, taskPayload, options) => taskQueue.add(name, taskPayload, options),
+  recoverFailedQueueJob: (jobId) => retryFailedQueueJob(taskQueue, jobId),
   onTaskCreated: (taskRun) => dispatchTaskCreated(taskRun).catch((error) => {
     logger.warn("[Realtime] failed to dispatch task.created", error);
   }),

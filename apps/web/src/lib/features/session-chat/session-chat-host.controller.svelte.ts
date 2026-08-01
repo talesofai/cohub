@@ -2972,6 +2972,7 @@ export function createSessionChatHost(options: SessionChatHostOptions) {
 		let optimisticTurn: SessionTurnRecord | null = null;
 		let hasActiveTurn = false;
 		const submissionGenerationPolicy = buildTurnGenerationPolicy();
+		const retryViewportContexts = viewport.captureSendContexts();
 		const retryDraft = submissionDraftKey
 			? readSessionComposerDraft(submissionDraftKey)
 			: null;
@@ -2988,9 +2989,11 @@ export function createSessionChatHost(options: SessionChatHostOptions) {
 			provider: model?.provider ?? null,
 			thinkingLevel: activeSessionThinkingLevel ?? null,
 			generationPolicy: submissionGenerationPolicy,
+			viewportContexts: retryViewportContexts,
 		});
 		try {
 			if (pendingSubmission) {
+				viewport.takeSendSnapshot();
 				content = pendingSubmission.content;
 				text = pendingSubmission.text;
 				clientMessageId = pendingSubmission.clientMessageId;

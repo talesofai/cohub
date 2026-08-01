@@ -36,6 +36,7 @@ export async function enqueueAgentTurnJob(
   data: AgentTurnJobData,
   options: JobsOptions = {},
 ) {
+  const { removeOnFail: _removeOnFail, ...jobOptions } = options;
   return agentTurnQueue.add(AGENT_TURN_JOB_NAME, data, {
     jobId: `agent-session-wakeup-${data.sessionId}`,
     attempts: 2,
@@ -43,8 +44,8 @@ export async function enqueueAgentTurnJob(
     removeOnComplete: true,
     // Queued session turns are the durable outbox. A retained failed wakeup
     // would block the reconciler from recreating this stable job id.
+    ...jobOptions,
     removeOnFail: true,
-    ...options,
   });
 }
 

@@ -717,6 +717,7 @@ async function createTurnExecutionToken(input: {
     turnId: input.turnId,
     source: typeof input.source === "string" && input.source.trim() ? input.source.trim() : "agent_turn",
     scopes: getPromptAuthScopes(input.promptAuth, input.spaceId),
+    authorizationMode: input.promptAuth ? "restricted" : "account",
   });
 }
 

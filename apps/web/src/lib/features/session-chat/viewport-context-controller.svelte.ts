@@ -336,22 +336,26 @@ export function createViewportContextController() {
 		dismissedIds = [...dismissedIds, id];
 	}
 
-	function takeSendSnapshot(): ViewportContext[] {
+	function captureSendContexts(): ViewportContext[] {
 		// Flush any coalesced board observation before capturing.
 		if (pendingBoardObservation) {
 			const pending = pendingBoardObservation;
 			cancelPendingBoardFlush();
 			applyBoardObservation(pending);
 		}
-		// Capture before freezing UI so we don't read the empty send-cycle list.
-		const next =
+		return (
 			snapshot ??
 			(() => {
 				const context = activeContext;
 				if (!context) return [] as ViewportContext[];
 				if (dismissedIds.includes(viewportContextId(context))) return [];
 				return [context];
-			})();
+			})()
+		);
+	}
+
+	function takeSendSnapshot(): ViewportContext[] {
+		const next = captureSendContexts();
 		// Freeze an empty composer list for the in-flight send so chips clear
 		// with the draft, while returning the captured contexts for the message.
 		snapshot = [];
@@ -383,6 +387,7 @@ export function createViewportContextController() {
 		setFileVisibleLines,
 		setBoardViewState,
 		dismiss,
+		captureSendContexts,
 		takeSendSnapshot,
 		restoreAfterFailedSend,
 		markSendSucceeded,

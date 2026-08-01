@@ -11,6 +11,7 @@ export type ExecutionGrantPayload = {
   turnId: string | null;
   source: string;
   scopes?: Permission[];
+  authorizationMode?: "account" | "restricted";
   exp: number;
   iat: number;
 };
@@ -28,6 +29,7 @@ export type ExecutionGrantService = {
     turnId: string | null;
     source: string;
     scopes?: string[];
+    authorizationMode?: "account" | "restricted";
   }): Promise<SessionExecutionGrant>;
   verifyExecutionGrant(token: string): Promise<ExecutionGrantPayload | null>;
 };
@@ -54,13 +56,15 @@ export function createExecutionGrantService(input: {
       const spaceId = grantInput.spaceId?.trim();
       if (!spaceId) throw new Error("Execution grant requires a non-empty spaceId");
       const nowSeconds = Math.floor(now().getTime() / 1000);
+      const scopes = normalizePermissionScopes(grantInput.scopes ?? []);
       const payload: ExecutionGrantPayload = {
         actorUserId: grantInput.actorUserId?.trim() || null,
         spaceId,
         sessionId: grantInput.sessionId?.trim() || null,
         turnId: grantInput.turnId?.trim() || null,
         source: grantInput.source?.trim() || "prompt",
-        scopes: normalizePermissionScopes(grantInput.scopes ?? []),
+        scopes,
+        authorizationMode: grantInput.authorizationMode ?? (scopes.length > 0 ? "restricted" : "account"),
         iat: nowSeconds,
         exp: nowSeconds + EXECUTION_GRANT_TTL_SECONDS,
       };
@@ -99,6 +103,7 @@ export function createExecutionGrantService(input: {
       if (typeof parsedPayload.source !== "string" || !parsedPayload.source.trim()) return null;
       if (typeof parsedPayload.exp !== "number" || !Number.isFinite(parsedPayload.exp)) return null;
       if (typeof parsedPayload.iat !== "number" || !Number.isFinite(parsedPayload.iat)) return null;
+      if (parsedPayload.authorizationMode !== undefined && parsedPayload.authorizationMode !== "account" && parsedPayload.authorizationMode !== "restricted") return null;
       if (parsedPayload.exp <= Math.floor(now().getTime() / 1000)) return null;
 
       return {
@@ -108,6 +113,7 @@ export function createExecutionGrantService(input: {
         turnId: typeof parsedPayload.turnId === "string" && parsedPayload.turnId.trim() ? parsedPayload.turnId.trim() : null,
         source: parsedPayload.source.trim(),
         scopes: normalizePermissionScopes(Array.isArray(parsedPayload.scopes) ? parsedPayload.scopes : []),
+        authorizationMode: parsedPayload.authorizationMode ?? (Array.isArray(parsedPayload.scopes) && parsedPayload.scopes.length > 0 ? "restricted" : "account"),
         exp: parsedPayload.exp,
         iat: parsedPayload.iat,
       };

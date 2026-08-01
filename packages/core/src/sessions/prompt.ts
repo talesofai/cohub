@@ -3,6 +3,7 @@ import { createHash } from "node:crypto";
 import type { ContentBlock } from "@cohub/protocol/core";
 import type { GenerationPolicy } from "@cohub/protocol/generation";
 import type { SessionTurnIntent } from "@cohub/protocol/model";
+import type { LabelPath } from "../labels/index.js";
 import { normalizeContentBlocks } from "../content/normalize.js";
 import type { PromptEnv } from "./prompt-env.js";
 import { parsePromptSystemInstructions } from "./system-instructions.js";
@@ -148,6 +149,13 @@ export type SubmitSessionPromptInput = {
   systemInstructions?: string | null;
   intent?: SessionTurnIntent | null;
   context?: SubmitSessionPromptContext | null;
+  /** User-authorized label paths committed with the turn before it can be queued. */
+  sessionLabelPaths?: LabelPath[];
+  /**
+   * Route-owned fields that also cause persistent side effects must participate
+   * in clientMessageId reuse checks without becoming turn metadata.
+   */
+  idempotencyContext?: unknown;
 };
 
 export type SubmitSessionPromptResult = {
@@ -243,6 +251,7 @@ export type SessionPromptDependencies = {
     userContent: ContentBlock[];
     intent: SessionTurnIntent;
     meta: Record<string, unknown>;
+    sessionLabelPaths?: LabelPath[];
   }): Promise<{
     id: string;
     idempotent?: boolean;
@@ -391,6 +400,7 @@ export function createSessionPromptFingerprint(input: SubmitSessionPromptInput):
     systemInstructions: input.systemInstructions ?? null,
     intent: input.intent ?? "followup",
     context: normalizePromptContextForFingerprint(input.context),
+    idempotencyContext: input.idempotencyContext ?? null,
   })).digest("hex");
 }
 
@@ -588,6 +598,7 @@ export const submitSessionPrompt = async (
     userContent: content,
     intent: turnIntent,
     meta: baseMeta,
+    sessionLabelPaths: input.sessionLabelPaths,
   }).catch((error: unknown) => {
     if (error instanceof SessionPromptIdempotencyConflictError) throw error;
     throw new SubmitSessionPromptError("failed to create session turn", error);

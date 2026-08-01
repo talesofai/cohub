@@ -16,6 +16,17 @@ type ScheduledPromptView = {
   payload: unknown;
 };
 
+type TaskRunInternalView = ScheduledPromptView & {
+  idempotencyFingerprint?: unknown;
+};
+
+type CronJobInternalView = ScheduledPromptView & {
+  idempotencyKey?: unknown;
+  requestFingerprint?: unknown;
+  scheduleVersion?: unknown;
+  queueSyncedVersion?: unknown;
+};
+
 function sanitizeScheduledPromptPayload(payload: unknown) {
   if (!isRecord(payload)) return { payload, hasSystemInstructions: false };
 
@@ -49,6 +60,30 @@ export function sanitizeScheduledPromptForClient<T extends ScheduledPromptView>(
   if (value.taskType !== "send_message") return value;
   const { payload, hasSystemInstructions } = sanitizeScheduledPromptPayload(value.payload);
   return { ...value, payload, hasSystemInstructions };
+}
+
+/** Drop internal request identity from task-run projections. */
+export function sanitizeTaskRunForClient<T extends TaskRunInternalView>(
+  value: T,
+): Omit<T, "idempotencyFingerprint"> & { hasSystemInstructions?: boolean } {
+  const { idempotencyFingerprint: _idempotencyFingerprint, ...publicValue } = value;
+  return sanitizeScheduledPromptForClient(publicValue);
+}
+
+/** Keep queue synchronization observable without exposing its implementation state. */
+export function sanitizeCronJobForClient<T extends CronJobInternalView>(
+  value: T,
+): Omit<T, "idempotencyKey" | "requestFingerprint" | "scheduleVersion" | "queueSyncedVersion"> & {
+  hasSystemInstructions?: boolean;
+} {
+  const {
+    idempotencyKey: _idempotencyKey,
+    requestFingerprint: _requestFingerprint,
+    scheduleVersion: _scheduleVersion,
+    queueSyncedVersion: _queueSyncedVersion,
+    ...publicValue
+  } = value;
+  return sanitizeScheduledPromptForClient(publicValue);
 }
 
 /** Preserve hidden instructions on ordinary cron edits; explicit values replace or clear them. */

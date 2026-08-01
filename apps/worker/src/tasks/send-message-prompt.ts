@@ -1,10 +1,13 @@
 import {
+  getPromptAuthScopes,
   parsePromptEnv,
   parsePromptSystemInstructions,
   type PromptAccessMode,
+  type PromptAuthContext,
   type PromptEnv,
   type SubmitSessionPromptContext,
 } from "@cohub/core/sessions";
+import type { LabelPath } from "@cohub/core/labels";
 import type { ContentBlock } from "@cohub/protocol/core";
 import type { GenerationPolicy } from "@cohub/protocol/generation";
 import type { SessionTurnIntent } from "@cohub/protocol/model";
@@ -18,6 +21,23 @@ export function parseScheduledSendMessagePromptOptions(input: {
     env: parsePromptEnv(input.env),
     systemInstructions: parsePromptSystemInstructions(input.systemInstructions),
   };
+}
+
+/** Scheduled delegated authorization must fail closed rather than fall back to account scopes. */
+export function requireScheduledPromptAuth(
+  auth: PromptAuthContext | null | undefined,
+  input: { spaceId: string; userId: string },
+) {
+  if (!auth) return null;
+  if (
+    auth.type !== "delegated_prompt"
+    || auth.spaceId !== input.spaceId
+    || auth.actorUserId !== input.userId
+    || getPromptAuthScopes(auth, input.spaceId).length === 0
+  ) {
+    throw new Error("scheduled prompt authorization is invalid or expired");
+  }
+  return auth;
 }
 
 export function buildScheduledSendMessagePromptInput(input: {
@@ -35,6 +55,7 @@ export function buildScheduledSendMessagePromptInput(input: {
   env?: PromptEnv | null;
   systemInstructions?: string | null;
   intent?: SessionTurnIntent | null;
+  sessionLabelPaths?: LabelPath[];
   context: SubmitSessionPromptContext;
 }) {
   return {
@@ -52,6 +73,7 @@ export function buildScheduledSendMessagePromptInput(input: {
     env: input.env ?? null,
     systemInstructions: input.systemInstructions ?? null,
     intent: input.intent ?? null,
+    sessionLabelPaths: input.sessionLabelPaths,
     context: input.context,
   };
 }

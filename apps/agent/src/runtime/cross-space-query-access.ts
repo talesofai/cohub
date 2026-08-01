@@ -8,12 +8,14 @@ import type { AgentFileVisibility } from "./workspace-visibility.js";
 
 const permissionStore = createDrizzlePermissionStore(db);
 
-function visibilityFromPromptAuth(auth: unknown, spaceId: string): AgentFileVisibility | null {
+function visibilityFromPromptAuth(auth: unknown, spaceId: string): AgentFileVisibility | "denied" | null {
   if (!auth || typeof auth !== "object" || Array.isArray(auth)) return null;
+  const record = auth as { type?: unknown; spaceId?: unknown };
+  if ((record.type !== "work_session" && record.type !== "delegated_prompt") || record.spaceId !== spaceId) return "denied";
   const scopes = getPromptAuthScopes(auth, spaceId);
   if (scopeListHasPermission(scopes, "file.view")) return "full";
   if (scopeListHasPermission(scopes, "file.view.filtered")) return "filtered";
-  return null;
+  return "denied";
 }
 
 export async function resolveSpaceFileVisibility(input: {
@@ -26,6 +28,7 @@ export async function resolveSpaceFileVisibility(input: {
   if (!space) throw new Error("Space not found.");
 
   const promptAuthVisibility = visibilityFromPromptAuth(input.promptAuth, spaceId);
+  if (promptAuthVisibility === "denied") throw new Error("File access denied.");
   if (promptAuthVisibility) return promptAuthVisibility;
 
   const user = { uuid: input.actorUserId };

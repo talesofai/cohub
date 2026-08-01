@@ -9,6 +9,7 @@ import {
   validatePublicIdentifierAssignment,
 } from "@cohub/protocol/public-identifiers";
 import { normalizeGenerationPolicy } from "@cohub/protocol/generation";
+import { contentBlockSchema } from "@cohub/protocol/realtime/schema";
 import { db } from "../../db/index.js";
 import {
   userChannels,
@@ -101,6 +102,7 @@ import { billingBlockedResponse } from "../../lib/billing-blocked.js";
 import { applyRequestSourceToMeta, getRequestSource, resolveSessionSourceFromRequest } from "../../lib/request-source.js";
 import {
   validatePromptSchedule,
+  validateWorkSessionPromptSchedule,
   type SpacePromptSchedule,
   type ValidatedPromptSchedule,
 } from "../../prompt-schedule.js";
@@ -488,8 +490,7 @@ const mergeSpaceConfig = (space: typeof spaces.$inferSelect, patch: SpaceConfigI
   };
 };
 function validatePromptContentBlocks(content: unknown): content is ContentBlock[] {
-  if (!Array.isArray(content) || content.length === 0) return false;
-  return content.every((block) => block && typeof block === "object" && !Array.isArray(block) && typeof (block as { type?: unknown }).type === "string");
+  return contentBlockSchema.array().min(1).safeParse(content).success;
 }
 
 function promptInputError(error: unknown): string | null {
@@ -1803,6 +1804,12 @@ router.post("/:id/prompt", async (c) => {
   if (!validatePromptContentBlocks(body?.content)) {
     return c.json({ message: "content must be a non-empty ContentBlock array" }, 400);
   }
+  for (const field of ["title", "model", "provider"] as const) {
+    const value = body?.[field];
+    if (value !== undefined && value !== null && typeof value !== "string") {
+      return c.json({ message: `${field} must be a string` }, 400);
+    }
+  }
   const accessMode = normalizePromptAccessMode(body.accessMode);
   if (!accessMode) return c.json({ message: "accessMode must be one of: read_only, full_access" }, 400);
   const promptIntent = normalizeSpacePromptIntent(body.intent);
@@ -1900,12 +1907,21 @@ router.post("/:id/prompt", async (c) => {
   } catch (error) {
     return c.json({ message: error instanceof Error ? error.message : String(error) }, 400);
   }
+  promptLabelPaths.sort((left, right) => left.join("/").localeCompare(right.join("/"), undefined, { sensitivity: "base" }));
   const promptLabelRefs = promptLabelPaths.map((path) => path.join("/"));
+  const promptLabelFingerprintRefs = promptLabelRefs.map((ref) => ref.toLocaleLowerCase()).sort();
 
   const content = body.content;
   const source = resolveSessionSourceFromRequest(c, typeof body.source === "string" ? body.source : null);
 
   const scheduledAuth = getScheduledPromptAuthContext(c, spaceId, user.uuid);
+  if (scheduledAuth) {
+    try {
+      validateWorkSessionPromptSchedule(promptSchedule, scheduledAuth.exp * 1000);
+    } catch (error) {
+      return c.json({ message: error instanceof Error ? error.message : "invalid work session schedule" }, 400);
+    }
+  }
   const taskData = {
     content,
     clientMessageId,
@@ -1943,6 +1959,8 @@ router.post("/:id/prompt", async (c) => {
       createdPromptSession = ensured.created ? promptSession : null;
       sessionId = promptSession.id;
     }
+    const immediateSessionId = sessionId;
+    if (!immediateSessionId) throw new Error("sessionId is required for an immediate prompt");
 
     try {
       if (createdPromptSession) {
@@ -1955,7 +1973,7 @@ router.post("/:id/prompt", async (c) => {
       }
       const { turnId } = await submitSessionPrompt({
         spaceId,
-        sessionId,
+        sessionId: immediateSessionId,
         userId: user.uuid,
         clientMessageId,
         content,
@@ -1968,18 +1986,16 @@ router.post("/:id/prompt", async (c) => {
         accessMode,
         env: promptEnv,
         systemInstructions,
+        idempotencyContext: {
+          labelRefs: promptLabelFingerprintRefs,
+          title: body.sessionId
+            ? null
+            : (body.title?.trim() || null),
+        },
+        sessionLabelPaths: promptLabelPaths,
         context: { kind: "public_api", auth: getPromptAuthContext(c, spaceId) },
       });
-      if (promptLabelPaths.length > 0) {
-        const { labelIds } = await resolveOrCreateLabelPaths({
-          db,
-          spaceId,
-          paths: promptLabelPaths,
-          userId: user.uuid,
-        });
-        await assignLabelsToSession({ db, spaceId, sessionId, labelIds, userId: user.uuid });
-      }
-      const response = await buildSpacePromptTurnResponse(await getSpaceSessionById(sessionId), turnId);
+      const response = await buildSpacePromptTurnResponse(await getSpaceSessionById(immediateSessionId), turnId);
       if (!response) return c.json({ message: "turn not found" }, 500);
       return c.json(response);
     } catch (error) {
@@ -2038,7 +2054,7 @@ router.post("/:id/prompt", async (c) => {
           model: body.model ?? null,
           provider: body.provider ?? null,
           thinkingLevel: promptThinkingLevel ?? null,
-          labelRefs: promptLabelRefs,
+          labelRefs: promptLabelFingerprintRefs,
           schedule: createScheduledPromptScheduleIdentity(promptSchedule),
         })
       : null;
@@ -2052,6 +2068,8 @@ router.post("/:id/prompt", async (c) => {
       }, {
         delay: Math.max(0, scheduledAt.getTime() - Date.now()),
         scheduledAt,
+        attempts: 3,
+        backoff: { type: "exponential", delay: 60_000 },
         ...(jobId ? { jobId, idempotencyFingerprint } : {}),
       });
       return c.json({
@@ -2087,7 +2105,7 @@ router.post("/:id/prompt", async (c) => {
         model: body.model ?? null,
         provider: body.provider ?? null,
         thinkingLevel: promptThinkingLevel ?? null,
-        labelRefs: promptLabelRefs,
+        labelRefs: promptLabelFingerprintRefs,
         cronExpression: promptSchedule.cronExpression,
         timezone: promptSchedule.timezone,
       })

@@ -1,12 +1,10 @@
 import { billingOperations, createBillingUsageGate } from "@cohub/billing";
-import { COHUB_AGENT_TURNS_QUEUE, createBullmqQueue, defaultJobRetention } from "@cohub/infra/bullmq";
 import { getCurrentRequestId, getOrCreateRequestId } from "@cohub/infra/tracing";
 import { injectTrace } from "@cohub/infra/tracing/propagator";
 import { createSessionServices } from "@cohub/core/sessions";
 import { assignSessionParticipantSystemLabels } from "@cohub/core/labels/session-user";
 import { createSandboxLifecycleController, getSandboxPromptRecoveryReason } from "@cohub/sandbox-controller";
 import { db } from "./db/index.js";
-import { config } from "./config.js";
 import { redisCommandClient } from "./redis.js";
 import { expandPromptTemplate, type LoadPromptTemplatesOptions, type ExpandedPromptTemplate } from "./prompt-templates.js";
 import { expandSkillCommand, type ExpandedSkill } from "./skills.js";
@@ -15,11 +13,10 @@ import { getSpaceSessionById, getSpaceById } from "./space-sessions.js";
 import { touchSpaceActivity } from "./space-activity.js";
 import { dispatchLabelAssignmentsUpdated, dispatchSessionUpdated } from "./realtime-events.js";
 import { createLogger } from "@cohub/infra/logging";
+import { enqueueAgentTurnJob } from "./agent-turn-queue.js";
 
 
 const logger = createLogger({ serviceName: "cohub-api" });
-const AGENT_TURN_JOB_NAME = "agent_turns";
-
 export type PromptTemplateService = {
   expand(text: string, options?: LoadPromptTemplatesOptions): Promise<ExpandedPromptTemplate | null>;
 };
@@ -35,17 +32,6 @@ const defaultPromptTemplateService: PromptTemplateService = {
 const defaultSkillService: SkillService = {
   expand: expandSkillCommand,
 };
-
-const agentTurnQueue = createBullmqQueue<{
-  spaceId: string;
-  sessionId: string;
-  reason?: "prompt" | "steer" | "drain" | "retry" | "recovery";
-  requestId?: string | null;
-  trace?: Record<string, unknown>;
-}>(COHUB_AGENT_TURNS_QUEUE, {
-  redisUrl: config.bullmqRedisUrl,
-  telemetryServiceName: "cohub-api-agent-turns",
-});
 
 const sandboxLifecycle = createSandboxLifecycleController({ db, infra: null });
 const billingUsageGate = createBillingUsageGate({
@@ -116,19 +102,10 @@ export function getSessionDomainServices(input?: {
       });
     },
     agentTurnQueue: {
-      enqueue: (job) => agentTurnQueue.add(AGENT_TURN_JOB_NAME, {
-        spaceId: job.spaceId,
-        sessionId: job.sessionId,
-        reason: job.reason,
+      enqueue: (job) => enqueueAgentTurnJob({
+        ...job,
         requestId: getOrCreateRequestId(job.requestId),
-        trace: job.trace,
-      }, {
-        jobId: job.jobId ?? `agent-session-wakeup-${job.sessionId}`,
-        attempts: 2,
-        backoff: { type: "fixed", delay: 1000 },
-        removeOnComplete: true,
-        removeOnFail: defaultJobRetention.removeOnFail,
-      }),
+      }, job.jobId ? { jobId: job.jobId } : {}),
     },
     logger: console,
   });

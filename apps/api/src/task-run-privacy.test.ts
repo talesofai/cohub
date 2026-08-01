@@ -2,8 +2,10 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 import { MAX_PROMPT_SYSTEM_INSTRUCTIONS_LENGTH } from "@cohub/protocol";
 import {
+  sanitizeCronJobForClient,
   prepareScheduledPromptPayloadUpdate,
   sanitizeScheduledPromptForClient,
+  sanitizeTaskRunForClient,
 } from "./task-run-privacy.js";
 
 test("scheduled prompt client projections omit private system instructions", () => {
@@ -50,6 +52,27 @@ test("unrelated task payloads are unchanged", () => {
     payload: { systemInstructions: "Not a scheduled prompt field" },
   };
   assert.equal(sanitizeScheduledPromptForClient(task), task);
+});
+
+test("client task and cron projections omit internal idempotency state", () => {
+  const taskRun = sanitizeTaskRunForClient({
+    id: "task-1",
+    taskType: "send_message",
+    payload: {},
+    idempotencyFingerprint: "private-task-fingerprint",
+  });
+  const cronJob = sanitizeCronJobForClient({
+    id: "cron-1",
+    taskType: "send_message",
+    payload: {},
+    idempotencyKey: "private-cron-key",
+    requestFingerprint: "private-cron-fingerprint",
+    scheduleVersion: 2,
+    queueSyncedVersion: 1,
+  });
+
+  assert.deepEqual(taskRun, { id: "task-1", taskType: "send_message", payload: {}, hasSystemInstructions: false });
+  assert.deepEqual(cronJob, { id: "cron-1", taskType: "send_message", payload: {}, hasSystemInstructions: false });
 });
 
 test("scheduled prompt updates preserve omitted private instructions", () => {

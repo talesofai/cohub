@@ -1,5 +1,5 @@
 import { billingOperations, createBillingUsageGate } from "@cohub/billing";
-import { COHUB_AGENT_TURNS_QUEUE, createBullmqQueue, defaultJobRetention } from "@cohub/infra/bullmq";
+import { COHUB_AGENT_TURNS_QUEUE, createBullmqQueue } from "@cohub/infra/bullmq";
 import { injectTrace } from "@cohub/infra/tracing/propagator";
 import { createSessionServices } from "@cohub/core/sessions";
 import { assignSessionParticipantSystemLabels } from "@cohub/core/labels/session-user";
@@ -64,7 +64,9 @@ export function getSessionDomainServices(input: {
         attempts: 2,
         backoff: { type: "fixed", delay: 1000 },
         removeOnComplete: true,
-        removeOnFail: defaultJobRetention.removeOnFail,
+        // Queued turns are durable in Postgres; retaining a failed stable wakeup
+        // would prevent the reconciler from creating its replacement.
+        removeOnFail: true,
       }),
     },
     logger: console,

@@ -24,6 +24,7 @@ export type EnqueueTaskRunInput<Job = unknown> = {
   payload: TaskPayload;
   options?: TaskEnqueueOptions;
   enqueue: (name: string, payload: TaskPayload, options: TaskQueueJobOptions) => Promise<Job>;
+  recoverFailedQueueJob?: (jobId: string) => Promise<Job | null>;
   onTaskCreated?: (taskRun: typeof taskRuns.$inferSelect) => Promise<void> | void;
 };
 
@@ -90,7 +91,10 @@ export async function enqueueTaskRun<Job = unknown>(input: EnqueueTaskRunInput<J
     const persistedDelay = !insertedTaskRun && taskRun.scheduledAt
       ? Math.max(0, taskRun.scheduledAt.getTime() - Date.now())
       : null;
-    const job = await input.enqueue(taskRun.payload.type, taskRun.payload, {
+    const recoveredJob = !insertedTaskRun
+      ? await input.recoverFailedQueueJob?.(queueJobId)
+      : null;
+    const job = recoveredJob ?? await input.enqueue(taskRun.payload.type, taskRun.payload, {
       ...jobOptions,
       ...(persistedDelay === null ? {} : { delay: persistedDelay }),
       jobId: queueJobId,
