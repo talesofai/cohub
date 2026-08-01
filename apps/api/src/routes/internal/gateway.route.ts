@@ -13,7 +13,7 @@ import { filterSessionsByPermission, filterSpaceIdsByPermission, hasPermission }
 import { ensureInternalRequest, getOptionalAuth, getRequestPrincipal, requireValidId } from "../../lib/middleware.js";
 import { getSpaceById } from "../../space-sessions.js";
 import { canReadSessionResourceAfterViewDenied } from "../../owner-resource-access.js";
-import { spaceRoomReadPermission } from "../../realtime-room-access.js";
+import { filterReadableSpaceRoomIds, spaceRoomReadPermission } from "../../realtime-room-access.js";
 import { getSpaceSandboxBySpaceId, updateSpaceSandbox } from "../../space-sandboxes.js";
 import { normalizeSandboxLifecycleStatus, normalizeSandboxRuntimeStatus } from "@cohub/sandbox-controller";
 import {
@@ -234,12 +234,14 @@ router.post("/authorize-realtime-rooms", async (c) => {
     return [];
   }));
   const roomPermission = spaceRoomReadPermission(principal);
-  const allowedSpaceIds = new Set(roomPermission
-    ? spaceIds.filter((spaceId) => {
-      const role = memberRoleBySpace.get(spaceId);
-      return Boolean(role && roleHasPermission(role, "session.view"));
-    })
-    : []);
+  const allowedSpaceIds = new Set(await filterReadableSpaceRoomIds(
+    principal,
+    spaceIds,
+    (permission, ids) => filterSpaceIdsByPermission(user, permission, ids).catch((error) => {
+      logger.warn("[RealtimeRooms] failed to batch authorize Space rooms", { userId: user.uuid, error });
+      return [];
+    }),
+  ));
 
   for (const { room, parsed, normalizedRoom } of parsedRooms) {
     if (parsed.kind === "user") {

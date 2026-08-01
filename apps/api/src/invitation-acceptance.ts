@@ -250,14 +250,14 @@ export async function reconcileExpiredInvitationUses(
 
 type InvitationMembershipDependencies = {
   getRole: () => Promise<SpaceRole | null>;
+  hasReservedUse: () => Promise<boolean>;
   reserveUse: () => Promise<InvitationUseReservationState>;
   applyRole: () => Promise<SpaceRole>;
-  finalizeUse: () => Promise<InvitationUseFinalizationState>;
   releaseUse: () => Promise<void>;
 };
 
 export type InvitationMembershipAcceptance =
-  | { state: "accepted"; role: SpaceRole }
+  | { state: "accepted"; role: SpaceRole; pendingFinalization: boolean }
   | { state: "missing" | "revoked" | "exhausted" | "used" };
 
 export async function acceptInvitationMembership(
@@ -266,8 +266,11 @@ export async function acceptInvitationMembership(
 ): Promise<InvitationMembershipAcceptance> {
   const existingRole = await dependencies.getRole();
   if (existingRole && !isRoleHigherThan(invitedRole, existingRole)) {
-    await dependencies.finalizeUse();
-    return { state: "accepted", role: existingRole };
+    return {
+      state: "accepted",
+      role: existingRole,
+      pendingFinalization: await dependencies.hasReservedUse(),
+    };
   }
 
   const reservation = await dependencies.reserveUse();
@@ -283,16 +286,5 @@ export async function acceptInvitationMembership(
     await dependencies.releaseUse().catch(() => undefined);
     throw error;
   }
-  let finalization: InvitationUseFinalizationState;
-  try {
-    finalization = await dependencies.finalizeUse();
-  } catch (error) {
-    await dependencies.releaseUse().catch(() => undefined);
-    throw error;
-  }
-  if (finalization === "absent" || finalization === "missing") {
-    await dependencies.releaseUse().catch(() => undefined);
-    throw new Error("invitation reservation was lost before membership committed");
-  }
-  return { state: "accepted", role };
+  return { state: "accepted", role, pendingFinalization: true };
 }

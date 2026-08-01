@@ -4,6 +4,7 @@ import type { SpaceRole } from "@cohub/db";
 import {
   acceptInvitationMembership,
   finalizeInvitationUse,
+  hasInvitationUseReservation,
   invitationUseAvailability,
   reconcileExpiredInvitationUses,
   releaseInvitationUse,
@@ -122,6 +123,7 @@ function membershipDependencies(input: {
   const invitedRole = input.role ?? "builder";
   return {
     getRole: async () => input.roleByUser.get(input.userUuid) ?? null,
+    hasReservedUse: async () => hasInvitationUseReservation(input.redis.record(input.invitationKey), input.userUuid),
     reserveUse: () => reserveInvitationUse(
       input.invitationKey,
       input.userUuid,
@@ -141,6 +143,18 @@ function membershipDependencies(input: {
   };
 }
 
+async function acceptAndFinalize(
+  invitedRole: SpaceRole,
+  dependencies: ReturnType<typeof membershipDependencies>,
+) {
+  const result = await acceptInvitationMembership(invitedRole, dependencies);
+  if (result.state === "accepted" && result.pendingFinalization) {
+    const finalization = await dependencies.finalizeUse();
+    assert.ok(finalization === "finalized" || finalization === "existing");
+  }
+  return result;
+}
+
 describe("invitation use reservations", () => {
   it("serializes concurrent accepts and never exceeds maxUses", async () => {
     const token = "single-use-token";
@@ -155,7 +169,7 @@ describe("invitation use reservations", () => {
     const roleByUser = new Map<string, SpaceRole>();
     const accept = (userUuid: string) => withInvitationLock(
       token,
-      () => acceptInvitationMembership("builder", membershipDependencies({
+      () => acceptAndFinalize("builder", membershipDependencies({
         invitationKey,
         redis,
         roleByUser,
@@ -195,13 +209,13 @@ describe("invitation use reservations", () => {
     assert.equal(redis.invitations.get(invitationKey)?.useCount, 0);
     assert.equal(invitationUseAvailability(redis.record(invitationKey), "next-user"), "active");
     assert.deepEqual(
-      await acceptInvitationMembership("builder", membershipDependencies({
+      await acceptAndFinalize("builder", membershipDependencies({
         invitationKey,
         redis,
         roleByUser,
         userUuid: "next-user",
       })),
-      { state: "accepted", role: "builder" },
+      { state: "accepted", role: "builder", pendingFinalization: true },
     );
   });
 
@@ -269,7 +283,7 @@ describe("invitation use reservations", () => {
       token,
       () => withInvitationLock(
         invitationMembershipLockId(spaceId, userUuid),
-        () => acceptInvitationMembership(role, membershipDependencies({
+        () => acceptAndFinalize(role, membershipDependencies({
           invitationKey: `invite:${token}`,
           redis,
           roleByUser,
@@ -290,6 +304,7 @@ describe("invitation use reservations", () => {
     await assert.rejects(
       acceptInvitationMembership("builder", {
         getRole: async () => null,
+        hasReservedUse: async () => false,
         reserveUse: () => reserveInvitationUse("invite:offline", "user-1", "builder", {
           eval: async () => { throw new Error("redis unavailable"); },
         }),
@@ -297,7 +312,6 @@ describe("invitation use reservations", () => {
           applied = true;
           return "builder";
         },
-        finalizeUse: async () => "finalized",
         releaseUse: async () => undefined,
       }),
       /redis unavailable/,
@@ -305,22 +319,15 @@ describe("invitation use reservations", () => {
     assert.equal(applied, false);
   });
 
-  it("rejects an acceptance when its reservation disappears before commit", async () => {
-    let applied = false;
-    await assert.rejects(
-      acceptInvitationMembership("builder", {
-        getRole: async () => null,
-        reserveUse: async () => "reserved",
-        applyRole: async () => {
-          applied = true;
-          return "builder";
-        },
-        finalizeUse: async () => "absent",
-        releaseUse: async () => undefined,
-      }),
-      /reservation was lost/,
-    );
-    assert.equal(applied, true);
+  it("leaves the reservation pending until the membership transaction commits", async () => {
+    const result = await acceptInvitationMembership("builder", {
+      getRole: async () => null,
+      hasReservedUse: async () => false,
+      reserveUse: async () => "reserved",
+      applyRole: async () => "builder",
+      releaseUse: async () => undefined,
+    });
+    assert.deepEqual(result, { state: "accepted", role: "builder", pendingFinalization: true });
   });
 
   it("does not let an existing reservation bypass a later revoke", async () => {
@@ -351,17 +358,17 @@ describe("invitation use reservations", () => {
       reservations: new Map(),
     });
     const roleByUser = new Map<string, SpaceRole>();
-    const accept = (userUuid: string, role: SpaceRole) => acceptInvitationMembership(
+    const accept = (userUuid: string, role: SpaceRole) => acceptAndFinalize(
       role,
       membershipDependencies({ invitationKey, redis, roleByUser, userUuid, role }),
     );
 
-    assert.deepEqual(await accept("removed-user", "builder"), { state: "accepted", role: "builder" });
+    assert.deepEqual(await accept("removed-user", "builder"), { state: "accepted", role: "builder", pendingFinalization: true });
     roleByUser.delete("removed-user");
     assert.deepEqual(await accept("removed-user", "builder"), { state: "used" });
     assert.equal(roleByUser.has("removed-user"), false);
 
-    assert.deepEqual(await accept("downgraded-user", "host"), { state: "accepted", role: "host" });
+    assert.deepEqual(await accept("downgraded-user", "host"), { state: "accepted", role: "host", pendingFinalization: true });
     roleByUser.set("downgraded-user", "guest");
     assert.deepEqual(await accept("downgraded-user", "host"), { state: "used" });
     assert.equal(roleByUser.get("downgraded-user"), "guest");

@@ -14,6 +14,7 @@ import {
 import {
   acceptInvitationMembership,
   finalizeInvitationUse,
+  hasInvitationUseReservation,
   invitationUseAvailability,
   reconcileExpiredInvitationUses,
   releaseInvitationUse,
@@ -81,7 +82,8 @@ router.post("/:token/accept", async (c) => {
   const key = inviteKey(token);
   let accepted: Response | { spaceId: string; role: SpaceRole };
   try {
-    accepted = await withInvitationLock(token, () => withInvitationDatabaseLock(token, async (transaction) => {
+    accepted = await withInvitationLock(token, async () => {
+      const result = await withInvitationDatabaseLock(token, async (transaction) => {
       const exists = await redisCommandClient.exists(key);
       if (!exists) return c.json({ message: "invitation expired or not found" }, 410);
 
@@ -127,6 +129,7 @@ router.post("/:token/accept", async (c) => {
               .limit(1);
             return existing?.role ?? null;
           },
+          hasReservedUse: async () => hasInvitationUseReservation(data, user.uuid),
           reserveUse: () => reserveInvitationUse(key, user.uuid, role, redisCommandClient),
           applyRole: async () => {
             const [member] = await transaction.insert(spaceMembers).values({
@@ -150,7 +153,6 @@ router.post("/:token/accept", async (c) => {
             if (!member) throw new Error("failed to apply invitation membership");
             return member.role;
           },
-          finalizeUse: () => finalizeInvitationUse(key, user.uuid, redisCommandClient),
           releaseUse: () => releaseInvitationUse(key, user.uuid, redisCommandClient),
         }),
         redisCommandClient,
@@ -165,9 +167,18 @@ router.post("/:token/accept", async (c) => {
         case "used":
           return c.json({ message: "invitation has already been used" }, 410);
         case "accepted":
-          return { spaceId, role: membership.role };
+          return { spaceId, role: membership.role, pendingFinalization: membership.pendingFinalization };
       }
-    }), redisCommandClient);
+      });
+      if (result instanceof Response) return result;
+      if (result.pendingFinalization) {
+        const finalization = await finalizeInvitationUse(key, user.uuid, redisCommandClient);
+        if (finalization === "absent" || finalization === "missing") {
+          throw new Error("invitation reservation was lost after membership committed");
+        }
+      }
+      return { spaceId: result.spaceId, role: result.role };
+    }, redisCommandClient);
   } catch (error) {
     if (error instanceof InvitationLockTimeoutError) {
       return c.json({ message: "invitation is busy, please try again" }, 503);
