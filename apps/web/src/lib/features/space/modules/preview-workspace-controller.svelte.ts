@@ -1,3 +1,11 @@
+import {
+	alignPreviewNavigation,
+	beginPreviewNavigation,
+	createPreviewNavigationState,
+	isCurrentPreviewNavigation,
+	type PreviewNavigationSource,
+	previewRefsEqual,
+} from "./preview-navigation";
 import type {
 	WorkspacePreviewKind,
 	WorkspacePreviewRef,
@@ -83,7 +91,16 @@ export function createPreviewWorkspaceController(
 ) {
 	let activeKind = $state<PreviewTabKind | null>(null);
 	let accessedAt = $state<Record<string, number>>({});
+	let navigation = $state(createPreviewNavigationState());
 	const weightLimit = options.weightLimit ?? DEFAULT_WEIGHT_LIMIT;
+
+	function beginNavigation(
+		ref: WorkspacePreviewRef | null,
+		source: PreviewNavigationSource,
+	) {
+		navigation = beginPreviewNavigation(navigation, ref, source);
+		return navigation.transitionId;
+	}
 
 	function tabId(kind: PreviewTabKind, key: string) {
 		return `${kind}:${key}`;
@@ -167,7 +184,9 @@ export function createPreviewWorkspaceController(
 		}
 		if (closed > 0) {
 			activeKind = resolveKind();
-			options.syncUrl(currentRef(), true);
+			const ref = currentRef();
+			navigation = alignPreviewNavigation(navigation, ref);
+			options.syncUrl(ref, true);
 			options.onBudgetCleanup?.();
 		}
 	}
@@ -178,76 +197,93 @@ export function createPreviewWorkspaceController(
 			syncUrl?: boolean;
 			preserveHistory?: boolean;
 			position?: unknown;
+			source?: PreviewNavigationSource;
 		} = {},
 	) {
 		const syncUrl = opts.syncUrl ?? true;
-		// Capture before flipping activeKind so first open pushes history,
-		// subsequent tab switches replace.
 		const hadPreview = Boolean(currentRef());
+		const ref = { kind: "file" as const, key: path };
+		const transitionId = beginNavigation(
+			ref,
+			opts.source ?? (syncUrl ? "user" : "route"),
+		);
 		activeKind = "file";
 		touch("file", path);
-		// Sync URL before awaiting domain I/O. Otherwise the route-hydration
-		// effect can observe a brief no-preview URL while UI already opened
-		// a file and tear the panel down (click → composer focus only).
-		if (syncUrl) {
-			options.syncUrl({ kind: "file", key: path }, hadPreview);
-		}
-		await options.openFile(path, {
+		// Domain open creates its loading tab synchronously. URL sync follows in
+		// the same task, while route reconciliation only observes route changes.
+		const pending = options.openFile(path, {
 			preserveHistory: opts.preserveHistory,
 			position: opts.position,
 		});
+		if (syncUrl) options.syncUrl(ref, hadPreview);
+		await pending;
 		enforceBudget();
-		// Re-assert URL if budget eviction / concurrent open changed active tab.
-		if (syncUrl) {
-			const ref = currentRef();
-			if (ref) options.syncUrl(ref, true);
+		if (syncUrl && isCurrentPreviewNavigation(navigation, transitionId)) {
+			const current = currentRef();
+			if (current) options.syncUrl(current, true);
 		}
 	}
 
-	async function openBoard(path: string, opts: { syncUrl?: boolean } = {}) {
+	async function openBoard(
+		path: string,
+		opts: {
+			syncUrl?: boolean;
+			source?: PreviewNavigationSource;
+		} = {},
+	) {
 		const syncUrl = opts.syncUrl ?? true;
 		const hadPreview = Boolean(currentRef());
+		const ref = { kind: "board" as const, key: path };
+		const transitionId = beginNavigation(
+			ref,
+			opts.source ?? (syncUrl ? "user" : "route"),
+		);
 		activeKind = "board";
 		touch("board", path);
-		if (syncUrl) {
-			options.syncUrl({ kind: "board", key: path }, hadPreview);
-		}
-		await options.openBoard(path);
+		const pending = options.openBoard(path);
+		if (syncUrl) options.syncUrl(ref, hadPreview);
+		await pending;
 		enforceBudget();
-		if (syncUrl) {
-			const ref = currentRef();
-			if (ref) options.syncUrl(ref, true);
+		if (syncUrl && isCurrentPreviewNavigation(navigation, transitionId)) {
+			const current = currentRef();
+			if (current) options.syncUrl(current, true);
 		}
 	}
 
 	function openPort(
 		port: string,
 		url: string,
-		opts: { autoOpened?: boolean; syncUrl?: boolean } = {},
+		opts: {
+			autoOpened?: boolean;
+			syncUrl?: boolean;
+			source?: PreviewNavigationSource;
+		} = {},
 	) {
 		if (!isValidPortKey(port)) return;
 		const syncUrl = opts.syncUrl ?? true;
 		const hadPreview = Boolean(currentRef());
+		const ref = { kind: "port" as const, key: port };
+		beginNavigation(ref, opts.source ?? (syncUrl ? "user" : "route"));
 		activeKind = "port";
 		touch("port", port);
-		if (syncUrl) {
-			options.syncUrl({ kind: "port", key: port }, hadPreview);
-		}
 		options.openPort(port, url, { autoOpened: opts.autoOpened });
+		if (syncUrl) options.syncUrl(ref, hadPreview);
 		enforceBudget();
 		if (syncUrl) {
-			const ref = currentRef();
-			if (ref) options.syncUrl(ref, true);
+			const current = currentRef();
+			if (current) options.syncUrl(current, true);
 		}
 	}
 
 	function activate(kind: PreviewTabKind, key: string, syncUrl = true) {
+		const ref = { kind, key };
+		beginNavigation(ref, syncUrl ? "user" : "route");
 		activeKind = kind;
 		touch(kind, key);
 		if (kind === "file") options.activateFile(key);
 		else if (kind === "board") options.activateBoard(key);
 		else options.activatePort(key);
-		if (syncUrl) options.syncUrl({ kind, key }, true);
+		if (syncUrl) options.syncUrl(ref, true);
 	}
 
 	function close(
@@ -259,7 +295,9 @@ export function createPreviewWorkspaceController(
 		else if (kind === "board") options.closeBoard(key);
 		else options.closePort(key);
 		activeKind = resolveKind();
-		options.syncUrl(currentRef(), true);
+		const ref = currentRef();
+		beginNavigation(ref, "user");
+		options.syncUrl(ref, true);
 	}
 
 	function closeActive() {
@@ -268,8 +306,11 @@ export function createPreviewWorkspaceController(
 		close(ref.kind, ref.key);
 	}
 
-	function closeAll(opts: { syncUrl?: boolean } = {}) {
+	function closeAll(
+		opts: { syncUrl?: boolean; source?: PreviewNavigationSource } = {},
+	) {
 		const syncUrl = opts.syncUrl ?? true;
+		beginNavigation(null, opts.source ?? (syncUrl ? "user" : "route"));
 		activeKind = null;
 		for (const tab of [...options.getFileTabs()]) {
 			options.closeFile(tab.path, true);
@@ -284,43 +325,62 @@ export function createPreviewWorkspaceController(
 	}
 
 	async function goBackFile() {
+		const transitionId = beginNavigation(currentRef(), "user");
 		const previous = await options.goBackFile();
-		if (!previous) return null;
+		if (!previous || !isCurrentPreviewNavigation(navigation, transitionId))
+			return null;
+		const ref = { kind: "file" as const, key: previous };
+		navigation = alignPreviewNavigation(navigation, ref);
 		activeKind = "file";
 		touch("file", previous);
-		options.syncUrl({ kind: "file", key: previous }, true);
+		options.syncUrl(ref, true);
 		return previous;
 	}
 
-	function hydrateFromRoute(ref: WorkspacePreviewRef | null) {
+	function applyRoute(ref: WorkspacePreviewRef | null) {
+		const current = currentRef();
 		if (!ref) {
-			closeAll({ syncUrl: false });
+			if (!current && navigation.desiredRef === null)
+				return { ok: true as const };
+			closeAll({ syncUrl: false, source: "route" });
 			return { ok: true as const };
 		}
-		const current = currentRef();
-		if (current && current.kind === ref.kind && current.key === ref.key) {
+		if (previewRefsEqual(current, ref)) {
+			// A shallow-route acknowledgement must not supersede the user transition
+			// that produced it; only external route changes begin a new transition.
+			if (!previewRefsEqual(navigation.desiredRef, ref))
+				beginNavigation(ref, "route");
 			activeKind = ref.kind;
 			touch(ref.kind, ref.key);
 			return { ok: true as const };
 		}
 		if (ref.kind === "file") {
-			void openFile(ref.key, { syncUrl: false });
+			void openFile(ref.key, { syncUrl: false, source: "route" });
 			return { ok: true as const };
 		}
 		if (ref.kind === "board") {
-			void openBoard(ref.key, { syncUrl: false });
+			void openBoard(ref.key, { syncUrl: false, source: "route" });
 			return { ok: true as const };
 		}
-		// port: only open when a trusted endpoint URL is available
+		// Port routes wait for a trusted endpoint before activating a surface.
 		const url = options.getPortEndpointUrl(ref.key);
-		if (!url)
+		if (!url) {
+			beginNavigation(ref, "route");
 			return { ok: false as const, reason: "port-endpoint-pending" as const };
-		openPort(ref.key, url, { syncUrl: false });
+		}
+		openPort(ref.key, url, { syncUrl: false, source: "route" });
 		return { ok: true as const };
 	}
 
-	function setActiveKind(kind: PreviewTabKind | null) {
-		activeKind = kind;
+	function resetForContext() {
+		beginNavigation(null, "restore");
+		activeKind = null;
+	}
+
+	function syncCurrent() {
+		const ref = currentRef();
+		beginNavigation(ref, "user");
+		options.syncUrl(ref, true);
 	}
 
 	return {
@@ -330,7 +390,11 @@ export function createPreviewWorkspaceController(
 		get activeKindState() {
 			return activeKind;
 		},
-		setActiveKind,
+		get navigation() {
+			return navigation;
+		},
+		resetForContext,
+		syncCurrent,
 		currentRef,
 		touch,
 		openFile,
@@ -341,7 +405,7 @@ export function createPreviewWorkspaceController(
 		closeActive,
 		closeAll,
 		goBackFile,
-		hydrateFromRoute,
+		applyRoute,
 		enforceBudget,
 	};
 }

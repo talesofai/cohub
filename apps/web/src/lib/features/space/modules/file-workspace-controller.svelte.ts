@@ -85,6 +85,7 @@ type FileWorkspaceControllerOptions = {
 	getCanEditFiles: () => boolean;
 	getActiveFsReadonly: () => boolean;
 	getSpaceHasMinimalAccess: () => boolean;
+	onOpenInlineFile: (path: string) => Promise<void>;
 	onOpenInlineBoard: (path: string) => Promise<void>;
 	onCloseInlineBoard: () => void;
 	onRenameInlineBoard?: (fromPath: string, toPath: string) => void;
@@ -698,7 +699,7 @@ export function createFileWorkspaceController(
 			await options.onOpenInlineBoard(path);
 			return;
 		}
-		await openInlineFile(path);
+		await options.onOpenInlineFile(path);
 	}
 
 	async function downloadActiveFsFile(
@@ -1253,7 +1254,7 @@ export function createFileWorkspaceController(
 			]);
 			if (workspaceFilePreviewKind(path, false) === "board")
 				await options.onOpenInlineBoard(path);
-			else await openInlineFile(path);
+			else await options.onOpenInlineFile(path);
 		} catch (error) {
 			fileTreeError =
 				error instanceof Error ? error.message : "Failed to create file";

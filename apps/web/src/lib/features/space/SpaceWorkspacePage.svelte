@@ -163,7 +163,6 @@ import {
 	encodePreviewParam,
 	parsePreviewParam,
 	readPreviewFromSearch,
-	resolvePreviewRouteSync,
 	type WorkspacePreviewRef,
 	withCurrentPreview,
 	withPreviewParam,
@@ -438,6 +437,7 @@ const fileWorkspace = createFileWorkspaceController({
 	getCanEditFiles: () => canEditFiles,
 	getActiveFsReadonly: () => activeFsReadonly,
 	getSpaceHasMinimalAccess: () => spaceHasMinimalAccess,
+	onOpenInlineFile: (path) => openInlineFile(path),
 	onOpenInlineBoard: (path) => openInlineBoard(path),
 	onCloseInlineBoard: () => closeInlineBoard(),
 	onRenameInlineBoard: (fromPath, toPath) =>
@@ -447,9 +447,8 @@ const fileWorkspace = createFileWorkspaceController({
 	onCloseInlinePort: () => closeInlinePort(),
 	onActivateFilePreview: () => {
 		// Domain open paths (and re-activate) must reveal Files even when the
-		// page wrapper was skipped (e.g. route hydrate → controller openFile).
+		// page wrapper was skipped (e.g. route hydrate -> controller openFile).
 		if (uiState.filesColumnHidden) uiState.setFilesColumnHidden(false);
-		previewWorkspace.setActiveKind("file");
 	},
 	onClosePreviewFocusMode: () => {
 		// Only leave focus/immersive when nothing is open in Files.
@@ -798,7 +797,7 @@ $effect(() => {
 	});
 });
 
-let appliedFsSourceKey: string | null = null;
+let appliedPreviewContextKey: string | null = null;
 const spacePresence = createSpacePresenceController(() => spaceId);
 const danmakuController = createSpaceDanmakuController();
 let danmakuCatchupTimer: ReturnType<typeof setTimeout> | null = null;
@@ -1804,14 +1803,14 @@ async function handleRenameNode(node: SpaceFsNode) {
 	await fileWorkspace.handleRenameNode(node);
 	// If active preview path changed via rename, keep query in sync.
 	const next = currentPreviewRef();
-	if (next) syncPreviewQuery(next, true);
+	if (next) previewWorkspace.syncCurrent();
 	else if (routePreviewRef?.key === prevPath) syncPreviewQuery(null, true);
 }
 async function handleMoveNode(node: SpaceFsNode, targetDir: string) {
 	const prevPath = node.path;
 	await fileWorkspace.handleMoveNode(node, targetDir);
 	const next = currentPreviewRef();
-	if (next) syncPreviewQuery(next, true);
+	if (next) previewWorkspace.syncCurrent();
 	else if (routePreviewRef?.key === prevPath) syncPreviewQuery(null, true);
 }
 async function handleDownloadNode(node: SpaceFsNode) {
@@ -2456,16 +2455,16 @@ $effect(() => {
 	});
 });
 $effect(() => {
-	// Ordered: source first, then route preview hydration (bi-directional).
+	// Route adapter: external context first, then one-way route hydration.
+	const currentSpaceId = spaceId;
 	const sourceKey = activeFsSourceKey;
 	const preview = routePreviewRef;
-	const currentPreview = previewWorkspace.currentRef();
 	// Retry pending port deep-links when sandbox endpoints arrive.
 	if (preview?.kind === "port") void previewEndpoints[preview.key]?.url;
 	untrack(() => {
-		let reconciledPreview = currentPreview;
-		// 1) FS source transition (checkpoint <-> live)
-		if (sourceKey !== appliedFsSourceKey) {
+		const contextKey = `${currentSpaceId}\0${sourceKey}`;
+		// 1) Space / FS source transition
+		if (contextKey !== appliedPreviewContextKey) {
 			// beforeNavigate already confirmed discard when FS source changes.
 			fileWorkspace.switchSource(sourceKey, { force: true });
 			// Source change invalidates non-file previews; file tabs already cleared by switchSource.
@@ -2473,23 +2472,17 @@ $effect(() => {
 				boardPreview.closeBoard(tab.path);
 			for (const tab of [...portPreview.previews])
 				portPreview.closePort(tab.port);
-			previewWorkspace.setActiveKind(null);
-			appliedFsSourceKey = sourceKey;
-			reconciledPreview = null;
+			previewWorkspace.resetForContext();
+			appliedPreviewContextKey = contextKey;
 		}
 
-		// 2) Preview route hydration / teardown
+		// 2) URL is authoritative only when this adapter is triggered by route
+		// context. Internal tab changes are intentionally not dependencies here.
 		const target =
 			preview?.kind === "board" && activeFsReadonly
 				? { kind: "file" as const, key: preview.key }
 				: preview;
-		const action = resolvePreviewRouteSync(target, reconciledPreview);
-		if (action === "close") {
-			previewWorkspace.closeAll({ syncUrl: false });
-			return;
-		}
-		if (action === "none" || !target) return;
-		const result = previewWorkspace.hydrateFromRoute(target);
+		const result = previewWorkspace.applyRoute(target);
 		if (!result.ok) {
 			// Wait for trusted port endpoint; effect re-runs when endpoints update.
 			return;
