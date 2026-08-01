@@ -5,6 +5,7 @@ import {
   acceptInvitationMembership,
   finalizeInvitationUse,
   hasInvitationUseReservation,
+  invitationLimitError,
   invitationUseAvailability,
   reconcileExpiredInvitationUses,
   releaseInvitationUse,
@@ -156,6 +157,14 @@ async function acceptAndFinalize(
 }
 
 describe("invitation use reservations", () => {
+  it("rejects non-integer invitation limits", () => {
+    assert.match(invitationLimitError("3600", 1) ?? "", /ttlSeconds/);
+    assert.match(invitationLimitError(3600.5, 1) ?? "", /ttlSeconds/);
+    assert.match(invitationLimitError(3600, "1") ?? "", /maxUses/);
+    assert.match(invitationLimitError(3600, 1.5) ?? "", /maxUses/);
+    assert.equal(invitationLimitError(3600, 0), null);
+  });
+
   it("serializes concurrent accepts and never exceeds maxUses", async () => {
     const token = "single-use-token";
     const invitationKey = `invite:${token}`;

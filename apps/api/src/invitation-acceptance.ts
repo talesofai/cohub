@@ -88,6 +88,16 @@ return "released"
 
 const INVITATION_USE_LEASE_MS = 60_000;
 
+export function invitationLimitError(ttlSeconds: unknown, maxUses: unknown): string | null {
+  if (!Number.isSafeInteger(ttlSeconds) || (ttlSeconds as number) <= 0 || (ttlSeconds as number) > 30 * 24 * 60 * 60) {
+    return "ttlSeconds must be an integer between 1 and 30 days";
+  }
+  if (!Number.isSafeInteger(maxUses) || (maxUses as number) < 0) {
+    return "maxUses must be a non-negative integer";
+  }
+  return null;
+}
+
 export type InvitationUseReservationState =
   | "reserved"
   | "existing"

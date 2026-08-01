@@ -10,6 +10,7 @@ import {
   withInvitationDatabaseLock,
   withInvitationLock,
 } from "../../invitation-lock.js";
+import { invitationLimitError } from "../../invitation-acceptance.js";
 import {
   canManageSpaceInvitations,
   canViewSpaceInvitations,
@@ -60,12 +61,9 @@ router.post("/", async (c) => {
   if (!VALID_ROLES.includes(role)) return c.json({ message: "invalid role" }, 400);
 
   const ttlSeconds = body?.ttlSeconds ?? DEFAULT_TTL_SECONDS;
-  if (ttlSeconds <= 0 || ttlSeconds > 30 * 24 * 60 * 60) {
-    return c.json({ message: "ttlSeconds must be between 1 and 30 days" }, 400);
-  }
-
   const maxUses = body?.maxUses ?? 0; // 0 = unlimited
-  if (maxUses < 0) return c.json({ message: "maxUses must be non-negative" }, 400);
+  const limitError = invitationLimitError(ttlSeconds, maxUses);
+  if (limitError) return c.json({ message: limitError }, 400);
 
   const token = generateToken();
   const key = inviteKey(token);

@@ -572,11 +572,23 @@ const authorizeRoomsForConnection = async (
   return { rooms: accepted, rejected };
 };
 
+const WS_CONNECTION_SWEEP_CONCURRENCY = 16;
+
 const startWsConnectionSweeper = () => {
-  setInterval(async () => {
+  let sweepInFlight = false;
+  const sweep = async () => {
+    if (sweepInFlight) return;
+    sweepInFlight = true;
     const now = Date.now();
-    for (const [connectionId, ctx] of wsConnections.entries()) {
-      await enqueueConnectionState(ctx, async () => {
+    const connections = [...wsConnections.entries()];
+    let nextConnection = 0;
+    const sweepConnection = async () => {
+      while (nextConnection < connections.length) {
+        const connection = connections[nextConnection];
+        nextConnection += 1;
+        if (!connection) return;
+        const [connectionId, ctx] = connection;
+        await enqueueConnectionState(ctx, async () => {
         if (ctx.closing) return;
         if (isRealtimeAuthExpired(ctx.authExpiresAtMs, now)) {
           const socket = wsSockets.get(connectionId);
@@ -617,9 +629,22 @@ const startWsConnectionSweeper = () => {
           socket.close(4001, `expired:${now}`);
         }
         await cleanupWsConnection(ctx);
-      }, { allowWhenFull: true });
+        }).catch((error) => {
+          if (error instanceof ConnectionStateQueueOverflowError) return;
+          logger.warn("[Gateway] failed to sweep realtime connection", { connectionId, error });
+        });
+      }
     }
-  }, 30_000);
+    try {
+      await Promise.all(Array.from(
+        { length: Math.min(WS_CONNECTION_SWEEP_CONCURRENCY, connections.length) },
+        sweepConnection,
+      ));
+    } finally {
+      sweepInFlight = false;
+    }
+  };
+  setInterval(() => void sweep(), 30_000);
 };
 
 const resolveRealtimeRoomsForEnvelope = (payload: GatewayWsBroadcastPayload): RealtimeRoom[] => {
