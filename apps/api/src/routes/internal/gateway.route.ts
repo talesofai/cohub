@@ -1,17 +1,18 @@
 import { context, trace, SpanStatusCode } from "@opentelemetry/api";
-import { boards } from "@cohub/db";
+import { accessPolicies, boards, spaceMembers, spaceSessions } from "@cohub/db";
+import { roleHasPermission } from "@cohub/core/permissions";
 import { createLogger } from "@cohub/infra/logging";
 import { getTracer, extractTrace } from "@cohub/infra/tracing/propagator";
 import { GATEWAY_ATTACHMENT_MAX_BYTES, gatewayInboundEventSchema, type GatewayInboundEvent } from "@cohub/protocol/gateway";
-import { parseRealtimeRoom } from "@cohub/protocol/realtime";
+import { MAX_REALTIME_ROOMS_PER_REQUEST, parseRealtimeRoom } from "@cohub/protocol/realtime";
 import { dispatchSpacePresenceUpdated } from "../../realtime-events.js";
 import { getSpacePresenceSnapshot } from "../../space-presence.js";
 import { Hono } from "hono";
 import { bindAllActiveSpaceChannelsToGateway, handleInboundEvent, resolveChannelInboundForEventWithLock } from "../../channels.js";
-import { hasPermission } from "../../permissions.js";
+import { filterSessionsByPermission, filterSpaceIdsByPermission, hasPermission } from "../../permissions.js";
 import { ensureInternalRequest, getOptionalAuth, getRequestPrincipal, requireValidId } from "../../lib/middleware.js";
-import { getSpaceById, getSpaceSessionById } from "../../space-sessions.js";
-import { canReadSessionResource } from "../../owner-resource-access.js";
+import { getSpaceById } from "../../space-sessions.js";
+import { canReadSessionResourceAfterViewDenied } from "../../owner-resource-access.js";
 import { spaceRoomReadPermission } from "../../realtime-room-access.js";
 import { getSpaceSandboxBySpaceId, updateSpaceSandbox } from "../../space-sandboxes.js";
 import { normalizeSandboxLifecycleStatus, normalizeSandboxRuntimeStatus } from "@cohub/sandbox-controller";
@@ -39,7 +40,7 @@ import {
 } from "../../space-upload-storage.js";
 import { enqueueSandboxUploadFilesJob } from "../../sandbox-bash-queue.js";
 import { db } from "../../db/index.js";
-import { eq } from "drizzle-orm";
+import { and, eq, inArray } from "drizzle-orm";
 
 const logger = createLogger({ serviceName: "cohub-api" });
 const tracer = getTracer("cohub-api");
@@ -117,76 +118,159 @@ router.post("/authorize-realtime-rooms", async (c) => {
   const principal = getRequestPrincipal(c);
 
   const body = await c.req.json<{ rooms?: string[] }>().catch(() => null);
+  if (Array.isArray(body?.rooms) && body.rooms.length > MAX_REALTIME_ROOMS_PER_REQUEST) {
+    return c.json({ ok: false, message: "realtime room limit exceeded" }, 400);
+  }
   const requestedRooms = Array.isArray(body?.rooms) ? Array.from(new Set(body.rooms.filter((room): room is string => typeof room === "string").map((room) => room.trim()).filter(Boolean))) : [];
   if (requestedRooms.length === 0) return c.json({ ok: true, rooms: [], rejected: [] });
 
   const accepted: string[] = [];
   const rejected: Array<{ room: string; code: "BAD_ROOM" | "FORBIDDEN"; message: string }> = [];
 
-  for (const room of requestedRooms) {
+  const parsedRooms = requestedRooms.flatMap((room) => {
     const parsed = parseRealtimeRoom(room);
-    if (!parsed) {
+    if (!parsed || (parsed.kind !== "user" && !requireValidId(parsed.id))) {
       rejected.push({ room, code: "BAD_ROOM", message: "Invalid room" });
-      continue;
+      return [];
     }
-    const normalizedRoom = `${parsed.kind}:${parsed.id}`;
+    return [{ room, parsed, normalizedRoom: `${parsed.kind}:${parsed.id}` }];
+  });
+  const sessionIds = parsedRooms.filter(({ parsed }) => parsed.kind === "session").map(({ parsed }) => parsed.id);
+  const boardIds = parsedRooms.filter(({ parsed }) => parsed.kind === "board").map(({ parsed }) => parsed.id);
+  const boardSpaceRoomIds = parsedRooms.filter(({ parsed }) => parsed.kind === "boardspace").map(({ parsed }) => parsed.id);
+  const spaceIds = parsedRooms.filter(({ parsed }) => parsed.kind === "space").map(({ parsed }) => parsed.id);
 
-    if (parsed.kind === "user") {
-      if (principal?.type === "user" && parsed.id === user.uuid) {
-        accepted.push(normalizedRoom);
-      } else {
-        rejected.push({ room, code: "FORBIDDEN", message: "Cannot subscribe to another user" });
-      }
-      continue;
-    }
+  const [sessions, boardRows] = await Promise.all([
+    sessionIds.length > 0
+      ? db.select().from(spaceSessions).where(inArray(spaceSessions.id, sessionIds))
+      : Promise.resolve([]),
+    boardIds.length > 0
+      ? db.select({ id: boards.id, spaceId: boards.spaceId }).from(boards).where(inArray(boards.id, boardIds))
+      : Promise.resolve([]),
+  ]);
+  const sessionById = new Map(sessions.map((session) => [session.id, session]));
+  const boardById = new Map(boardRows.map((board) => [board.id, board]));
+  const sessionsBySpace = new Map<string, typeof sessions>();
+  for (const session of sessions) {
+    const grouped = sessionsBySpace.get(session.spaceId) ?? [];
+    grouped.push(session);
+    sessionsBySpace.set(session.spaceId, grouped);
+  }
 
-    if (parsed.kind === "session") {
-      const session = await getSpaceSessionById(parsed.id);
-      const allowed = session
-        ? await canReadSessionResource(
-            principal,
-            session,
-            (permission, permissionContext) => hasPermission(user, permission, permissionContext),
-          ).catch((error) => {
-            logger.warn("[RealtimeRooms] failed to authorize Session room", { room, userId: user.uuid, error });
-            return false;
+  const sessionSpaceIds = Array.from(sessionsBySpace.keys());
+  const membershipSpaceIds = Array.from(new Set([...sessionSpaceIds, ...spaceIds]));
+  const membershipRows = principal?.type === "user" && membershipSpaceIds.length > 0
+    ? await db
+        .select({ spaceId: spaceMembers.spaceId, role: spaceMembers.role })
+        .from(spaceMembers)
+        .where(and(eq(spaceMembers.userId, user.uuid), inArray(spaceMembers.spaceId, membershipSpaceIds)))
+    : [];
+  const memberRoleBySpace = new Map(membershipRows.map((membership) => [membership.spaceId, membership.role]));
+  const sessionViewIds = new Set<string>();
+  if (principal?.type === "user") {
+    const policyResourceIds = Array.from(new Set([...sessionSpaceIds, ...sessionIds]));
+    const policyRows = policyResourceIds.length > 0
+      ? await db
+          .select({
+            resourceType: accessPolicies.resourceType,
+            resourceId: accessPolicies.resourceId,
+            signedInUserRole: accessPolicies.signedInUserRole,
+            anonymousUserRole: accessPolicies.anonymousUserRole,
           })
-        : false;
+          .from(accessPolicies)
+          .where(inArray(accessPolicies.resourceId, policyResourceIds))
+      : [];
+    const policyByResource = new Map(
+      policyRows.map((policy) => [`${policy.resourceType}:${policy.resourceId}`, policy]),
+    );
+    for (const session of sessions) {
+      const memberRole = memberRoleBySpace.get(session.spaceId);
+      if (memberRole && roleHasPermission(memberRole, "session.view")) {
+        sessionViewIds.add(session.id);
+        continue;
+      }
+      const policy = policyByResource.get(`session:${session.id}`)
+        ?? policyByResource.get(`space:${session.spaceId}`);
+      const role = policy?.signedInUserRole ?? policy?.anonymousUserRole ?? null;
+      if (role && roleHasPermission(role, "session.view")) sessionViewIds.add(session.id);
+    }
+  } else {
+    await Promise.all(Array.from(sessionsBySpace, async ([spaceId, grouped]) => {
+      const visible = await filterSessionsByPermission(user, "session.view", spaceId, grouped).catch((error) => {
+        logger.warn("[RealtimeRooms] failed to authorize scoped Session rooms", { spaceId, userId: user.uuid, error });
+        return [];
+      });
+      for (const session of visible) sessionViewIds.add(session.id);
+    }));
+  }
+
+  const permissionCache = new Map<string, Promise<boolean>>();
+  const checkPermission = (permission: Parameters<typeof hasPermission>[1], permissionContext: { spaceId: string; sessionId?: string }) => {
+    const cacheKey = `${permission}:${permissionContext.spaceId}`;
+    let result = permissionCache.get(cacheKey);
+    if (!result) {
+      result = hasPermission(user, permission, permissionContext).catch((error) => {
+        logger.warn("[RealtimeRooms] failed to authorize scoped Session room", { permission, ...permissionContext, userId: user.uuid, error });
+        return false;
+      });
+      permissionCache.set(cacheKey, result);
+    }
+    return result;
+  };
+  const ownerVisibleSessionIds = new Set<string>();
+  await Promise.all(sessions.filter((session) => !sessionViewIds.has(session.id)).map(async (session) => {
+    if (await canReadSessionResourceAfterViewDenied(principal, session, checkPermission)) {
+      ownerVisibleSessionIds.add(session.id);
+    }
+  }));
+
+  const boardSpaceIds = Array.from(new Set(boardRows.map((board) => board.spaceId)));
+  const allowedBoardSpaceIds = new Set(await filterSpaceIdsByPermission(user, "file.view", boardSpaceIds).catch((error) => {
+    logger.warn("[RealtimeRooms] failed to batch authorize Board rooms", { userId: user.uuid, error });
+    return [];
+  }));
+  const allowedBoardAggregateSpaceIds = new Set(await filterSpaceIdsByPermission(user, "file.view", boardSpaceRoomIds).catch((error) => {
+    logger.warn("[RealtimeRooms] failed to batch authorize Board aggregate rooms", { userId: user.uuid, error });
+    return [];
+  }));
+  const roomPermission = spaceRoomReadPermission(principal);
+  const allowedSpaceIds = new Set(roomPermission
+    ? spaceIds.filter((spaceId) => {
+      const role = memberRoleBySpace.get(spaceId);
+      return Boolean(role && roleHasPermission(role, "session.view"));
+    })
+    : []);
+
+  for (const { room, parsed, normalizedRoom } of parsedRooms) {
+    if (parsed.kind === "user") {
+      if (principal?.type === "user" && parsed.id === user.uuid) accepted.push(normalizedRoom);
+      else rejected.push({ room, code: "FORBIDDEN", message: "Cannot subscribe to another user" });
+      continue;
+    }
+    if (parsed.kind === "session") {
+      const allowed = sessionById.has(parsed.id)
+        && (sessionViewIds.has(parsed.id) || ownerVisibleSessionIds.has(parsed.id));
       if (allowed) accepted.push(normalizedRoom);
       else rejected.push({ room, code: "FORBIDDEN", message: "Missing Session view permission" });
       continue;
     }
-
     if (parsed.kind === "board") {
-      const [board] = await db
-        .select({ spaceId: boards.spaceId })
-        .from(boards)
-        .where(eq(boards.id, parsed.id))
-        .limit(1);
-      const allowed = board
-        ? await hasPermission(user, "file.view", { spaceId: board.spaceId }).catch((error) => {
-            logger.warn("[RealtimeRooms] failed to authorize Board room", { room, userId: user.uuid, error });
-            return false;
-          })
-        : false;
-      if (allowed) accepted.push(normalizedRoom);
+      const board = boardById.get(parsed.id);
+      if (board && allowedBoardSpaceIds.has(board.spaceId)) accepted.push(normalizedRoom);
       else rejected.push({ room, code: "FORBIDDEN", message: "Missing Board view permission" });
       continue;
     }
-
-    // Space rooms include Space-wide Session and Turn events. Scoped principals
-    // must opt into that broad read surface explicitly; owner-bound Work reads
-    // use session:<id> rooms instead.
-    const roomPermission = spaceRoomReadPermission(principal);
-    const allowed = await hasPermission(user, roomPermission, { spaceId: parsed.id }).catch((error) => {
-      logger.warn("[RealtimeRooms] failed to authorize room", { room, userId: user.uuid, error });
-      return false;
-    });
-    if (allowed) {
-      accepted.push(normalizedRoom);
-    } else {
-      rejected.push({ room, code: "FORBIDDEN", message: `Missing ${roomPermission} permission` });
+    if (parsed.kind === "boardspace") {
+      if (allowedBoardAggregateSpaceIds.has(parsed.id)) accepted.push(normalizedRoom);
+      else rejected.push({ room, code: "FORBIDDEN", message: "Missing Board view permission" });
+      continue;
     }
+    if (allowedSpaceIds.has(parsed.id)) accepted.push(normalizedRoom);
+    else rejected.push({
+      room,
+      code: "FORBIDDEN",
+      message: roomPermission ? `Missing ${roomPermission} permission` : "Space rooms require an account principal",
+    });
   }
 
   return c.json({ ok: true, rooms: accepted, rejected });

@@ -1,6 +1,7 @@
 import type { SpacePublicEndpoints } from "@cohub/protocol/ports";
 import {
   getRealtimeBoardRoom,
+  getRealtimeBoardSpaceRoom,
   getRealtimeSessionRoom,
   getRealtimeSpaceRoom,
   type BoardAwarenessUpdatedEvent as ProtocolBoardAwarenessUpdatedEvent,
@@ -889,7 +890,10 @@ export class SpaceEventsApi {
       throw new Error("realtime transport is not configured for this client");
     }
     ensureRealtimeConnected(this.websocketClient);
-    const releaseRoom = this.websocketClient.retainRooms([getRealtimeSpaceRoom(this.spaceId)]);
+    const releaseRoom = this.websocketClient.retainRooms([
+      getRealtimeSpaceRoom(this.spaceId),
+      getRealtimeBoardSpaceRoom(this.spaceId),
+    ]);
     const offEvent = this.websocketClient.on("event", (event) => {
       if (event.spaceId !== this.spaceId) return;
       handler(event);
@@ -1479,7 +1483,6 @@ class BoardRealtimeClient {
     }
     ensureRealtimeConnected(this.websocketClient);
     const releaseRoom = this.websocketClient.retainRooms([
-      getRealtimeSpaceRoom(this.spaceId),
       getRealtimeBoardRoom(this.boardId),
     ]);
     const unsubscribe = this.websocketClient.on("event", (event) => {

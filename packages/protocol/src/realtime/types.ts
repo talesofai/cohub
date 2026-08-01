@@ -19,26 +19,31 @@ export const WS_ROOM_SUBSCRIPTION_CAPABILITY = "realtime.rooms.v1";
 export const WS_BOARD_AWARENESS_CAPABILITY = "board.awareness.v1";
 export const REALTIME_OUTBOUND_CHANNEL = "pubsub:realtime:outbound";
 export const AGENT_REALTIME_PATCH_CHANNEL = "pubsub:realtime:agent_patches";
+export const MAX_REALTIME_ROOMS_PER_REQUEST = 128;
+// Account connections also retain one server-managed user room.
+export const MAX_REALTIME_ROOMS_PER_CONNECTION = MAX_REALTIME_ROOMS_PER_REQUEST + 1;
 
 export type RealtimeRoom =
   | `space:${string}`
   | `session:${string}`
   | `user:${string}`
-  | `board:${string}`;
+  | `board:${string}`
+  | `boardspace:${string}`;
 
 export const getRealtimeSpaceRoom = (spaceId: string): RealtimeRoom => `space:${spaceId}`;
 export const getRealtimeSessionRoom = (sessionId: string): RealtimeRoom => `session:${sessionId}`;
 export const getRealtimeUserRoom = (userId: string): RealtimeRoom => `user:${userId}`;
 export const getRealtimeBoardRoom = (boardId: string): RealtimeRoom => `board:${boardId}`;
+export const getRealtimeBoardSpaceRoom = (spaceId: string): RealtimeRoom => `boardspace:${spaceId}`;
 
-export const parseRealtimeRoom = (room: string): { kind: "space" | "session" | "user" | "board"; id: string } | null => {
+export const parseRealtimeRoom = (room: string): { kind: "space" | "session" | "user" | "board" | "boardspace"; id: string } | null => {
   const trimmed = room.trim();
   const separatorIndex = trimmed.indexOf(":");
   if (separatorIndex <= 0) return null;
   const kind = trimmed.slice(0, separatorIndex);
   const id = trimmed.slice(separatorIndex + 1).trim();
   if (!id) return null;
-  if (kind !== "space" && kind !== "session" && kind !== "user" && kind !== "board") return null;
+  if (kind !== "space" && kind !== "session" && kind !== "user" && kind !== "board" && kind !== "boardspace") return null;
   return { kind, id };
 };
 
@@ -156,7 +161,7 @@ export type SystemSubscribeErrorEvent = {
   requestId?: string | null;
   spaceId?: string | null;
   sessionId?: string | null;
-  payload: { rejected: Array<{ room: string; code: "BAD_ROOM" | "FORBIDDEN"; message: string }> };
+  payload: { rejected: Array<{ room: string; code: "BAD_ROOM" | "FORBIDDEN" | "ROOM_LIMIT"; message: string }> };
 };
 
 export type RealtimeSessionRecord = Pick<

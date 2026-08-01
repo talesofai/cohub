@@ -1,12 +1,47 @@
-import type { SessionRecord, UserSessionListItem } from "@neta-art/cohub";
+import type {
+	SessionRecord,
+	UserSessionListItem,
+	UserSessionSummary,
+} from "@neta-art/cohub";
 
 type MergeableSession = SessionRecord | UserSessionListItem;
+export type FullUserSessionListItem = Exclude<
+	UserSessionListItem,
+	UserSessionSummary
+>;
 
-function hasOwn<T extends object, K extends PropertyKey>(
-	value: T,
-	key: K,
-): value is T & Record<K, unknown> {
-	return Object.hasOwn(value, key);
+export function isUserSessionSummary(
+	session: UserSessionListItem,
+): session is UserSessionSummary {
+	return "accessLevel" in session && session.accessLevel === "summary";
+}
+
+export function isFullUserSessionListItem(
+	session: UserSessionListItem,
+): session is FullUserSessionListItem {
+	return !isUserSessionSummary(session);
+}
+
+/** Summary rows cannot infer unread state without exposing message identity. */
+export function getUserSessionLastMessageId(
+	session: UserSessionListItem,
+): string | null {
+	return isFullUserSessionListItem(session)
+		? (session.lastMessageId ?? null)
+		: null;
+}
+
+function mergeSessionValue(
+	existing: MergeableSession | undefined | null,
+	incoming: MergeableSession,
+): MergeableSession {
+	if (!existing) return incoming;
+	if (isUserSessionSummary(incoming)) {
+		return incoming;
+	}
+	const merged: Record<string, unknown> = { ...existing, ...incoming };
+	delete merged.accessLevel;
+	return merged as MergeableSession;
 }
 
 /**
@@ -18,7 +53,7 @@ function hasOwn<T extends object, K extends PropertyKey>(
  * to replace stale data.
  */
 export function mergeSessionRecord(
-	existing: SessionRecord | undefined | null,
+	existing: MergeableSession | undefined | null,
 	incoming: SessionRecord,
 ): SessionRecord;
 export function mergeSessionRecord(
@@ -29,21 +64,7 @@ export function mergeSessionRecord(
 	existing: MergeableSession | undefined | null,
 	incoming: MergeableSession,
 ): MergeableSession {
-	if (!existing) return incoming;
-	return {
-		...existing,
-		...incoming,
-		meta: hasOwn(incoming, "meta") ? incoming.meta : existing.meta,
-		userProfile: hasOwn(incoming, "userProfile")
-			? incoming.userProfile
-			: existing.userProfile,
-		participantUserUuids: hasOwn(incoming, "participantUserUuids")
-			? incoming.participantUserUuids
-			: existing.participantUserUuids,
-		participantProfiles: hasOwn(incoming, "participantProfiles")
-			? incoming.participantProfiles
-			: existing.participantProfiles,
-	} as MergeableSession;
+	return mergeSessionValue(existing, incoming);
 }
 
 export function mergeSessionRecords(sessions: SessionRecord[]): SessionRecord[];
@@ -55,21 +76,7 @@ export function mergeSessionRecords(
 ): MergeableSession[] {
 	const byId = new Map<string, MergeableSession>();
 	for (const session of sessions) {
-		const existing = byId.get(session.id);
-		byId.set(session.id, {
-			...existing,
-			...session,
-			meta: hasOwn(session, "meta") ? session.meta : existing?.meta,
-			userProfile: hasOwn(session, "userProfile")
-				? session.userProfile
-				: existing?.userProfile,
-			participantUserUuids: hasOwn(session, "participantUserUuids")
-				? session.participantUserUuids
-				: existing?.participantUserUuids,
-			participantProfiles: hasOwn(session, "participantProfiles")
-				? session.participantProfiles
-				: existing?.participantProfiles,
-		} as MergeableSession);
+		byId.set(session.id, mergeSessionValue(byId.get(session.id), session));
 	}
 	return Array.from(byId.values());
 }

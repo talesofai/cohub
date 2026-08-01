@@ -33,7 +33,7 @@ import {
 } from "../usage-aggregation.js";
 import { createLogger } from "@cohub/infra/logging";
 import { getReferralDashboard, rotateReferralCode } from "../referrals.js";
-import { ownerSessionSummary } from "../owner-resource-access.js";
+import { canExposeWorkSessionRecord, canIncludeWorkSessionListRow, ownerSessionSummary } from "../owner-resource-access.js";
 
 const logger = createLogger({ serviceName: "cohub-api" });
 
@@ -208,14 +208,15 @@ router.get("/rules", async (c) => {
 
 /**
  * Cross-space recent sessions for the account identity.
- * Gate: `user.session.list`. Work sessions always include their own sessions.
- * Participant sessions and full list records require `session.view` in each
- * Session's exact Space.
+ * Gate: `user.session.list`. Work sessions include their own sessions, but
+ * only a row in the bound Space with `session.view` can be a full record.
+ * Viewer-owned rows in other Spaces are projected as summaries; participant
+ * rows outside the bound Space are omitted.
  * Ordinary account tokens retain membership / access-policy visibility.
  */
 async function listVisibleUserSessions(
   user: AuthUser,
-  options: { limit: number; cursor: string | null; ownerOnly?: boolean },
+  options: { limit: number; cursor: string | null; workSpaceId?: string | null },
 ) {
   const identity = asAccountIdentity(user);
   if (!identity) {
@@ -248,15 +249,30 @@ async function listVisibleUserSessions(
     const batch = await listUserSessions(identity.uuid, {
       limit: batchLimit,
       cursor,
-      creatorOnly: options.ownerOnly,
     });
     hasMore = Boolean(batch.pageInfo.hasMore);
     cursor = batch.pageInfo.nextCursor;
 
     if (batch.sessions.length === 0) break;
 
-    if (options.ownerOnly) {
-      visible.push(...batch.sessions);
+    if (options.workSpaceId) {
+      // Work principals are allowed to enumerate their own rows across
+      // Spaces, but participant rows are visible only in the bound Space and
+      // only after a session-level view check.
+      const visibleIds = new Set<string>();
+      for (const session of batch.sessions) {
+        const isOwner = session.userUuid === identity.uuid;
+        const hasSessionView = !isOwner
+          && session.spaceId === options.workSpaceId
+          && await hasPermission(user, "session.view", {
+            spaceId: session.spaceId,
+            sessionId: session.id,
+          });
+        if (canIncludeWorkSessionListRow({ userUuid: identity.uuid, spaceId: options.workSpaceId }, session, hasSessionView)) {
+          visibleIds.add(session.id);
+        }
+      }
+      visible.push(...pickSessionsPreservingOrder(batch.sessions, visibleIds));
       if (!hasMore) break;
       continue;
     }
@@ -323,23 +339,25 @@ router.get("/sessions", async (c) => {
   const limit = Number.isFinite(limitParam) ? limitParam : 20;
   const cursor = c.req.query("cursor") ?? null;
   const workSession = getWorkSessionPrincipal(c);
-  const ownerOnly = Boolean(
-    workSession
-    && !(await hasPermission(user, "session.view", { spaceId: workSession.spaceId })),
-  );
   try {
-    const { sessions, pageInfo } = await listVisibleUserSessions(user, { limit, cursor, ownerOnly });
+    const { sessions, pageInfo } = await listVisibleUserSessions(user, {
+      limit,
+      cursor,
+      workSpaceId: workSession?.spaceId ?? null,
+    });
     const hydratedSessions = await hydrateSessionParticipantProfiles(sessions);
     const withSpaces = await attachSessionSpaceSummaries(hydratedSessions);
     const projectedSessions = workSession
-      ? await Promise.all(withSpaces.map(async (session) => (
-          await hasPermission(user, "session.view", {
-            spaceId: session.spaceId,
-            sessionId: session.id,
-          })
+      ? await Promise.all(withSpaces.map(async (session) => {
+          const hasSessionView = session.spaceId === workSession.spaceId
+            && await hasPermission(user, "session.view", {
+              spaceId: session.spaceId,
+              sessionId: session.id,
+            });
+          return canExposeWorkSessionRecord(workSession, session, hasSessionView)
             ? session
-            : ownerSessionSummary(session)
-        )))
+            : ownerSessionSummary(session);
+        }))
       : withSpaces;
     return c.json({
       sessions: projectedSessions,

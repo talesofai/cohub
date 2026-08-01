@@ -163,6 +163,36 @@ export const normalizePermissionScopes = (scopes: readonly string[]): Permission
   return Array.from(new Set(scopes.filter((scope): scope is Permission => typeof scope === "string" && ALL_PERMISSION_SET.has(scope as Permission))));
 };
 
+export type ActiveWorkSessionPolicy = {
+  workScopes: Permission[];
+  allowedViewerScopes: Permission[];
+};
+
+export function resolveActiveWorkSessionPolicy(
+  token: {
+    spaceId: string;
+    workScopes?: readonly string[];
+    viewerScopes?: readonly string[];
+  },
+  current: {
+    status: string;
+    spaceId: string;
+    workScopes: readonly string[];
+    allowedViewerScopes: readonly string[];
+  } | null,
+): ActiveWorkSessionPolicy | null {
+  if (current?.status !== "published" || current.spaceId !== token.spaceId) return null;
+
+  const tokenWorkScopes = new Set(normalizePermissionScopes(token.workScopes ?? []));
+  const tokenViewerScopes = new Set(normalizePermissionScopes(token.viewerScopes ?? []));
+  return {
+    workScopes: normalizePermissionScopes(current.workScopes)
+      .filter((scope) => tokenWorkScopes.has(scope)),
+    allowedViewerScopes: normalizePermissionScopes(current.allowedViewerScopes)
+      .filter((scope) => tokenViewerScopes.has(scope)),
+  };
+}
+
 export const scopeListHasPermission = (scopes: readonly Permission[], permission: Permission) => {
   if (scopes.includes(permission)) return true;
   if (permission === "session.prompt.readonly" && scopes.includes("session.prompt.fullaccess")) return true;

@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { setTimeout as delay } from "node:timers/promises";
 import { test } from "node:test";
+import { MAX_REALTIME_ROOMS_PER_REQUEST } from "@cohub/protocol/realtime";
 import { WebsocketClient, type WebSocketLike } from "../src/websocket.js";
 
 type CloseSnapshot = { code: number; reason: string; willReconnect: boolean };
@@ -151,5 +152,64 @@ test("stops after a forced authentication retry is rejected", async () => {
   assert.equal(client.state, "closed");
 
   release();
+  await client.disconnect();
+});
+
+test("batches room subscriptions and clears pending rooms after a request error", async () => {
+  FakeWebSocket.instances = [];
+  const client = new WebsocketClient({
+    url: "ws://localhost",
+    autoReconnect: false,
+    getAccessToken: () => "token",
+    WebSocketImpl: FakeWebSocket,
+  });
+  const rooms = Array.from(
+    { length: MAX_REALTIME_ROOMS_PER_REQUEST + 2 },
+    (_, index) => `session:session-${index}`,
+  );
+  const releaseRooms = client.subscribeRooms(rooms);
+  assert.equal((client as unknown as { roomSubscriptions: Map<string, unknown> }).roomSubscriptions.size, rooms.length);
+  const socket = FakeWebSocket.instances[0];
+  assert.ok(socket);
+  socket.open();
+  await waitFor(() => sentTypes(socket).includes("auth"), "expected auth request");
+  socket.receive(authOk("connection-batches"));
+
+  const subscriptions = () => socket.sent
+    .map((raw) => JSON.parse(raw) as { type: string; requestId?: string; payload?: { rooms?: string[] } })
+    .filter((event) => event.type === "subscribe");
+  await waitFor(() => subscriptions().length === 1, "expected first subscription batch");
+  const first = subscriptions()[0];
+  assert.equal(first?.payload?.rooms?.length, MAX_REALTIME_ROOMS_PER_REQUEST);
+  socket.receive({
+    id: "subscribe-ok",
+    timestamp: Date.now(),
+    domain: "system",
+    type: "system.subscribe.ok",
+    requestId: first?.requestId,
+    payload: { rooms: first?.payload?.rooms ?? [] },
+  });
+
+  await waitFor(() => subscriptions().length === 2, "expected second subscription batch");
+  const second = subscriptions()[1];
+  assert.equal(second?.payload?.rooms?.length, 2);
+  socket.receive({
+    id: "subscribe-error",
+    timestamp: Date.now(),
+    domain: "system",
+    type: "system.request.error",
+    requestId: second?.requestId,
+    payload: { code: "BAD_REQUEST", message: "room limit" },
+  });
+
+  const releaseExtra = client.subscribeSpace("after-limit");
+  await waitFor(() => subscriptions().length === 3, "expected failed rooms to become retryable");
+  assert.deepEqual(subscriptions()[2]?.payload?.rooms, [
+    ...rooms.slice(MAX_REALTIME_ROOMS_PER_REQUEST),
+    "space:after-limit",
+  ]);
+
+  releaseExtra();
+  releaseRooms();
   await client.disconnect();
 });

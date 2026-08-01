@@ -59,6 +59,13 @@ function isRecord(value: unknown): value is Record<string, unknown> {
   return !!value && typeof value === "object" && !Array.isArray(value);
 }
 
+function isDelegatedWorkPayload(value: unknown): boolean {
+  if (!isRecord(value)) return false;
+  const data = isRecord(value.data) ? value.data : value;
+  return data.delegatedAuthRequired === true
+    || (isRecord(data.auth) && data.auth.source === "work_session");
+}
+
 async function authorizeCronJobView(
   user: ReturnType<typeof getOptionalAuth>,
   job: CronJobAuthSubject,
@@ -268,6 +275,9 @@ router.patch("/:id", async (c) => {
   }
 
   if ("payload" in body) {
+    if (isDelegatedWorkPayload(job.payload)) {
+      return c.json({ message: "payload cannot be changed for a delegated Work cron job" }, 409);
+    }
     if (!isRecord(body.payload)) return c.json({ message: "payload must be an object" }, 400);
     patch.payload = sanitizePostgresJsonValue(body.payload) as Record<string, unknown>;
   }

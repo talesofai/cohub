@@ -27,6 +27,7 @@ import { isSandboxReportTokenValid } from "../../crypto.js";
 import { normalizeSandboxLifecycleStatus, normalizeSandboxRuntimeStatus } from "@cohub/sandbox-controller";
 import {
   ensureInternalRequest,
+  getRequestPrincipal,
   getRequestRemoteAddress,
   isPrivateNetworkAddress,
   requireValidId,
@@ -413,10 +414,12 @@ router.post("/:spaceId/sessions/:sessionId/prompt", async (c) => {
   const promptThinkingLevel = typeof body.thinkingLevel === "string" && body.thinkingLevel.trim() && VALID_THINKING_LEVELS.has(body.thinkingLevel.trim()) ? body.thinkingLevel.trim() : body.thinkingLevel === undefined || body.thinkingLevel === null ? undefined : null;
   if (promptThinkingLevel === null) return c.json({ message: "thinkingLevel must be one of: off, minimal, low, medium, high, xhigh, max" }, 400);
   const promptPermission = accessMode === "read_only" ? "session.prompt.readonly" : "session.prompt.fullaccess";
+  const requestPrincipal = getRequestPrincipal(c);
   const actor = resolveInternalPromptActor({
     principalType: body.principalType,
     userId,
     authToken: body.authToken?.trim() ?? "",
+    accountUser: requestPrincipal?.type === "user" ? requestPrincipal.user : null,
   }, verifyWorkSessionToken);
   if (!actor) return c.json({ message: "forbidden" }, 403);
   const promptAuth = actor.workSession

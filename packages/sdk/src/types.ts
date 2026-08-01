@@ -1053,15 +1053,22 @@ export type UserSessionSpaceSummary = {
   publicProfile?: SpacePublicProfile | null;
 };
 
-export type UserSessionSummary = Omit<
+export type UserSessionSummary = Pick<
   SessionRecord,
-  "externalSessionId" | "meta" | "latestMessageText" | "lastMessageId"
+  | "id"
+  | "spaceId"
+  | "userUuid"
+  | "userProfile"
+  | "participantUserUuids"
+  | "participantProfiles"
+  | "title"
+  | "source"
+  | "status"
+  | "lastMessageAt"
+  | "createdAt"
+  | "updatedAt"
 > & {
   accessLevel: "summary";
-  externalSessionId?: never;
-  meta?: never;
-  latestMessageText?: never;
-  lastMessageId?: never;
   space?: UserSessionSpaceSummary | null;
 };
 
@@ -1607,6 +1614,8 @@ export type ReferralDashboard = {
 // ─── Invitation types ───
 
 export type SpaceInvitation = {
+  /** Stable non-secret identifier suitable for rendering and reconciliation. */
+  id: string;
   /** Bearer credential, present only for viewers with member.manage. */
   token?: string;
   role: SpaceRole;

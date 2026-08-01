@@ -2,6 +2,7 @@
 import type { UserSessionListItem } from "@neta-art/cohub";
 import UserAvatar from "$lib/components/UserAvatar.svelte";
 import type { ModelCatalogItem } from "$lib/model-catalog";
+import { getUserSessionLastMessageId } from "$lib/session-record-merge";
 import { getSessionSidebarActivity } from "$lib/session-sidebar-activity";
 import { getSessionActivityAt } from "$lib/session-sort";
 import { authStore } from "$lib/stores/auth.svelte";
@@ -43,7 +44,7 @@ const activityTime = $derived(
 	formatCompactAbsoluteTime(getSessionActivityAt(session)),
 );
 const isUnread = $derived(
-	unreadTracker.isUnread(session, session.lastMessageId),
+	unreadTracker.isUnread(session, getUserSessionLastMessageId(session)),
 );
 const shouldShowActivity = $derived(
 	activity.active ||

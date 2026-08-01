@@ -29,8 +29,13 @@ import {
   type GenerationUsageBilling,
 } from "@cohub/protocol/generation";
 import type { TaskPayload } from "@cohub/protocol/task";
+import type { PromptAuthContext } from "@cohub/core/sessions";
+import { requireDelegatedTaskAuth, resolveScheduledPromptAuth, type WorkViewerGrantSnapshot } from "../work-viewer-prompt-auth.js";
+import { works, workViewerGrants } from "@cohub/db";
+import { and, eq } from "drizzle-orm";
 import { defaultJobRetention } from "@cohub/infra/bullmq";
 import { config } from "../config.js";
+import { db } from "../db.js";
 import { recordGenerationUsageStatsHourly } from "../generation-usage-stats.js";
 import { redisCommandClient } from "../redis.js";
 import { enqueueTask } from "./enqueue.js";
@@ -49,6 +54,34 @@ const billingUsageGate = createBillingUsageGate({
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return !!value && typeof value === "object" && !Array.isArray(value);
+}
+
+async function loadGenerationWorkViewerGrant(input: {
+  grantId: string;
+  workId: string;
+  spaceId: string;
+  viewerUserUuid: string;
+}): Promise<WorkViewerGrantSnapshot | null> {
+  const [grant] = await db
+    .select({
+      scopes: workViewerGrants.scopes,
+      expiresAt: workViewerGrants.expiresAt,
+      revokedAt: workViewerGrants.revokedAt,
+      workStatus: works.status,
+      workSpaceId: works.spaceId,
+      workScopes: works.workScopes,
+      allowedViewerScopes: works.allowedViewerScopes,
+    })
+    .from(workViewerGrants)
+    .innerJoin(works, eq(works.id, workViewerGrants.workId))
+    .where(and(
+      eq(workViewerGrants.id, input.grantId),
+      eq(workViewerGrants.workId, input.workId),
+      eq(workViewerGrants.spaceId, input.spaceId),
+      eq(workViewerGrants.viewerUserUuid, input.viewerUserUuid),
+    ))
+    .limit(1);
+  return grant ?? null;
 }
 
 function parseModelDiscountSnapshot(value: unknown): GenerationModelDiscountSnapshot {
@@ -88,11 +121,25 @@ function parseGenerationTaskData(data: unknown): GenerationTaskData {
   if (data.meta !== undefined && !isRecord(data.meta)) {
     throw new Error("Invalid generation task payload: meta must be an object");
   }
+  if (data.workId !== undefined && (typeof data.workId !== "string" || !data.workId.trim())) {
+    throw new Error("Invalid generation task payload: workId must be a non-empty string");
+  }
+  if (data.declarationScope !== undefined && data.declarationScope !== "platform" && data.declarationScope !== "user") {
+    throw new Error("Invalid generation task payload: declarationScope must be platform or user");
+  }
+  const declarationScope = data.declarationScope ?? (data.workId ? "platform" : "user");
+  if (data.workId && declarationScope !== "platform") {
+    throw new Error("Invalid generation task payload: Work generation must use platform declarations");
+  }
   return {
     model: data.model,
     content: data.content as GenerationTaskData["content"],
     parameters: data.parameters,
     meta: data.meta,
+    declarationScope,
+    ...(data.workId === undefined ? {} : { workId: data.workId.trim() }),
+    ...(data.auth === undefined ? {} : { auth: isRecord(data.auth) ? data.auth : null }),
+    ...(data.delegatedAuthRequired === undefined ? {} : { delegatedAuthRequired: data.delegatedAuthRequired === true }),
     ...(data.modelDiscount === undefined
       ? {}
       : { modelDiscount: parseModelDiscountSnapshot(data.modelDiscount) }),
@@ -359,8 +406,23 @@ registerTask(GENERATION_TASK_TYPE, async (job: Job, context) => {
     turnId: turnId ?? null,
   });
 
+  const delegatedAuthRequired = data.delegatedAuthRequired === true;
+  const taskAuth = requireDelegatedTaskAuth(
+    delegatedAuthRequired,
+    data.auth as PromptAuthContext | null | undefined,
+  );
+  if (taskAuth) {
+    await resolveScheduledPromptAuth(
+        taskAuth,
+        { spaceId, userId, requiredPermission: "generation.create" },
+        loadGenerationWorkViewerGrant,
+      );
+  }
+
   try {
-    const declaration = await loader.loadGenerationDeclaration(userId, data.model);
+    const declaration = data.declarationScope === "platform"
+      ? await loader.loadPlatformGenerationDeclaration(data.model)
+      : await loader.loadGenerationDeclaration(userId, data.model);
     if (!declaration) throw new Error(`Generation model is unavailable: ${data.model}`);
 
     // Re-read authoritative entitlements before trusting a queued snapshot. This

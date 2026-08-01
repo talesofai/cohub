@@ -12,9 +12,9 @@ import { getSessionDomainServices } from "../session-services.js";
 import { createLogger } from "@cohub/infra/logging";
 import { db } from "../db.js";
 import { dispatchLabelAssignmentsUpdated } from "../label-events.js";
-import { workViewerGrants } from "@cohub/db";
+import { works, workViewerGrants } from "@cohub/db";
 import { and, eq } from "drizzle-orm";
-import { resolveScheduledPromptAuth } from "../work-viewer-prompt-auth.js";
+import { requireDelegatedTaskAuth, resolveScheduledPromptAuth } from "../work-viewer-prompt-auth.js";
 
 const MAX_TASK_SOURCE_LENGTH = 255;
 
@@ -43,8 +43,13 @@ async function loadWorkViewerGrant(input: {
       scopes: workViewerGrants.scopes,
       expiresAt: workViewerGrants.expiresAt,
       revokedAt: workViewerGrants.revokedAt,
+      workStatus: works.status,
+      workSpaceId: works.spaceId,
+      workScopes: works.workScopes,
+      allowedViewerScopes: works.allowedViewerScopes,
     })
     .from(workViewerGrants)
+    .innerJoin(works, eq(works.id, workViewerGrants.workId))
     .where(and(
       eq(workViewerGrants.id, input.grantId),
       eq(workViewerGrants.workId, input.workId),
@@ -58,7 +63,7 @@ async function loadWorkViewerGrant(input: {
 const sendMessageHandler = async (job: import("bullmq").Job, context?: { taskRunId: string }) => {
   const payload = job.data as TaskPayload;
   const spaceId = payload.spaceId;
-  const { content, sessionId, title, source: payloadSource, model, provider, thinkingLevel, clientMessageId, generationPolicy, accessMode, intent, labelIds, auth, env } = (payload.data ?? {}) as {
+  const { content, sessionId, title, source: payloadSource, model, provider, thinkingLevel, clientMessageId, generationPolicy, accessMode, intent, labelIds, auth, delegatedAuthRequired, env } = (payload.data ?? {}) as {
     content?: ContentBlock[];
     sessionId?: string;
     title?: string;
@@ -72,6 +77,7 @@ const sendMessageHandler = async (job: import("bullmq").Job, context?: { taskRun
     intent?: SessionTurnIntent | null;
     labelIds?: string[];
     auth?: PromptAuthContext | null;
+    delegatedAuthRequired?: boolean;
     env?: PromptEnv | null;
   };
 
@@ -88,8 +94,9 @@ const sendMessageHandler = async (job: import("bullmq").Job, context?: { taskRun
   const promptPermission = promptAccessMode === "read_only"
     ? "session.prompt.readonly"
     : "session.prompt.fullaccess";
+  const taskAuth = requireDelegatedTaskAuth(delegatedAuthRequired === true, auth);
   const promptAuth = await resolveScheduledPromptAuth(
-    auth ?? null,
+    taskAuth,
     { spaceId, userId, requiredPermission: promptPermission },
     loadWorkViewerGrant,
   );

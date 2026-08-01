@@ -7,13 +7,13 @@ import type {
 	WebsocketEventPayload,
 } from "../src/websocket.js";
 
-test("SpaceEventsApi routes published Work versions for the selected Space", () => {
+test("SpaceEventsApi retains aggregate rooms and routes Space events", () => {
 	let emit: ((event: WebsocketEventPayload) => void) | null = null;
 	let released = 0;
 	const websocket = {
 		state: "open",
 		retainRooms(rooms: string[]) {
-			assert.deepEqual(rooms, ["space:space-1"]);
+			assert.deepEqual(rooms, ["space:space-1", "boardspace:space-1"]);
 			return () => {
 				released += 1;
 			};
@@ -43,6 +43,12 @@ test("SpaceEventsApi routes published Work versions for the selected Space", () 
 	publish({
 		spaceId: "space-1",
 		type: "work.version.published",
+		payload: {},
+	} as WebsocketEventPayload);
+	publish({
+		spaceId: "space-1",
+		sessionId: "session-1",
+		type: "session.turn.patch",
 		payload: {},
 	} as WebsocketEventPayload);
 

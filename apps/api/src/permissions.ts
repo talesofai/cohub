@@ -1,14 +1,19 @@
 import { createBatchDrizzlePermissionStore, hasPermission as hasSharedPermission, isUserLevelPermission, normalizePermissionScopes, resolvePermissionAccess as resolveSharedPermissionAccess, scopeListHasPermission } from "@cohub/core/permissions";
 import { db } from "./db/index.js";
 import type { AuthUserProfile } from "./auth.js";
-import { workViewerGrants, type SpaceRole } from "@cohub/db";
+import { works, workViewerGrants, type SpaceRole } from "@cohub/db";
 import type { Permission, AccessPolicy, PermissionAccess } from "@cohub/core/permissions";
 import type { PreviewSessionPrincipal } from "./preview-sessions.js";
 import { hasPreviewSessionPermission } from "./preview-sessions.js";
 import type { WorkSessionPrincipal } from "./work-sessions.js";
 import { and, eq } from "drizzle-orm";
+import {
+  resolveActiveWorkSessionPolicy,
+  type ActiveWorkSessionPolicy,
+} from "./work-session-policy.js";
 
 type CachedWorkSessionPrincipal = WorkSessionPrincipal & {
+  activeWorkPolicy?: Promise<ActiveWorkSessionPolicy | null>;
   activeViewerGrantScopes?: Promise<Permission[]>;
 };
 
@@ -53,8 +58,29 @@ export function asAccountIdentity(user: { uuid?: string | null } | null | undefi
   return uuid ? { uuid } : null;
 }
 
+const loadActiveWorkPolicy = async (workSession: CachedWorkSessionPrincipal) => {
+  const [current] = await db
+    .select({
+      status: works.status,
+      spaceId: works.spaceId,
+      workScopes: works.workScopes,
+      allowedViewerScopes: works.allowedViewerScopes,
+    })
+    .from(works)
+    .where(eq(works.id, workSession.workId))
+    .limit(1);
+  return resolveActiveWorkSessionPolicy(workSession, current ?? null);
+};
+
+const getActiveWorkPolicy = async (workSession: CachedWorkSessionPrincipal) => {
+  workSession.activeWorkPolicy ??= loadActiveWorkPolicy(workSession);
+  return workSession.activeWorkPolicy;
+};
+
 const loadActiveViewerGrantScopes = async (workSession: CachedWorkSessionPrincipal) => {
   if (!workSession.workViewerGrantId) return [] as Permission[];
+  const activeWorkPolicy = await getActiveWorkPolicy(workSession);
+  if (!activeWorkPolicy) return [] as Permission[];
   const [grant] = await db
     .select({ scopes: workViewerGrants.scopes, expiresAt: workViewerGrants.expiresAt, revokedAt: workViewerGrants.revokedAt })
     .from(workViewerGrants)
@@ -67,8 +93,9 @@ const loadActiveViewerGrantScopes = async (workSession: CachedWorkSessionPrincip
     .limit(1);
   if (!grant || grant.revokedAt) return [];
   if (grant.expiresAt && grant.expiresAt.getTime() <= Date.now()) return [];
-  const tokenScopes = new Set(normalizePermissionScopes(workSession.viewerScopes));
-  return normalizePermissionScopes(grant.scopes as string[]).filter((scope) => tokenScopes.has(scope));
+  const allowedScopes = new Set(activeWorkPolicy.allowedViewerScopes);
+  return normalizePermissionScopes(grant.scopes as string[])
+    .filter((scope) => allowedScopes.has(scope));
 };
 
 const getActiveViewerGrantScopes = async (workSession: CachedWorkSessionPrincipal) => {
@@ -82,13 +109,17 @@ const hasActiveViewerGrantPermission = async (workSession: CachedWorkSessionPrin
 };
 
 const resolveWorkSessionScopes = async (workSession: CachedWorkSessionPrincipal) => {
+  const activeWorkPolicy = await getActiveWorkPolicy(workSession);
+  if (!activeWorkPolicy) return [];
   const viewerScopes = await getActiveViewerGrantScopes(workSession);
-  return normalizePermissionScopes([...workSession.workScopes, ...viewerScopes]);
+  return normalizePermissionScopes([...activeWorkPolicy.workScopes, ...viewerScopes]);
 };
 
 const hasWorkSessionScopedPermission = async (workSession: CachedWorkSessionPrincipal, permission: Permission, spaceId: string) => {
   if (workSession.spaceId !== spaceId) return false;
-  if (scopeListHasPermission(workSession.workScopes, permission)) return true;
+  const activeWorkPolicy = await getActiveWorkPolicy(workSession);
+  if (!activeWorkPolicy) return false;
+  if (scopeListHasPermission(activeWorkPolicy.workScopes, permission)) return true;
   return hasActiveViewerGrantPermission(workSession, permission);
 };
 

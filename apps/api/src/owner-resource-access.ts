@@ -103,12 +103,39 @@ export function ownerSessionSummary<T extends {
   };
 }
 
+/** Work list rows are owner-visible across Spaces, or view-visible in-bound. */
+export function canIncludeWorkSessionListRow(
+  workSession: { userUuid: string; spaceId: string },
+  session: { userUuid: string | null; spaceId: string },
+  hasSessionView: boolean,
+): boolean {
+  return session.userUuid === workSession.userUuid
+    || (hasSessionView && session.spaceId === workSession.spaceId);
+}
+
+/** Full Work list records never escape the token's bound Space. */
+export function canExposeWorkSessionRecord(
+  workSession: { spaceId: string },
+  session: { spaceId: string },
+  hasSessionView: boolean,
+): boolean {
+  return hasSessionView && workSession.spaceId === session.spaceId;
+}
+
 export async function canReadSessionResource(
   principal: OwnerResourcePrincipal,
   session: SessionResource,
   checkPermission: PermissionCheck,
 ): Promise<boolean> {
   if (await checkPermission("session.view", { spaceId: session.spaceId, sessionId: session.id })) return true;
+  return canReadSessionResourceAfterViewDenied(principal, session, checkPermission);
+}
+
+export async function canReadSessionResourceAfterViewDenied(
+  principal: OwnerResourcePrincipal,
+  session: SessionResource,
+  checkPermission: PermissionCheck,
+): Promise<boolean> {
   if (!ownsResource(principal, session)) return false;
   if (principal?.type === "user") return true;
   return await checkPermission("session.prompt.readonly", {

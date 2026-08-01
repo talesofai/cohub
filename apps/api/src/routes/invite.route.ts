@@ -1,67 +1,30 @@
 import { Hono } from "hono";
-import { createHash, randomUUID } from "node:crypto";
 import { db } from "../db/index.js";
 import { spaceMembers, spaces } from "@cohub/db";
 import type { SpaceRole } from "@cohub/db";
-import { isRoleHigherThan } from "@cohub/core/permissions";
-import { and, eq } from "drizzle-orm";
+import { and, eq, sql } from "drizzle-orm";
 import { redisCommandClient } from "../redis.js";
-import { useAccountAuth } from "../lib/middleware.js";
-import { createLogger } from "@cohub/infra/logging";
+import { authzDenied, getRequestPrincipal, requireValidId } from "../lib/middleware.js";
+import {
+  invitationMembershipLockId,
+  InvitationLockTimeoutError,
+  withInvitationDatabaseLock,
+  withInvitationLock,
+} from "../invitation-lock.js";
+import {
+  acceptInvitationMembership,
+  finalizeInvitationUse,
+  invitationUseAvailability,
+  reconcileExpiredInvitationUses,
+  releaseInvitationUse,
+  reserveInvitationUse,
+} from "../invitation-acceptance.js";
+import { invitationAccountUser } from "../space-invitation-access.js";
 
 const INVITE_PREFIX = "invite";
-const logger = createLogger({ serviceName: "cohub-api" });
-const INVITE_LOCK_TTL_MS = 30_000;
-const INVITE_LOCK_WAIT_MS = 5_000;
-const INVITE_LOCK_RETRY_MS = 25;
-const RELEASE_INVITE_LOCK_SCRIPT = `
-if redis.call("get", KEYS[1]) == ARGV[1] then
-  return redis.call("del", KEYS[1])
-end
-return 0
-`;
 
 function inviteKey(token: string) {
   return `${INVITE_PREFIX}:${token}`;
-}
-
-const sleep = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms));
-
-class InviteLockTimeoutError extends Error {
-  override name = "InviteLockTimeoutError";
-}
-
-async function withInviteLock<T>(token: string, fn: () => Promise<T>): Promise<T> {
-  const tokenHash = createHash("sha256").update(token).digest("hex");
-  const lockKey = `${INVITE_PREFIX}:accept-lock:${tokenHash}`;
-  const lockToken = randomUUID();
-  const deadline = Date.now() + INVITE_LOCK_WAIT_MS;
-
-  while (true) {
-    const acquired = await redisCommandClient.set(
-      lockKey,
-      lockToken,
-      "PX",
-      INVITE_LOCK_TTL_MS,
-      "NX",
-    );
-    if (acquired === "OK") break;
-    if (Date.now() >= deadline) throw new InviteLockTimeoutError("invitation is busy");
-    await sleep(INVITE_LOCK_RETRY_MS);
-  }
-
-  try {
-    return await fn();
-  } finally {
-    await redisCommandClient.eval(
-      RELEASE_INVITE_LOCK_SCRIPT,
-      1,
-      lockKey,
-      lockToken,
-    ).catch((error) => {
-      logger.warn("[Invite] failed to release accept lock", { lockKey, error });
-    });
-  }
 }
 
 const router = new Hono();
@@ -78,13 +41,11 @@ router.get("/:token", async (c) => {
 
   const data = await redisCommandClient.hgetall(key);
 
-  if (data.status === "revoked") {
+  const availability = invitationUseAvailability(data);
+  if (availability === "revoked") {
     return c.json({ message: "invitation has been revoked" }, 410);
   }
-
-  const maxUses = Number.parseInt(data.max_uses ?? "0", 10);
-  const useCount = Number.parseInt(data.use_count ?? "0", 10);
-  if (maxUses > 0 && useCount >= maxUses) {
+  if (availability === "exhausted") {
     return c.json({ message: "invitation has reached its usage limit" }, 410);
   }
 
@@ -113,75 +74,102 @@ router.get("/:token", async (c) => {
 // Accept an invitation (auth required)
 
 router.post("/:token/accept", async (c) => {
-  const user = useAccountAuth(c);
-  if (user instanceof Response) return user;
+  const user = invitationAccountUser(getRequestPrincipal(c));
+  if (!user) return authzDenied(c);
 
   const token = c.req.param("token");
   const key = inviteKey(token);
   let accepted: Response | { spaceId: string; role: SpaceRole };
   try {
-    accepted = await withInviteLock(token, async () => {
+    accepted = await withInvitationLock(token, () => withInvitationDatabaseLock(token, async (transaction) => {
       const exists = await redisCommandClient.exists(key);
       if (!exists) return c.json({ message: "invitation expired or not found" }, 410);
 
-      const data = await redisCommandClient.hgetall(key);
-      if (data.status === "revoked") {
+      let data = await redisCommandClient.hgetall(key);
+      const spaceId = data.space_id;
+      const role = data.role as SpaceRole | undefined;
+      if (!spaceId || !requireValidId(spaceId) || !role) {
+        return c.json({ message: "invitation expired or not found" }, 410);
+      }
+      await reconcileExpiredInvitationUses(
+        key,
+        data,
+        async (reservedUserUuid) => {
+          const [existing] = await transaction
+            .select({ role: spaceMembers.role })
+            .from(spaceMembers)
+            .where(and(eq(spaceMembers.spaceId, spaceId), eq(spaceMembers.userId, reservedUserUuid)))
+            .limit(1);
+          return existing?.role ?? null;
+        },
+        redisCommandClient,
+      );
+      data = await redisCommandClient.hgetall(key);
+      const availability = invitationUseAvailability(data, user.uuid);
+      if (availability === "revoked") {
         return c.json({ message: "invitation has been revoked" }, 410);
       }
-
-      const maxUses = Number.parseInt(data.max_uses ?? "0", 10);
-      const useCount = Number.parseInt(data.use_count ?? "0", 10);
-      if (maxUses > 0 && useCount >= maxUses) {
+      if (availability === "pending") {
+        return c.json({ message: "invitation acceptance is still being recovered, please try again" }, 503);
+      }
+      if (availability === "exhausted") {
         return c.json({ message: "invitation has reached its usage limit" }, 410);
       }
 
-      const spaceId = data.space_id;
-      const role = data.role as SpaceRole | undefined;
-      if (!spaceId || !role) {
-        return c.json({ message: "invitation expired or not found" }, 410);
+      const membership = await withInvitationLock(
+        invitationMembershipLockId(spaceId, user.uuid),
+        () => acceptInvitationMembership(role, {
+          getRole: async () => {
+            const [existing] = await transaction
+              .select({ role: spaceMembers.role })
+              .from(spaceMembers)
+              .where(and(eq(spaceMembers.spaceId, spaceId), eq(spaceMembers.userId, user.uuid)))
+              .limit(1);
+            return existing?.role ?? null;
+          },
+          reserveUse: () => reserveInvitationUse(key, user.uuid, role, redisCommandClient),
+          applyRole: async () => {
+            const [member] = await transaction.insert(spaceMembers).values({
+              spaceId,
+              userId: user.uuid,
+              role,
+              createdBy: user.uuid,
+              updatedBy: user.uuid,
+            }).onConflictDoUpdate({
+              target: [spaceMembers.spaceId, spaceMembers.userId],
+              set: {
+                role: sql<SpaceRole>`CASE
+                  WHEN ${spaceMembers.role} = 'host' OR ${role} = 'host' THEN 'host'
+                  WHEN ${spaceMembers.role} = 'builder' OR ${role} = 'builder' THEN 'builder'
+                  ELSE 'guest'
+                END`,
+                updatedBy: user.uuid,
+                updatedAt: new Date(),
+              },
+            }).returning({ role: spaceMembers.role });
+            if (!member) throw new Error("failed to apply invitation membership");
+            return member.role;
+          },
+          finalizeUse: () => finalizeInvitationUse(key, user.uuid, redisCommandClient),
+          releaseUse: () => releaseInvitationUse(key, user.uuid, redisCommandClient),
+        }),
+        redisCommandClient,
+      );
+      switch (membership.state) {
+        case "missing":
+          return c.json({ message: "invitation expired or not found" }, 410);
+        case "revoked":
+          return c.json({ message: "invitation has been revoked" }, 410);
+        case "exhausted":
+          return c.json({ message: "invitation has reached its usage limit" }, 410);
+        case "used":
+          return c.json({ message: "invitation has already been used" }, 410);
+        case "accepted":
+          return { spaceId, role: membership.role };
       }
-
-      // Invite links may upgrade an existing lower-role member, but never demote.
-      const [existing] = await db
-        .select({ id: spaceMembers.id, role: spaceMembers.role })
-        .from(spaceMembers)
-        .where(and(eq(spaceMembers.spaceId, spaceId), eq(spaceMembers.userId, user.uuid)))
-        .limit(1);
-
-      let acceptedRole = role;
-      let consumedInviteUse = false;
-      if (existing) {
-        if (isRoleHigherThan(role, existing.role)) {
-          await db
-            .update(spaceMembers)
-            .set({ role, updatedBy: user.uuid, updatedAt: new Date() })
-            .where(and(eq(spaceMembers.spaceId, spaceId), eq(spaceMembers.userId, user.uuid)));
-          consumedInviteUse = true;
-        } else {
-          acceptedRole = existing.role;
-        }
-      } else {
-        await db.insert(spaceMembers).values({
-          spaceId,
-          userId: user.uuid,
-          role,
-          createdBy: user.uuid,
-          updatedBy: user.uuid,
-        });
-        consumedInviteUse = true;
-      }
-
-      if (consumedInviteUse) {
-        const newCount = await redisCommandClient.hincrby(key, "use_count", 1);
-        if (maxUses > 0 && newCount >= maxUses) {
-          await redisCommandClient.hset(key, "status", "exhausted");
-        }
-      }
-
-      return { spaceId, role: acceptedRole };
-    });
+    }), redisCommandClient);
   } catch (error) {
-    if (error instanceof InviteLockTimeoutError) {
+    if (error instanceof InvitationLockTimeoutError) {
       return c.json({ message: "invitation is busy, please try again" }, 503);
     }
     throw error;

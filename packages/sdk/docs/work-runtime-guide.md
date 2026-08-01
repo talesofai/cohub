@@ -185,7 +185,7 @@ session.prompt.readonly   — send read-only prompts (no side effects)
 session.prompt.fullaccess — send prompts with full access (write, create sessions)
 generation.create         — create generation tasks (image/video/audio)
 user.space.list           — list the viewer's spaces (account-level)
-user.session.list         — list the viewer's session summaries across spaces
+user.session.list         — list the viewer's sessions across spaces (redacted by default)
 user.usage.read           — read the viewer's aggregated usage
 ```
 
@@ -196,10 +196,12 @@ user.usage.read           — read the viewer's aggregated usage
 
 `session.prompt.fullaccess` or `session.prompt.readonly` lets the viewer send a
 prompt and poll the resulting session they own in the current Work Space.
-`user.session.list` only lists summaries; it does not grant message or turn
-content. Reading another user's session still needs `session.view`. A viewer
-can read a generation task they own while the `generation.create` grant remains
-active; `taskrun.view` is required for another user's task.
+`user.session.list` returns redacted summaries by default. A matching
+`session.view` Work scope upgrades only records in that Work's exact Space; it
+does not unlock records in any other Space or grant turn content by itself.
+Reading another user's session still needs `session.view`. A Work can read only
+generation tasks created by that same Work while its `generation.create` grant
+remains active; `taskrun.view` never widens that Work recovery boundary.
 
 ### Complete API → scope mapping
 
@@ -210,12 +212,12 @@ active; `taskrun.view` is required for another user's task.
 | Send a prompt (full) | `space.prompt({ accessMode: "full_access", content, ... })` | `session.prompt.fullaccess` | viewer |
 | Send a prompt (read-only) | `space.prompt({ accessMode: "read_only", content, ... })` | `session.prompt.readonly` | viewer |
 | Read turn result | `session.turns.get(turnId)` | matching `session.prompt.*` grant for the viewer's own session in this Work Space; otherwise `session.view` | viewer / work |
-| Stream generation | `session.subscribeGeneration({ state, finalized })` | `session.view` | work |
+| Stream generation | `session.subscribeGeneration({ state, finalized })` | matching `session.prompt.*` for a viewer-owned session; otherwise `session.view` | viewer / work |
 | Read file tree | `space.files.tree()` | `file.view` | work |
 | Read file content | `space.files.read(path)` | `file.view` | work |
 | Create generation task | `client.generations.create(request)` | `generation.create` | viewer |
-| **Poll generation result** | `client.generations.wait(taskRunId)` / `createAndWait()` | Task owner: authenticated identity; otherwise `taskrun.view` | owner / work |
-| Read task run detail | `client.tasks.get(taskRunId)` | Task owner: authenticated identity; otherwise `taskrun.view` | owner / work |
+| **Poll generation result** | `client.generations.wait(taskRunId)` / `createAndWait()` | matching `generation.create` grant and task created by this Work | viewer / work |
+| Read task run detail | `client.tasks.get(taskRunId)` | same-Work generation task + `generation.create`; non-Work Space readers use `taskrun.view` | viewer / work |
 | List viewer's spaces | `client.spaces.list()` | `user.space.list` | viewer |
 | List viewer's sessions | `client.user.listSessions()` | `user.session.list` | viewer |
 | Read viewer's usage | `client.user.getUsage()` | `user.usage.read` | viewer |
@@ -387,9 +389,9 @@ Assume `client` and `space` are already initialized per [§4](#4-initialization-
 
 ### LLM chat (`space.prompt` + owner polling or streaming)
 
-**Scopes:** viewer `session.prompt.fullaccess` sends the prompt and polls the
-viewer-owned reply in the current Work Space. Add work `session.view` only to
-stream or read sessions beyond that owner boundary.
+**Scopes:** viewer `session.prompt.fullaccess` sends the prompt and reads or
+streams the viewer-owned reply in the current Work Space. Add work
+`session.view` only to read sessions beyond that owner boundary.
 For a read-only prompt (no side effects), use viewer `session.prompt.readonly`
 instead — but you **must** pass `accessMode: "read_only"` in the call (see the
 read-only recipe below).
@@ -415,8 +417,8 @@ const result = await space.prompt({
 const sessionId = result.session.id;
 const turnId = result.turn.id;
 
-// --- Option A: stream the reply (requires broad Space read access) ---
-// Requires work scope: session.view
+// --- Option A: stream the viewer-owned reply ---
+// The matching session.prompt.fullaccess grant authorizes this Session room.
 const stop = space.session(sessionId).subscribeGeneration({
   state(event) {
     // Partial text as it streams in
@@ -458,10 +460,10 @@ const reply = turn.assistantText;
 `turn.assistantContent` (ContentBlock[] | null). Always check both —
 `assistantText` is a convenience; `assistantContent` is the source of truth.
 
-> **Do not silently swallow `subscribeGeneration` errors.** If the work scope
-`session.view` is missing, the WebSocket subscription fails. If you catch and
-ignore it, explicitly fall back to polling the viewer-owned session with the
-matching `session.prompt.*` grant. Surface errors from both paths.
+> **Do not silently swallow `subscribeGeneration` errors.** The matching
+> `session.prompt.*` grant must still be active for the viewer-owned Session
+> room. If streaming fails, explicitly fall back to owner-bound polling and
+> surface errors from both paths.
 
 #### Read-only prompt (`accessMode: "read_only"`)
 
@@ -501,26 +503,26 @@ Publish the Work with:
 - workScopes: `["space.view"]`
 - allowedViewerScopes: `["session.prompt.readonly"]`
 
-This privacy-scoped form can poll a session owned by the viewer. Add the broad
-`session.view` work scope only when the Work must stream or inspect sessions
+This privacy-scoped form can poll or stream a session owned by the viewer. Add
+the broad `session.view` work scope only when the Work must inspect sessions
 owned by other Space users.
 
 > **Scope/accessMode mismatch → 403.** Requesting `session.prompt.readonly`
 but calling `space.prompt({ content })` (no `accessMode`) fails because the
 backend defaults to `full_access` and checks `session.prompt.fullaccess`.
-Symmetrically, requesting `session.prompt.fullaccess` while passing
-`accessMode: "read_only"` also works only if `session.prompt.readonly` is
-additionally granted — otherwise 403. Always keep them in sync.
+`session.prompt.fullaccess` also satisfies a read-only prompt. Keep the requested
+scope as narrow as the behavior actually needs.
 
 ### Image / media generation (`generations.createAndWait`)
 
-**Scopes:** viewer `generation.create`. The created generation task belongs to
-the viewer, so the same authenticated identity can list and poll its full
-result. This grant never exposes non-generation task types.
+**Scopes:** viewer `generation.create`. The created generation task is tagged
+to both the viewer and the current Work, so that Work can list and poll its full
+result. This grant never exposes non-generation tasks or generation tasks from
+another Work, even for the same viewer and Space.
 
 `createAndWait` is a convenience that calls `create` then `wait` (polls
-`GET /api/tasks/{id}`). `taskrun.view` is needed only when reading a task owned
-by another Space user.
+`GET /api/tasks/{id}`). A Work cannot use `taskrun.view` to widen this recovery
+boundary; non-Work Space clients use that permission for broad task reads.
 
 ```js
 const result = await client.generations.createAndWait(
@@ -610,7 +612,8 @@ await client.auth.request({
 });
 const spaces = await client.spaces.list();
 
-// List safe session summaries across all the viewer's spaces — needs user.session.list
+// List sessions across the viewer's spaces — redacted unless this Work also
+// has session.view in the matching Space.
 await client.auth.request({
   scopes: ["user.session.list"],
   reason: "List your recent sessions.",
@@ -931,15 +934,16 @@ Before publishing your Work, verify each item:
   Set `accessMode: "read_only"` explicitly when using the readonly scope.
 - [ ] **Owner session reads use the matching `session.prompt.*` grant** and are
   limited to the viewer's own session in the current Work Space.
-- [ ] **`user.session.list` only lists session summaries.** It does not grant
-  message, turn, snapshot, or signed-media access.
+- [ ] **`user.session.list` is redacted per Session Space.** Full list records
+  require `session.view` in that exact Space; one Space scope never unlocks
+  another. The list permission does not grant turn or signed-media access.
 - [ ] **Owner generation polling checks the authenticated user**. Do not add
   `taskrun.view` merely to poll a generation task just created by that viewer;
   `generation.create` does not expose other task types.
 - [ ] **`auth.request()` is called from a user gesture** (button click), not
   on page load.
 - [ ] **`subscribeGeneration` errors are not silently swallowed** — if the
-  stream fails without `session.view`, fall back to owner-bound polling only
+  viewer-owned Session stream fails, fall back to owner-bound polling only
   while the matching `session.prompt.*` viewer grant remains active.
 - [ ] **Broker mode**: if the Work may be accessed standalone, pass
   `work: { brokerOrigin, workId }` and call `auth.request()` before any other

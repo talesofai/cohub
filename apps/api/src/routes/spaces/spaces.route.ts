@@ -85,6 +85,8 @@ import { featureGateResponse } from "../../lib/feature-gate.js";
 import { billingBlockedResponse } from "../../lib/billing-blocked.js";
 import { applyRequestSourceToMeta, getRequestSource, resolveSessionSourceFromRequest } from "../../lib/request-source.js";
 import { canWriteSessionResource } from "../../owner-resource-access.js";
+import { sanitizeSpaceMeta, stripSensitiveSpaceFields } from "../../space-response-privacy.js";
+import { scheduledPromptAuthCoversExecution } from "../../scheduled-prompt-auth.js";
 
 
 const logger = createLogger({ serviceName: "cohub-api" });
@@ -1026,20 +1028,6 @@ router.post("/", async (c) => {
  * lists the viewer's spaces. All omitted fields are already optional in the
  * SDK type, so the response stays type-compatible.
  */
-function stripSensitiveSpaceFields(item: Record<string, unknown>): Record<string, unknown> {
-  const { storageRepoName, sandboxStatus, access, meta, ...rest } = item;
-  void storageRepoName;
-  void sandboxStatus;
-  void access;
-  if (meta && typeof meta === "object" && !Array.isArray(meta)) {
-    const { extraEnv, config, ...safeMeta } = meta as Record<string, unknown>;
-    void extraEnv;
-    void config;
-    return { ...rest, meta: safeMeta };
-  }
-  return rest;
-}
-
 async function buildDefaultSpaceResponse(c: Context, space: SpaceRow, user: AuthUser) {
   if (!getWorkSessionPrincipal(c)) return serializeSpaceForResponse(space, user);
   const [item] = await buildSpaceListItems([space]);
@@ -1065,55 +1053,6 @@ async function serializeSpaceForResponse(space: typeof spaces.$inferSelect, user
     access,
     ownerProfile,
   };
-}
-
-function sanitizeRepoUrl(url: string): string {
-  try {
-    const parsed = new URL(url);
-    parsed.username = "";
-    parsed.password = "";
-    return parsed.toString();
-  } catch {
-    return url;
-  }
-}
-
-function sanitizeSpaceMeta(meta: unknown): Record<string, unknown> | null {
-  if (!meta || typeof meta !== "object" || Array.isArray(meta)) {
-    return meta as null;
-  }
-  const metaObj = meta as Record<string, unknown>;
-  const bootstrap = metaObj.bootstrap;
-  if (
-    !bootstrap ||
-    typeof bootstrap !== "object" ||
-    Array.isArray(bootstrap)
-  ) {
-    return metaObj;
-  }
-  const bootstrapObj = bootstrap as Record<string, unknown>;
-  const source = bootstrapObj.source;
-  if (
-    !source ||
-    typeof source !== "object" ||
-    Array.isArray(source)
-  ) {
-    return metaObj;
-  }
-  const sourceObj = source as Record<string, unknown>;
-  if (sourceObj.type === "git_repo" && typeof sourceObj.repoUrl === "string") {
-    return {
-      ...metaObj,
-      bootstrap: {
-        ...bootstrapObj,
-        source: {
-          ...sourceObj,
-          repoUrl: sanitizeRepoUrl(sourceObj.repoUrl as string),
-        },
-      },
-    };
-  }
-  return metaObj;
 }
 
 router.get("/:id", async (c) => {
@@ -1915,7 +1854,7 @@ router.post("/:id/prompt", async (c) => {
     ...(body.provider ? { provider: body.provider } : {}),
     ...(promptThinkingLevel ? { thinkingLevel: promptThinkingLevel } : {}),
     ...(promptLabelIds.length > 0 ? { labelIds: promptLabelIds } : {}),
-    ...(scheduledAuth ? { auth: scheduledAuth } : {}),
+    ...(scheduledAuth ? { auth: scheduledAuth, delegatedAuthRequired: true } : {}),
   };
 
   if (mode === "immediate") {
@@ -2000,6 +1939,9 @@ router.post("/:id/prompt", async (c) => {
       return c.json({ message: "delayMs must be a positive integer, e.g. 600000" }, 400);
     }
     const scheduledAt = new Date(Date.now() + delayMs);
+    if (!scheduledPromptAuthCoversExecution(scheduledAuth, scheduledAt)) {
+      return c.json({ message: "scheduled time exceeds the current Work authorization lifetime" }, 400);
+    }
     const { taskRunId } = await enqueueTask({
       type: "send_message",
       spaceId,
@@ -2019,6 +1961,9 @@ router.post("/:id/prompt", async (c) => {
     } catch (error) {
       return c.json({ message: error instanceof Error ? error.message.toLowerCase().replace(/\.$/, "") : "invalid sendAt" }, 400);
     }
+    if (!scheduledPromptAuthCoversExecution(scheduledAuth, scheduledAt)) {
+      return c.json({ message: "scheduled time exceeds the current Work authorization lifetime" }, 400);
+    }
     const { taskRunId } = await enqueueTask({
       type: "send_message",
       spaceId,
@@ -2030,6 +1975,7 @@ router.post("/:id/prompt", async (c) => {
   }
 
   const repeat = schedule as { cronExpression?: string; timezone?: string };
+  if (getRequestPrincipal(c)?.type !== "user") return authzDenied(c);
   if (!repeat.cronExpression?.trim()) return c.json({ message: "cronExpression is required, e.g. 0 9 * * *" }, 400);
   if (!repeat.timezone?.trim()) return c.json({ message: "timezone is required, e.g. Asia/Shanghai" }, 400);
   let parsedRepeat: { cronExpression: string; timezone: string; nextRun: Date };

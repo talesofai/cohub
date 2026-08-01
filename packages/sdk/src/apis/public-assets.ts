@@ -49,9 +49,9 @@ export type UploadPublicAssetInput = {
 };
 
 export type UploadChatAttachmentInput = {
-  /** Optional association only; upload is user-scoped. */
+  /** Optional account association; Work uploads are always bound to the Work Space. */
   spaceId?: string;
-  /** Optional association only; upload is user-scoped. */
+  /** Optional association for an authorized prompt session. */
   sessionId?: string;
   file: Blob;
   mimeType: string;
@@ -128,7 +128,7 @@ export class PublicAssetsApi {
     return plan.asset;
   }
 
-  /** Durable public upload for any chat attachment (image or file). No space required. */
+  /** Durable viewer-scoped upload. Work sessions infer and enforce their bound Space. */
   uploadChatAttachment(input: UploadChatAttachmentInput) {
     return this.upload({
       purpose: "chat_attachment",

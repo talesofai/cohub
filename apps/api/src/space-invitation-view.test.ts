@@ -15,7 +15,9 @@ const invitation = {
 test("member.view invitation summaries never expose bearer tokens", () => {
   const summary = projectSpaceInvitation(invitation, false);
   assert.equal("token" in summary, false);
+  assert.match(summary.id, /^invite_[A-Za-z0-9_-]{43}$/);
   assert.equal(summary.role, "host");
   const managed = projectSpaceInvitation(invitation, true);
+  assert.equal(managed.id, summary.id);
   assert.equal("token" in managed ? managed.token : null, invitation.token);
 });

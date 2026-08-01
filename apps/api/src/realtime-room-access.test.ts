@@ -3,7 +3,7 @@ import { test } from "node:test";
 import type { AuthUser, RequestPrincipal } from "./lib/middleware.js";
 import { spaceRoomReadPermission } from "./realtime-room-access.js";
 
-test("scoped principals need explicit broad Session access for Space rooms", () => {
+test("only account principals can subscribe to mixed Space rooms", () => {
   const account: RequestPrincipal = {
     type: "user",
     user: { uuid: "viewer-1" } as AuthUser,
@@ -25,6 +25,6 @@ test("scoped principals need explicit broad Session access for Space rooms", () 
   };
 
   assert.equal(spaceRoomReadPermission(account), "space.view");
-  assert.equal(spaceRoomReadPermission(work), "session.view");
-  assert.equal(spaceRoomReadPermission(null), "session.view");
+  assert.equal(spaceRoomReadPermission(work), null);
+  assert.equal(spaceRoomReadPermission(null), null);
 });

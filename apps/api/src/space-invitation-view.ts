@@ -1,4 +1,8 @@
+import { createHash } from "node:crypto";
 import type { SpaceRole } from "@cohub/db";
+
+const invitationPublicId = (token: string) =>
+  `invite_${createHash("sha256").update(token).digest("base64url")}`;
 
 export function projectSpaceInvitation(
   input: {
@@ -13,5 +17,6 @@ export function projectSpaceInvitation(
   canManage: boolean,
 ) {
   const { token, ...summary } = input;
-  return canManage ? { token, ...summary } : summary;
+  const projected = { id: invitationPublicId(token), ...summary };
+  return canManage ? { token, ...projected } : projected;
 }

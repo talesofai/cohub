@@ -4,6 +4,7 @@ import { BoardAwarenessClientPayloadSchema } from "./src/realtime/board-awarenes
 import { wsClientEventSchema } from "./src/realtime/schema.js";
 import {
 	getRealtimeBoardRoom,
+	getRealtimeBoardSpaceRoom,
 	getRealtimeSessionRoom,
 	normalizeRealtimeRooms,
 	parseRealtimeRoom,
@@ -26,6 +27,14 @@ test("Board rooms normalize alongside Space and user rooms", () => {
 		]),
 		[`board:${boardId}`, `space:${spaceId}`],
 	);
+});
+
+test("Board aggregate rooms use a separate permission domain", () => {
+	assert.equal(getRealtimeBoardSpaceRoom(spaceId), `boardspace:${spaceId}`);
+	assert.deepEqual(parseRealtimeRoom(`boardspace:${spaceId}`), {
+		kind: "boardspace",
+		id: spaceId,
+	});
 });
 
 test("Session rooms are explicit resource rooms", () => {

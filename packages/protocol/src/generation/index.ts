@@ -38,6 +38,11 @@ export type GenerationTaskData = {
   content: GenerationContentBlock[];
   parameters?: Record<string, unknown>;
   meta?: Record<string, unknown>;
+  workId?: string;
+  /** Delegated Work authorization revalidated by the worker before billing. */
+  auth?: Record<string, unknown> | null;
+  delegatedAuthRequired?: boolean;
+  declarationScope?: "platform" | "user";
   /** Server-resolved pricing snapshot. This field is never accepted from the public request. */
   modelDiscount?: GenerationModelDiscountSnapshot;
 };

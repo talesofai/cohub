@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import type { PromptAuthContext } from "@cohub/core/sessions";
-import { resolveScheduledPromptAuth } from "../src/work-viewer-prompt-auth.js";
+import { requireDelegatedTaskAuth, resolveScheduledPromptAuth } from "../src/work-viewer-prompt-auth.js";
 
 const now = Date.UTC(2026, 6, 31);
 const auth: PromptAuthContext = {
@@ -18,6 +18,59 @@ const auth: PromptAuthContext = {
   workViewerGrantId: "grant-1",
 };
 
+const activeGrant = {
+  scopes: ["session.prompt.fullaccess", "user.session.list"],
+  expiresAt: new Date(now + 30_000),
+  revokedAt: null,
+  workStatus: "published",
+  workSpaceId: "space-1",
+  workScopes: ["space.view"],
+  allowedViewerScopes: ["session.prompt.fullaccess", "user.session.list"],
+};
+
+test("delegated worker tasks fail closed when their authorization is missing", () => {
+  assert.equal(requireDelegatedTaskAuth(false, null), null);
+  assert.throws(
+    () => requireDelegatedTaskAuth(true, null),
+    /authorization is missing/,
+  );
+  assert.equal(requireDelegatedTaskAuth(true, auth), auth);
+});
+
+test("Work generation tasks revalidate generation.create against the active grant", async () => {
+  const generationAuth: PromptAuthContext = {
+    ...auth,
+    scopes: ["space.view", "generation.create"],
+    viewerScopes: ["generation.create"],
+  };
+  const resolved = await resolveScheduledPromptAuth(
+    generationAuth,
+    { spaceId: "space-1", userId: "viewer-1", requiredPermission: "generation.create" },
+    async () => ({
+      ...activeGrant,
+      scopes: ["generation.create"],
+      allowedViewerScopes: ["generation.create"],
+    }),
+    now,
+  );
+  assert.deepEqual(resolved?.viewerScopes, ["generation.create"]);
+
+  await assert.rejects(
+    resolveScheduledPromptAuth(
+      generationAuth,
+      { spaceId: "space-1", userId: "viewer-1", requiredPermission: "generation.create" },
+      async () => ({
+        ...activeGrant,
+        expiresAt: new Date(now - 1),
+        scopes: ["generation.create"],
+        allowedViewerScopes: ["generation.create"],
+      }),
+      now,
+    ),
+    /no longer active/,
+  );
+});
+
 test("scheduled Work prompts revalidate the exact active grant", async () => {
   const calls: unknown[] = [];
   const resolved = await resolveScheduledPromptAuth(
@@ -29,11 +82,7 @@ test("scheduled Work prompts revalidate the exact active grant", async () => {
     },
     async (input) => {
       calls.push(input);
-      return {
-        scopes: ["session.prompt.fullaccess", "user.session.list"],
-        expiresAt: new Date(now + 30_000),
-        revokedAt: null,
-      };
+      return activeGrant;
     },
     now,
   );
@@ -55,7 +104,7 @@ test("scheduled Work prompts stop after revoke, expiry, or scope removal", async
   };
   await assert.rejects(
     resolveScheduledPromptAuth(auth, input, async () => ({
-      scopes: ["session.prompt.fullaccess"],
+      ...activeGrant,
       expiresAt: new Date(now + 1_000),
       revokedAt: new Date(now - 1),
     }), now),
@@ -63,17 +112,37 @@ test("scheduled Work prompts stop after revoke, expiry, or scope removal", async
   );
   await assert.rejects(
     resolveScheduledPromptAuth(auth, input, async () => ({
-      scopes: ["session.prompt.fullaccess"],
+      ...activeGrant,
       expiresAt: new Date(now - 1),
-      revokedAt: null,
     }), now),
     /no longer active/,
   );
   await assert.rejects(
     resolveScheduledPromptAuth(auth, input, async () => ({
+      ...activeGrant,
       scopes: ["generation.create"],
-      expiresAt: new Date(now + 1_000),
-      revokedAt: null,
+    }), now),
+    /no longer allows/,
+  );
+});
+
+test("scheduled Work prompts stop after the Work is disabled or its policy shrinks", async () => {
+  const input = {
+    spaceId: "space-1",
+    userId: "viewer-1",
+    requiredPermission: "session.prompt.fullaccess" as const,
+  };
+  await assert.rejects(
+    resolveScheduledPromptAuth(auth, input, async () => ({
+      ...activeGrant,
+      workStatus: "disabled",
+    }), now),
+    /Work is no longer active/,
+  );
+  await assert.rejects(
+    resolveScheduledPromptAuth(auth, input, async () => ({
+      ...activeGrant,
+      allowedViewerScopes: ["user.session.list"],
     }), now),
     /no longer allows/,
   );

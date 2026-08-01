@@ -4,7 +4,6 @@ import { createHash, randomUUID } from "node:crypto";
 import type { ContentBlock } from "@cohub/protocol/core";
 import type { ChannelConfig, ChannelProvider, GatewayChannelCommandEvent, GatewayInboundEvent, GatewayOutboundCommand } from "@cohub/protocol/gateway";
 import type { RealtimeEnvelope, RealtimeRoom, RealtimeServerEvent } from "@cohub/protocol/realtime";
-import { getRealtimeSpaceRoom, getRealtimeUserRoom, normalizeRealtimeRooms } from "@cohub/protocol/realtime";
 import { executeChannelCommand } from "./channel-commands.js";
 import { db } from "./db/index.js";
 import { providerMessageRefs, spaceChannels, spaceSessionBindings, userChannels } from "@cohub/db";
@@ -21,6 +20,7 @@ import { buildSessionSourceChannel } from "./lib/session-source-channel.js";
 import { assignSessionChannelSystemLabel } from "@cohub/core/labels/session-channel";
 import { assignSessionSourceSystemLabel } from "@cohub/core/labels/session-source";
 import { dispatchLabelAssignmentsUpdated } from "./realtime-events.js";
+import { resolveRealtimeEventRooms } from "./realtime-event-rooms.js";
 
 
 const logger = createLogger({ serviceName: "cohub-api" });
@@ -361,22 +361,6 @@ export async function dispatchOutboundMessage(input: {
   await xaddWithMaxlen(redisCommandClient, getGatewayNodeOutboundStreamKey(nodeId), "*", "payload", JSON.stringify(command));
 }
 
-const resolveRealtimeEventRooms = (input: {
-  spaceId?: string | null;
-  rooms?: string[];
-  userIds?: string[];
-}): RealtimeRoom[] => {
-  const rooms = normalizeRealtimeRooms(input.rooms ?? []);
-  if (rooms.length > 0) return rooms;
-  const userIds = Array.from(new Set(
-    (input.userIds ?? [])
-      .map((value) => value.trim())
-      .filter(Boolean),
-  ));
-  if (userIds.length > 0) return userIds.map(getRealtimeUserRoom);
-  return input.spaceId ? [getRealtimeSpaceRoom(input.spaceId)] : [];
-};
-
 export async function dispatchRealtimeEvent(input: (RealtimeServerEvent | RealtimeEnvelope) & { rooms?: RealtimeRoom[] }) {
   const payload = input.payload as Record<string, unknown>;
   const task = payload.task && typeof payload.task === "object" ? payload.task as { userId?: unknown } : null;
@@ -385,8 +369,10 @@ export async function dispatchRealtimeEvent(input: (RealtimeServerEvent | Realti
     : typeof task?.userId === "string"
       ? task.userId
       : undefined;
-  const rooms = input.rooms?.length ? input.rooms : resolveRealtimeEventRooms({
+  const rooms = resolveRealtimeEventRooms({
     spaceId: input.spaceId,
+    sessionId: input.sessionId,
+    rooms: input.rooms,
     userIds: userId ? [userId] : undefined,
   });
   if (rooms.length === 0) return;

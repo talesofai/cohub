@@ -1,5 +1,6 @@
 import { randomUUID } from "node:crypto";
 import type { BoardOperation, BoardPlaybackSnapshot } from "@cohub/protocol";
+import { getRealtimeBoardRoom, getRealtimeBoardSpaceRoom } from "@cohub/protocol/realtime";
 import { dispatchRealtimeEvent } from "./channels.js";
 
 export async function dispatchBoardTransactionApplied(input: {
@@ -18,6 +19,7 @@ export async function dispatchBoardTransactionApplied(input: {
     type: "board.transaction.applied",
     spaceId: input.spaceId,
     sessionId: null,
+    rooms: [getRealtimeBoardRoom(input.boardId), getRealtimeBoardSpaceRoom(input.spaceId)],
     payload: {
       boardId: input.boardId,
       actorId: input.actorId,
@@ -40,6 +42,7 @@ export async function dispatchBoardPlaybackChanged(input: {
     type: "board.playback.changed",
     spaceId: input.spaceId,
     sessionId: null,
+    rooms: [getRealtimeBoardRoom(input.snapshot.boardId), getRealtimeBoardSpaceRoom(input.spaceId)],
     payload: input.snapshot,
   });
 }

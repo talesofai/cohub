@@ -5,6 +5,8 @@ import {
   canReadSessionResource,
   canReadTaskResource,
   canWriteSessionResource,
+  canExposeWorkSessionRecord,
+  canIncludeWorkSessionListRow,
   minimalOwnerSessionSpace,
   ownerSessionSummary,
   ownerTaskListScope,
@@ -53,6 +55,11 @@ describe("owner-bound Work resource access", () => {
   it("binds generation only to an account or Work owner in the same space", async () => {
     assert.equal(await canBindGenerationToSession(user(), session, async () => false), true);
     assert.equal(await canBindGenerationToSession(work(), session, async () => false), true);
+    assert.equal(await canBindGenerationToSession(
+      work("viewer-2"),
+      session,
+      async (permission) => permission === "session.view",
+    ), false);
     assert.equal(await canBindGenerationToSession(work("viewer-1", "space-2"), session, async () => false), false);
     assert.equal(await canBindGenerationToSession(preview(), session, async () => false), false);
     assert.equal(await canBindGenerationToSession(execution(), session, async () => false), false);
@@ -191,5 +198,19 @@ describe("owner-bound Work resource access", () => {
     assert.equal(JSON.stringify(summary).includes("private prompt"), false);
     assert.equal(JSON.stringify(summary).includes("external-1"), false);
     assert.equal(JSON.stringify(summary).includes("secret"), false);
+  });
+
+  it("requires both the bound Space and session.view for a full Work list record", () => {
+    assert.equal(canExposeWorkSessionRecord({ spaceId: "space-1" }, { spaceId: "space-1" }, true), true);
+    assert.equal(canExposeWorkSessionRecord({ spaceId: "space-1" }, { spaceId: "space-1" }, false), false);
+    assert.equal(canExposeWorkSessionRecord({ spaceId: "space-1" }, { spaceId: "space-2" }, true), false);
+  });
+
+  it("lists only Work-owned rows across Spaces and viewed rows in the bound Space", () => {
+    const boundWork = { userUuid: "viewer-1", spaceId: "space-1" };
+    assert.equal(canIncludeWorkSessionListRow(boundWork, { userUuid: "viewer-1", spaceId: "space-2" }, false), true);
+    assert.equal(canIncludeWorkSessionListRow(boundWork, { userUuid: "viewer-2", spaceId: "space-1" }, true), true);
+    assert.equal(canIncludeWorkSessionListRow(boundWork, { userUuid: "viewer-2", spaceId: "space-1" }, false), false);
+    assert.equal(canIncludeWorkSessionListRow(boundWork, { userUuid: "viewer-2", spaceId: "space-2" }, true), false);
   });
 });

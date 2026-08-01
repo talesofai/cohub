@@ -9,4 +9,6 @@ const loader = createGenerationDeclarationLoader({
 
 export const loadGenerationDeclarations = loader.loadGenerationDeclarations;
 export const loadGenerationDeclaration = loader.loadGenerationDeclaration;
+export const loadPlatformGenerationDeclaration = loader.loadPlatformGenerationDeclaration;
 export const loadPublicGenerationModels = loader.loadPublicGenerationModels;
+export const loadPlatformPublicGenerationModels = loader.loadPlatformPublicGenerationModels;

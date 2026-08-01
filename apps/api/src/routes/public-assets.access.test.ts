@@ -43,6 +43,7 @@ describe("public asset upload principal isolation", () => {
       { userUuid: account.uuid, workSpaceId: "space-1" },
     );
     assert.equal(resolvePublicAssetUploadActor(work, { purpose: "user_avatar", spaceId: "space-1" }), null);
+    assert.equal(resolvePublicAssetUploadActor(work, { purpose: "space_avatar", spaceId: "space-1" }), null);
     assert.equal(resolvePublicAssetUploadActor(work, { purpose: "chat_attachment", spaceId: "space-2" }), null);
   });
 

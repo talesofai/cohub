@@ -86,7 +86,7 @@ test("Board realtime subscriptions isolate events by space and Board", () => {
 		state: "open",
 		connectionId: "connection-self",
 		retainRooms(rooms: string[]) {
-			assert.deepEqual(rooms, ["space:space-1", "board:board-1"]);
+			assert.deepEqual(rooms, ["board:board-1"]);
 			return () => {
 				released += 1;
 			};

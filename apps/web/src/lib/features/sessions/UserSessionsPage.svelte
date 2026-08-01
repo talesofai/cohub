@@ -21,6 +21,10 @@ import {
 import { DESKTOP_SHELL_MIN_WIDTH_PX } from "$lib/layout/breakpoints";
 import { sdk } from "$lib/sdk";
 import {
+	isFullUserSessionListItem,
+	isUserSessionSummary,
+} from "$lib/session-record-merge";
+import {
 	buildSessionsRoute,
 	buildSpaceSessionRoute,
 	buildUserSessionRoute,
@@ -181,11 +185,8 @@ async function openChatSession(input: {
 	const { spaceId, sessionId, session, turnSequence = null } = input;
 	spaceBox.current = spaceId;
 	sessionChat.enterSpace(spaceId);
-	if (
-		session &&
-		(!("accessLevel" in session) || session.accessLevel !== "summary")
-	) {
-		sessionChat.upsertSessionRecord(session as SessionRecord);
+	if (session && !isUserSessionSummary(session)) {
+		sessionChat.upsertSessionRecord(session);
 	}
 	sessionChat.syncContext({
 		spaceId,
@@ -416,6 +417,7 @@ $effect(() => {
 		// Skip no-op writes (same title/updatedAt) to avoid churn.
 		if (
 			existing &&
+			isFullUserSessionListItem(existing) &&
 			existing.title === session.title &&
 			existing.updatedAt === session.updatedAt &&
 			existing.lastMessageId === session.lastMessageId

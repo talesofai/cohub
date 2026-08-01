@@ -15,10 +15,13 @@ import {
   type CreateGenerationTaskResponse,
   type GenerationModelDiscountSnapshot,
 } from "@cohub/protocol/generation";
-import { useAuth, authzDenied, getRequestPrincipal } from "../lib/middleware.js";
+import { useAuth, authzDenied, getRequestPrincipal, getWorkSessionPrincipal } from "../lib/middleware.js";
 import { billingBlockedResponse } from "../lib/billing-blocked.js";
 import { hasPermission } from "../permissions.js";
-import { loadGenerationDeclaration } from "../generations/declarations.js";
+import {
+  loadGenerationDeclaration,
+  loadPlatformGenerationDeclaration,
+} from "../generations/declarations.js";
 import { createGenerationTaskRequestSchema } from "../generations/schema.js";
 import { getSpaceSessionById } from "../space-sessions.js";
 import { getSessionTurnById } from "../session-turns.js";
@@ -27,6 +30,7 @@ import { defaultJobRetention } from "@cohub/infra/bullmq";
 import { createLogger } from "@cohub/infra/logging";
 import { applyRequestSourceToMeta } from "../lib/request-source.js";
 import { canBindGenerationToSession } from "../owner-resource-access.js";
+import { delegatedPromptAuthFromWorkSession } from "../prompt-auth-context.js";
 
 
 const logger = createLogger({ serviceName: "cohub-api" });
@@ -87,7 +91,15 @@ router.post("/", async (c) => {
     }
   }
 
-  const declaration = await loadGenerationDeclaration(user.uuid, request.model);
+  const declarationScope = principal?.type === "user" ? "user" : "platform";
+  const delegatedAuth = delegatedPromptAuthFromWorkSession(
+    getWorkSessionPrincipal(c),
+    request.spaceId,
+    user.uuid,
+  );
+  const declaration = declarationScope === "user"
+    ? await loadGenerationDeclaration(user.uuid, request.model)
+    : await loadPlatformGenerationDeclaration(request.model);
   if (!declaration) {
     return generationError(c, 404, "generation_model_not_found", `Generation model not found: ${request.model}`);
   }
@@ -178,7 +190,9 @@ router.post("/", async (c) => {
         parameters,
         meta,
         modelDiscount,
+        declarationScope,
         ...(principal?.type === "work_session" ? { workId: principal.workSession.workId } : {}),
+        ...(delegatedAuth ? { auth: delegatedAuth, delegatedAuthRequired: true } : {}),
       },
     }, {
       attempts: 1,

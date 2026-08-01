@@ -10,16 +10,16 @@ export function resolvePublicAssetUploadActor(
     return { userUuid: principal.user.uuid, workSpaceId: null };
   }
   if (
-    principal?.type === "work_session"
-    && input.purpose === "chat_attachment"
-    && (!input.spaceId || input.spaceId === principal.workSession.spaceId)
+    principal?.type !== "work_session"
+    || input.purpose !== "chat_attachment"
+    || (input.spaceId !== undefined && input.spaceId !== principal.workSession.spaceId)
   ) {
-    return {
-      userUuid: principal.workSession.userUuid,
-      workSpaceId: principal.workSession.spaceId,
-    };
+    return null;
   }
-  return null;
+  return {
+    userUuid: principal.workSession.userUuid,
+    workSpaceId: principal.workSession.spaceId,
+  };
 }
 
 export async function canUploadWorkChatAttachment(

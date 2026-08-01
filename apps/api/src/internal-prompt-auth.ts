@@ -8,6 +8,7 @@ export function resolveInternalPromptActor(
     principalType: InternalPromptPrincipalType;
     userId: string;
     authToken: string;
+    accountUser?: { uuid: string } | null;
   },
   verifyWorkToken: (token: string) => WorkSessionPrincipal | null,
 ): {
@@ -17,8 +18,9 @@ export function resolveInternalPromptActor(
 } | null {
   if (!input.authToken) return null;
   if (input.principalType === "user") {
+    if (!input.accountUser || input.accountUser.uuid !== input.userId) return null;
     return {
-      principal: { type: "user", user: { uuid: input.userId } },
+      principal: { type: "user", user: input.accountUser },
       permissionSubject: { uuid: input.userId },
       workSession: null,
     };

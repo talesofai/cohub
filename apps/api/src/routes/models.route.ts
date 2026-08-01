@@ -15,9 +15,12 @@ import {
   type ModelCatalogEntry,
   type ModelsConfig,
 } from "@cohub/infra/config-runtime/models";
-import { loadPublicGenerationModels } from "../generations/declarations.js";
+import {
+  loadPlatformPublicGenerationModels,
+  loadPublicGenerationModels,
+} from "../generations/declarations.js";
 import { config } from "../config.js";
-import { useAuth } from "../lib/middleware.js";
+import { getRequestPrincipal, useAuth } from "../lib/middleware.js";
 import { redisCommandClient } from "../redis.js";
 
 
@@ -94,13 +97,18 @@ async function loadCachedModels(input: {
   }
 }
 
-async function fetchModelsCatalog(userId: string): Promise<ModelCatalogEntry[]> {
+async function loadPlatformModelsConfig(): Promise<ModelsConfig> {
   const platformModels = await loadCachedModels({
     redisKey: PLATFORM_MODELS_REDIS_KEY,
     modelsPath: PLATFORM_MODELS_PATH,
     allowMissing: false,
   });
   if (!platformModels) throw new Error("Models catalog file not found");
+  return platformModels;
+}
+
+async function fetchModelsCatalog(userId: string): Promise<ModelCatalogEntry[]> {
+  const platformModels = await loadPlatformModelsConfig();
 
   const userModels = await loadCachedModels({
     redisKey: getUserModelsRedisKey(userId),
@@ -123,10 +131,16 @@ router.get("/", async (c) => {
   try {
     const modelType = c.req.query("modelType");
     if (modelType === MULTIMODAL_MODEL_TYPE) {
-      return c.json(await loadPublicGenerationModels(user.uuid));
+      return c.json(
+        getRequestPrincipal(c)?.type === "user"
+          ? await loadPublicGenerationModels(user.uuid)
+          : await loadPlatformPublicGenerationModels(),
+      );
     }
 
-    const catalog = await fetchModelsCatalog(user.uuid);
+    const catalog = getRequestPrincipal(c)?.type === "user"
+      ? await fetchModelsCatalog(user.uuid)
+      : flattenModelsCatalog(await loadPlatformModelsConfig());
     const grouped: Record<string, ModelCatalogEntry[]> = {};
     for (const entry of catalog) {
       let list = grouped[entry.provider];

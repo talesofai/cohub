@@ -35,6 +35,21 @@ test("internal account prompts retain a real user principal", () => {
     principalType: "user",
     userId: "viewer-1",
     authToken: "account-token",
+    accountUser: { uuid: "viewer-1" },
   }, () => null);
   assert.deepEqual(resolved?.principal, { type: "user", user: { uuid: "viewer-1" } });
+});
+
+test("internal account prompts reject an unverified or mismatched user token", () => {
+  assert.equal(resolveInternalPromptActor({
+    principalType: "user",
+    userId: "viewer-1",
+    authToken: "account-token",
+  }, () => null), null);
+  assert.equal(resolveInternalPromptActor({
+    principalType: "user",
+    userId: "viewer-1",
+    authToken: "account-token",
+    accountUser: { uuid: "viewer-2" },
+  }, () => null), null);
 });

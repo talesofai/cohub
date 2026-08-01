@@ -1,11 +1,16 @@
 import { z } from "zod";
 import type { ContentBlock } from "../core/content.js";
-import type { RealtimeCompactFrame, RealtimeEnvelope, RealtimeRoom } from "./types.js";
+import {
+  MAX_REALTIME_ROOMS_PER_REQUEST,
+  type RealtimeCompactFrame,
+  type RealtimeEnvelope,
+  type RealtimeRoom,
+} from "./types.js";
 import { BoardAwarenessClientPayloadSchema } from "./board-awareness.js";
 export type * from "./types.js";
 
 const contentBlockMetaSchema = z.record(z.string(), z.unknown());
-const realtimeRoomSchema = z.string().regex(/^(space|user|board):[^:]+$/);
+const realtimeRoomSchema = z.string().regex(/^(space|user|board|boardspace|session):[^:]+$/);
 
 export const contentBlockSchema = z.discriminatedUnion("type", [
   z.object({
@@ -68,14 +73,14 @@ export const wsClientEventSchema = z.discriminatedUnion("type", [
     type: z.literal("subscribe"),
     requestId: z.string().optional(),
     payload: z.object({
-      rooms: z.array(realtimeRoomSchema).min(1),
+      rooms: z.array(realtimeRoomSchema).min(1).max(MAX_REALTIME_ROOMS_PER_REQUEST),
     }),
   }),
   z.object({
     type: z.literal("unsubscribe"),
     requestId: z.string().optional(),
     payload: z.object({
-      rooms: z.array(realtimeRoomSchema).min(1),
+      rooms: z.array(realtimeRoomSchema).min(1).max(MAX_REALTIME_ROOMS_PER_REQUEST),
     }),
   }),
   z.object({

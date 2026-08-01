@@ -1,10 +1,20 @@
 import { Hono } from "hono";
 import { redisCommandClient } from "../../redis.js";
-import { requireValidId, useAccountAuth, useAuth } from "../../lib/middleware.js";
+import { authzDenied, getRequestPrincipal, requireValidId } from "../../lib/middleware.js";
 import { getSpaceById } from "../../space-sessions.js";
-import { hasPermission, getRoleForSpaceUser } from "../../permissions.js";
+import { getRoleForSpaceUser, hasPermission } from "../../permissions.js";
 import type { SpaceRole } from "@cohub/db";
 import { projectSpaceInvitation } from "../../space-invitation-view.js";
+import {
+  InvitationLockTimeoutError,
+  withInvitationDatabaseLock,
+  withInvitationLock,
+} from "../../invitation-lock.js";
+import {
+  canManageSpaceInvitations,
+  canViewSpaceInvitations,
+  invitationAccountUser,
+} from "../../space-invitation-access.js";
 
 const VALID_ROLES: SpaceRole[] = ["host", "builder", "guest"];
 const DEFAULT_TTL_SECONDS = 7 * 24 * 60 * 60; // 7 days
@@ -25,8 +35,9 @@ const router = new Hono();
 // Create a new invitation link
 
 router.post("/", async (c) => {
-  const user = useAccountAuth(c);
-  if (user instanceof Response) return user;
+  const principal = getRequestPrincipal(c);
+  const user = invitationAccountUser(principal);
+  if (!user) return authzDenied(c);
   const spaceId = c.req.param("id");
   if (!spaceId || !requireValidId(spaceId)) return c.json({ message: "space not found" }, 404);
 
@@ -35,7 +46,9 @@ router.post("/", async (c) => {
 
   // Only hosts can create invitations
   const actorRole = await getRoleForSpaceUser(spaceId, user.uuid);
-  if (actorRole !== "host") return c.json({ message: "forbidden" }, 403);
+  if (!canManageSpaceInvitations(principal, actorRole)) {
+    return c.json({ message: "forbidden" }, 403);
+  }
 
   const body = await c.req.json<{
     role?: SpaceRole;
@@ -86,15 +99,19 @@ router.post("/", async (c) => {
 // List active invitations for this space
 
 router.get("/", async (c) => {
-  const user = useAuth(c);
-  if (user instanceof Response) return user;
+  const principal = getRequestPrincipal(c);
+  const user = invitationAccountUser(principal);
+  if (!user) return authzDenied(c);
   const spaceId = c.req.param("id");
   if (!spaceId || !requireValidId(spaceId)) return c.json({ message: "space not found" }, 404);
 
-  if (!(await hasPermission(user, "member.view", { spaceId }))) {
+  const [hasMemberView, hasMemberManage] = await Promise.all([
+    hasPermission(user, "member.view", { spaceId }),
+    hasPermission(user, "member.manage", { spaceId }),
+  ]);
+  if (!canViewSpaceInvitations(principal, hasMemberView)) {
     return c.json({ message: "forbidden" }, 403);
   }
-  const canManage = await hasPermission(user, "member.manage", { spaceId });
 
   // Scan for invite keys belonging to this space
   const spaceInviteKey = `${INVITE_PREFIX}:space:${spaceId}`;
@@ -121,7 +138,7 @@ router.get("/", async (c) => {
       maxUses: Number.parseInt(data.max_uses ?? "0", 10) || null,
       createdAt: data.created_at ?? null,
       expiresInSeconds: ttl > 0 ? ttl : null,
-    }, canManage));
+    }, hasMemberManage));
   }
 
   return c.json({ items: invitations });
@@ -131,24 +148,37 @@ router.get("/", async (c) => {
 // Revoke an invitation
 
 router.delete("/:token", async (c) => {
-  const user = useAccountAuth(c);
-  if (user instanceof Response) return user;
+  const principal = getRequestPrincipal(c);
+  const user = invitationAccountUser(principal);
+  if (!user) return authzDenied(c);
   const spaceId = c.req.param("id");
   const token = c.req.param("token");
   if (!spaceId || !requireValidId(spaceId)) return c.json({ message: "space not found" }, 404);
 
   const actorRole = await getRoleForSpaceUser(spaceId, user.uuid);
-  if (actorRole !== "host") return c.json({ message: "forbidden" }, 403);
+  if (!canManageSpaceInvitations(principal, actorRole)) {
+    return c.json({ message: "forbidden" }, 403);
+  }
 
-  const key = inviteKey(token);
-  const exists = await redisCommandClient.exists(key);
-  if (!exists) return c.json({ message: "invitation not found" }, 404);
+  try {
+    const revoked = await withInvitationLock(token, () => withInvitationDatabaseLock(token, async () => {
+      const key = inviteKey(token);
+      const exists = await redisCommandClient.exists(key);
+      if (!exists) return c.json({ message: "invitation not found" }, 404);
 
-  const data = await redisCommandClient.hgetall(key);
-  if (data.space_id !== spaceId) return c.json({ message: "invitation not found" }, 404);
+      const data = await redisCommandClient.hgetall(key);
+      if (data.space_id !== spaceId) return c.json({ message: "invitation not found" }, 404);
 
-  await redisCommandClient.hset(key, "status", "revoked");
-  return c.json({ ok: true });
+      await redisCommandClient.hset(key, "status", "revoked");
+      return c.json({ ok: true });
+    }), redisCommandClient);
+    return revoked;
+  } catch (error) {
+    if (error instanceof InvitationLockTimeoutError) {
+      return c.json({ message: "invitation is busy, please try again" }, 503);
+    }
+    throw error;
+  }
 });
 
 export default router;

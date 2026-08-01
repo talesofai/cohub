@@ -51,6 +51,11 @@ import {
   isRealtimeAuthExpired,
   realtimeConnectionTtlSeconds,
 } from "./realtime-auth-lifetime.js";
+import { hasRealtimeRoomCapacity } from "./realtime-room-admission.js";
+import {
+  ConnectionStateQueueOverflowError,
+  enqueueConnectionState,
+} from "./connection-state-queue.js";
 import {
   createPubSubRedisClient,
   redisCommandClient,
@@ -77,6 +82,9 @@ type WsConnectionContext = {
   boardAwarenessRate: BoardAwarenessRate;
   boardAwarenessPending: number;
   boardAwarenessTail: Promise<void>;
+  stateTail: Promise<void>;
+  pendingStateOperations: number;
+  closing: boolean;
 };
 
 type GatewayWsBroadcastPayload = RealtimeServerEvent & {
@@ -235,10 +243,29 @@ const persistWsConnection = async (ctx: WsConnectionContext) => {
 
 const cleanupWsConnection = async (ctx: WsConnectionContext | undefined) => {
   if (!ctx) return;
+  ctx.closing = true;
   unsubscribeConnectionFromAllRooms(ctx);
   wsSockets.delete(ctx.connectionId);
-  wsConnections.delete(ctx.connectionId);
+  if (wsConnections.get(ctx.connectionId) === ctx) wsConnections.delete(ctx.connectionId);
   await redisCommandClient.del(getWsConnectionKey(ctx.connectionId)).catch(() => undefined);
+};
+
+const closeWsConnection = (
+  ctx: WsConnectionContext,
+  socket: WebSocket,
+  code: number,
+  reason: string,
+) => {
+  if (ctx.closing) return;
+  ctx.closing = true;
+  if (socket.readyState === socket.OPEN || socket.readyState === socket.CONNECTING) {
+    socket.close(code, reason);
+  }
+  void enqueueConnectionState(
+    ctx,
+    () => cleanupWsConnection(ctx),
+    { allowWhenFull: true },
+  ).catch((error) => logger.warn("[Gateway] failed to cleanup closed WebSocket", { connectionId: ctx.connectionId, error }));
 };
 
 const sendWsEnvelope = (socket: WebSocket, envelope: RealtimeEnvelope) => {
@@ -549,43 +576,48 @@ const startWsConnectionSweeper = () => {
   setInterval(async () => {
     const now = Date.now();
     for (const [connectionId, ctx] of wsConnections.entries()) {
-      if (isRealtimeAuthExpired(ctx.authExpiresAtMs, now)) {
+      await enqueueConnectionState(ctx, async () => {
+        if (ctx.closing) return;
+        if (isRealtimeAuthExpired(ctx.authExpiresAtMs, now)) {
+          const socket = wsSockets.get(connectionId);
+          if (socket && socket.readyState === socket.OPEN) {
+            socket.close(4003, "authentication expired");
+          }
+          ctx.closing = true;
+          await cleanupWsConnection(ctx);
+          return;
+        }
+        if (
+          ctx.token
+          && ctx.rooms.size > 0
+          && now - ctx.lastRoomAuthorizationAt >= ROOM_AUTH_CACHE_TTL_MS
+        ) {
+          const currentRooms = [...ctx.rooms];
+          const roomAuth = await authorizeRoomsForConnection(ctx, currentRooms, true).catch((error) => {
+            logger.warn("[Gateway] failed to reauthorize realtime rooms", {
+              connectionId,
+              error,
+            });
+            return null;
+          });
+          if (ctx.closing) return;
+          if (roomAuth) {
+            const accepted = new Set(roomAuth.rooms);
+            for (const room of currentRooms) {
+              if (!accepted.has(room)) unsubscribeConnectionFromRoom(ctx, room);
+            }
+            ctx.lastRoomAuthorizationAt = now;
+            await persistWsConnection(ctx);
+          }
+        }
+        const raw = await redisCommandClient.get(getWsConnectionKey(connectionId)).catch(() => null);
+        if (raw) return;
         const socket = wsSockets.get(connectionId);
         if (socket && socket.readyState === socket.OPEN) {
-          socket.close(4003, "authentication expired");
+          socket.close(4001, `expired:${now}`);
         }
         await cleanupWsConnection(ctx);
-        continue;
-      }
-      if (
-        ctx.token
-        && ctx.rooms.size > 0
-        && now - ctx.lastRoomAuthorizationAt >= ROOM_AUTH_CACHE_TTL_MS
-      ) {
-        const currentRooms = [...ctx.rooms];
-        const roomAuth = await authorizeRoomsForConnection(ctx, currentRooms, true).catch((error) => {
-          logger.warn("[Gateway] failed to reauthorize realtime rooms", {
-            connectionId,
-            error,
-          });
-          return null;
-        });
-        if (roomAuth) {
-          const accepted = new Set(roomAuth.rooms);
-          for (const room of currentRooms) {
-            if (!accepted.has(room)) unsubscribeConnectionFromRoom(ctx, room);
-          }
-          ctx.lastRoomAuthorizationAt = now;
-          await persistWsConnection(ctx);
-        }
-      }
-      const raw = await redisCommandClient.get(getWsConnectionKey(connectionId)).catch(() => null);
-      if (raw) continue;
-      const socket = wsSockets.get(connectionId);
-      if (socket && socket.readyState === socket.OPEN) {
-        socket.close(4001, `expired:${now}`);
-      }
-      await cleanupWsConnection(ctx);
+      }, { allowWhenFull: true });
     }
   }, 30_000);
 };
@@ -595,14 +627,12 @@ const resolveRealtimeRoomsForEnvelope = (payload: GatewayWsBroadcastPayload): Re
   const explicitRooms = normalizeRealtimeRooms(Array.isArray(payload.rooms) ? payload.rooms : []);
   if (explicitRooms.length > 0) return explicitRooms;
 
-  const resourceRooms: RealtimeRoom[] = [];
-  if (typeof payload.spaceId === "string" && payload.spaceId.trim()) {
-    resourceRooms.push(getRealtimeSpaceRoom(payload.spaceId.trim()));
-  }
   if (typeof payload.sessionId === "string" && payload.sessionId.trim()) {
-    resourceRooms.push(getRealtimeSessionRoom(payload.sessionId.trim()));
+    return [getRealtimeSessionRoom(payload.sessionId.trim())];
   }
-  if (resourceRooms.length > 0) return resourceRooms;
+  if (typeof payload.spaceId === "string" && payload.spaceId.trim()) {
+    return [getRealtimeSpaceRoom(payload.spaceId.trim())];
+  }
 
   const task = payloadRecord.task;
   if (task && typeof task === "object") {
@@ -627,10 +657,9 @@ async function fanOutBroadcastToLocalSockets(payload: GatewayWsBroadcastPayload)
     if (deliveredConnectionIds.has(connectionId)) return;
     const ctx = wsConnections.get(connectionId);
     const socket = wsSockets.get(connectionId);
-    if (!socket) return;
+    if (!ctx || !socket || ctx.closing) return;
     if (isRealtimeAuthExpired(ctx?.authExpiresAtMs)) {
-      if (socket.readyState === socket.OPEN) socket.close(4003, "authentication expired");
-      void cleanupWsConnection(ctx);
+      closeWsConnection(ctx, socket, 4003, "authentication expired");
       return;
     }
     deliveredConnectionIds.add(connectionId);
@@ -864,7 +893,7 @@ async function main() {
   });
 
   const server = serve({ fetch: app.fetch, port: gatewayConfig.port }) as unknown as import("node:http").Server;
-  const wss = new WebSocketServer({ noServer: true });
+  const wss = new WebSocketServer({ noServer: true, maxPayload: WS_MAX_MESSAGE_BYTES });
   const asrWss = new WebSocketServer({ noServer: true, maxPayload: 1024 * 1024 });
   // Local sandbox relay: control (runner⇒gateway), data (runner dial-out), and
   // peer (agent/worker⇒gateway) channels. Large payloads flow on data channels.
@@ -929,6 +958,9 @@ async function main() {
       boardAwarenessRate: { startedAt: Date.now(), count: 0 },
       boardAwarenessPending: 0,
       boardAwarenessTail: Promise.resolve(),
+      stateTail: Promise.resolve(),
+      pendingStateOperations: 0,
+      closing: false,
     };
     wsConnections.set(connectionId, ctx);
     wsSockets.set(connectionId, socket);
@@ -938,7 +970,21 @@ async function main() {
       payload: { connectionId },
     }));
 
-    socket.on("message", async (data: RawData) => {
+    socket.on("message", (data: RawData) => {
+      const rawSize = typeof data === "string"
+        ? Buffer.byteLength(data, "utf-8")
+        : Buffer.isBuffer(data)
+          ? data.byteLength
+          : Array.isArray(data)
+            ? data.reduce((total, chunk) => total + (Buffer.isBuffer(chunk) ? chunk.byteLength : Buffer.byteLength(String(chunk))), 0)
+            : data.byteLength;
+      if (rawSize > WS_MAX_MESSAGE_BYTES) {
+        sendWsError(socket, "MESSAGE_TOO_LARGE", "message too large");
+        closeWsConnection(ctx, socket, 1009, "message too large");
+        return;
+      }
+      const queued = enqueueConnectionState(ctx, async () => {
+      if (ctx.closing) return;
       let requestId: string | undefined;
       try {
         const raw = typeof data === "string"
@@ -948,16 +994,11 @@ async function main() {
             : Array.isArray(data)
               ? Buffer.concat(data.map((chunk) => Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk))).toString("utf-8")
               : Buffer.from(data).toString("utf-8");
-        if (Buffer.byteLength(raw, "utf-8") > WS_MAX_MESSAGE_BYTES) {
-          sendWsError(socket, "MESSAGE_TOO_LARGE", "message too large");
-          return;
-        }
-
         const message = parseWsJson(raw);
         requestId = typeof message.requestId === "string" ? message.requestId : undefined;
 
         if (ctx.token && isRealtimeAuthExpired(ctx.authExpiresAtMs)) {
-          socket.close(4003, "authentication expired");
+          closeWsConnection(ctx, socket, 4003, "authentication expired");
           await cleanupWsConnection(ctx);
           return;
         }
@@ -980,6 +1021,7 @@ async function main() {
             return;
           }
           const result: RealtimeAuthResult = await authenticateRealtimeToken({ token });
+          if (ctx.closing) return;
           if (!result.ok) {
             sendWsError(socket, "UNAUTHORIZED", result.error.message, requestId);
             return;
@@ -1028,8 +1070,26 @@ async function main() {
             sendWsError(socket, "BAD_REQUEST", "rooms are required", requestId);
             return;
           }
+          if (!hasRealtimeRoomCapacity(ctx.rooms, rooms)) {
+            sendWsEnvelope(socket, buildRealtimeEnvelope({
+              domain: "system",
+              type: "system.subscribe.error",
+              requestId: requestId ?? null,
+              payload: {
+                rejected: rooms
+                  .filter((room) => !ctx.rooms.has(room))
+                  .map((room) => ({
+                    room,
+                    code: "ROOM_LIMIT",
+                    message: "Realtime room limit exceeded",
+                  })),
+              },
+            }));
+            return;
+          }
           try {
             const result = await authorizeRoomsForConnection(ctx, rooms);
+            if (ctx.closing) return;
             for (const room of result.rooms) subscribeConnectionToRoom(ctx, room);
             await persistWsConnection(ctx);
             sendWsEnvelope(socket, buildRealtimeEnvelope({
@@ -1087,6 +1147,10 @@ async function main() {
           const spaceId = typeof message.payload.spaceId === "string" ? message.payload.spaceId : "";
           const room = getRealtimeSpaceRoom(spaceId);
           if (!ctx.rooms.has(room)) {
+            if (!hasRealtimeRoomCapacity(ctx.rooms, [room])) {
+              sendWsError(socket, "BAD_REQUEST", "realtime room limit exceeded", requestId);
+              return;
+            }
             const result = await authorizeRoomsForConnection(ctx, [room]);
             if (result.rooms.length === 0) {
               sendWsEnvelope(socket, buildRealtimeEnvelope({
@@ -1181,13 +1245,23 @@ async function main() {
         logger.error("[Gateway] WebSocket message handling failed:", error);
         sendWsError(socket, "INTERNAL_ERROR", "internal error", requestId);
       }
+      });
+      queued.catch((error) => {
+        if (error instanceof ConnectionStateQueueOverflowError) {
+          closeWsConnection(ctx, socket, 1013, "too many pending requests");
+          return;
+        }
+        logger.warn("[Gateway] WebSocket state operation failed", { connectionId, error });
+      });
     });
 
     socket.on("close", () => {
-      void cleanupWsConnection(wsConnections.get(connectionId));
+      const current = wsConnections.get(connectionId);
+      if (current) closeWsConnection(current, socket, 1000, "closed");
     });
     socket.on("error", () => {
-      void cleanupWsConnection(wsConnections.get(connectionId));
+      const current = wsConnections.get(connectionId);
+      if (current) closeWsConnection(current, socket, 1011, "socket error");
     });
   });
 

@@ -7,6 +7,13 @@ import type { BillingPayload } from "@cohub/protocol";
 import type { GatewayAuthUser } from "./config.js";
 import { gatewayConfig } from "./config.js";
 
+const GATEWAY_API_REQUEST_TIMEOUT_MS = 10_000;
+
+const fetchGatewayApi = (input: string | URL, init?: RequestInit) => fetch(input, {
+  ...init,
+  signal: init?.signal ?? AbortSignal.timeout(GATEWAY_API_REQUEST_TIMEOUT_MS),
+});
+
 const parseJson = async <T>(response: Response): Promise<T | null> => {
   return response.json().catch(() => null) as Promise<T | null>;
 };
@@ -67,7 +74,7 @@ export const authenticateRealtimeToken = async (input: { token: string }): Promi
     }
   }
 
-  const response = await fetch(`${gatewayConfig.apiBaseUrl}/api/me`, {
+  const response = await fetchGatewayApi(`${gatewayConfig.apiBaseUrl}/api/me`, {
     headers: {
       authorization: `Bearer ${input.token}`,
       ...buildTraceHeaders(),
@@ -112,7 +119,7 @@ export const authenticateRealtimeToken = async (input: { token: string }): Promi
 };
 
 export const requestGatewayChannelReconcile = async (): Promise<{ stats: unknown }> => {
-  const response = await fetch(`${gatewayConfig.apiBaseUrl}/internal/gateway/reconcile-channels`, {
+  const response = await fetchGatewayApi(`${gatewayConfig.apiBaseUrl}/internal/gateway/reconcile-channels`, {
     method: "POST",
     headers: {
       "content-type": "application/json",
@@ -130,7 +137,7 @@ export const requestGatewayChannelReconcile = async (): Promise<{ stats: unknown
 };
 
 export const notifySpacePresenceUpdated = async (spaceId: string): Promise<void> => {
-  const response = await fetch(`${gatewayConfig.apiBaseUrl}/internal/gateway/space-presence-updated`, {
+  const response = await fetchGatewayApi(`${gatewayConfig.apiBaseUrl}/internal/gateway/space-presence-updated`, {
     method: "POST",
     headers: {
       "content-type": "application/json",
@@ -151,7 +158,7 @@ export const authorizeBoardAwareness = async (input: {
   spaceId: string;
   permission: "view" | "edit";
 }): Promise<boolean> => {
-  const response = await fetch(`${gatewayConfig.apiBaseUrl}/internal/gateway/authorize-board-awareness`, {
+  const response = await fetchGatewayApi(`${gatewayConfig.apiBaseUrl}/internal/gateway/authorize-board-awareness`, {
     method: "POST",
     headers: {
       "content-type": "application/json",
@@ -172,7 +179,7 @@ export const authorizeRealtimeRooms = async (input: {
   authToken: string;
   rooms: string[];
 }): Promise<{ rooms: RealtimeRoom[]; rejected: Array<{ room: string; code: "BAD_ROOM" | "FORBIDDEN"; message: string }> }> => {
-  const response = await fetch(`${gatewayConfig.apiBaseUrl}/internal/gateway/authorize-realtime-rooms`, {
+  const response = await fetchGatewayApi(`${gatewayConfig.apiBaseUrl}/internal/gateway/authorize-realtime-rooms`, {
     method: "POST",
     headers: {
       "content-type": "application/json",
@@ -230,11 +237,12 @@ export const submitInternalSessionPrompt = async (input: {
   context?: Record<string, unknown> | null;
 }): Promise<{ ok: true; turnId: string; userMessageId: string; trace: TraceIdentifiers }> => {
   const requestId = typeof input.context?.requestId === "string" ? input.context.requestId : null;
-  const response = await fetch(`${gatewayConfig.apiBaseUrl}/internal/spaces/${input.spaceId}/sessions/${input.sessionId}/prompt`, {
+  const response = await fetchGatewayApi(`${gatewayConfig.apiBaseUrl}/internal/spaces/${input.spaceId}/sessions/${input.sessionId}/prompt`, {
     method: "POST",
     headers: {
       "content-type": "application/json",
       "x-worker-secret": gatewayConfig.workerSecret,
+      ...(input.authToken ? { authorization: `Bearer ${input.authToken}` } : {}),
       ...buildTraceHeaders({ requestId }),
     },
     body: JSON.stringify({
@@ -271,7 +279,7 @@ export const authorizeSessionAccess = async (input: {
   spaceId: string;
   sessionId: string;
 }): Promise<SessionAuthorizationResult> => {
-  const sessionResponse = await fetch(`${gatewayConfig.apiBaseUrl}/api/sessions/${input.sessionId}`, {
+  const sessionResponse = await fetchGatewayApi(`${gatewayConfig.apiBaseUrl}/api/sessions/${input.sessionId}`, {
     headers: {
       authorization: `Bearer ${input.token}`,
       ...buildTraceHeaders(),
@@ -363,7 +371,7 @@ export const authorizeLocalSandbox = async (input: {
   authToken: string;
   spaceId: string;
 }): Promise<LocalSandboxAuthorizeResult> => {
-  const response = await fetch(`${gatewayConfig.apiBaseUrl}/internal/gateway/local-sandbox/authorize`, {
+  const response = await fetchGatewayApi(`${gatewayConfig.apiBaseUrl}/internal/gateway/local-sandbox/authorize`, {
     method: "POST",
     headers: {
       "content-type": "application/json",
@@ -389,7 +397,7 @@ export const reportLocalSandboxStatus = async (input: {
   hostname?: string | null;
   gatewayNodeId?: string | null;
 }): Promise<void> => {
-  const response = await fetch(`${gatewayConfig.apiBaseUrl}/internal/gateway/local-sandbox/status`, {
+  const response = await fetchGatewayApi(`${gatewayConfig.apiBaseUrl}/internal/gateway/local-sandbox/status`, {
     method: "POST",
     headers: {
       "content-type": "application/json",

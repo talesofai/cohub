@@ -3,7 +3,15 @@ import { context, trace, type Span } from "@opentelemetry/api";
 import { Redis } from "ioredis";
 import { z } from "zod";
 import type { ContentBlock } from "@cohub/protocol/core";
-import { AGENT_REALTIME_PATCH_CHANNEL, REALTIME_OUTBOUND_CHANNEL, type RealtimeEnvelope, type RealtimeRoom, type SessionStreamError, type SessionStreamEvent, type SessionTurnLifecycleOutput } from "@cohub/protocol/realtime";
+import {
+  AGENT_REALTIME_PATCH_CHANNEL,
+  REALTIME_OUTBOUND_CHANNEL,
+  type RealtimeEnvelope,
+  type RealtimeRoom,
+  type SessionStreamError,
+  type SessionStreamEvent,
+  type SessionTurnLifecycleOutput,
+} from "@cohub/protocol/realtime";
 import type { SpaceFsChangedPayload } from "@cohub/protocol/fs";
 import type { SpacePortsChangedPayload } from "@cohub/protocol/ports";
 import { injectTrace } from "@cohub/infra/tracing/propagator";
@@ -12,6 +20,7 @@ import { env } from "./env.js";
 import { enqueueSpaceHookFromEvent } from "./space-hooks.js";
 import { buildPatchOpsForContentDelta, getAppendPathForStreamEvent } from "./stream/patch-delta.js";
 import { createLogger } from "@cohub/infra/logging";
+import { getSessionEventRooms } from "./session-event-rooms.js";
 
 
 const logger = createLogger({ serviceName: "cohub-agent" });
@@ -470,6 +479,10 @@ export async function sendOutput(data: SessionStreamEvent | SessionStreamError |
 
   const activeSpan = trace.getActiveSpan();
   const event = parsed.data as SessionStreamEvent | SessionStreamError | SessionTurnLifecycleOutput;
+  if (!event.sessionId) {
+    logger.warn("[Redis] Skipping session output without sessionId");
+    return;
+  }
 
   try {
     const traceCarrier = injectTrace();
@@ -537,7 +550,11 @@ export async function sendOutput(data: SessionStreamEvent | SessionStreamError |
       };
     }
 
-    const payload = JSON.stringify({ ...envelope, ...traceCarrier });
+    const payload = JSON.stringify({
+      ...envelope,
+      rooms: getSessionEventRooms(event.spaceId, event.sessionId),
+      ...traceCarrier,
+    });
     const span = trace.getActiveSpan();
     await redis.publish(AGENT_REALTIME_PATCH_CHANNEL, payload).catch((err) => {
       if (span) recordStreamPublishFailure(span, err);

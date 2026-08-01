@@ -1,5 +1,6 @@
 import {
   normalizePermissionScopes,
+  resolveActiveWorkSessionPolicy,
   scopeListHasPermission,
   type Permission,
 } from "@cohub/core/permissions";
@@ -12,7 +13,19 @@ export type WorkViewerGrantSnapshot = {
   scopes: string[];
   expiresAt: Date | null;
   revokedAt: Date | null;
+  workStatus: string;
+  workSpaceId: string;
+  workScopes: string[];
+  allowedViewerScopes: string[];
 };
+
+export function requireDelegatedTaskAuth(
+  required: boolean,
+  auth: PromptAuthContext | null | undefined,
+): PromptAuthContext | null {
+  if (required && !auth) throw new Error("delegated Work authorization is missing from task");
+  return auth ?? null;
+}
 
 export async function resolveScheduledPromptAuth(
   auth: PromptAuthContext | null | undefined,
@@ -55,7 +68,15 @@ export async function resolveScheduledPromptAuth(
     throw new Error("delegated Work grant is no longer active");
   }
 
-  const tokenViewerScopes = normalizePermissionScopes(auth.viewerScopes);
+  const activePolicy = resolveActiveWorkSessionPolicy(auth, {
+    status: grant.workStatus,
+    spaceId: grant.workSpaceId,
+    workScopes: grant.workScopes,
+    allowedViewerScopes: grant.allowedViewerScopes,
+  });
+  if (!activePolicy) throw new Error("delegated Work is no longer active");
+
+  const tokenViewerScopes = activePolicy.allowedViewerScopes;
   const grantScopes = normalizePermissionScopes(grant.scopes);
   if (
     !scopeListHasPermission(tokenViewerScopes, input.requiredPermission)
@@ -67,7 +88,7 @@ export async function resolveScheduledPromptAuth(
   const tokenViewerScopeSet = new Set(tokenViewerScopes);
   const viewerScopes = grantScopes.filter((scope) => tokenViewerScopeSet.has(scope));
   const tokenScopeSet = new Set(normalizePermissionScopes(auth.scopes));
-  const scopes = normalizePermissionScopes([...auth.workScopes, ...viewerScopes])
+  const scopes = normalizePermissionScopes([...activePolicy.workScopes, ...viewerScopes])
     .filter((scope) => tokenScopeSet.has(scope));
   if (!scopeListHasPermission(scopes, input.requiredPermission)) {
     throw new Error("delegated Work grant no longer allows this prompt");

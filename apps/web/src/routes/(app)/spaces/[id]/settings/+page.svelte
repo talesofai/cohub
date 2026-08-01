@@ -1689,7 +1689,7 @@ $effect(() => {
 								<p class="mt-3 text-[12px] text-text-tertiary">No invite links.</p>
 							{:else if invitations.length > 0}
 								<div class="mt-3 divide-y divide-border-subtle rounded-md border border-border-subtle">
-									{#each invitations as invitation (`${invitation.token ?? "summary"}:${invitation.role}:${invitation.createdAt ?? ""}`)}
+										{#each invitations as invitation (invitation.id)}
 										<div class="flex items-center justify-between gap-3 px-3 py-2.5">
 											<div class="min-w-0 flex-1">
 												<div class="flex flex-wrap items-center gap-2">

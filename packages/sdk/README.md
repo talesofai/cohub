@@ -258,8 +258,10 @@ results need viewer scopes.** A matching `session.prompt.*` grant can poll the
 viewer's own session in the current Work Space, while `session.view` is still
 required for another user's session. Likewise, `generation.create` can list and
 poll only the viewer's own generation tasks; it never exposes other task types.
-`taskrun.view` remains required for broader task access. `user.session.list`
-lists summaries only and does not grant turn content.
+`taskrun.view` remains a separate broad read permission, but it never widens a
+Work's generation-task recovery beyond tasks created by that same Work.
+`user.session.list` returns redacted summaries unless the token also has
+`session.view` in that Session's exact Space; it never grants turn content.
 
 For the complete API-to-scope mapping, initialization recipe, capability
 recipes, a full working example, and a pitfalls checklist, see the

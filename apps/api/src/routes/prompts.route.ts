@@ -10,6 +10,7 @@ const router = new Hono();
 
 router.get("/", async (c) => {
   const actor = getOptionalAuth(c);
+  // Scoped principals may authorize Space access, never account-private paths.
   const accountUser = getOptionalAccountAuth(c);
   const spaceId = c.req.query("spaceId")?.trim() || null;
 
