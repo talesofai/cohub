@@ -574,6 +574,7 @@ export class WebsocketClient {
   private async restoreRoomSubscriptions() {
     for (const state of this.roomSubscriptions.values()) {
       state.subscribed = false;
+      state.pending = false;
     }
     this.flushRoomSubscriptions();
   }

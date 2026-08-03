@@ -113,6 +113,48 @@ test("retries authentication with a forced token refresh and restores rooms", as
   await client.disconnect();
 });
 
+test("restores a pending room retained by multiple subscribers after reconnecting", async (t) => {
+  FakeWebSocket.instances = [];
+  const client = new WebsocketClient({
+    url: "ws://localhost",
+    reconnectBaseDelayMs: 0,
+    reconnectMaxDelayMs: 0,
+    getAccessToken: () => "token",
+    WebSocketImpl: FakeWebSocket,
+  });
+
+  const releaseFirst = client.subscribeSpace("space-1");
+  const releaseSecond = client.subscribeSpace("space-1");
+  t.after(async () => {
+    releaseFirst();
+    releaseSecond();
+    await client.disconnect();
+  });
+  const first = FakeWebSocket.instances[0];
+  assert.ok(first);
+  first.open();
+  await waitFor(() => sentTypes(first).includes("auth"), "expected the initial auth request");
+  first.receive(authOk("connection-1"));
+  await waitFor(() => sentTypes(first).includes("subscribe"), "expected the initial room subscription");
+
+  first.close(1012, "service restart");
+  await waitFor(() => FakeWebSocket.instances.length === 2, "expected a reconnect");
+  const second = FakeWebSocket.instances[1];
+  assert.ok(second);
+  second.open();
+  await waitFor(() => sentTypes(second).includes("auth"), "expected the reconnect auth request");
+  second.receive(authOk("connection-2"));
+  await waitFor(
+    () => sentTypes(second).includes("subscribe"),
+    "expected the pending room subscription to be restored",
+  );
+
+  const subscribe = second.sent
+    .map((raw) => JSON.parse(raw) as { type: string; payload?: unknown })
+    .find((event) => event.type === "subscribe");
+  assert.deepEqual(subscribe?.payload, { rooms: ["space:space-1"] });
+});
+
 test("stops after a forced authentication retry is rejected", async () => {
   FakeWebSocket.instances = [];
   const tokenOptions: Array<{ forceRefresh?: boolean } | undefined> = [];
