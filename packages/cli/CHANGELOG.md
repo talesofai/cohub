@@ -1,5 +1,16 @@
 # @neta-art/cohub-cli
 
+## 3.4.0
+
+### Minor Changes
+
+- ec5ffdb: Add generation model discovery helpers and hide generation declarations marked `hidden` from default CLI discovery while preserving exact-ID and explicit-policy access.
+
+### Patch Changes
+
+- Updated dependencies [ec5ffdb]
+  - @neta-art/cohub@4.7.0
+
 ## 3.3.1
 
 ### Patch Changes
