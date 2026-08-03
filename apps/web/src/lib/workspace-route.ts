@@ -1,8 +1,9 @@
 /**
  * Resolve the active workspace route context.
  *
- * Canonical app routes are `/spaces/:id/...`. Pretty URLs (`/:username/:spaceSlug`)
- * resolve the id in page load and expose it as `page.data.spaceId`.
+ * Workspace routes support immutable `/spaces/:id/...` ingress and canonical
+ * `/:username/:spaceSlug/...` URLs. Friendly page loads expose the immutable id
+ * as `page.data.spaceId`.
  *
  * Never treat sessions-inbox draft targets (`newChatSpaceId` / `?space=`) as the
  * workspace space — those must not drive sidebar layout prefs.
@@ -68,7 +69,9 @@ function parseResourceId(
 	pathname: string,
 	kind: "sessions" | "works" | "checkpoints" | "cronjobs" | "tasks",
 ): string | null {
-	const match = pathname.match(new RegExp(`^/spaces/[^/]+/${kind}/([^/]+)`));
+	const match = pathname.match(
+		new RegExp(`^/(?:spaces/[^/]+|[^/]+/[^/]+)/${kind}/([^/]+)`),
+	);
 	const id = match?.[1] ? decodePathSegment(match[1]) : null;
 	if (!id) return null;
 	if ((kind === "checkpoints" || kind === "cronjobs") && id === "new") {
@@ -78,7 +81,9 @@ function parseResourceId(
 }
 
 function parseFilePath(pathname: string): string | null {
-	const match = pathname.match(/^\/spaces\/[^/]+\/files\/(.+)$/);
+	const match = pathname.match(
+		/^\/(?:spaces\/[^/]+|[^/]+\/[^/]+)\/files\/(.+)$/,
+	);
 	if (!match?.[1]) return null;
 	return decodeFilePath(match[1]);
 }

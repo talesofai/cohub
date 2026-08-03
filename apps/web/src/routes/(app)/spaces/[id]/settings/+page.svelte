@@ -59,7 +59,11 @@ import { isComposingKeyboardEvent } from "$lib/keyboard";
 import { uploadSpaceAvatarImage } from "$lib/public-asset-images";
 import { sdk } from "$lib/sdk";
 import { validateSpaceSlugInput } from "$lib/slug-rules";
-import { buildSpaceLandingRoute } from "$lib/space-routes";
+import {
+	buildSpaceCommerceSettingsRoute,
+	buildSpaceLandingRoute,
+	type SpaceRouteTarget,
+} from "$lib/space-routes";
 import { billingConversion } from "$lib/stores/billing-conversion.svelte";
 import { invalidateCachedSpaceMembers } from "$lib/stores/space-profile-cache";
 import { cacheSpaceRecordSoon } from "$lib/stores/space-record-cache";
@@ -91,8 +95,11 @@ type SandboxInfo = {
 	meta?: Record<string, unknown> | null;
 };
 
-const props = $props<{ data: { spaceId: string } }>();
+const props = $props<{
+	data: { spaceId: string; spaceRouteTarget?: SpaceRouteTarget };
+}>();
 const spaceId = $derived(props.data.spaceId);
+const spaceRouteTarget = $derived(props.data.spaceRouteTarget ?? spaceId);
 const defaultIdleTtlSeconds = import.meta.env.DEV ? 10 * 60 : 12 * 60 * 60;
 const recommendedBaseMod =
 	getDefaultSpaceModsForEnv(normalizeCohubRuntimeEnv(PUBLIC_COHUB_ENV))[0] ??
@@ -1459,14 +1466,14 @@ $effect(() => {
 						window.history.back();
 						return;
 					}
-					void goto(buildSpaceLandingRoute(spaceId));
+					void goto(buildSpaceLandingRoute(spaceRouteTarget));
 				}}
 			>
 				<ArrowLeft class="h-4 w-4" />
 			</button>
 			<div class="min-w-0 truncate text-[13px] font-medium text-text-primary">Space settings</div>
 		</div>
-		<a href={`/spaces/${spaceId}/settings/commerce`} class="inline-flex h-8 items-center justify-center gap-1.5 rounded-[5px] px-2.5 text-[12px] text-text-tertiary transition-colors hover:bg-bg-hover hover:text-text-primary"><PackagePlus class="h-3.5 w-3.5" /> Commerce</a>
+		<a href={buildSpaceCommerceSettingsRoute(spaceRouteTarget)} class="inline-flex h-8 items-center justify-center gap-1.5 rounded-[5px] px-2.5 text-[12px] text-text-tertiary transition-colors hover:bg-bg-hover hover:text-text-primary"><PackagePlus class="h-3.5 w-3.5" /> Commerce</a>
 	</header>
 
 	<div class="flex min-h-0 flex-1 flex-col lg:flex-row">

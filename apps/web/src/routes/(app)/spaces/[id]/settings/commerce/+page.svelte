@@ -21,7 +21,10 @@ import CommerceProductEditor from "$lib/components/commerce/CommerceProductEdito
 import Dialog from "$lib/components/Dialog.svelte";
 import UserAvatar from "$lib/components/UserAvatar.svelte";
 import { sdk } from "$lib/sdk";
-import { buildSpaceSettingsRoute } from "$lib/space-routes";
+import {
+	buildSpaceSettingsRoute,
+	type SpaceRouteTarget,
+} from "$lib/space-routes";
 
 type MetaValue = string | number | boolean;
 
@@ -34,8 +37,11 @@ type DialogState =
 
 const NOT_INITIALIZED_CODE = "space_commerce_not_initialized";
 
-const props = $props<{ data: { spaceId: string } }>();
+const props = $props<{
+	data: { spaceId: string; spaceRouteTarget?: SpaceRouteTarget };
+}>();
 const spaceId = $derived(props.data.spaceId);
+const spaceRouteTarget = $derived(props.data.spaceRouteTarget ?? spaceId);
 
 let loading = $state(true);
 let loadError = $state("");
@@ -503,7 +509,7 @@ $effect(() => {
 <div class="flex min-h-0 flex-1 flex-col overflow-hidden bg-bg-primary">
 	<header class="flex h-[44px] shrink-0 items-center justify-between border-b border-border-subtle bg-bg-primary px-3 sm:px-4">
 		<div class="flex min-w-0 items-center gap-3">
-			<button type="button" class="inline-flex h-8 items-center justify-center rounded-[6px] px-2.5 text-[12px] text-text-tertiary transition-colors hover:bg-bg-hover hover:text-text-primary" onclick={() => goto(buildSpaceSettingsRoute(spaceId))}>Back</button>
+			<button type="button" class="inline-flex h-8 items-center justify-center rounded-[6px] px-2.5 text-[12px] text-text-tertiary transition-colors hover:bg-bg-hover hover:text-text-primary" onclick={() => goto(buildSpaceSettingsRoute(spaceRouteTarget))}>Back</button>
 			<div class="truncate text-[13px] font-medium text-text-primary">Commerce</div>
 		</div>
 	</header>

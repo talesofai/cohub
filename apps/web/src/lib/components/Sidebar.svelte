@@ -44,7 +44,7 @@ import {
 	X,
 } from "lucide-svelte";
 import { onMount, tick, untrack } from "svelte";
-import { goto } from "$app/navigation";
+import { goto, replaceState } from "$app/navigation";
 import { page } from "$app/state";
 import { floatNear } from "$lib/actions/portal";
 import { logtoClient } from "$lib/auth";
@@ -108,6 +108,8 @@ import {
 	buildSpaceSettingsRoute,
 	buildSpaceTaskRoute,
 	buildSpaceWorkRoute,
+	canonicalizeSpaceRoute,
+	getSpaceRouteIdentity,
 } from "$lib/space-routes";
 import { authStore } from "$lib/stores/auth.svelte";
 import { billingCatalogStore } from "$lib/stores/billing-catalog.svelte";
@@ -413,6 +415,40 @@ const activeCronjob = $derived(
 const currentSpace = $derived(
 	currentSpaceId ? (spaces.find((s) => s.id === currentSpaceId) ?? null) : null,
 );
+const currentSpaceRouteIdentity = $derived(
+	currentSpace
+		? getSpaceRouteIdentity({
+				id: currentSpace.id,
+				slug: currentSpace.slug,
+				ownerUsername:
+					currentSpace.ownerProfile?.username ??
+					(currentSpace.userUuid === authStore.userUuid
+						? authStore.profile?.username
+						: null),
+			})
+		: null,
+);
+const currentSpaceRouteTarget = $derived(
+	currentSpaceRouteIdentity ?? currentSpaceId ?? "",
+);
+
+// Keep immutable ID routes as ingress, then expose the readable Space identity
+// once reliable cached or server data has supplied it.
+$effect(() => {
+	if (!currentSpaceRouteIdentity || typeof window === "undefined") return;
+	const target = canonicalizeSpaceRoute(
+		page.url,
+		currentSpaceRouteIdentity,
+		currentSpaceId,
+	);
+	if (
+		!target ||
+		target === `${page.url.pathname}${page.url.search}${page.url.hash}`
+	)
+		return;
+	replaceState(target, page.state);
+});
+
 const canAssignLabels = $derived(
 	Boolean(currentSpace?.access?.permissions?.includes("space.label.assign")),
 );
@@ -2020,7 +2056,7 @@ function handleSessionDragStart(
 					ref: session.id,
 					title,
 					href: currentSpaceId
-						? buildSpaceSessionRoute(currentSpaceId, session.id)
+						? buildSpaceSessionRoute(currentSpaceRouteTarget, session.id)
 						: undefined,
 					path,
 				},
@@ -2422,34 +2458,44 @@ async function handleNavigateToCheckpoint(checkpointId: string) {
 	onClose?.();
 	if (!currentSpaceId) return;
 	await goto(
-		withSidebarPreview(buildSpaceCheckpointRoute(currentSpaceId, checkpointId)),
+		withSidebarPreview(
+			buildSpaceCheckpointRoute(currentSpaceRouteTarget, checkpointId),
+		),
 	);
 }
 
 async function handleNavigateToNewCheckpoint() {
 	onClose?.();
 	if (!currentSpaceId) return;
-	await goto(withSidebarPreview(buildSpaceCheckpointNewRoute(currentSpaceId)));
+	await goto(
+		withSidebarPreview(buildSpaceCheckpointNewRoute(currentSpaceRouteTarget)),
+	);
 }
 
 async function handleNavigateToCronjob(cronjobId: string) {
 	onClose?.();
 	if (!currentSpaceId) return;
 	await goto(
-		withSidebarPreview(buildSpaceCronjobRoute(currentSpaceId, cronjobId)),
+		withSidebarPreview(
+			buildSpaceCronjobRoute(currentSpaceRouteTarget, cronjobId),
+		),
 	);
 }
 
 async function handleNavigateToNewCronjob() {
 	onClose?.();
 	if (!currentSpaceId) return;
-	await goto(withSidebarPreview(buildSpaceCronjobNewRoute(currentSpaceId)));
+	await goto(
+		withSidebarPreview(buildSpaceCronjobNewRoute(currentSpaceRouteTarget)),
+	);
 }
 
 async function handleNavigateToTask(taskId: string) {
 	onClose?.();
 	if (!currentSpaceId) return;
-	await goto(withSidebarPreview(buildSpaceTaskRoute(currentSpaceId, taskId)));
+	await goto(
+		withSidebarPreview(buildSpaceTaskRoute(currentSpaceRouteTarget, taskId)),
+	);
 }
 
 function getCurrentSpaceOwnerUsername() {
@@ -2464,7 +2510,9 @@ function getCurrentSpaceOwnerUsername() {
 async function handleNavigateToWork(workId: string) {
 	onClose?.();
 	if (!currentSpaceId) return;
-	await goto(withSidebarPreview(buildSpaceWorkRoute(currentSpaceId, workId)));
+	await goto(
+		withSidebarPreview(buildSpaceWorkRoute(currentSpaceRouteTarget, workId)),
+	);
 }
 
 function handleWorksChanged(event: Event) {
@@ -2487,10 +2535,13 @@ async function handleCreateNewSession() {
 	if (!currentSpaceId || creatingSession) return;
 	createSessionError = "";
 	try {
-		await goto(withSidebarPreview(buildSpaceNewSessionRoute(currentSpaceId)), {
-			keepFocus: true,
-			noScroll: true,
-		});
+		await goto(
+			withSidebarPreview(buildSpaceNewSessionRoute(currentSpaceRouteTarget)),
+			{
+				keepFocus: true,
+				noScroll: true,
+			},
+		);
 		onClose?.();
 		requestAnimationFrame(() => {
 			window.dispatchEvent(new CustomEvent("cohub:composer-focus"));
@@ -3365,7 +3416,7 @@ $effect(() => {
 						{@const checkpoint = checkpointsById.get(item.resourceRef)!}
 						<SidebarCheckpointRow
 							{checkpoint}
-							href={buildSpaceCheckpointRoute(currentSpaceId!, checkpoint.id)}
+							href={buildSpaceCheckpointRoute(currentSpaceRouteTarget, checkpoint.id)}
 							active={isActive}
 							removeLabelTitle={canRemoveItem ? labelRemoveTitle : undefined}
 							removeLabelDisabled={labelDropBusyId === label.id}
@@ -3714,7 +3765,7 @@ $effect(() => {
 			{#each checkpoints.slice(0, sidebarFlyoutPreviewLimit) as checkpoint (checkpoint.id)}
 				<SidebarCheckpointRow
 					{checkpoint}
-					href={buildSpaceCheckpointRoute(currentSpaceId!, checkpoint.id)}
+					href={buildSpaceCheckpointRoute(currentSpaceRouteTarget, checkpoint.id)}
 					active={activeCheckpointId === checkpoint.id}
 					onNavigate={(target) => void handleNavigateToCheckpoint(target.id)}
 				/>
@@ -3737,7 +3788,7 @@ $effect(() => {
 		<div class="space-y-[2px]">
 			{#each cronjobs.slice(0, sidebarFlyoutPreviewLimit) as job (job.id)}
 				{@const isActive = activeCronjobId === job.id}
-				<a href={buildSpaceCronjobRoute(currentSpaceId!, job.id)} class="sidebar-flyout-item flex items-center gap-2 rounded-[var(--sidebar-item-radius)] px-1.5 py-1.5 text-[13px] {isActive ? 'bg-[var(--sidebar-item-active-bg)] font-medium text-[var(--sidebar-item-active-fg)]' : 'text-text-tertiary hover:bg-[var(--sidebar-item-hover-bg)] hover:text-text-secondary'}" onclick={(e) => { e.preventDefault(); handleNavigateToCronjob(job.id); }}>
+				<a href={buildSpaceCronjobRoute(currentSpaceRouteTarget, job.id)} class="sidebar-flyout-item flex items-center gap-2 rounded-[var(--sidebar-item-radius)] px-1.5 py-1.5 text-[13px] {isActive ? 'bg-[var(--sidebar-item-active-bg)] font-medium text-[var(--sidebar-item-active-fg)]' : 'text-text-tertiary hover:bg-[var(--sidebar-item-hover-bg)] hover:text-text-secondary'}" onclick={(e) => { e.preventDefault(); handleNavigateToCronjob(job.id); }}>
 					<div class="min-w-0 flex-1"><div class="truncate leading-tight">{job.title}</div></div>
 					<span class="h-1.5 w-1.5 shrink-0 rounded-full {job.enabled ? 'bg-status-running' : 'bg-text-placeholder'}"></span>
 				</a>
@@ -3754,7 +3805,7 @@ $effect(() => {
 	{:else}
 		<div class="space-y-[2px]">
 			{#each works.slice(0, sidebarFlyoutPreviewLimit) as work (work.id)}
-				{@const manageHref = currentSpaceId ? buildSpaceWorkRoute(currentSpaceId, work.id) : "#"}
+				{@const manageHref = currentSpaceId ? buildSpaceWorkRoute(currentSpaceRouteTarget, work.id) : "#"}
 				{@const isActive = activeWork?.id === work.id}
 				<a href={manageHref} class="sidebar-flyout-item flex items-center gap-2 rounded-[var(--sidebar-item-radius)] px-1.5 py-1.5 text-[13px] {isActive ? 'bg-[var(--sidebar-item-active-bg)] font-medium text-[var(--sidebar-item-active-fg)]' : 'text-text-tertiary hover:bg-[var(--sidebar-item-hover-bg)] hover:text-text-secondary'}" onclick={(e) => { e.preventDefault(); void handleNavigateToWork(work.id); }}>
 					<div class="min-w-0 flex-1"><div class="truncate font-mono leading-tight">{work.slug}</div></div>
@@ -3774,7 +3825,7 @@ $effect(() => {
 			{#each tasks.slice(0, sidebarFlyoutPreviewLimit) as run (run.id)}
 				{@const isActive = activeTaskId === run.id}
 				{@const badge = getTaskRunBadge(run.status)}
-				<a href={buildSpaceTaskRoute(currentSpaceId!, run.id)} class="sidebar-flyout-item flex items-center gap-2 rounded-[var(--sidebar-item-radius)] px-1.5 py-1.5 text-[13px] {isActive ? 'bg-[var(--sidebar-item-active-bg)] font-medium text-[var(--sidebar-item-active-fg)]' : 'text-text-tertiary hover:bg-[var(--sidebar-item-hover-bg)] hover:text-text-secondary'}" onclick={(e) => { e.preventDefault(); handleNavigateToTask(run.id); }}>
+				<a href={buildSpaceTaskRoute(currentSpaceRouteTarget, run.id)} class="sidebar-flyout-item flex items-center gap-2 rounded-[var(--sidebar-item-radius)] px-1.5 py-1.5 text-[13px] {isActive ? 'bg-[var(--sidebar-item-active-bg)] font-medium text-[var(--sidebar-item-active-fg)]' : 'text-text-tertiary hover:bg-[var(--sidebar-item-hover-bg)] hover:text-text-secondary'}" onclick={(e) => { e.preventDefault(); handleNavigateToTask(run.id); }}>
 					<div class="min-w-0 flex-1"><div class="truncate text-[12px] capitalize leading-tight {badge.color}">{run.status}</div><div class="mt-0.5 text-[10px] text-text-placeholder">{formatTaskRunTime(run)}</div></div>
 					<span class="h-1.5 w-1.5 shrink-0 rounded-full {badge.dot}"></span>
 				</a>
@@ -3859,8 +3910,8 @@ $effect(() => {
             </button>
             <button
               type="button"
-              class="flex h-8 w-8 items-center justify-center rounded-[6px] transition-colors duration-100 {currentPath === buildSpaceSettingsRoute(currentSpaceId!) ? 'bg-bg-active text-text-primary' : 'text-text-tertiary hover:bg-bg-hover hover:text-text-secondary'}"
-              onclick={() => { void handleNavigate(buildSpaceSettingsRoute(currentSpaceId!)); }}
+              class="flex h-8 w-8 items-center justify-center rounded-[6px] transition-colors duration-100 {currentPath === buildSpaceSettingsRoute(currentSpaceRouteTarget) ? 'bg-bg-active text-text-primary' : 'text-text-tertiary hover:bg-bg-hover hover:text-text-secondary'}"
+              onclick={() => { void handleNavigate(buildSpaceSettingsRoute(currentSpaceRouteTarget)); }}
               aria-label="Space settings"
               title="Space settings"
             >
@@ -4109,7 +4160,7 @@ $effect(() => {
         <button
           type="button"
           class="flex items-center gap-2 w-full px-1.5 py-1.5 rounded-[5px] text-text-tertiary hover:text-text-primary hover:bg-bg-hover transition-colors duration-100 disabled:opacity-50"
-          onclick={() => { void handleNavigate(buildSpaceSettingsRoute(currentSpaceId!)); }}
+          onclick={() => { void handleNavigate(buildSpaceSettingsRoute(currentSpaceRouteTarget)); }}
           title="Space settings"
         >
           <Settings class="w-3.5 h-3.5 shrink-0" />
@@ -4161,7 +4212,7 @@ $effect(() => {
               {:else}
                 <div class="space-y-[2px] mt-1">
                   {#each works as work (work.id)}
-                    {@const manageHref = currentSpaceId ? buildSpaceWorkRoute(currentSpaceId, work.id) : "#"}
+                    {@const manageHref = currentSpaceId ? buildSpaceWorkRoute(currentSpaceRouteTarget, work.id) : "#"}
                     {@const isActive = activeWork?.id === work.id}
                     <a
                       href={manageHref}
@@ -4176,7 +4227,7 @@ $effect(() => {
                 </div>
               {/if}
             {:else if activeWork}
-              {@const manageHref = currentSpaceId ? buildSpaceWorkRoute(currentSpaceId, activeWork.id) : "#"}
+              {@const manageHref = currentSpaceId ? buildSpaceWorkRoute(currentSpaceRouteTarget, activeWork.id) : "#"}
               <a
                 href={manageHref}
                 class="mt-1 flex items-center gap-2 rounded-[var(--sidebar-item-radius)] bg-[var(--sidebar-item-active-bg)] px-1.5 py-1.5 text-[13px] font-medium text-[var(--sidebar-item-active-fg)] transition-colors duration-100"
@@ -4212,7 +4263,7 @@ $effect(() => {
                   {#each checkpoints as checkpoint (checkpoint.id)}
                     <SidebarCheckpointRow
                       {checkpoint}
-                      href={buildSpaceCheckpointRoute(currentSpaceId!, checkpoint.id)}
+                      href={buildSpaceCheckpointRoute(currentSpaceRouteTarget, checkpoint.id)}
                       active={activeCheckpointId === checkpoint.id}
                       onNavigate={(target) => void handleNavigateToCheckpoint(target.id)}
                     />
@@ -4238,7 +4289,7 @@ $effect(() => {
               <div class="mt-1">
                 <SidebarCheckpointRow
                   checkpoint={activeCheckpoint}
-                  href={buildSpaceCheckpointRoute(currentSpaceId!, activeCheckpoint.id)}
+                  href={buildSpaceCheckpointRoute(currentSpaceRouteTarget, activeCheckpoint.id)}
                   active={true}
                   onNavigate={(target) => void handleNavigateToCheckpoint(target.id)}
                 />
@@ -4283,7 +4334,7 @@ $effect(() => {
                   {#each cronjobs as job (job.id)}
                     {@const isActive = activeCronjobId === job.id}
                     <a
-                      href={buildSpaceCronjobRoute(currentSpaceId!, job.id)}
+                      href={buildSpaceCronjobRoute(currentSpaceRouteTarget, job.id)}
                       class="flex items-center gap-2 px-1.5 py-1.5 rounded-[var(--sidebar-item-radius)] text-[13px] transition-colors duration-100 {isActive ? 'text-[var(--sidebar-item-active-fg)] bg-[var(--sidebar-item-active-bg)] font-medium' : 'text-text-tertiary hover:text-text-secondary hover:bg-[var(--sidebar-item-hover-bg)]'}"
                       onclick={(e) => { e.preventDefault(); handleNavigateToCronjob(job.id); }}
                     >
@@ -4297,7 +4348,7 @@ $effect(() => {
               {/if}
             {:else if activeCronjob}
               <a
-                href={buildSpaceCronjobRoute(currentSpaceId!, activeCronjob.id)}
+                href={buildSpaceCronjobRoute(currentSpaceRouteTarget, activeCronjob.id)}
                 class="flex items-center gap-2 px-1.5 py-1.5 mt-1 rounded-[var(--sidebar-item-radius)] text-[13px] transition-colors duration-100 text-[var(--sidebar-item-active-fg)] bg-[var(--sidebar-item-active-bg)] font-medium"
                 onclick={(e) => { e.preventDefault(); handleNavigateToCronjob(activeCronjob.id); }}
               >
@@ -4341,7 +4392,7 @@ $effect(() => {
                     {@const isActive = activeTaskId === run.id}
                     {@const badge = getTaskRunBadge(run.status)}
                     <a
-                      href={buildSpaceTaskRoute(currentSpaceId!, run.id)}
+                      href={buildSpaceTaskRoute(currentSpaceRouteTarget, run.id)}
                       class="flex items-center gap-2 px-1.5 py-1.5 rounded-[var(--sidebar-item-radius)] text-[13px] transition-colors duration-100 {isActive ? 'text-[var(--sidebar-item-active-fg)] bg-[var(--sidebar-item-active-bg)] font-medium' : 'text-text-tertiary hover:text-text-secondary hover:bg-[var(--sidebar-item-hover-bg)]'}"
                       onclick={(e) => { e.preventDefault(); handleNavigateToTask(run.id); }}
                       title={getTaskRunMeta(run)}
@@ -4372,7 +4423,7 @@ $effect(() => {
               {/if}
             {:else if activeTaskId}
               <a
-                href={buildSpaceTaskRoute(currentSpaceId!, activeTaskId)}
+                href={buildSpaceTaskRoute(currentSpaceRouteTarget, activeTaskId)}
                 class="flex items-center gap-2 px-1.5 py-1.5 mt-1 rounded-[var(--sidebar-item-radius)] text-[13px] transition-colors duration-100 text-[var(--sidebar-item-active-fg)] bg-[var(--sidebar-item-active-bg)] font-medium"
                 onclick={(e) => { e.preventDefault(); handleNavigateToTask(activeTaskId); }}
               >
