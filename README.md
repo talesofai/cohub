@@ -125,6 +125,40 @@ pnpm typecheck
 pnpm build
 ```
 
+## Parallel PR Development with Git Worktrees
+
+This repo ships directly on `main`, and PRs are often developed and reviewed in parallel. Git worktrees let you check out multiple branches side by side — each PR gets its own directory, its own dependencies, and its own dev server — without stashing changes, switching branches, or re-cloning.
+
+Create one worktree per PR, using a stable path like `/tmp/pr-xxx`:
+
+```bash
+git worktree add /tmp/pr-1234 feat/my-change
+```
+
+Each worktree is a full checkout, so install dependencies and run checks inside it:
+
+```bash
+cd /tmp/pr-1234
+pnpm install
+pnpm lint
+pnpm typecheck
+```
+
+List all worktrees to see which branches are checked out where:
+
+```bash
+git worktree list
+```
+
+When a PR is merged or abandoned, remove its worktree and prune the stale bookkeeping:
+
+```bash
+git worktree remove /tmp/pr-1234
+git worktree prune
+```
+
+> Note: a branch can only be checked out in one worktree at a time, and each worktree keeps its own `.git` pointer — commit, push, and open the PR from inside that worktree's directory.
+
 ## Docs
 
 Product docs (web):
