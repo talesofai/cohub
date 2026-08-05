@@ -18,6 +18,12 @@ type CreateGenerationTaskRequest = {
   content: GenerationContentBlock[];
   parameters?: Record<string, unknown>;
   meta?: Record<string, unknown>;
+  timeline?: {
+    keyframes: Array<{
+      timeSec: number;
+      source: GenerationSource;
+    }>;
+  };
 };
 ```
 
@@ -45,6 +51,12 @@ type GenerationTaskResult = {
   requestId?: string;
   /** Official request price from provider `usage.cost` */
   cost?: number;
+  timeline?: {
+    durationSec: number;
+    segmentCount: number;
+    requestIds: string[];
+    url: string;
+  };
   meta?: Record<string, unknown>;
 };
 ```
@@ -52,6 +64,28 @@ type GenerationTaskResult = {
 `requestId` and `cost` are observed provider fields captured via `generateResult()`. Older completed tasks may omit them.
 
 `meta` is model-owned input and is validated against the model declaration. Cohub request provenance and task context are stored separately and are never forwarded to generation providers.
+
+## Timeline video generation
+
+MiniMax H3 requests can be orchestrated into one video with fixed image keyframes. `timeline.keyframes` uses absolute whole-second positions; the last keyframe defines the output duration. A keyframe at `timeSec: 0` fixes the initial frame, while each later keyframe fixes the frame at that exact second.
+
+```ts
+await client.generations.createAndWait({
+  spaceId,
+  model: "MiniMax-H3",
+  content: [{ type: "text", text: "A slow cinematic transition between the two reference images" }],
+  timeline: {
+    keyframes: [
+      { timeSec: 0, source: { type: "url", url: "https://example.com/start.png" } },
+      { timeSec: 5, source: { type: "url", url: "https://example.com/end.png" } },
+    ],
+  },
+});
+```
+
+Each interval is split into 4-15 second MiniMax H3 segments. For a gap longer than 15 seconds, Cohub extracts the previous segment's final frame and uses it as the next segment's `first_frame`. Base64 keyframes are staged as temporary public CDN objects because H3 accepts public image URLs only; those objects are removed after assembly. The worker then re-encodes and concatenates all segments, uploads the final MP4 to the turn-object CDN, and returns one video block. Timeline orchestration is Cohub-owned and is never sent as a provider parameter.
+
+Timeline limits are 16 keyframes and 120 seconds total. Keyframe times must be strictly increasing; intervals shorter than four seconds are rejected because they cannot be represented by the official H3 duration range. Timeline requests require the MiniMax H3 adapter and cannot mix additional reference media in `content`.
 
 ## Billing
 
@@ -197,6 +231,11 @@ cohub generate "smoothly transition from the first frame to the last frame" \
   --image first_frame=https://example.com/first.png \
   --image last_frame=https://example.com/last.png \
   --param duration=5
+
+cohub generate "a continuous cinematic transition" \
+  --model MiniMax-H3 \
+  --timeline '{"keyframes":[{"timeSec":0,"source":{"type":"url","url":"https://example.com/start.png"}},{"timeSec":5,"source":{"type":"url","url":"https://example.com/end.png"}}]}' \
+  --output transition.mp4
 
 cohub generate "keep the character identity from all reference images" \
   --model seedance-2-0-fast \

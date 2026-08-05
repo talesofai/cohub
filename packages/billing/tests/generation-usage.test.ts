@@ -31,6 +31,10 @@ test("resolveGenerationUsageType prefers strict adapter families", () => {
 		resolveGenerationUsageType({ adapterType: "kling.videoGenerations" }),
 		COHUB_BILLING_USAGE_TYPES.generationVideo,
 	);
+	assert.equal(
+		resolveGenerationUsageType({ adapterType: "minimax.h3VideoGenerations" }),
+		COHUB_BILLING_USAGE_TYPES.generationVideo,
+	);
 });
 
 test("ambiguous adapters prefer content modality over adapter default", () => {

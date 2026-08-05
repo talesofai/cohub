@@ -72,5 +72,48 @@ test("generation wait rejects invalid billing discount multipliers", async (t) =
 				/Generation task completed without a valid result/,
 			);
 		});
-	}
+  }
+});
+
+test("generation wait accepts timeline metadata", async () => {
+  const client = clientReturning({
+    ...completedGenerationResponse(null),
+    run: {
+      ...completedGenerationResponse(null).run,
+      result: {
+        model: "MiniMax-H3",
+        output: [{ type: "video", source: { type: "url", url: "https://cdn.example.test/timeline.mp4" } }],
+        timeline: {
+          durationSec: 10,
+          segmentCount: 2,
+          requestIds: ["segment-1", "segment-2"],
+          url: "https://cdn.example.test/timeline.mp4",
+        },
+      },
+    },
+  });
+
+  const result = await client.generations.wait("task-run-1");
+  assert.equal(result.timeline?.segmentCount, 2);
+});
+
+test("generation wait rejects invalid timeline metadata", async () => {
+  const client = clientReturning({
+    ...completedGenerationResponse(null),
+    run: {
+      ...completedGenerationResponse(null).run,
+      result: {
+        model: "MiniMax-H3",
+        output: [],
+        timeline: {
+          durationSec: 121,
+          segmentCount: 1,
+          requestIds: ["segment-1"],
+          url: "file:///tmp/timeline.mp4",
+        },
+      },
+    },
+  });
+
+  await assert.rejects(client.generations.wait("task-run-1"), /Generation task completed without a valid result/);
 });

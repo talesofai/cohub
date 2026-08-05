@@ -26,6 +26,7 @@ import {
   type GenerationModelDiscountSnapshot,
   type GenerationTaskData,
   type GenerationTaskResult,
+  type GenerationTimelineResult,
   type GenerationUsageBilling,
 } from "@cohub/protocol/generation";
 import type { TaskPayload } from "@cohub/protocol/task";
@@ -33,6 +34,7 @@ import { defaultJobRetention } from "@cohub/infra/bullmq";
 import { config } from "../config.js";
 import { recordGenerationUsageStatsHourly } from "../generation-usage-stats.js";
 import { redisCommandClient } from "../redis.js";
+import { generateTimeline, parseGenerationTimeline, TimelineGenerationError } from "./generation-timeline.js";
 import { enqueueTask } from "./enqueue.js";
 import { registerTask } from "./registry.js";
 
@@ -93,6 +95,7 @@ function parseGenerationTaskData(data: unknown): GenerationTaskData {
     content: data.content as GenerationTaskData["content"],
     parameters: data.parameters,
     meta: data.meta,
+    ...(data.timeline === undefined ? {} : { timeline: parseGenerationTimeline(data.timeline) }),
     ...(data.modelDiscount === undefined
       ? {}
       : { modelDiscount: parseModelDiscountSnapshot(data.modelDiscount) }),
@@ -338,6 +341,7 @@ registerTask(GENERATION_TASK_TYPE, async (job: Job, context) => {
   if (!userId) throw new Error("Invalid generation task payload: userId is required");
   const data = parseGenerationTaskData(payload.data);
   const taskRunId = context?.taskRunId ?? String(job.id ?? "");
+  let modelDiscountSnapshot: GenerationModelDiscountSnapshot | undefined;
 
   try {
     const declaration = await loader.loadGenerationDeclaration(userId, data.model);
@@ -354,6 +358,7 @@ registerTask(GENERATION_TASK_TYPE, async (job: Job, context) => {
       snapshot: data.modelDiscount,
       resolved: resolvedDiscount,
     });
+    modelDiscountSnapshot = modelDiscount;
     if (resolvedDiscount.benefitKey) {
       console.info("[Billing] worker verified generation model discount", {
         userId,
@@ -384,16 +389,32 @@ registerTask(GENERATION_TASK_TYPE, async (job: Job, context) => {
         });
     if (billingDecision.status === "blocked") throw new BillingAccessBlockedError(billingDecision);
 
-    const result = await createGenerationClient({
+    const generationClient = createGenerationClient({
       models: [declaration],
       includeBuiltinModels: false,
       apiKey: getNetaRouterApiKey(),
-    }).generateResult({
-      model: data.model,
-      content: data.content,
-      parameters: data.parameters,
-      meta: data.meta,
     });
+    const result = data.timeline
+      ? await generateTimeline({
+          declaration,
+          content: data.content,
+          parameters: data.parameters,
+          timeline: data.timeline,
+          spaceId,
+          taskRunId,
+          generate: ({ content, parameters }) => generationClient.generateResult({
+            model: data.model,
+            content,
+            parameters,
+            meta: data.meta,
+          }),
+        })
+      : await generationClient.generateResult({
+          model: data.model,
+          content: data.content,
+          parameters: data.parameters,
+          meta: data.meta,
+        });
 
     const usageType = resolveGenerationUsageType({
       adapterType: declaration.adapter?.type,
@@ -435,6 +456,9 @@ registerTask(GENERATION_TASK_TYPE, async (job: Job, context) => {
       costTotal: result.cost ?? 0,
     });
 
+    const timeline = "timeline" in result && result.timeline && typeof result.timeline === "object"
+      ? result.timeline as GenerationTimelineResult
+      : undefined;
     return {
       model: data.model,
       output: result.content,
@@ -442,8 +466,45 @@ registerTask(GENERATION_TASK_TYPE, async (job: Job, context) => {
       ...(result.cost !== undefined ? { cost: result.cost } : {}),
       billing,
       ...(data.meta ? { meta: data.meta } : {}),
+      ...(timeline ? { timeline } : {}),
     } satisfies GenerationTaskResult;
   } catch (error) {
-    throw normalizeGenerationError(error);
+    const timelineFailure = error instanceof TimelineGenerationError ? error : undefined;
+    if (timelineFailure && modelDiscountSnapshot) {
+      const usageType = resolveGenerationUsageType({
+        adapterType: "minimax.h3VideoGenerations",
+        contentTypes: ["video"],
+      });
+      await recordGenerationUsageBilling({
+        userId,
+        taskRunId,
+        model: data.model,
+        adapterType: "minimax.h3VideoGenerations",
+        officialCostUsd: timelineFailure.cost,
+        modelDiscount: modelDiscountSnapshot,
+        usageType,
+        spaceId,
+        sessionId,
+      }).catch((billingError) => {
+        console.warn("[Billing] failed to record partial timeline usage", {
+          userId,
+          taskRunId,
+          model: data.model,
+          officialCostUsd: timelineFailure.cost,
+          error: billingError,
+        });
+      });
+      await recordGenerationStatsSafe({
+        taskRunId,
+        userId,
+        spaceId,
+        sessionId,
+        usageType,
+        adapterType: "minimax.h3VideoGenerations",
+        model: data.model,
+        costTotal: timelineFailure.cost,
+      });
+    }
+    throw normalizeGenerationError(timelineFailure?.originalError ?? error);
   }
 });

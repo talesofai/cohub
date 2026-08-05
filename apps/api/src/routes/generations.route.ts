@@ -172,6 +172,7 @@ router.post("/", async (c) => {
         content: request.content,
         parameters,
         meta,
+        ...(request.timeline ? { timeline: request.timeline } : {}),
         requestSource,
         modelDiscount,
       },

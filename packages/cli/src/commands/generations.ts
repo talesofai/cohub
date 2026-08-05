@@ -6,6 +6,7 @@ import {
   assertGenerationRequestAllowedByPolicy,
   parseGenerationPolicyFromEnv,
   type GenerationContentBlock,
+  type GenerationTimelineRequest,
 } from "@neta-art/cohub";
 import { createClient } from "../client.js";
 import { resolveSpace } from "../space.js";
@@ -250,6 +251,24 @@ function parseMeta(value?: string): Record<string, unknown> | undefined {
   return parsed as Record<string, unknown>;
 }
 
+function parseTimeline(value?: string): GenerationTimelineRequest | undefined {
+  if (!value) return undefined;
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(value) as unknown;
+  } catch {
+    return error("Invalid timeline", "--timeline must be a JSON object");
+  }
+  if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
+    return error("Invalid timeline", "--timeline must be a JSON object");
+  }
+  const timeline = parsed as { keyframes?: unknown };
+  if (!Array.isArray(timeline.keyframes) || timeline.keyframes.length === 0) {
+    return error("Invalid timeline", "--timeline.keyframes must be a non-empty JSON array");
+  }
+  return parsed as GenerationTimelineRequest;
+}
+
 export function registerGenerations(program: Command): void {
   program
     .command("generate")
@@ -272,6 +291,7 @@ export function registerGenerations(program: Command): void {
     .option("--param <key=value>", "Generation parameter; repeatable, values may be JSON/number/boolean", collect, [])
     .option("--parameters <json>", "Generation parameters as a JSON object")
     .option("--meta <json>", "Meta as a JSON object")
+    .option("--timeline <json>", "Timeline keyframes as a JSON object; image/reference flags cannot be combined")
     .option("-o, --output <path>", "Save generated output to a file or directory")
     .option("--async", "Queue the generation task and return immediately")
     .option("--timeout-ms <ms>", "Maximum time to wait in synchronous mode")
@@ -294,6 +314,7 @@ Examples:
       param: string[];
       parameters?: string;
       meta?: string;
+      timeline?: string;
       output?: string;
       async?: boolean;
       timeoutMs?: string;
@@ -306,6 +327,11 @@ Examples:
         content.push(...await Promise.all(opts.video.map((value) => contentFromPathOrUrl("video", value))));
         content.push(...await Promise.all(opts.audio.map((value) => contentFromPathOrUrl("audio", value))));
         validateMediaRoleModes(content);
+
+        const timeline = parseTimeline(opts.timeline);
+        if (timeline && content.length > 1) {
+          return error("Invalid timeline", "--timeline cannot be combined with --image, --video, or --audio");
+        }
 
         const parameters = parseParams(opts.param, opts.parameters);
         try {
@@ -329,6 +355,7 @@ Examples:
           content,
           parameters,
           meta,
+          ...(timeline ? { timeline } : {}),
         });
 
         if (opts.async) {
