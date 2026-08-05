@@ -1,5 +1,11 @@
 # @neta-art/cohub
 
+## 4.8.0
+
+### Minor Changes
+
+- 93c1267: Add platform-managed Cohub Balance components to Work Commerce products, including SDK response types, retry-safe checkout attempts, and CLI creation and listing support.
+
 ## 4.7.1
 
 ### Patch Changes
