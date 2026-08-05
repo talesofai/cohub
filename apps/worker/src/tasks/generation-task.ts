@@ -470,6 +470,14 @@ registerTask(GENERATION_TASK_TYPE, async (job: Job, context) => {
     } satisfies GenerationTaskResult;
   } catch (error) {
     const timelineFailure = error instanceof TimelineGenerationError ? error : undefined;
+    if (timelineFailure?.requestIds.length) {
+      console.warn("[GenerationTimeline] provider segments failed", {
+        userId,
+        taskRunId,
+        model: data.model,
+        requestIds: timelineFailure.requestIds,
+      });
+    }
     if (timelineFailure && modelDiscountSnapshot) {
       const usageType = resolveGenerationUsageType({
         adapterType: "minimax.h3VideoGenerations",
