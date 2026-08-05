@@ -33,12 +33,17 @@ parameters:
     default: 720p
     enum: [480p, 720p]
     description: Output video resolution.
-  aspect_ratio:
+  ratio:
     type: string
     optional: true
     default: "16:9"
-    enum: ["16:9", "9:16", "1:1", "4:3", "3:2", "2:3", "3:4", "21:9", adaptive]
-    description: Output aspect ratio. Use adaptive to let the model choose.
+    enum: ["16:9", "9:16"]
+    description: Supported output aspect ratios are 16:9 and 9:16.
+  aspect_ratio:
+    type: string
+    optional: true
+    enum: ["16:9", "9:16"]
+    description: Deprecated compatibility alias for ratio. Use ratio.
   fps:
     type: integer
     optional: true
@@ -94,4 +99,4 @@ examples:
       parameters:
         duration: 5
         resolution: 720p
-        aspect_ratio: "16:9"
+        ratio: "16:9"

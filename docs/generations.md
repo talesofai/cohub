@@ -121,6 +121,8 @@ Generation declarations live in:
 
 Platform declarations are loaded from `platform/.cohub/generations`, and user declarations from `users/<userId>/.cohub/generations`. User declarations override platform declarations with the same `model`.
 
+Seedance 2.0 and Seedance 2.0 Fast accept `ratio: "16:9"` or `ratio: "9:16"`. The legacy `aspect_ratio` parameter remains accepted as a compatibility alias and is normalized to `ratio`; new requests and declarations should use `ratio`.
+
 Declarations use `neta.generation.model.v1`. Adapter credentials and provider base URLs are not stored in model declarations. Worker execution uses `NETA_ROUTER_API_KEY`, while provider routing defaults are handled by `@neta-art/generation`.
 
 Minimal shape:
@@ -190,7 +192,8 @@ cohub generate "a vibrant infographic explaining photosynthesis" \
 cohub generate "a cat playing piano in a cozy jazz club" \
   --model seedance-2-0-fast \
   --param duration=5 \
-  --param resolution=720p
+  --param resolution=720p \
+  --param ratio=16:9
 
 cohub generate "smoothly transition from the first frame to the last frame" \
   --model seedance-2-0-fast \
