@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
+import { GENERATION_TIMELINE_MAX_KEYFRAME_BASE64_CHARS } from "@cohub/protocol/generation";
 import { createGenerationTaskRequestSchema } from "./schema.js";
 
 const baseRequest = {
@@ -57,4 +58,20 @@ test("generation schema rejects non-image timeline base64 sources", () => {
   });
   assert.equal(result.success, false);
   if (!result.success) assert.match(result.error.issues.at(-1)?.message ?? "", /image sources/);
+});
+
+test("generation schema rejects timelines whose base64 data is too large in total", () => {
+  const frame = "A".repeat(GENERATION_TIMELINE_MAX_KEYFRAME_BASE64_CHARS);
+  const result = createGenerationTaskRequestSchema.safeParse({
+    ...baseRequest,
+    timeline: {
+      keyframes: [
+        { timeSec: 4, source: { type: "base64", mediaType: "image/png", data: frame } },
+        { timeSec: 8, source: { type: "base64", mediaType: "image/png", data: frame } },
+        { timeSec: 12, source: { type: "base64", mediaType: "image/png", data: frame } },
+      ],
+    },
+  });
+  assert.equal(result.success, false);
+  if (!result.success) assert.match(result.error.issues.at(-1)?.message ?? "", /in total/);
 });

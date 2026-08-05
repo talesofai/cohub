@@ -9,7 +9,8 @@ import {
   serializeBillingWarning,
 } from "@cohub/billing";
 import { Hono, type Context } from "hono";
-import { createGenerationClient, GenerationValidationError } from "@neta-art/generation";
+import { bodyLimit } from "hono/body-limit";
+import { createGenerationClient, GenerationValidationError, getGenerationAdapter } from "@neta-art/generation";
 import {
   GENERATION_TASK_TYPE,
   type CreateGenerationTaskResponse,
@@ -30,6 +31,14 @@ import { getRequestSource } from "../lib/request-source.js";
 
 const logger = createLogger({ serviceName: "cohub-api" });
 const router = new Hono();
+const MAX_GENERATION_REQUEST_BYTES = 48 * 1024 * 1024;
+const generationRequestBodyLimit = bodyLimit({
+  maxSize: MAX_GENERATION_REQUEST_BYTES,
+  onError: (c) => c.json({
+    code: "generation_request_too_large",
+    message: "Generation request exceeds the 48MB limit.",
+  }, 413),
+});
 const billingUsageGate = createBillingUsageGate({
   operations: billingOperations,
   onEvaluationError: (error, gateInput) => {
@@ -50,7 +59,7 @@ function zodDetails(error: { issues: Array<{ path: PropertyKey[]; message: strin
   }));
 }
 
-router.post("/", async (c) => {
+router.post("/", generationRequestBodyLimit, async (c) => {
   const user = useAuth(c);
   if (user instanceof Response) return user;
   const parsed = createGenerationTaskRequestSchema.safeParse(await c.req.json().catch(() => null));
@@ -85,6 +94,34 @@ router.post("/", async (c) => {
   const declaration = await loadGenerationDeclaration(user.uuid, request.model);
   if (!declaration) {
     return generationError(c, 404, "generation_model_not_found", `Generation model not found: ${request.model}`);
+  }
+  if (request.timeline) {
+    if (declaration.adapter?.type !== "minimax.h3VideoGenerations") {
+      return generationError(
+        c,
+        400,
+        "timeline_model_unsupported",
+        "Timeline generation currently requires the MiniMax H3 video model.",
+      );
+    }
+    try {
+      getGenerationAdapter(declaration.adapter.type);
+    } catch {
+      return generationError(
+        c,
+        503,
+        "timeline_adapter_unavailable",
+        "MiniMax H3 timeline generation is temporarily unavailable while its provider adapter is being deployed.",
+      );
+    }
+    if (request.content.some((block) => block.type !== "text")) {
+      return generationError(
+        c,
+        400,
+        "timeline_content_unsupported",
+        "Timeline generation content may contain text only; use timeline keyframes for images.",
+      );
+    }
   }
 
   let parameters: Record<string, unknown> | undefined;

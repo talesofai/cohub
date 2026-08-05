@@ -1,12 +1,13 @@
 import { z } from "zod";
 import {
+  GENERATION_TIMELINE_MAX_BASE64_CHARS,
   GENERATION_TIMELINE_MAX_DURATION_SEC,
   GENERATION_TIMELINE_MAX_KEYFRAMES,
+  GENERATION_TIMELINE_MAX_KEYFRAME_BASE64_CHARS,
   GENERATION_TIMELINE_MIN_INTERVAL_SEC,
 } from "@cohub/protocol/generation";
 
 const metaSchema = z.record(z.string(), z.unknown());
-const MAX_BASE64_CHARS = 14 * 1024 * 1024;
 
 function isHttpUrl(value: string): boolean {
   try {
@@ -19,7 +20,11 @@ function isHttpUrl(value: string): boolean {
 
 const generationSourceSchema = z.discriminatedUnion("type", [
   z.object({ type: z.literal("url"), url: z.string().url() }),
-  z.object({ type: z.literal("base64"), mediaType: z.string().min(1), data: z.string().min(1).max(MAX_BASE64_CHARS) }),
+  z.object({
+    type: z.literal("base64"),
+    mediaType: z.string().min(1),
+    data: z.string().min(1).max(GENERATION_TIMELINE_MAX_KEYFRAME_BASE64_CHARS),
+  }),
 ]);
 
 const generationTimelineKeyframeSchema = z.object({
@@ -47,6 +52,17 @@ const generationTimelineSchema = z.object({
       });
     }
     previousTime = keyframe.timeSec;
+  }
+  const totalBase64Chars = timeline.keyframes.reduce(
+    (total, keyframe) => total + (keyframe.source.type === "base64" ? keyframe.source.data.length : 0),
+    0,
+  );
+  if (totalBase64Chars > GENERATION_TIMELINE_MAX_BASE64_CHARS) {
+    context.addIssue({
+      code: "custom",
+      path: ["keyframes"],
+      message: `Timeline base64 image data cannot exceed ${GENERATION_TIMELINE_MAX_BASE64_CHARS} characters in total`,
+    });
   }
   let intervalStart = 0;
   for (const [index, keyframe] of timeline.keyframes.entries()) {

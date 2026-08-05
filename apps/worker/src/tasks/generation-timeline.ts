@@ -1,5 +1,5 @@
 import { createReadStream, createWriteStream } from "node:fs";
-import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { Readable, Transform } from "node:stream";
@@ -17,21 +17,25 @@ import {
 } from "@neta-art/generation";
 import {
   GENERATION_TIMELINE_MAX_DURATION_SEC,
+  GENERATION_TIMELINE_MAX_BASE64_CHARS,
   GENERATION_TIMELINE_MAX_KEYFRAMES,
+  GENERATION_TIMELINE_MAX_KEYFRAME_BASE64_CHARS,
   GENERATION_TIMELINE_MIN_INTERVAL_SEC,
   type GenerationTimelineKeyframe,
   type GenerationTimelineRequest,
   type GenerationTimelineResult,
 } from "@cohub/protocol/generation";
+import { createLogger } from "@cohub/infra/logging";
 import { config } from "../config.js";
 
+const logger = createLogger({ serviceName: "cohub-worker" });
 const MIN_SEGMENT_DURATION_SEC = GENERATION_TIMELINE_MIN_INTERVAL_SEC;
 const MAX_SEGMENT_DURATION_SEC = 15;
 const MAX_VIDEO_BYTES = 512 * 1024 * 1024;
-const MAX_TIMELINE_BASE64_CHARS = 14 * 1024 * 1024;
 const VIDEO_DOWNLOAD_TIMEOUT_MS = 5 * 60 * 1000;
 const FFMPEG_TIMEOUT_MS = 10 * 60 * 1000;
 const IMMUTABLE_PUBLIC_CACHE_CONTROL = "public, max-age=31536000, immutable";
+const TEMPORARY_OBJECT_CACHE_CONTROL = "no-store";
 
 type TimelineSegmentPlan = {
   startSec: number;
@@ -47,12 +51,14 @@ export type TimelineGenerationResult = GenerationResult & { timeline: Generation
 export class TimelineGenerationError extends Error {
   readonly originalError: unknown;
   readonly cost: number;
+  readonly requestIds: string[];
 
-  constructor(originalError: unknown, cost: number) {
+  constructor(originalError: unknown, cost: number, requestIds: readonly string[] = []) {
     super(originalError instanceof Error ? originalError.message : String(originalError));
     this.name = "TimelineGenerationError";
     this.originalError = originalError;
     this.cost = cost;
+    this.requestIds = [...requestIds];
   }
 }
 
@@ -91,7 +97,7 @@ function isGenerationSource(value: unknown): value is GenerationSource {
     value.mediaType.toLowerCase().startsWith("image/") &&
     typeof value.data === "string" &&
     value.data.length > 0 &&
-    value.data.length <= MAX_TIMELINE_BASE64_CHARS
+    value.data.length <= GENERATION_TIMELINE_MAX_KEYFRAME_BASE64_CHARS
   );
 }
 
@@ -107,6 +113,7 @@ export function parseGenerationTimeline(value: unknown): GenerationTimelineReque
   }
 
   const keyframes: GenerationTimelineKeyframe[] = [];
+  let totalBase64Chars = 0;
   let previousTime = -1;
   for (const [index, rawKeyframe] of value.keyframes.entries()) {
     if (!isRecord(rawKeyframe)) {
@@ -121,6 +128,14 @@ export function parseGenerationTimeline(value: unknown): GenerationTimelineReque
     }
     if (!isGenerationSource(rawKeyframe.source)) {
       throw new GenerationValidationError(`Generation timeline keyframe ${index + 1} must contain an image source`);
+    }
+    if (rawKeyframe.source.type === "base64") {
+      totalBase64Chars += rawKeyframe.source.data.length;
+      if (totalBase64Chars > GENERATION_TIMELINE_MAX_BASE64_CHARS) {
+        throw new GenerationValidationError(
+          `Generation timeline base64 image data cannot exceed ${GENERATION_TIMELINE_MAX_BASE64_CHARS} characters in total`,
+        );
+      }
     }
     keyframes.push({ timeSec, source: rawKeyframe.source });
     previousTime = timeSec;
@@ -206,11 +221,15 @@ function runFfmpeg(args: string[]): Promise<void> {
 }
 
 async function extractLastFrame(videoPath: string, framePath: string): Promise<void> {
+  // Decode the final second in reverse so the first emitted frame is the
+  // actual final frame, independent of the video's frame rate.
   await runFfmpeg([
     "-sseof",
     "-1",
     "-i",
     videoPath,
+    "-vf",
+    "reverse",
     "-frames:v",
     "1",
     "-f",
@@ -238,10 +257,19 @@ async function downloadVideo(source: GenerationSource, targetPath: string): Prom
   }
   let response: Response;
   try {
-    response = await fetch(parsed, { signal: AbortSignal.timeout(VIDEO_DOWNLOAD_TIMEOUT_MS) });
+    response = await fetch(parsed, {
+      redirect: "manual",
+      signal: AbortSignal.timeout(VIDEO_DOWNLOAD_TIMEOUT_MS),
+    });
   } catch (error) {
     throw new GenerationProviderError("Failed to download generated timeline segment", {
       details: { url: source.url, reason: error instanceof Error ? error.message : String(error) },
+    });
+  }
+  if (response.status >= 300 && response.status < 400) {
+    throw new GenerationProviderError("Generated timeline segment URL redirects and was rejected", {
+      status: response.status,
+      details: { url: source.url, location: response.headers.get("location") },
     });
   }
   if (!response.ok || !response.body) {
@@ -302,6 +330,8 @@ function getStorageClient(): S3Client {
   storageClient ??= new S3Client({
     endpoint: config.turnObjectS3Endpoint,
     region: config.turnObjectS3Region,
+    forcePathStyle: false,
+    requestChecksumCalculation: "WHEN_REQUIRED",
     credentials: {
       accessKeyId: config.turnObjectS3AccessKeyId,
       secretAccessKey: config.turnObjectS3SecretAccessKey,
@@ -326,29 +356,48 @@ async function uploadTimelineObject(input: {
   filePath: string;
   objectKey: string;
   contentType: string;
+  cacheControl?: string;
 }): Promise<void> {
+  const file = await stat(input.filePath);
+  if (!file.isFile()) throw new Error("Timeline output must be a regular file");
   await getStorageClient().send(new PutObjectCommand({
     Bucket: config.turnObjectS3Bucket,
     Key: input.objectKey,
     Body: createReadStream(input.filePath),
+    ContentLength: file.size,
     ContentType: input.contentType,
-    CacheControl: IMMUTABLE_PUBLIC_CACHE_CONTROL,
+    CacheControl: input.cacheControl ?? TEMPORARY_OBJECT_CACHE_CONTROL,
   }));
 }
 
 async function deleteTimelineObjects(objectKeys: ReadonlySet<string>): Promise<void> {
   if (!storageClient || !config.turnObjectS3Bucket || objectKeys.size === 0) return;
-  await Promise.allSettled(
-    [...objectKeys].map((Key) => storageClient?.send(new DeleteObjectCommand({
-      Bucket: config.turnObjectS3Bucket,
-      Key,
-    }))),
-  );
+  let pendingKeys = [...objectKeys];
+  for (let attempt = 1; attempt <= 2 && pendingKeys.length > 0; attempt += 1) {
+    const results = await Promise.allSettled(
+      pendingKeys.map((Key) => storageClient?.send(new DeleteObjectCommand({
+        Bucket: config.turnObjectS3Bucket,
+        Key,
+      }))),
+    );
+    pendingKeys = pendingKeys.filter((_, index) => results[index]?.status === "rejected");
+  }
+  if (pendingKeys.length > 0) {
+    logger.warn("[GenerationTimeline] failed to delete temporary objects", {
+      bucket: config.turnObjectS3Bucket,
+      keys: pendingKeys,
+    });
+  }
 }
 
 async function uploadTimelineVideo(input: { filePath: string; spaceId: string; taskRunId: string }): Promise<string> {
   const objectKey = timelineObjectKey({ ...input, fileName: "timeline.mp4" });
-  await uploadTimelineObject({ filePath: input.filePath, objectKey, contentType: "video/mp4" });
+  await uploadTimelineObject({
+    filePath: input.filePath,
+    objectKey,
+    contentType: "video/mp4",
+    cacheControl: IMMUTABLE_PUBLIC_CACHE_CONTROL,
+  });
   return timelineObjectUrl(objectKey);
 }
 
@@ -406,6 +455,54 @@ function textOnlyContent(content: GenerationContentBlock[]): GenerationContentBl
   return text;
 }
 
+function addRequestId(requestIds: Set<string>, value: unknown): void {
+  if (typeof value === "string" && value.trim()) requestIds.add(value.trim());
+}
+
+function collectBlockRequestIds(requestIds: Set<string>, block: GenerationContentBlock): void {
+  if (!block.meta || !isRecord(block.meta)) return;
+  addRequestId(requestIds, block.meta.request_id);
+  addRequestId(requestIds, block.meta.requestId);
+  addRequestId(requestIds, block.meta.task_id);
+  addRequestId(requestIds, block.meta.taskId);
+}
+
+type ProviderObservation = {
+  cost?: number;
+  requestIds: string[];
+};
+
+function observeProviderFailure(error: unknown): ProviderObservation {
+  const result: ProviderObservation = { requestIds: [] };
+  const requestIds = new Set<string>();
+  const visited = new Set<object>();
+
+  const visit = (value: unknown, depth: number): void => {
+    if (depth > 5 || value === null || typeof value !== "object") return;
+    if (visited.has(value)) return;
+    visited.add(value);
+    if (Array.isArray(value)) {
+      for (const item of value) visit(item, depth + 1);
+      return;
+    }
+    if (!isRecord(value)) return;
+    for (const [key, child] of Object.entries(value)) {
+      const normalizedKey = key.toLowerCase();
+      if (normalizedKey === "cost" && result.cost === undefined && typeof child === "number" && Number.isFinite(child) && child > 0) {
+        result.cost = child;
+      }
+      if (normalizedKey === "request_id" || normalizedKey === "requestid" || normalizedKey === "task_id" || normalizedKey === "taskid") {
+        addRequestId(requestIds, child);
+      }
+      visit(child, depth + 1);
+    }
+  };
+
+  if (error instanceof GenerationProviderError) visit(error.details, 0);
+  result.requestIds = [...requestIds];
+  return result;
+}
+
 export async function generateTimeline(input: GenerateTimelineInput): Promise<TimelineGenerationResult> {
   if (input.declaration.adapter.type !== "minimax.h3VideoGenerations") {
     throw new GenerationValidationError("Timeline generation currently requires the MiniMax H3 video model");
@@ -416,7 +513,7 @@ export async function generateTimeline(input: GenerateTimelineInput): Promise<Ti
   getStorageClient();
   const workDir = await mkdtemp(join(tmpdir(), "cohub-generation-timeline-"));
   const videoPaths: string[] = [];
-  const requestIds: string[] = [];
+  const requestIds = new Set<string>();
   const uploadedObjectKeys = new Set<string>();
   let totalCost = 0;
   let generatedFrame: GenerationSource | undefined;
@@ -436,14 +533,23 @@ export async function generateTimeline(input: GenerateTimelineInput): Promise<Ti
       if (startSource) segmentContent.push({ type: "image", source: startSource, meta: { role: "first_frame" } });
       if (segment.endSource) segmentContent.push({ type: "image", source: segment.endSource, meta: { role: "last_frame" } });
 
-      const result = await input.generate({
-        content: segmentContent,
-        parameters: { ...(input.parameters ?? {}), duration: segment.durationSec },
-      });
-      if (typeof result.requestId === "string" && result.requestId.trim()) requestIds.push(result.requestId);
+      let result: GenerationResult;
+      try {
+        result = await input.generate({
+          content: segmentContent,
+          parameters: { ...(input.parameters ?? {}), duration: segment.durationSec },
+        });
+      } catch (error) {
+        const observation = observeProviderFailure(error);
+        if (observation.cost !== undefined) totalCost += observation.cost;
+        for (const requestId of observation.requestIds) requestIds.add(requestId);
+        throw error;
+      }
+      addRequestId(requestIds, result.requestId);
       if (typeof result.cost === "number" && Number.isFinite(result.cost) && result.cost > 0) totalCost += result.cost;
       const video = result.content.find((block) => block.type === "video");
       if (!video) throw new GenerationProviderError("Timeline segment generation returned no video");
+      collectBlockRequestIds(requestIds, video);
       const videoPath = join(workDir, `segment-${String(index + 1).padStart(2, "0")}.mp4`);
       await downloadVideo(video.source, videoPath);
       videoPaths.push(videoPath);
@@ -474,12 +580,12 @@ export async function generateTimeline(input: GenerateTimelineInput): Promise<Ti
       timeline: {
         durationSec: plan.at(-1)?.endSec ?? 0,
         segmentCount: plan.length,
-        requestIds,
+        requestIds: [...requestIds],
         url,
       },
     };
   } catch (error) {
-    if (totalCost > 0) throw new TimelineGenerationError(error, totalCost);
+    if (totalCost > 0) throw new TimelineGenerationError(error, totalCost, [...requestIds]);
     throw error;
   } finally {
     await deleteTimelineObjects(uploadedObjectKeys);

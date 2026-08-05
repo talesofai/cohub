@@ -20,6 +20,10 @@ export const GENERATION_BILLING_RETRY_TASK_TYPE = "generation.billing_retry" as 
 export const GENERATION_TIMELINE_MAX_KEYFRAMES = 16;
 export const GENERATION_TIMELINE_MAX_DURATION_SEC = 120;
 export const GENERATION_TIMELINE_MIN_INTERVAL_SEC = 4;
+/** Maximum encoded image data accepted across one timeline request. */
+export const GENERATION_TIMELINE_MAX_BASE64_CHARS = 32 * 1024 * 1024;
+/** Maximum encoded image data accepted for one timeline keyframe. */
+export const GENERATION_TIMELINE_MAX_KEYFRAME_BASE64_CHARS = 14 * 1024 * 1024;
 
 /** A fixed visual checkpoint in a generated video timeline. */
 export type GenerationTimelineKeyframe = {
