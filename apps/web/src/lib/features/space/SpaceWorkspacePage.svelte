@@ -89,6 +89,7 @@ import type { SpaceFsNode } from "$lib/space-fs";
 import {
 	buildSpaceNewSessionRoute,
 	buildSpaceSessionRoute,
+	getSpaceRouteIdentity,
 } from "$lib/space-routes";
 import {
 	activateSpaceStyle,
@@ -294,6 +295,13 @@ const spaceOwnerUsername = $derived(
 			: null),
 );
 const spaceSlug = $derived(space?.slug ?? null);
+const spaceRouteTarget = $derived(
+	getSpaceRouteIdentity({
+		id: spaceId,
+		slug: spaceSlug,
+		ownerUsername: spaceOwnerUsername,
+	}),
+);
 // Connection box filled when spaceRealtime is ready.
 let connectionStateBox: {
 	current: "idle" | "connecting" | "reconnecting" | "open" | "closed" | "error";
@@ -301,11 +309,12 @@ let connectionStateBox: {
 
 const sessionChat = createSessionChatHost({
 	openPath: (target) => openLinkedInlineFile(target),
+	getSpaceRouteIdentity: () => spaceRouteTarget,
 	router: {
 		toSession: async (sessionId, opts) => {
 			// Keep open file/board/port preview when new chat becomes a real session.
 			await goto(
-				withCurrentPreview(buildSpaceSessionRoute(spaceId, sessionId)),
+				withCurrentPreview(buildSpaceSessionRoute(spaceRouteTarget, sessionId)),
 				{
 					replaceState: opts?.replace ?? true,
 					keepFocus: true,
@@ -317,7 +326,7 @@ const sessionChat = createSessionChatHost({
 			// Merge turn + current preview; buildSpaceSessionTurnRoute alone drops preview.
 			await goto(
 				withPreviewParam(
-					buildSpaceSessionRoute(spaceId, sessionId),
+					buildSpaceSessionRoute(spaceRouteTarget, sessionId),
 					new URLSearchParams({ turn: String(sequence) }),
 					readPreviewFromSearch(
 						typeof window !== "undefined" ? window.location.search : null,
@@ -331,11 +340,14 @@ const sessionChat = createSessionChatHost({
 			);
 		},
 		toNewSession: async (opts) => {
-			await goto(withCurrentPreview(buildSpaceNewSessionRoute(spaceId)), {
-				replaceState: opts?.replace ?? false,
-				keepFocus: true,
-				noScroll: true,
-			});
+			await goto(
+				withCurrentPreview(buildSpaceNewSessionRoute(spaceRouteTarget)),
+				{
+					replaceState: opts?.replace ?? false,
+					keepFocus: true,
+					noScroll: true,
+				},
+			);
 		},
 	},
 	getConnectionState: () => connectionStateBox.current,

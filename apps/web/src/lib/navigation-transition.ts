@@ -27,7 +27,9 @@ export function isUserNewSessionPath(pathname: string): boolean {
 
 /** Space-scoped chat detail (not the "new" landing). */
 export function isSpaceSessionDetailPath(pathname: string): boolean {
-	const match = pathname.match(/^\/spaces\/[^/]+\/sessions\/([^/]+)\/?$/);
+	const match = pathname.match(
+		/^\/(?:spaces\/[^/]+|[^/]+\/[^/]+)\/sessions\/([^/]+)\/?$/,
+	);
 	if (!match) return false;
 	return match[1] !== "new";
 }

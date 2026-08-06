@@ -1,10 +1,16 @@
 import type { SpaceAccessPolicy } from "@neta-art/cohub";
 import { copyTextToClipboard } from "$lib/clipboard";
 import { sdk } from "$lib/sdk";
-import { buildSpaceSessionRoute } from "$lib/space-routes";
+import {
+	buildSpaceSessionRoute,
+	type SpaceRouteIdentity,
+} from "$lib/space-routes";
 
-function sessionShareUrl(spaceId: string, targetSessionId: string): string {
-	return `${window.location.origin}${buildSpaceSessionRoute(spaceId, targetSessionId)}`;
+function sessionShareUrl(
+	space: SpaceRouteIdentity,
+	targetSessionId: string,
+): string {
+	return `${window.location.origin}${buildSpaceSessionRoute(space, targetSessionId)}`;
 }
 
 const PUBLIC_POLICY: SpaceAccessPolicy = {
@@ -13,7 +19,7 @@ const PUBLIC_POLICY: SpaceAccessPolicy = {
 };
 
 export function createSessionShareController(options: {
-	getSpaceId: () => string;
+	getSpaceIdentity: () => SpaceRouteIdentity;
 	canManageAccess: () => boolean;
 }) {
 	let open = $state(false);
@@ -96,7 +102,7 @@ export function createSessionShareController(options: {
 		if (!sessionId) return;
 		error = "";
 		try {
-			const url = sessionShareUrl(options.getSpaceId(), sessionId);
+			const url = sessionShareUrl(options.getSpaceIdentity(), sessionId);
 			await copyTextToClipboard(url);
 			markCopied();
 		} catch (err) {
@@ -178,7 +184,7 @@ export function createSessionShareController(options: {
 		},
 		get shareUrl() {
 			if (!sessionId) return "";
-			return sessionShareUrl(options.getSpaceId(), sessionId);
+			return sessionShareUrl(options.getSpaceIdentity(), sessionId);
 		},
 		get copied() {
 			return copied;

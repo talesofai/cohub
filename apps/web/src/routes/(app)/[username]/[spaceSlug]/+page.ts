@@ -1,11 +1,8 @@
 import { readPreviewFromSearch } from "$lib/features/space/modules/workspace-preview-route";
-import { sdk } from "$lib/sdk";
-import { cacheSpaceRecordSoon } from "$lib/stores/space-record-cache";
 import type { PageLoad } from "./$types";
 
-export const load: PageLoad = async ({ params, url }) => {
-	const space = await sdk.spaces.getBySlug(params.username, params.spaceSlug);
-	cacheSpaceRecordSoon(space);
+export const load: PageLoad = async ({ parent, url }) => {
+	const { space } = await parent();
 	const sessionId = url.searchParams.get("session");
 	// Prefer ?preview=; legacy ?file= maps to file preview.
 	const preview =

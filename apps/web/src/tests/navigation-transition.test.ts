@@ -24,7 +24,9 @@ test("isUserNewSessionPath matches draft route", () => {
 
 test("isSpaceSessionDetailPath ignores new landing", () => {
 	assert.equal(isSpaceSessionDetailPath("/spaces/s1/sessions/abc"), true);
+	assert.equal(isSpaceSessionDetailPath("/alice/lab/sessions/abc"), true);
 	assert.equal(isSpaceSessionDetailPath("/spaces/s1/sessions/new"), false);
+	assert.equal(isSpaceSessionDetailPath("/alice/lab/sessions/new"), false);
 	assert.equal(isSpaceSessionDetailPath("/sessions/abc"), false);
 });
 

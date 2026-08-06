@@ -25,6 +25,32 @@ test("prefers page.data.spaceId over path (pretty URL entry)", () => {
 	assert.deepEqual(ctx.labelResource, { type: "session", ref: "ses_9" });
 });
 
+test("parses resources from friendly Space paths", () => {
+	const session = resolveWorkspaceRouteContext({
+		pathname: "/alice/lab/sessions/ses_9",
+		pageData: { spaceId: "spc_pretty" },
+	});
+	assert.equal(session.spaceId, "spc_pretty");
+	assert.equal(session.sessionId, "ses_9");
+	assert.deepEqual(session.labelResource, { type: "session", ref: "ses_9" });
+
+	const checkpoint = resolveWorkspaceRouteContext({
+		pathname: "/alice/lab/checkpoints/cp_1",
+		pageData: { spaceId: "spc_pretty" },
+	});
+	assert.equal(checkpoint.checkpointId, "cp_1");
+	assert.deepEqual(checkpoint.labelResource, {
+		type: "checkpoint",
+		ref: "cp_1",
+	});
+
+	const file = resolveWorkspaceRouteContext({
+		pathname: "/alice/lab/files/docs/a%20b.md",
+		pageData: { spaceId: "spc_pretty" },
+	});
+	assert.equal(file.filePath, "docs/a b.md");
+});
+
 test("page.data.sessionId wins over query and path", () => {
 	const ctx = resolveWorkspaceRouteContext({
 		pathname: "/spaces/spc_1/sessions/ses_path",

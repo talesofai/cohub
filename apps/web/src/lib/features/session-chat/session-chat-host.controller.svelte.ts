@@ -61,6 +61,7 @@ import { sortSessionsByRecentActivity } from "$lib/session-sort";
 import type { TimelineItem } from "$lib/session-tree";
 import { buildTurnTimelineItems } from "$lib/session-turn-render";
 import type { NewChatComposerApplyPayload } from "$lib/space-config";
+import type { SpaceRouteIdentity } from "$lib/space-routes";
 import { materializeSpaceEntries } from "$lib/space-upload";
 import { authStore } from "$lib/stores/auth.svelte";
 import {
@@ -177,6 +178,7 @@ const TERMINAL_GENERATION_STATUSES = new Set([
 ]);
 
 export type SessionChatHostOptions = SessionChatEnvironment & {
+	getSpaceRouteIdentity?: () => SpaceRouteIdentity;
 	getConnectionState: () =>
 		| "idle"
 		| "connecting"
@@ -251,7 +253,8 @@ export function createSessionChatHost(options: SessionChatHostOptions) {
 		getSpaceId: () => spaceId,
 	});
 	const share = createSessionShareController({
-		getSpaceId: () => spaceId,
+		getSpaceIdentity: () =>
+			options.getSpaceRouteIdentity?.() ?? { id: spaceId },
 		canManageAccess: () => options.canManageSessionAccess?.() ?? false,
 	});
 

@@ -273,7 +273,9 @@ router.get("/spaces", async (c) => {
         slug: space.slug ?? null,
         title,
         summary: space.description ?? null,
-        spaceUrl: `/spaces/${space.id}`,
+        spaceUrl: ownerProfile.username && space.slug
+          ? `/${encodeURIComponent(ownerProfile.username)}/${encodeURIComponent(space.slug)}`
+          : `/spaces/${space.id}`,
         avatarUrl: normalizeExploreImageUrl(publicProfile.avatarUrl),
         avatarAlt: publicProfile.avatarUrl ? `${title} avatar` : null,
         ownerDisplayName: ownerProfile?.displayName ?? null,
