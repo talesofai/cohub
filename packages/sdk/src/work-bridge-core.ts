@@ -1,6 +1,10 @@
 import type { Permission } from "./types.js";
 import type { WorkRecord } from "./apis/works.js";
-import type { WorkRuntimeCheckoutState } from "./work-runtime.js";
+import type {
+	WorkRuntimeCheckoutState,
+	WorkRuntimeNetaCharacter,
+	WorkRuntimeNetaCharacterPage,
+} from "./work-runtime.js";
 import {
 	clearGrantedWorkScopes,
 	hasGrantedWorkScopes,
@@ -16,6 +20,21 @@ export type WorkBridgeCoreWork = Pick<
 	WorkRecord,
 	"id" | "spaceId" | "slug" | "userUuid" | "workScopes" | "allowedViewerScopes"
 >;
+
+const DEFAULT_NETA_API_ORIGIN = "https://api.talesofai.cn";
+const NETA_CHARACTER_UUID_RE =
+	/^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
+
+type NetaCharacterOperation = "search" | "favorites" | "favorite";
+
+type NetaCharacterRequest = {
+	operation?: unknown;
+	keywords?: unknown;
+	pageIndex?: unknown;
+	pageSize?: unknown;
+	uuid?: unknown;
+	isCancel?: unknown;
+};
 
 /**
  * A pending authorize request surfaced to the UI as a consent dialog.
@@ -86,6 +105,8 @@ export type WorkBridgeCoreConfig = {
 	isBackground?: boolean;
 	/** Base origin for Cohub API requests (e.g. "https://cohub.run"). */
 	apiOrigin: string;
+	/** Base origin for the first-party TalesofAI API. */
+	netaApiOrigin?: string;
 	/** Sends a reply payload back to the work runtime. */
 	reply: (requestId: string, payload: Record<string, unknown>) => void;
 	/** Reads the current checkout state (typically derived from the page URL). */
@@ -140,10 +161,12 @@ export function createWorkBridgeCore(
 	const { work, reply, getCheckoutState, getAccessToken, getViewerUuid } =
 		config;
 	const apiOrigin = config.apiOrigin;
+	const netaApiOrigin = (config.netaApiOrigin ?? DEFAULT_NETA_API_ORIGIN).replace(/\/+$/, "");
 	const isBackground = config.isBackground ?? false;
 	const onStateChange = config.onStateChange;
 
 	let workToken: string | null = null;
+	const grantedNetaScopes = new Set<Permission>();
 
 	const state: WorkBridgeDialogState = {
 		authOpen: false,
@@ -217,7 +240,144 @@ export function createWorkBridgeCore(
 		const token = readTokenResponse(await response.json());
 		if (!token) throw new Error("Invalid work authorization response.");
 		workToken = token;
+		for (const scope of scopes) {
+			if (scope === "neta.character.read" || scope === "neta.character.favorite") {
+				grantedNetaScopes.add(scope);
+			}
+		}
 		return workToken;
+	}
+
+	function readPageNumber(value: unknown, fallback: number, max: number) {
+		return typeof value === "number" && Number.isInteger(value) && value >= 0
+			? Math.min(value, max)
+			: fallback;
+	}
+
+	function readPageSize(value: unknown) {
+		return typeof value === "number" && Number.isInteger(value) && value >= 1
+			? Math.min(value, 40)
+			: 20;
+	}
+
+	function readNetaCharacter(value: unknown): WorkRuntimeNetaCharacter | null {
+		if (!value || typeof value !== "object" || Array.isArray(value)) return null;
+		const record = value as Record<string, unknown>;
+		if (typeof record.uuid !== "string" || !NETA_CHARACTER_UUID_RE.test(record.uuid)) return null;
+		const configValue = record.config && typeof record.config === "object" && !Array.isArray(record.config)
+			? record.config as Record<string, unknown>
+			: null;
+		const charInfo = configValue?.char_info && typeof configValue.char_info === "object" && !Array.isArray(configValue.char_info)
+			? configValue.char_info as Record<string, unknown>
+			: null;
+		const name = typeof record.name === "string" ? record.name.trim() : "";
+		if (!name) return null;
+		const shortName = typeof record.short_name === "string" && record.short_name.trim()
+			? record.short_name.trim()
+			: name.split("#")[0]?.trim() || name;
+		const description = typeof record.biography === "string"
+			? record.biography.trim()
+			: typeof charInfo?.background === "string"
+				? charInfo.background.trim()
+				: null;
+		return {
+			uuid: record.uuid,
+			name,
+			shortName,
+			type: typeof record.type === "string" ? record.type : null,
+			avatarUrl: typeof configValue?.avatar_img === "string" && configValue.avatar_img ? configValue.avatar_img : null,
+			headerUrl: typeof configValue?.header_img === "string" && configValue.header_img ? configValue.header_img : null,
+			description: description || null,
+			isFavored: record.is_favored === true,
+		};
+	}
+
+	function normalizeNetaPage(value: unknown, fallbackPageIndex: number, fallbackPageSize: number): WorkRuntimeNetaCharacterPage {
+		const record = value && typeof value === "object" && !Array.isArray(value)
+			? value as Record<string, unknown>
+			: {};
+		const rawList = Array.isArray(record.list) ? record.list : [];
+		const list = rawList.map(readNetaCharacter).filter((item): item is WorkRuntimeNetaCharacter => item !== null);
+		const total = typeof record.total === "number" && Number.isFinite(record.total) ? Math.max(0, Math.trunc(record.total)) : list.length;
+		const pageIndex = typeof record.page_index === "number" && Number.isInteger(record.page_index) ? Math.max(0, record.page_index) : fallbackPageIndex;
+		const pageSize = typeof record.page_size === "number" && Number.isInteger(record.page_size) ? Math.max(0, record.page_size) : fallbackPageSize;
+		return {
+			list,
+			total,
+			pageIndex,
+			pageSize,
+			hasNext: record.has_next === true || (pageSize > 0 && (pageIndex + 1) * pageSize < total),
+		};
+	}
+
+	function parseNetaOperation(value: unknown): NetaCharacterOperation | null {
+		return value === "search" || value === "favorites" || value === "favorite" ? value : null;
+	}
+
+	async function requestNetaCharacters(input: NetaCharacterRequest) {
+		const operation = parseNetaOperation(input.operation);
+		if (!operation) throw new Error("Neta character operation is invalid.");
+		const allowedScopes = clonePermissionScopes(work.allowedViewerScopes);
+		const requiredScopes = operation === "favorite"
+			? ["neta.character.read", "neta.character.favorite"]
+			: ["neta.character.read"];
+		if (!requiredScopes.every((scope) => allowedScopes.includes(scope as Permission))) {
+			throw new Error("Neta character access is not enabled for this work.");
+		}
+		if (!requiredScopes.every((scope) => grantedNetaScopes.has(scope as Permission))) {
+			throw new Error("Authorize TalesofAI character access before continuing.");
+		}
+
+		const token = await getAccessToken();
+		if (!token) {
+			await config.requestSignIn(typeof location !== "undefined" ? location.pathname : "/");
+			throw new Error("Authentication is required.");
+		}
+
+		const pageIndex = readPageNumber(input.pageIndex, 0, 100_000);
+		const pageSize = readPageSize(input.pageSize);
+		const request = async (accessToken: string) => {
+			if (operation === "favorite") {
+				if (typeof input.uuid !== "string" || !NETA_CHARACTER_UUID_RE.test(input.uuid)) {
+					throw new Error("Character id is invalid.");
+				}
+				if (typeof input.isCancel !== "boolean") throw new Error("Favorite action is invalid.");
+				return fetch(`${netaApiOrigin}/v2/travel/parent/parent-favor`, {
+					method: "PUT",
+					headers: {
+						Authorization: `Bearer ${accessToken}`,
+						"Content-Type": "application/json",
+					},
+					body: JSON.stringify({ uuid: input.uuid, is_cancel: input.isCancel }),
+				});
+			}
+			const keywords = typeof input.keywords === "string" ? input.keywords.trim() : "";
+			if (keywords.length > 128) throw new Error("Search keywords are too long.");
+			const params = new URLSearchParams({
+				page_index: String(pageIndex),
+				page_size: String(pageSize),
+			});
+			if (operation === "favorites") params.set("parent_type", "all");
+			if (operation === "search") params.set("keywords", keywords);
+			return fetch(
+				`${netaApiOrigin}${operation === "search" ? "/v2/travel/parent-search-community" : "/v2/travel/parent/parent-favor/list"}?${params.toString()}`,
+				{ headers: { Authorization: `Bearer ${accessToken}` } },
+			);
+		};
+
+		let response = await request(token);
+		if (response.status === 401) {
+			const refreshedToken = await getAccessToken({ forceRefresh: true });
+			if (!refreshedToken) throw new Error("Authentication is required.");
+			response = await request(refreshedToken);
+		}
+		if (!response.ok) {
+			const body = await response.json().catch(() => null) as { detail?: unknown; message?: unknown } | null;
+			const detail = typeof body?.detail === "string" ? body.detail : typeof body?.message === "string" ? body.message : null;
+			throw new Error(detail || `TalesofAI request failed (${response.status}).`);
+		}
+		if (operation === "favorite") return { ok: true };
+		return { page: normalizeNetaPage(await response.json(), pageIndex, pageSize) };
 	}
 
 	function writePendingPurchase(input: {
@@ -314,6 +474,12 @@ export function createWorkBridgeCore(
 			forceRefresh?: boolean;
 			productKey?: string;
 			purchaseAttemptId?: string;
+			operation?: unknown;
+			keywords?: unknown;
+			pageIndex?: unknown;
+			pageSize?: unknown;
+			uuid?: unknown;
+			isCancel?: unknown;
 		};
 		if (!data?.requestId) return;
 		try {
@@ -351,6 +517,13 @@ export function createWorkBridgeCore(
 					type: "cohub.work.checkout-state.result",
 					status: checkoutState.status,
 					orderId,
+				});
+			}
+			if (data.type === "cohub.neta.characters") {
+				const result = await requestNetaCharacters(data);
+				reply(data.requestId, {
+					type: "cohub.neta.characters.result",
+					...result,
 				});
 			}
 			if (data.type === "cohub.work.purchase") {

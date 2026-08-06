@@ -54,6 +54,8 @@ const ALLOWED_VIEWER_SCOPES = new Set<Permission>([
   "user.space.list",
   "user.session.list",
   "user.usage.read",
+  "neta.character.read",
+  "neta.character.favorite",
 ]);
 
 

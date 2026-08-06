@@ -101,6 +101,50 @@ test("WorkRuntimeApi delegates to the injected transport", async () => {
 	assert.deepEqual(calls[4].options, { timeoutMs: 8_000, retryIntervalMs: 250 });
 });
 
+test("WorkRuntimeApi exposes the typed TalesofAI character bridge", async () => {
+	const calls: Record<string, unknown>[] = [];
+	const transport: WorkRuntimeTransport = {
+		request: (message) => {
+			calls.push(message);
+			if (message.operation === "favorite") return Promise.resolve({ ok: true });
+			return Promise.resolve({
+				page: { list: [], total: 0, pageIndex: 0, pageSize: 20, hasNext: false },
+			});
+		},
+	};
+	const runtime = createWorkRuntime(transport);
+
+	await runtime.searchNetaCharacters({ keywords: "Ada", pageSize: 12 });
+	await runtime.listNetaCharacterFavorites({ pageIndex: 1 });
+	const updated = await runtime.setNetaCharacterFavorite(
+		"11111111-1111-4111-8111-111111111111",
+		true,
+	);
+
+	assert.equal(updated, true);
+	assert.deepEqual(calls, [
+		{
+			type: "cohub.neta.characters",
+			operation: "search",
+			keywords: "Ada",
+			pageIndex: undefined,
+			pageSize: 12,
+		},
+		{
+			type: "cohub.neta.characters",
+			operation: "favorites",
+			pageIndex: 1,
+			pageSize: undefined,
+		},
+		{
+			type: "cohub.neta.characters",
+			operation: "favorite",
+			uuid: "11111111-1111-4111-8111-111111111111",
+			isCancel: true,
+		},
+	]);
+});
+
 test("WorkRuntimeApi caches the access token across calls", async () => {
 	const transport: WorkRuntimeTransport = {
 		request: () => Promise.resolve({ token: "tok-1" }),

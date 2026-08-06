@@ -38,6 +38,8 @@ export const ALL_PERMISSIONS = [
   "user.space.list",
   "user.session.list",
   "user.usage.read",
+  "neta.character.read",
+  "neta.character.favorite",
 ] as const;
 
 const ALL_PERMISSION_SET = new Set<Permission>(ALL_PERMISSIONS);

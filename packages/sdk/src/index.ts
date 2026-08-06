@@ -157,4 +157,4 @@ export type { CreatePublicAssetUploadInput, CreatePublicAssetUploadResponse, Pub
 export type { WorkAuthorizeResponse, WorkContent, WorkCreateInput, WorkDetailResponse, WorkExtractedPageMeta, WorkGetResponse, WorkMeta, WorkPresentationMeta, WorkPublicOwnerRecord, WorkPublicSpaceRecord, WorkRecord, WorkResolveResponse, WorkSessionResponse, WorkStatus, WorkTargetType, WorkUpdateInput, WorkVersionRecord, WorkVisibility } from "./apis/works.js";
 export type { WorkArtifactDescriptor, WorkBoardArtifactManifest, WorkBoardAsset, WorkContentKind } from "@cohub/protocol";
 export type { WorkCommerceCheckoutStatus, WorkCommerceCreditConsumeResponse, WorkCommerceCreditConsumeStatus, WorkCommerceEntitlement, WorkCommerceEntitlementsResponse, WorkCommerceOrder, WorkCommerceProductResolveResponse, WorkCommercePurchaseResponse } from "./apis/work-commerce.js";
-export type { WorkRuntimeCheckoutState, WorkRuntimeCheckoutStatus, WorkRuntimeContext } from "./work-runtime.js";
+export type { WorkRuntimeCheckoutState, WorkRuntimeCheckoutStatus, WorkRuntimeContext, WorkRuntimeNetaCharacter, WorkRuntimeNetaCharacterPage } from "./work-runtime.js";

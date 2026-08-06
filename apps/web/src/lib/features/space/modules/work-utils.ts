@@ -63,6 +63,16 @@ export const WORK_VIEWER_SCOPE_OPTIONS: {
 		label: "Read viewer usage",
 		description: "Let the work read the viewer's aggregated usage and cost.",
 	},
+	{
+		scope: "neta.character.read",
+		label: "Search TalesofAI characters",
+		description: "Search public TalesofAI characters using your Cohub session.",
+	},
+	{
+		scope: "neta.character.favorite",
+		label: "Manage character favorites",
+		description: "Add or remove TalesofAI characters from your favorites.",
+	},
 ];
 
 export function scopeState(

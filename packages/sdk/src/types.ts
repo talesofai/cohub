@@ -1463,7 +1463,9 @@ export type Permission =
   | "mod.manage"
   | "user.space.list"
   | "user.session.list"
-  | "user.usage.read";
+  | "user.usage.read"
+  | "neta.character.read"
+  | "neta.character.favorite";
 
 export type SpaceAccess = {
   role: SpaceRole | null;

@@ -56,6 +56,12 @@ const OPERATION_GROUPS: OperationGroup[] = [
 			"user.usage.read",
 		],
 	},
+	{
+		title: "Use TalesofAI characters",
+		description:
+			"Search public TalesofAI characters and manage your favorites.",
+		scopes: ["neta.character.read", "neta.character.favorite"],
+	},
 ];
 
 const operationGroups = $derived.by<OperationGroup[]>(() => {

@@ -86,6 +86,140 @@ test("context message replies with work metadata", async () => {
 	assert.deepEqual(context.space, { id: "space_1" });
 });
 
+test("Neta character search stays behind the read scope and returns sanitized data", async () => {
+	const originalFetch = globalThis.fetch;
+	const requests: { url: string; init?: RequestInit }[] = [];
+	globalThis.fetch = ((url: string, init?: RequestInit) => {
+		requests.push({ url, init });
+		if (url.includes("api.test/api/works/")) {
+			return Promise.resolve(new Response(JSON.stringify({ token: "work-token" }), { status: 200 }));
+		}
+		return Promise.resolve(new Response(JSON.stringify({
+			total: 1,
+			page_index: 0,
+			page_size: 20,
+			has_next: false,
+			list: [{
+				uuid: "11111111-1111-4111-8111-111111111111",
+				name: "Ada #public",
+				short_name: "Ada",
+				type: "oc",
+				config: { avatar_img: "https://cdn.example/ada.png", char_info: { background: "A scientist" } },
+				is_favored: true,
+				creator: { uuid: "private-data-that-must-not-cross" },
+			}],
+		}), { status: 200, headers: { "Content-Type": "application/json" } }));
+	}) as typeof fetch;
+
+	try {
+		const config = makeConfig({
+			isBackground: true,
+			viewerUuid: "owner-uuid",
+			work: makeWork({ allowedViewerScopes: ["neta.character.read"] }),
+		});
+		const core = createWorkBridgeCore(config);
+		await core.handleMessage(messageEvent({
+			type: "cohub.work.authorize",
+			requestId: "neta-authorize",
+			scopes: ["neta.character.read"],
+		}));
+		await core.handleMessage(messageEvent({
+			type: "cohub.neta.characters",
+			requestId: "neta-search",
+			operation: "search",
+			keywords: "Ada",
+		}));
+
+		const netaRequest = requests.find(({ url }) => url.includes("parent-search-community"));
+		assert.ok(netaRequest);
+		assert.match(netaRequest.url, /keywords=Ada/);
+		assert.equal(new Headers(netaRequest.init?.headers).get("Authorization"), "Bearer user-token-abc");
+		const payload = config.replies.at(-1)?.payload;
+		assert.ok(payload);
+		assert.equal(payload.type, "cohub.neta.characters.result");
+		assert.deepEqual(payload.page, {
+			list: [{
+				uuid: "11111111-1111-4111-8111-111111111111",
+				name: "Ada #public",
+				shortName: "Ada",
+				type: "oc",
+				avatarUrl: "https://cdn.example/ada.png",
+				headerUrl: null,
+				description: "A scientist",
+				isFavored: true,
+			}],
+			total: 1,
+			pageIndex: 0,
+			pageSize: 20,
+			hasNext: false,
+		});
+		assert.equal(JSON.stringify(payload).includes("private-data-that-must-not-cross"), false);
+	} finally {
+		globalThis.fetch = originalFetch;
+	}
+});
+
+test("Neta character favorite requires its dedicated scope and validates UUID", async () => {
+		const noScope = makeConfig({ work: makeWork({ allowedViewerScopes: ["neta.character.read"] }) });
+		const noScopeCore = createWorkBridgeCore(noScope);
+		await noScopeCore.handleMessage(messageEvent({
+			type: "cohub.neta.characters",
+			requestId: "neta-favorite-no-scope",
+			operation: "favorite",
+			uuid: "11111111-1111-4111-8111-111111111111",
+			isCancel: false,
+		}));
+		assert.equal(noScope.replies[0].payload.type, "cohub.work.error");
+
+		const invalid = makeConfig({ work: makeWork({ allowedViewerScopes: ["neta.character.favorite"] }) });
+		const invalidCore = createWorkBridgeCore(invalid);
+		await invalidCore.handleMessage(messageEvent({
+			type: "cohub.neta.characters",
+			requestId: "neta-favorite-invalid",
+			operation: "favorite",
+			uuid: "not-a-uuid",
+			isCancel: false,
+		}));
+		assert.equal(invalid.replies[0].payload.type, "cohub.work.error");
+});
+
+test("Neta character requests refresh the first-party token once on 401", async () => {
+	const originalFetch = globalThis.fetch;
+	const tokens = ["user-token-abc", "expired-token", "fresh-token"];
+	const authHeaders: string[] = [];
+	let callCount = 0;
+	globalThis.fetch = ((_: string, init?: RequestInit) => {
+		callCount += 1;
+		authHeaders.push(new Headers(init?.headers).get("Authorization") ?? "");
+		if (callCount === 1) return Promise.resolve(new Response(JSON.stringify({ token: "work-token" }), { status: 200 }));
+		if (callCount === 2) return Promise.resolve(new Response("", { status: 401 }));
+		return Promise.resolve(new Response(JSON.stringify({ list: [], total: 0 }), { status: 200 }));
+	}) as typeof fetch;
+	try {
+		const config = makeConfig({
+			isBackground: true,
+			viewerUuid: "owner-uuid",
+			tokens,
+			work: makeWork({ allowedViewerScopes: ["neta.character.read"] }),
+		});
+		const core = createWorkBridgeCore(config);
+		await core.handleMessage(messageEvent({
+			type: "cohub.work.authorize",
+			requestId: "neta-authorize-refresh",
+			scopes: ["neta.character.read"],
+		}));
+		await core.handleMessage(messageEvent({
+			type: "cohub.neta.characters",
+			requestId: "neta-refresh",
+			operation: "favorites",
+		}));
+		assert.deepEqual(authHeaders, ["Bearer user-token-abc", "Bearer expired-token", "Bearer fresh-token"]);
+		assert.equal(config.replies.at(-1)?.payload.type, "cohub.neta.characters.result");
+	} finally {
+		globalThis.fetch = originalFetch;
+	}
+});
+
 test("token message mints a session token via API", async () => {
 	const fetchCalls: string[] = [];
 	const originalFetch = globalThis.fetch;

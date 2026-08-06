@@ -35,6 +35,8 @@ export type {
  */
 export type WorkBridgeHostConfig = {
 	work: WorkBridgeHostWork;
+	/** Base origin for first-party TalesofAI character requests. */
+	netaApiOrigin?: string;
 	/** True when running as a background chat surface (owner auto-authorizes). */
 	isBackground?: boolean;
 	/** Sends a reply payload back to the work runtime. */
@@ -86,6 +88,7 @@ export function createWorkBridgeHost(
 
 	const core = createWorkBridgeCore({
 		work: config.work,
+		netaApiOrigin: config.netaApiOrigin,
 		isBackground: config.isBackground,
 		apiOrigin: PUBLIC_API_ORIGIN ?? "",
 		reply: config.reply,

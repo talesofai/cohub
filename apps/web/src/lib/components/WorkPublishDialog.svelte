@@ -69,6 +69,8 @@ const allowedViewerScopes = $state<Record<string, boolean>>({
 	"user.space.list": false,
 	"user.session.list": false,
 	"user.usage.read": false,
+	"neta.character.read": false,
+	"neta.character.favorite": false,
 });
 const missingUsername = $derived(!ownerUsername?.trim());
 const missingSpaceSlug = $derived(!spaceSlug?.trim());
