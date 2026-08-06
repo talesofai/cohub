@@ -146,7 +146,6 @@ const IMAGE_ADAPTER_TYPES = new Set([
 const VIDEO_ADAPTER_TYPES = new Set([
   "ark.videoGenerations",
   "kling.videoGenerations",
-  "minimax.h3VideoGenerations",
 ]);
 
 const MUSIC_ADAPTER_TYPES = new Set([

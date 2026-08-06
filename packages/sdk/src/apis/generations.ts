@@ -1,4 +1,3 @@
-import { GENERATION_TIMELINE_MAX_DURATION_SEC } from "@cohub/protocol/generation";
 import type {
   CreateGenerationTaskRequest,
   CreateGenerationTaskResponse,
@@ -16,15 +15,6 @@ export type WaitGenerationTaskOptions = {
 
 const DEFAULT_INTERVAL_MS = 1500;
 const DEFAULT_TIMEOUT_MS = 30 * 60 * 1000;
-
-function isHttpUrl(value: string): boolean {
-  try {
-    const protocol = new URL(value).protocol;
-    return protocol === "http:" || protocol === "https:";
-  } catch {
-    return false;
-  }
-}
 
 function sleep(ms: number, signal?: AbortSignal) {
   if (signal?.aborted) return Promise.reject(signal.reason ?? new Error("Generation wait aborted"));
@@ -51,33 +41,10 @@ function isGenerationTaskResult(value: unknown): value is GenerationTaskResult {
     requestId?: unknown;
     cost?: unknown;
     billing?: unknown;
-    timeline?: unknown;
   };
   if (typeof record.model !== "string" || !Array.isArray(record.output)) return false;
   if (record.requestId !== undefined && typeof record.requestId !== "string") return false;
   if (record.cost !== undefined && (typeof record.cost !== "number" || !Number.isFinite(record.cost))) return false;
-  if (record.timeline !== undefined) {
-    if (!record.timeline || typeof record.timeline !== "object" || Array.isArray(record.timeline)) return false;
-    const timeline = record.timeline as {
-      durationSec?: unknown;
-      segmentCount?: unknown;
-      requestIds?: unknown;
-      url?: unknown;
-    };
-    if (
-      typeof timeline.durationSec !== "number" ||
-      !Number.isSafeInteger(timeline.durationSec) ||
-      timeline.durationSec <= 0 ||
-      timeline.durationSec > GENERATION_TIMELINE_MAX_DURATION_SEC ||
-      typeof timeline.segmentCount !== "number" ||
-      !Number.isSafeInteger(timeline.segmentCount) ||
-      timeline.segmentCount <= 0 ||
-      !Array.isArray(timeline.requestIds) ||
-      timeline.requestIds.some((requestId) => typeof requestId !== "string" || requestId.trim().length === 0) ||
-      typeof timeline.url !== "string" ||
-      !isHttpUrl(timeline.url)
-    ) return false;
-  }
   if (record.billing !== undefined && record.billing !== null) {
     if (!record.billing || typeof record.billing !== "object" || Array.isArray(record.billing)) return false;
     const billing = record.billing as {

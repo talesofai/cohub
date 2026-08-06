@@ -1,4 +1,4 @@
-import type { GenerationContentBlock, GenerationModelDeclaration, GenerationSource } from "@neta-art/generation";
+import type { GenerationContentBlock, GenerationModelDeclaration } from "@neta-art/generation";
 import type { BillingPayload } from "../billing.js";
 import type { RequestSource } from "../provenance.js";
 export * from "./catalog.js";
@@ -17,26 +17,6 @@ export type {
 
 export const GENERATION_TASK_TYPE = "generation" as const;
 export const GENERATION_BILLING_RETRY_TASK_TYPE = "generation.billing_retry" as const;
-export const GENERATION_TIMELINE_MAX_KEYFRAMES = 16;
-export const GENERATION_TIMELINE_MAX_DURATION_SEC = 120;
-export const GENERATION_TIMELINE_MIN_INTERVAL_SEC = 4;
-
-/** A fixed visual checkpoint in a generated video timeline. */
-export type GenerationTimelineKeyframe = {
-  /** Absolute position in the final video, in whole seconds. */
-  timeSec: number;
-  /** Image that must be present at `timeSec`. */
-  source: GenerationSource;
-};
-
-/**
- * Server-side orchestration for models that support first/last frame inputs.
- * The timeline is deliberately outside `parameters`: it is consumed by the
- * worker and never forwarded to a provider adapter.
- */
-export type GenerationTimelineRequest = {
-  keyframes: GenerationTimelineKeyframe[];
-};
 
 export type CreateGenerationTaskRequest = {
   spaceId: string;
@@ -46,7 +26,6 @@ export type CreateGenerationTaskRequest = {
   content: GenerationContentBlock[];
   parameters?: Record<string, unknown>;
   meta?: Record<string, unknown>;
-  timeline?: GenerationTimelineRequest;
 };
 
 export type CreateGenerationTaskResponse = {
@@ -62,7 +41,6 @@ export type GenerationTaskData = {
   parameters?: Record<string, unknown>;
   /** Model-owned request metadata validated against the generation declaration. */
   meta?: Record<string, unknown>;
-  timeline?: GenerationTimelineRequest;
   /** Server-derived request provenance. Never forwarded to the generation provider. */
   requestSource?: RequestSource | null;
   /** Server-resolved pricing snapshot. This field is never accepted from the public request. */
@@ -120,13 +98,6 @@ export type GenerationUsageBilling = {
   reason?: string | null;
 };
 
-export type GenerationTimelineResult = {
-  durationSec: number;
-  segmentCount: number;
-  requestIds: string[];
-  url: string;
-};
-
 export type GenerationTaskResult = {
   model: string;
   output: GenerationContentBlock[];
@@ -135,7 +106,6 @@ export type GenerationTaskResult = {
   /** Post-success usage charge metadata. Distinct from gate `billing` on create. */
   billing?: GenerationUsageBilling | null;
   meta?: Record<string, unknown>;
-  timeline?: GenerationTimelineResult;
 };
 
 export type GenerationExampleRequest = Omit<CreateGenerationTaskRequest, "spaceId">;
