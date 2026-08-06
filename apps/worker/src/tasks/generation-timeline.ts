@@ -1,6 +1,5 @@
 import { createReadStream, createWriteStream } from "node:fs";
 import { mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises";
-import { isIP } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { Readable, Transform } from "node:stream";
@@ -33,12 +32,10 @@ const logger = createLogger({ serviceName: "cohub-worker" });
 const MIN_SEGMENT_DURATION_SEC = GENERATION_TIMELINE_MIN_INTERVAL_SEC;
 const MAX_SEGMENT_DURATION_SEC = 15;
 const MAX_VIDEO_BYTES = 512 * 1024 * 1024;
-const MAX_TIMELINE_VIDEO_BYTES = 2 * 1024 * 1024 * 1024;
 const VIDEO_DOWNLOAD_TIMEOUT_MS = 5 * 60 * 1000;
 const FFMPEG_TIMEOUT_MS = 10 * 60 * 1000;
 const IMMUTABLE_PUBLIC_CACHE_CONTROL = "public, max-age=31536000, immutable";
 const TEMPORARY_OBJECT_CACHE_CONTROL = "no-store";
-const TEMPORARY_OBJECT_TAGGING = "cohub_timeline_temporary=true";
 
 type TimelineSegmentPlan = {
   startSec: number;
@@ -244,49 +241,20 @@ async function extractLastFrame(videoPath: string, framePath: string): Promise<v
   if (data.length === 0) throw new Error("ffmpeg produced an empty timeline frame");
 }
 
-function isPrivateIp(hostname: string): boolean {
-  const normalized = hostname.replace(/^\[|\]$/g, "").toLowerCase();
-  const version = isIP(normalized);
-  if (version === 6) {
-    return normalized === "::1" || normalized.startsWith("fc") || normalized.startsWith("fd") || normalized.startsWith("fe80:");
+async function downloadVideo(source: GenerationSource, targetPath: string): Promise<void> {
+  if (source.type === "base64") {
+    await writeFile(targetPath, Buffer.from(source.data, "base64"));
+    return;
   }
-  if (version !== 4) return false;
-  const octets = normalized.split(".").map(Number);
-  const first = octets[0] ?? -1;
-  const second = octets[1] ?? -1;
-  return (
-    first === 10 ||
-    first === 127 ||
-    (first === 169 && second === 254) ||
-    (first === 172 && second >= 16 && second <= 31) ||
-    (first === 192 && second === 168) ||
-    first === 0
-  );
-}
-
-function assertSafeProviderUrl(value: string): URL {
   let parsed: URL;
   try {
-    parsed = new URL(value);
+    parsed = new URL(source.url);
   } catch {
-    throw new GenerationProviderError("Timeline provider returned an invalid video URL");
+    throw new GenerationProviderError("Timeline provider returned an invalid video URL", { details: { url: source.url } });
   }
-  if (parsed.protocol !== "https:" || parsed.username || parsed.password || isPrivateIp(parsed.hostname)) {
-    throw new GenerationProviderError("Timeline provider returned an unsafe video URL", {
-      details: { protocol: parsed.protocol, hostname: parsed.hostname },
-    });
+  if (parsed.protocol !== "http:" && parsed.protocol !== "https:") {
+    throw new GenerationProviderError("Timeline provider returned an unsupported video URL", { details: { url: source.url } });
   }
-  return parsed;
-}
-
-async function downloadVideo(source: GenerationSource, targetPath: string): Promise<number> {
-  if (source.type === "base64") {
-    const data = Buffer.from(source.data, "base64");
-    if (data.length > MAX_VIDEO_BYTES) throw new Error("Generated timeline segment is too large");
-    await writeFile(targetPath, data);
-    return data.length;
-  }
-  const parsed = assertSafeProviderUrl(source.url);
   let response: Response;
   try {
     response = await fetch(parsed, {
@@ -295,19 +263,19 @@ async function downloadVideo(source: GenerationSource, targetPath: string): Prom
     });
   } catch (error) {
     throw new GenerationProviderError("Failed to download generated timeline segment", {
-      details: { hostname: parsed.hostname, reason: error instanceof Error ? error.message : String(error) },
+      details: { url: source.url, reason: error instanceof Error ? error.message : String(error) },
     });
   }
   if (response.status >= 300 && response.status < 400) {
     throw new GenerationProviderError("Generated timeline segment URL redirects and was rejected", {
       status: response.status,
-      details: { hostname: parsed.hostname, hasLocation: response.headers.has("location") },
+      details: { url: source.url, location: response.headers.get("location") },
     });
   }
   if (!response.ok || !response.body) {
     throw new GenerationProviderError("Failed to download generated timeline segment", {
       status: response.status,
-      details: { hostname: parsed.hostname },
+      details: { url: source.url },
     });
   }
   const declaredLength = Number(response.headers.get("content-length") ?? 0);
@@ -320,7 +288,6 @@ async function downloadVideo(source: GenerationSource, targetPath: string): Prom
     },
   });
   await pipeline(Readable.fromWeb(response.body as unknown as NodeReadableStream), limiter, createWriteStream(targetPath));
-  return bytes;
 }
 
 async function concatVideos(videoPaths: string[], outputPath: string, workDir: string): Promise<void> {
@@ -390,7 +357,6 @@ async function uploadTimelineObject(input: {
   objectKey: string;
   contentType: string;
   cacheControl?: string;
-  temporary?: boolean;
 }): Promise<void> {
   const file = await stat(input.filePath);
   if (!file.isFile()) throw new Error("Timeline output must be a regular file");
@@ -401,7 +367,6 @@ async function uploadTimelineObject(input: {
     ContentLength: file.size,
     ContentType: input.contentType,
     CacheControl: input.cacheControl ?? TEMPORARY_OBJECT_CACHE_CONTROL,
-    ...(input.temporary === false ? {} : { Tagging: TEMPORARY_OBJECT_TAGGING }),
   }));
 }
 
@@ -432,7 +397,6 @@ async function uploadTimelineVideo(input: { filePath: string; spaceId: string; t
     objectKey,
     contentType: "video/mp4",
     cacheControl: IMMUTABLE_PUBLIC_CACHE_CONTROL,
-    temporary: false,
   });
   return timelineObjectUrl(objectKey);
 }
@@ -443,7 +407,7 @@ async function uploadTimelineFrame(input: { filePath: string; spaceId: string; t
     taskRunId: input.taskRunId,
     fileName: `frame-${String(input.index).padStart(2, "0")}.png`,
   });
-  await uploadTimelineObject({ filePath: input.filePath, objectKey, contentType: "image/png", temporary: true });
+  await uploadTimelineObject({ filePath: input.filePath, objectKey, contentType: "image/png" });
   return { objectKey, url: timelineObjectUrl(objectKey) };
 }
 
@@ -472,7 +436,7 @@ async function materializeTimelineSources(input: {
       taskRunId: input.taskRunId,
       fileName: `keyframe-${String(index + 1).padStart(2, "0")}.bin`,
     });
-    await uploadTimelineObject({ filePath, objectKey, contentType: keyframe.source.mediaType, temporary: true });
+    await uploadTimelineObject({ filePath, objectKey, contentType: keyframe.source.mediaType });
     input.uploadedObjectKeys.add(objectKey);
     keyframes.push({
       timeSec: keyframe.timeSec,
@@ -552,7 +516,6 @@ export async function generateTimeline(input: GenerateTimelineInput): Promise<Ti
   const requestIds = new Set<string>();
   const uploadedObjectKeys = new Set<string>();
   let totalCost = 0;
-  let totalVideoBytes = 0;
   let generatedFrame: GenerationSource | undefined;
 
   try {
@@ -588,12 +551,7 @@ export async function generateTimeline(input: GenerateTimelineInput): Promise<Ti
       if (!video) throw new GenerationProviderError("Timeline segment generation returned no video");
       collectBlockRequestIds(requestIds, video);
       const videoPath = join(workDir, `segment-${String(index + 1).padStart(2, "0")}.mp4`);
-      totalVideoBytes += await downloadVideo(video.source, videoPath);
-      if (totalVideoBytes > MAX_TIMELINE_VIDEO_BYTES) {
-        throw new GenerationProviderError("Generated timeline segments exceed the total size limit", {
-          details: { maxBytes: MAX_TIMELINE_VIDEO_BYTES },
-        });
-      }
+      await downloadVideo(video.source, videoPath);
       videoPaths.push(videoPath);
 
       const nextSegment = plan[index + 1];
@@ -615,12 +573,6 @@ export async function generateTimeline(input: GenerateTimelineInput): Promise<Ti
 
     const outputPath = join(workDir, "timeline.mp4");
     await concatVideos(videoPaths, outputPath, workDir);
-    const output = await stat(outputPath);
-    if (output.size > MAX_TIMELINE_VIDEO_BYTES) {
-      throw new GenerationProviderError("Generated timeline output exceeds the total size limit", {
-        details: { maxBytes: MAX_TIMELINE_VIDEO_BYTES, size: output.size },
-      });
-    }
     const url = await uploadTimelineVideo({ filePath: outputPath, spaceId: input.spaceId, taskRunId: input.taskRunId });
     return {
       content: [{ type: "video", source: { type: "url", url }, meta: { timeline: true, duration_sec: plan.at(-1)?.endSec ?? 0 } }],
