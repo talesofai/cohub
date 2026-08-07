@@ -1,5 +1,11 @@
 # @neta-art/cohub
 
+## 5.1.1
+
+### Patch Changes
+
+- 6602d1d: Deduplicate concurrent access-token refreshes and identify stale unauthorized requests so clients can preserve a newer session.
+
 ## 5.1.0
 
 ### Minor Changes
