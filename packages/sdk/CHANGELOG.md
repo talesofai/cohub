@@ -1,5 +1,16 @@
 # @neta-art/cohub
 
+## 5.0.0
+
+### Major Changes
+
+- e307ac2: Remove the Explore SDK API and its public response types after the Explore product surface was retired.
+
+### Patch Changes
+
+- e2dd355: Clarify Work realtime room APIs, runtime-only CLI boundaries, operational limits, and CDN usage in the SDK and product documentation.
+- 0f39153: Align Space creation across the SDK and CLI: support checkpoint bootstrap from the CLI, require API-mandated creation fields, expose typed bootstrap lifecycle metadata, preserve the bootstrap task ID in human-readable CLI output, and prevent Git credentials from leaking through bootstrap metadata or task responses.
+
 ## 4.9.0
 
 ### Minor Changes
