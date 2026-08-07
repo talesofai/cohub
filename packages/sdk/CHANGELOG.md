@@ -1,5 +1,11 @@
 # @neta-art/cohub
 
+## 5.1.0
+
+### Minor Changes
+
+- a7b9292: Add structured Work mentions, public-reference resolution, immutable artifact manifests, and verified file or directory Work downloads.
+
 ## 5.0.0
 
 ### Major Changes

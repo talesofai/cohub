@@ -1,5 +1,16 @@
 # @neta-art/cohub-cli
 
+## 3.6.0
+
+### Minor Changes
+
+- a7b9292: Add structured Work mentions, public-reference resolution, immutable artifact manifests, and verified file or directory Work downloads.
+
+### Patch Changes
+
+- Updated dependencies [a7b9292]
+  - @neta-art/cohub@5.1.0
+
 ## 3.5.2
 
 ### Patch Changes
