@@ -1,5 +1,11 @@
 # @neta-art/cohub-cli
 
+## 3.6.2
+
+### Patch Changes
+
+- a5fd97b: Remove redundant content verification status fields from Work download results.
+
 ## 3.6.1
 
 ### Patch Changes
