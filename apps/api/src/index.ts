@@ -15,6 +15,7 @@ import { applyTraceResponseHeaders, getActiveTraceIdentifiers, getOrCreateReques
 import { verifyUserAccessToken } from "@cohub/identity";
 
 import { getTokenFromRequest, type AuthUserProfile, consumeExecutionAuthFromToken, type ExecutionAuthPrincipal } from "./auth.js";
+import { describeUserAccessTokenFailure } from "./auth-failure.js";
 import { verifyPreviewSessionToken, type PreviewSessionPrincipal } from "./preview-sessions.js";
 import { verifyWorkSessionToken, type WorkSessionPrincipal } from "./work-sessions.js";
 import { assertRequiredConfig, config } from "./config.js";
@@ -139,7 +140,13 @@ app.use(async (c, next) => {
       const authUser = await verifyUserAccessToken({ token, logtoEndpoint: config.logtoEndpoint });
       c.set("authUser", authUser);
       c.set("principal", { type: "user", user: authUser });
-    } catch {
+    } catch (error) {
+      const failure = describeUserAccessTokenFailure(error);
+      logger.warn("User access token verification failed", {
+        auth_failure_reason: failure.reason,
+        ...(failure.claim ? { auth_failure_claim: failure.claim } : {}),
+        http_method: c.req.method,
+      });
       return c.json({ message: "unauthorized" }, 401);
     }
   }
