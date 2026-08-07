@@ -1,10 +1,12 @@
-import { HttpError } from "@neta-art/cohub";
+import { HttpError, matchesUnauthorizedErrorToken } from "@neta-art/cohub";
 import {
 	clearAuthJustCompleted,
 	clearAuthToken,
 	clearBrokenAuthSession,
+	getAuthSessionSnapshot,
 	hasRecentAuthCompletion,
 	sanitizeRedirectPath,
+	signInAfterUnauthorized,
 	signInWithRedirectPath,
 } from "$lib/auth";
 
@@ -15,7 +17,26 @@ export const getCurrentRedirectPath = () => {
 	);
 };
 
-let signInRedirectPromise: Promise<void> | null = null;
+type SignInRedirectOptions = {
+	clearSession?: boolean;
+	expectedGeneration?: number;
+	rejectedToken?: string | null;
+};
+
+type SignInRedirectAttempt = {
+	options: SignInRedirectOptions;
+	promise: Promise<void>;
+};
+
+let signInRedirectAttempt: SignInRedirectAttempt | null = null;
+
+const isSameRedirectAttempt = (
+	left: SignInRedirectOptions,
+	right: SignInRedirectOptions,
+) =>
+	Boolean(left.clearSession) === Boolean(right.clearSession) &&
+	left.expectedGeneration === right.expectedGeneration &&
+	left.rejectedToken === right.rejectedToken;
 
 /**
  * Start OAuth sign-in. Guards against silent SSO loops after a just-completed
@@ -24,11 +45,22 @@ let signInRedirectPromise: Promise<void> | null = null;
  */
 export const redirectToSignIn = async (
 	redirectPath = getCurrentRedirectPath(),
-	options?: { clearSession?: boolean },
-) => {
-	if (signInRedirectPromise) return signInRedirectPromise;
+	options: SignInRedirectOptions = {},
+): Promise<void> => {
+	const activeAttempt = signInRedirectAttempt;
+	if (activeAttempt) {
+		if (isSameRedirectAttempt(activeAttempt.options, options)) {
+			return activeAttempt.promise;
+		}
+		try {
+			await activeAttempt.promise;
+		} catch {
+			// A different session guard still needs its own attempt.
+		}
+		return redirectToSignIn(redirectPath, options);
+	}
 
-	signInRedirectPromise = (async () => {
+	const promise = (async () => {
 		const safePath = sanitizeRedirectPath(redirectPath);
 
 		// After callback, another 401 is almost always a broken/misconfigured
@@ -36,25 +68,36 @@ export const redirectToSignIn = async (
 		// Always hard-navigate home so in-memory stores drop with the page,
 		// even when already on "/" (common post-callback destination).
 		if (hasRecentAuthCompletion()) {
+			const cleared = await clearBrokenAuthSession({
+				expectedGeneration: options.expectedGeneration,
+				rejectedToken: options.rejectedToken,
+			});
+			if (!cleared) return;
 			clearAuthJustCompleted();
-			await clearBrokenAuthSession();
 			if (typeof window !== "undefined") {
 				window.location.replace("/");
 			}
 			return;
 		}
 
-		if (options?.clearSession) {
-			await clearBrokenAuthSession();
+		if (options.clearSession) {
+			const started = await signInAfterUnauthorized(safePath, {
+				expectedGeneration: options.expectedGeneration,
+				rejectedToken: options.rejectedToken,
+			});
+			if (!started) return;
 		} else {
 			clearAuthToken();
+			await signInWithRedirectPath(safePath);
 		}
-		await signInWithRedirectPath(safePath);
 	})().finally(() => {
-		signInRedirectPromise = null;
+		if (signInRedirectAttempt?.promise === promise) {
+			signInRedirectAttempt = null;
+		}
 	});
+	signInRedirectAttempt = { options, promise };
 
-	return signInRedirectPromise;
+	return promise;
 };
 
 export const handleUnauthorizedError = async (
@@ -62,6 +105,25 @@ export const handleUnauthorizedError = async (
 	redirectPath?: string,
 ): Promise<boolean> => {
 	if (!(error instanceof HttpError) || error.status !== 401) return false;
-	await redirectToSignIn(redirectPath, { clearSession: true });
+	// HttpTransport's configured handler already performed guarded cleanup and
+	// redirect. Do not run an unguarded second cleanup from the page catch path.
+	if (error.unauthorizedHandled) return true;
+	const current = getAuthSessionSnapshot();
+	const rejectedGeneration =
+		typeof error.authSessionVersion === "number"
+			? error.authSessionVersion
+			: current.generation;
+	if (current.generation !== rejectedGeneration) return true;
+	const tokenMatches = matchesUnauthorizedErrorToken(error, current.token);
+	if (tokenMatches === false) return true;
+	await redirectToSignIn(redirectPath, {
+		clearSession: true,
+		...(tokenMatches
+			? {
+					expectedGeneration: rejectedGeneration,
+					rejectedToken: current.token,
+				}
+			: {}),
+	});
 	return true;
 };

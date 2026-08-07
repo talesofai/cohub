@@ -32,7 +32,7 @@ export {
   isFeatureNotEntitledError,
   isHttpErrorCode,
 } from "./http-error.js";
-export { HttpError, joinApiUrl, sanitizeAccessToken } from "./transport.js";
+export { HttpError, joinApiUrl, matchesUnauthorizedErrorToken, sanitizeAccessToken } from "./transport.js";
 export {
   COHUB_SOURCE_HEADER,
   COHUB_SOURCE_HEADER_NAMES,

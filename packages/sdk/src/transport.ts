@@ -38,11 +38,27 @@ export type RawHttpResponse = {
   json(): Promise<unknown>;
 };
 
+export type AccessTokenRequestOptions = {
+  forceRefresh?: boolean;
+  /** Token used by the request that received 401. */
+  rejectedToken?: string | null;
+};
+
+export type AuthSessionVersion = string | number | null;
+
+export type UnauthorizedContext = {
+  /** Compare a known candidate without exposing the rejected bearer token. */
+  matchesRejectedToken(candidate: string | null | undefined): boolean;
+  /** Auth state observed before the rejected request resolved its token. */
+  authSessionVersion?: AuthSessionVersion;
+};
+
 export type CohubClientOptions = {
   env?: CohubEnvironment;
   baseUrl?: string;
-  getAccessToken?: (options?: { forceRefresh?: boolean }) => Promise<string | null> | string | null;
-  onUnauthorized?: () => Promise<void> | void;
+  getAccessToken?: (options?: AccessTokenRequestOptions) => Promise<string | null> | string | null;
+  getAuthSessionVersion?: () => AuthSessionVersion;
+  onUnauthorized?: (context: UnauthorizedContext) => Promise<void> | void;
   setStoredAuthToken?: (token: string) => void;
   clearStoredAuthToken?: () => void;
   fetch?: Fetch;
@@ -101,27 +117,63 @@ export class HttpError extends Error {
   readonly status: number;
   readonly body: unknown;
   readonly code: string | null;
+  /** The configured unauthorized callback already handled this 401. */
+  readonly unauthorizedHandled: boolean;
+  /** Auth state observed before the rejected request resolved its token. */
+  readonly authSessionVersion?: AuthSessionVersion;
 
-  constructor(message: string, status: number, body: unknown) {
+  constructor(
+    message: string,
+    status: number,
+    body: unknown,
+    options?: {
+      unauthorizedHandled?: boolean;
+      authSessionVersion?: AuthSessionVersion;
+    },
+  ) {
     super(message);
     this.name = "HttpError";
     this.status = status;
     this.body = body;
     this.code = errorCodeFromBody(body);
+    this.unauthorizedHandled = Boolean(options?.unauthorizedHandled);
+    this.authSessionVersion = options?.authSessionVersion;
   }
+}
+
+const rejectedTokenByError = new WeakMap<HttpError, string | null>();
+
+/**
+ * Compare a known candidate with the credential rejected by a transport 401.
+ * Returns undefined for HttpErrors that were not created by HttpTransport.
+ */
+export function matchesUnauthorizedErrorToken(
+  error: unknown,
+  candidate: string | null | undefined,
+): boolean | undefined {
+  if (!(error instanceof HttpError) || !rejectedTokenByError.has(error)) {
+    return undefined;
+  }
+  return rejectedTokenByError.get(error) === sanitizeAccessToken(candidate);
 }
 
 export class HttpTransport {
   private readonly baseUrl: string;
   private readonly fetcher: Fetch;
-  private readonly getAccessToken?: (options?: { forceRefresh?: boolean }) => Promise<string | null> | string | null;
-  private readonly onUnauthorized?: () => Promise<void> | void;
+  private readonly getAccessToken?: (options?: AccessTokenRequestOptions) => Promise<string | null> | string | null;
+  private readonly getAuthSessionVersion?: () => AuthSessionVersion;
+  private readonly onUnauthorized?: (context: UnauthorizedContext) => Promise<void> | void;
   private readonly requestSource?: RequestSource | null | (() => RequestSource | null | undefined);
+  private refreshInFlight: {
+    rejectedToken: string | null;
+    promise: Promise<string | null>;
+  } | null = null;
 
   constructor(options: CohubClientOptions = {}) {
     this.baseUrl = resolveApiBaseUrl(options);
     this.fetcher = options.fetch ?? fetch;
     this.getAccessToken = options.getAccessToken;
+    this.getAuthSessionVersion = options.getAuthSessionVersion;
     this.onUnauthorized = options.onUnauthorized;
     this.requestSource = options.requestSource;
   }
@@ -142,12 +194,26 @@ export class HttpTransport {
     }
   }
 
+  private readAuthSessionVersion(): AuthSessionVersion | undefined {
+    try {
+      return this.getAuthSessionVersion?.();
+    } catch {
+      // Versioning is an optional cleanup guard and must not block requests.
+      return undefined;
+    }
+  }
+
   private async withAuthorization(
     init?: RequestInitWithFetch,
     tokenOverride?: string | null,
-  ): Promise<RequestInit> {
+  ): Promise<{
+    requestInit: RequestInit;
+    token: string | null;
+    authSessionVersion?: AuthSessionVersion;
+  }> {
     const { fetch: _fetch, skipUnauthorizedHandler: _skip, ...requestInit } = init ?? {};
     const headers = new Headers(requestInit.headers);
+    let authSessionVersion = this.readAuthSessionVersion();
     const rawToken =
       tokenOverride !== undefined
         ? tokenOverride
@@ -155,6 +221,13 @@ export class HttpTransport {
           ? await this.getAccessToken()
           : null;
     const token = sanitizeAccessToken(rawToken);
+    if (token) {
+      // A token lookup may refresh the session itself. Bind a non-null bearer
+      // to the resulting version; retain the starting version for null so an
+      // unrelated callback cannot make an old unauthenticated request current.
+      const resolvedVersion = this.readAuthSessionVersion();
+      if (resolvedVersion !== undefined) authSessionVersion = resolvedVersion;
+    }
 
     if (token) {
       headers.set("Authorization", `Bearer ${token}`);
@@ -165,9 +238,55 @@ export class HttpTransport {
     this.applyRequestSourceHeaders(headers);
 
     return {
-      ...requestInit,
-      headers,
+      requestInit: {
+        ...requestInit,
+        headers,
+      },
+      token,
+      authSessionVersion,
     };
+  }
+
+  private async refreshAccessToken(rejectedToken: string | null): Promise<string | null> {
+    if (!this.getAccessToken) return null;
+    const inFlight = this.refreshInFlight;
+    if (inFlight) {
+      const resolved = await inFlight.promise;
+      if (inFlight.rejectedToken === rejectedToken) return resolved;
+      // A different credential was rejected while this refresh was running.
+      // Re-evaluate it against the provider's current state instead of retrying
+      // the request with a token resolved for another rejection.
+      return this.refreshAccessToken(rejectedToken);
+    }
+
+    const getAccessToken = this.getAccessToken;
+    const task = (async () => {
+      try {
+        const currentToken = sanitizeAccessToken(await getAccessToken());
+        if (currentToken && currentToken !== rejectedToken) {
+          return currentToken;
+        }
+      } catch {
+        // Continue to the explicit refresh path.
+      }
+
+      try {
+        return sanitizeAccessToken(
+          await getAccessToken({ forceRefresh: true, rejectedToken }),
+        );
+      } catch {
+        return null;
+      }
+    })();
+
+
+    const entry = { rejectedToken, promise: task };
+    this.refreshInFlight = entry;
+    try {
+      return await task;
+    } finally {
+      if (this.refreshInFlight === entry) this.refreshInFlight = null;
+    }
   }
 
   private async send(path: string, init?: RequestInitWithFetch) {
@@ -176,8 +295,13 @@ export class HttpTransport {
     const skipUnauthorizedHandler = Boolean(init?.skipUnauthorizedHandler);
 
     let response: Response;
+    let rejectedToken: string | null = null;
+    let rejectedAuthSessionVersion: AuthSessionVersion | undefined;
     try {
-      response = await fetcher(url, await this.withAuthorization(init));
+      const authorized = await this.withAuthorization(init);
+      rejectedToken = authorized.token;
+      rejectedAuthSessionVersion = authorized.authSessionVersion;
+      response = await fetcher(url, authorized.requestInit);
     } catch (error) {
       if (isBrowserRequestConstructionError(error)) {
         throw new Error(
@@ -188,19 +312,15 @@ export class HttpTransport {
       throw error;
     }
 
-    const getAccessToken = this.getAccessToken;
-    if (response.status === 401 && getAccessToken) {
-      const refreshedToken = await (async () => {
-        try {
-          return sanitizeAccessToken(await getAccessToken({ forceRefresh: true }));
-        } catch {
-          return null;
-        }
-      })();
+    if (response.status === 401 && this.getAccessToken) {
+      const refreshedToken = await this.refreshAccessToken(rejectedToken);
       if (refreshedToken) {
         let retryResponse: Response;
         try {
-          retryResponse = await fetcher(url, await this.withAuthorization(init, refreshedToken));
+          const authorizedRetry = await this.withAuthorization(init, refreshedToken);
+          rejectedToken = authorizedRetry.token;
+          rejectedAuthSessionVersion = authorizedRetry.authSessionVersion;
+          retryResponse = await fetcher(url, authorizedRetry.requestInit);
         } catch (error) {
           if (isBrowserRequestConstructionError(error)) {
             throw new Error(
@@ -225,10 +345,21 @@ export class HttpTransport {
     }
 
     if (response.status === 401) {
-      if (!skipUnauthorizedHandler) {
-        await this.onUnauthorized?.();
+      let unauthorizedHandled = false;
+      if (!skipUnauthorizedHandler && this.onUnauthorized) {
+        await this.onUnauthorized({
+          matchesRejectedToken: (candidate) =>
+            sanitizeAccessToken(candidate) === rejectedToken,
+          authSessionVersion: rejectedAuthSessionVersion,
+        });
+        unauthorizedHandled = true;
       }
-      throw new HttpError("unauthorized", 401, null);
+      const error = new HttpError("unauthorized", 401, null, {
+        unauthorizedHandled,
+        authSessionVersion: rejectedAuthSessionVersion,
+      });
+      rejectedTokenByError.set(error, rejectedToken);
+      throw error;
     }
 
     if (!response.ok) {

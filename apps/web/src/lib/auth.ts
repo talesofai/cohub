@@ -1,4 +1,10 @@
 import LogtoClient, { type IdTokenClaims } from "@logto/browser";
+import {
+	type AuthSessionSnapshot,
+	type AuthTokenRequestOptions,
+	type ClearBrokenSessionOptions,
+	createAuthRefreshCoordinator,
+} from "$lib/auth-refresh-coordinator";
 
 const IS_DEV =
 	(typeof location !== "undefined" && location.hostname.startsWith("dev")) ||
@@ -64,20 +70,28 @@ export const logtoClient: LogtoClient = new Proxy({} as LogtoClient, {
 });
 
 export const AUTH_TOKEN_STORAGE_KEY = "cohub_token";
+const AUTH_SESSION_SNAPSHOT_STORAGE_KEY = "cohub:auth-session:v1";
 /** Lightweight flag for first-paint home redirect (not an auth token). */
 export const SESSION_HINT_STORAGE_KEY = "cohub:session-hint";
 /** Set after OAuth callback succeeds; used to break silent SSO redirect loops. */
 export const AUTH_JUST_COMPLETED_KEY = "cohub:auth-just-completed";
 const AUTH_JUST_COMPLETED_TTL_MS = 30_000;
+const AUTH_REFRESH_LOCK_NAME = `cohub:logto-token:${LOGTO_APP_ID}`;
+const OPAQUE_TOKEN_RECHECK_MS = 30_000;
+const TOKEN_EXPIRY_SKEW_MS = 1_000;
 
 function hasLogtoSessionResidue(): boolean {
 	if (typeof localStorage === "undefined") return false;
-	// Logto BrowserStorage keys: logto:<appId>:<item>
-	const prefix = `logto:${LOGTO_APP_ID}:`;
-	return Boolean(
-		localStorage.getItem(`${prefix}refreshToken`) ||
-			localStorage.getItem(`${prefix}idToken`),
-	);
+	try {
+		// Logto BrowserStorage keys: logto:<appId>:<item>
+		const prefix = `logto:${LOGTO_APP_ID}:`;
+		return Boolean(
+			localStorage.getItem(`${prefix}refreshToken`) ||
+				localStorage.getItem(`${prefix}idToken`),
+		);
+	} catch {
+		return false;
+	}
 }
 
 /**
@@ -184,62 +198,221 @@ export function sanitizeRedirectPath(path?: string | null): string {
 	}
 }
 
+function sanitizeClientToken(token: string | null | undefined): string | null {
+	if (typeof token !== "string") return null;
+	const cleaned = token.replace(/[\r\n\t\0]/g, "").trim();
+	return cleaned.length > 0 ? cleaned : null;
+}
+
 type LogtoClientWithRefreshFallback = {
 	getAccessTokenByRefreshToken?: (resource?: string) => Promise<string>;
 };
 
-const getAccessTokenByRefreshToken = async (): Promise<string | null> => {
+async function resolveLogtoAccessToken(forceRefresh: boolean) {
 	const client = getLogtoClient();
-	const refreshToken = await client.getRefreshToken().catch(() => null);
-	const refreshWithToken = (client as unknown as LogtoClientWithRefreshFallback)
-		.getAccessTokenByRefreshToken;
+	if (forceRefresh) await client.clearAccessToken();
+	if (await client.isAuthenticated()) {
+		return client.getAccessToken(API_RESOURCE);
+	}
 
+	// Logto's public API requires an ID token. Preserve origin/main's private
+	// fallback only for the recoverable missing-ID-token case.
+	const refreshToken = await client.getRefreshToken().catch(() => null);
 	if (!refreshToken) return null;
 
+	const refreshWithToken = (client as unknown as LogtoClientWithRefreshFallback)
+		.getAccessTokenByRefreshToken;
 	if (typeof refreshWithToken !== "function") {
 		console.warn(
 			"[auth] Logto refresh-token fallback is unavailable; upgrade auth integration before relying on missing-ID-token recovery.",
 		);
 		return null;
 	}
+	return refreshWithToken.call(client, API_RESOURCE);
+}
 
-	return await refreshWithToken.call(client, API_RESOURCE);
+function readLegacyAuthToken(): string | null {
+	if (typeof localStorage === "undefined") return null;
+	try {
+		return sanitizeClientToken(localStorage.getItem(AUTH_TOKEN_STORAGE_KEY));
+	} catch {
+		return null;
+	}
+}
+
+export function getAuthSessionSnapshot(): AuthSessionSnapshot {
+	const fallback = {
+		generation: 0,
+		attempt: 0,
+		token: readLegacyAuthToken(),
+		updatedAt: 0,
+		lastResolutionSucceeded: false,
+	};
+	if (typeof localStorage === "undefined") return fallback;
+
+	try {
+		const raw = localStorage.getItem(AUTH_SESSION_SNAPSHOT_STORAGE_KEY);
+		if (!raw) return fallback;
+		const parsed = JSON.parse(raw) as Partial<AuthSessionSnapshot>;
+		if (
+			!Number.isSafeInteger(parsed.generation) ||
+			(parsed.generation ?? -1) < 0 ||
+			!Number.isSafeInteger(parsed.attempt) ||
+			(parsed.attempt ?? -1) < 0 ||
+			!Number.isFinite(parsed.updatedAt) ||
+			(parsed.updatedAt ?? -1) < 0 ||
+			typeof parsed.lastResolutionSucceeded !== "boolean" ||
+			(parsed.token !== null && typeof parsed.token !== "string")
+		) {
+			return fallback;
+		}
+		return {
+			generation: parsed.generation as number,
+			attempt: parsed.attempt as number,
+			token: sanitizeClientToken(parsed.token) ?? null,
+			updatedAt: parsed.updatedAt as number,
+			lastResolutionSucceeded: parsed.lastResolutionSucceeded,
+		};
+	} catch {
+		return fallback;
+	}
+}
+
+function writeAuthSessionSnapshot(snapshot: AuthSessionSnapshot) {
+	if (typeof localStorage === "undefined") return;
+	try {
+		localStorage.setItem(
+			AUTH_SESSION_SNAPSHOT_STORAGE_KEY,
+			JSON.stringify(snapshot),
+		);
+		if (snapshot.token) {
+			localStorage.setItem(AUTH_TOKEN_STORAGE_KEY, snapshot.token);
+		} else {
+			localStorage.removeItem(AUTH_TOKEN_STORAGE_KEY);
+		}
+	} catch {
+		// Storage can be unavailable in private browsing. The coordinator still
+		// provides same-page single-flight behavior in that case.
+	}
+}
+
+function nextGeneration(current: number) {
+	return Number.isSafeInteger(current) && current < Number.MAX_SAFE_INTEGER
+		? current + 1
+		: 1;
+}
+
+function commitTokenResolution(token: string | null, forceRefresh: boolean) {
+	const current = getAuthSessionSnapshot();
+	if (
+		token &&
+		!forceRefresh &&
+		token === current.token &&
+		current.lastResolutionSucceeded
+	) {
+		return;
+	}
+	writeAuthSessionSnapshot({
+		generation:
+			token &&
+			(forceRefresh ||
+				token !== current.token ||
+				!current.lastResolutionSucceeded)
+				? nextGeneration(current.generation)
+				: current.generation,
+		attempt: nextGeneration(current.attempt),
+		token: token ?? current.token,
+		updatedAt: token ? Date.now() : current.updatedAt,
+		lastResolutionSucceeded: token !== null,
+	});
+	if (token) setSessionHint(true);
+}
+
+function decodeJwtExpiry(token: string): number | null {
+	const payload = token.split(".")[1];
+	if (!payload || typeof atob === "undefined") return null;
+	try {
+		const padded = payload
+			.replace(/-/g, "+")
+			.replace(/_/g, "/")
+			.padEnd(Math.ceil(payload.length / 4) * 4, "=");
+		const parsed = JSON.parse(atob(padded)) as { exp?: unknown };
+		return typeof parsed.exp === "number" && Number.isFinite(parsed.exp)
+			? parsed.exp * 1_000
+			: null;
+	} catch {
+		return null;
+	}
+}
+
+function isReusableAuthSnapshot(snapshot: AuthSessionSnapshot) {
+	if (
+		!snapshot.token ||
+		!snapshot.lastResolutionSucceeded ||
+		!hasLogtoSessionResidue()
+	) {
+		return false;
+	}
+	const expiresAt = decodeJwtExpiry(snapshot.token);
+	if (expiresAt !== null) return expiresAt > Date.now() + TOKEN_EXPIRY_SKEW_MS;
+	return snapshot.updatedAt > Date.now() - OPAQUE_TOKEN_RECHECK_MS;
+}
+
+let localAuthLockTail: Promise<void> = Promise.resolve();
+
+const authRefreshLock = {
+	async runExclusive<T>(task: () => Promise<T>): Promise<T> {
+		const previous = localAuthLockTail;
+		let release = () => {};
+		localAuthLockTail = new Promise<void>((resolve) => {
+			release = resolve;
+		});
+		await previous;
+		try {
+			if (typeof navigator !== "undefined" && navigator.locks?.request) {
+				return await navigator.locks.request(
+					AUTH_REFRESH_LOCK_NAME,
+					{ mode: "exclusive" },
+					task,
+				);
+			}
+			return await task();
+		} finally {
+			release();
+		}
+	},
 };
 
-type GetAuthTokenOptions = { forceRefresh?: boolean };
+const authRefreshCoordinator = createAuthRefreshCoordinator({
+	state: {
+		read: getAuthSessionSnapshot,
+		commitResolution: commitTokenResolution,
+		clear: clearAuthToken,
+	},
+	lock: authRefreshLock,
+	isReusable: isReusableAuthSnapshot,
+	resolveToken: resolveLogtoAccessToken,
+	clearSession: async () => {
+		try {
+			await getLogtoClient().clearAllTokens();
+		} catch {
+			// Local cleanup remains authoritative if provider cleanup fails.
+		}
+	},
+});
 
-/**
- * Resolve a valid API access token.
- *
- * This function is intentionally side-effect-light: it does not redirect or
- * mutate UI state. It lets Logto refresh expired access tokens, and also falls
- * back to the refresh-token path for the rare case where the ID token is gone
- * but the refresh token is still valid.
- */
+/** Resolve a valid API token without allowing parallel refresh exchanges. */
 export const getAuthToken = async (
-	options?: GetAuthTokenOptions,
+	options?: AuthTokenRequestOptions,
 ): Promise<string | null> => {
 	if (typeof window === "undefined") return null;
 	try {
-		const token = options?.forceRefresh
-			? await getAccessTokenByRefreshToken()
-			: await getLogtoClient().getAccessToken(API_RESOURCE);
-		return sanitizeClientToken(token);
-	} catch {
-		try {
-			return sanitizeClientToken(await getAccessTokenByRefreshToken());
-		} catch (error) {
-			console.warn("[auth] Failed to resolve access token:", error);
-			return null;
-		}
+		return await authRefreshCoordinator.resolveToken(options);
+	} catch (error) {
+		console.warn("[auth] Failed to resolve access token:", error);
+		return null;
 	}
 };
-
-function sanitizeClientToken(token: string | null | undefined): string | null {
-	if (typeof token !== "string") return null;
-	const cleaned = token.replace(/[\r\n\t\0]/g, "").trim();
-	return cleaned.length > 0 ? cleaned : null;
-}
 
 export const getCurrentIdTokenClaims =
 	async (): Promise<IdTokenClaims | null> => {
@@ -262,33 +435,70 @@ export const hasRecoverableAuthSession = async (): Promise<boolean> => {
 	return hasIdToken || Boolean(refreshToken);
 };
 
-export const clearBrokenAuthSession = async () => {
-	clearAuthToken();
-	if (typeof window === "undefined") return;
+export const clearBrokenAuthSession = async (
+	options?: ClearBrokenSessionOptions,
+): Promise<boolean> => {
+	if (typeof window === "undefined") {
+		clearAuthToken();
+		return true;
+	}
 	try {
-		await getLogtoClient().clearAllTokens();
+		return await authRefreshCoordinator.clearBrokenSession(options);
 	} catch {
-		// Ignore cleanup failures.
+		// Lock acquisition or another coordinator-level failure must not be
+		// reported as a successful clear.
+		return false;
 	}
 };
 
-export const setAuthToken = (token: string) => {
-	if (typeof localStorage === "undefined") return;
+export function setAuthToken(token: string) {
 	// Keep stored token free of CR/LF so later Authorization headers stay valid
 	// (Safari: "The string did not match the expected pattern.").
-	const cleaned = token.replace(/[\r\n\t\0]/g, "").trim();
+	const cleaned = sanitizeClientToken(token);
 	if (!cleaned) return;
-	localStorage.setItem(AUTH_TOKEN_STORAGE_KEY, cleaned);
+	const current = getAuthSessionSnapshot();
+	writeAuthSessionSnapshot({
+		generation:
+			current.token === cleaned && current.lastResolutionSucceeded
+				? current.generation
+				: nextGeneration(current.generation),
+		attempt: nextGeneration(current.attempt),
+		token: cleaned,
+		updatedAt: Date.now(),
+		lastResolutionSucceeded: true,
+	});
 	setSessionHint(true);
-};
+}
 
-export const clearAuthToken = () => {
-	if (typeof localStorage === "undefined") return;
-	localStorage.removeItem(AUTH_TOKEN_STORAGE_KEY);
-	// Single source of truth for hint teardown — covers clearBrokenAuthSession
+export function clearAuthToken() {
+	const current = getAuthSessionSnapshot();
+	writeAuthSessionSnapshot({
+		generation: nextGeneration(current.generation),
+		attempt: nextGeneration(current.attempt),
+		token: null,
+		updatedAt: Date.now(),
+		lastResolutionSucceeded: true,
+	});
+	// Single source of truth for hint teardown — covers broken-session cleanup
 	// and redirectToSignIn({ clearSession }) via clearAuthToken().
 	setSessionHint(false);
-};
+}
+
+/** Complete the OAuth callback under the refresh/recovery lock. */
+export const completeSignInCallback = async (
+	callbackUri: string,
+): Promise<string | null> =>
+	authRefreshCoordinator.runExclusiveMutation(async () => {
+		const client = getLogtoClient();
+		await client.handleSignInCallback(callbackUri);
+		// The callback has replaced the Logto session. Invalidate the previous
+		// request generation before resolving its resource access token so a late
+		// 401 cannot clear the new session if token resolution fails.
+		clearAuthToken();
+		const token = sanitizeClientToken(await resolveLogtoAccessToken(false));
+		if (token) commitTokenResolution(token, true);
+		return token;
+	});
 
 const createRedirectState = (redirectPath?: string) => {
 	const searchParams = new URLSearchParams();
@@ -320,6 +530,21 @@ export const signInWithRedirectPath = async (redirectPath?: string) => {
 		client.adapter.generateState = originalGenerateState;
 	}
 };
+
+/** Clear and restart only the session whose token was actually rejected. */
+export const signInAfterUnauthorized = async (
+	redirectPath: string | undefined,
+	guard: ClearBrokenSessionOptions,
+): Promise<boolean> =>
+	authRefreshCoordinator.runGuardedMutation(guard, async () => {
+		try {
+			await getLogtoClient().clearAllTokens();
+		} catch {
+			// Continue with local cleanup and a clean authorization round trip.
+		}
+		clearAuthToken();
+		await signInWithRedirectPath(redirectPath);
+	});
 
 export const ensureAuth = async (options?: { redirectPath?: string }) => {
 	const token = await getAuthToken();

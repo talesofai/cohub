@@ -2,11 +2,9 @@
 import { HttpError } from "@neta-art/cohub";
 import { onMount } from "svelte";
 import {
-	getAuthToken,
-	logtoClient,
+	completeSignInCallback,
 	markAuthJustCompleted,
 	sanitizeRedirectPath,
-	setAuthToken,
 } from "$lib/auth";
 import CenteredLoading from "$lib/components/CenteredLoading.svelte";
 import { sdk } from "$lib/sdk";
@@ -23,19 +21,16 @@ onMount(async () => {
 		);
 
 		// Exchange the authorization code from the URL for tokens.
-		await logtoClient.handleSignInCallback(window.location.href);
-
-		// Ensure a resource access token is available AND accepted by the API
-		// before leaving the callback. A wrong audience/claim still yields a
-		// token string — without this check the app 401-loops via silent SSO.
-		const token = await getAuthToken();
+		// Callback exchange and token publication share the refresh/recovery lock.
+		const token = await completeSignInCallback(window.location.href);
 		if (!token) {
 			error =
 				"Signed in, but no API access token was issued. Check Logto API resource configuration, then try again.";
 			return;
 		}
-		setAuthToken(token);
 
+		// Ensure the resource access token is accepted by the API before leaving
+		// the callback. A wrong audience/claim can still yield a token string.
 		try {
 			await sdk.user.getMe({ skipUnauthorizedHandler: true });
 		} catch (err) {

@@ -2,17 +2,33 @@ import { type CohubClientOptions, createCohubClient } from "@neta-art/cohub";
 import { PUBLIC_API_ORIGIN, PUBLIC_GATEWAY_ORIGIN } from "$env/static/public";
 import {
 	clearAuthToken,
+	getAuthSessionSnapshot,
 	getAuthToken as resolveAccessToken,
 	setAuthToken,
 } from "$lib/auth";
 import { getCurrentRedirectPath, redirectToSignIn } from "$lib/auth-redirect";
 import { billingConversion } from "$lib/stores/billing-conversion.svelte";
 
-const handleUnauthorized = async () => {
+type UnauthorizedContext = Parameters<
+	NonNullable<CohubClientOptions["onUnauthorized"]>
+>[0];
+
+const handleUnauthorized = async (context: UnauthorizedContext) => {
 	if (typeof window === "undefined") return;
+	const rejectedSnapshot = getAuthSessionSnapshot();
+	const rejectedGeneration =
+		typeof context.authSessionVersion === "number"
+			? context.authSessionVersion
+			: rejectedSnapshot.generation;
+	if (rejectedSnapshot.generation !== rejectedGeneration) return;
+	if (!context.matchesRejectedToken(rejectedSnapshot.token)) return;
 	// Refresh already failed in transport — drop local Logto residue so the
 	// next sign-in is a clean round-trip instead of a silent SSO bounce.
-	await redirectToSignIn(getCurrentRedirectPath(), { clearSession: true });
+	await redirectToSignIn(getCurrentRedirectPath(), {
+		clearSession: true,
+		expectedGeneration: rejectedGeneration,
+		rejectedToken: rejectedSnapshot.token,
+	});
 };
 
 function shouldInspectBillingResponse(
@@ -54,6 +70,9 @@ const createWebSdk = (options: Partial<CohubClientOptions> = {}) => {
 	return createCohubClient({
 		baseUrl: options.baseUrl ?? PUBLIC_API_ORIGIN ?? "",
 		getAccessToken: options.getAccessToken ?? resolveAccessToken,
+		getAuthSessionVersion:
+			options.getAuthSessionVersion ??
+			(() => getAuthSessionSnapshot().generation),
 		onUnauthorized: options.onUnauthorized ?? handleUnauthorized,
 		setStoredAuthToken: options.setStoredAuthToken ?? setAuthToken,
 		clearStoredAuthToken: options.clearStoredAuthToken ?? clearAuthToken,

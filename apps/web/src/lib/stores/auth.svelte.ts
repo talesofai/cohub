@@ -1,7 +1,12 @@
 import type { IdTokenClaims } from "@logto/browser";
-import { HttpError, type UserProfile } from "@neta-art/cohub";
+import {
+	HttpError,
+	matchesUnauthorizedErrorToken,
+	type UserProfile,
+} from "@neta-art/cohub";
 import {
 	clearBrokenAuthSession,
+	getAuthSessionSnapshot,
 	getAuthToken,
 	getCurrentIdTokenClaims,
 	hasRecoverableAuthSession,
@@ -38,9 +43,13 @@ const restoreAuthSession = async (
 		return unauthenticatedSession();
 	}
 
+	const tokenStart = getAuthSessionSnapshot();
 	const token = await getAuthToken();
 	if (!token) {
-		await clearBrokenAuthSession();
+		await clearBrokenAuthSession({
+			expectedGeneration: tokenStart.generation,
+			rejectedToken: tokenStart.token,
+		});
 		return unauthenticatedSession();
 	}
 
@@ -104,7 +113,18 @@ const restoreAuthSession = async (
 	} catch (error) {
 		if (error instanceof HttpError && error.status === 401) {
 			clearCachedMeProfile(subject);
-			await clearBrokenAuthSession();
+			const current = getAuthSessionSnapshot();
+			const rejectedGeneration =
+				typeof error.authSessionVersion === "number"
+					? error.authSessionVersion
+					: current.generation;
+			const tokenMatches = matchesUnauthorizedErrorToken(error, current.token);
+			if (current.generation === rejectedGeneration && tokenMatches !== false) {
+				await clearBrokenAuthSession({
+					expectedGeneration: rejectedGeneration,
+					rejectedToken: tokenMatches ? current.token : token,
+				});
+			}
 			return unauthenticatedSession();
 		}
 		console.warn("[auth] Failed to load current user profile:", error);
