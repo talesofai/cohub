@@ -7,6 +7,7 @@ import {
 	setAuthToken,
 } from "$lib/auth";
 import { getCurrentRedirectPath, redirectToSignIn } from "$lib/auth-redirect";
+import { decideUnauthorizedRecovery } from "$lib/auth-unauthorized";
 import { billingConversion } from "$lib/stores/billing-conversion.svelte";
 
 type UnauthorizedContext = Parameters<
@@ -20,14 +21,40 @@ const handleUnauthorized = async (context: UnauthorizedContext) => {
 		typeof context.authSessionVersion === "number"
 			? context.authSessionVersion
 			: rejectedSnapshot.generation;
-	if (rejectedSnapshot.generation !== rejectedGeneration) return;
-	if (!context.matchesRejectedToken(rejectedSnapshot.token)) return;
+	const decision = decideUnauthorizedRecovery({
+		snapshot: rejectedSnapshot,
+		rejectedGeneration,
+		matchesRejectedToken: context.matchesRejectedToken,
+	});
+	const diagnostic = {
+		event: "auth.unauthorized_recovery",
+		action: decision.action,
+		reason: decision.reason,
+		authSessionGeneration: rejectedSnapshot.generation,
+		rejectedAuthSessionGeneration: rejectedGeneration,
+		authSessionAttempt: rejectedSnapshot.attempt,
+		requestCredentialPresent: !context.matchesRejectedToken(null),
+		cachedCredentialPresent: Boolean(rejectedSnapshot.token),
+		lastResolutionSucceeded: rejectedSnapshot.lastResolutionSucceeded,
+		...context.traceContext,
+	};
+	if (decision.action === "ignore") {
+		console.info(
+			"[auth] Ignored an unauthorized response that did not match the active session.",
+			diagnostic,
+		);
+		return;
+	}
+	console.warn(
+		"[auth] Recovering a session after a final unauthorized response.",
+		diagnostic,
+	);
 	// Refresh already failed in transport — drop local Logto residue so the
 	// next sign-in is a clean round-trip instead of a silent SSO bounce.
 	await redirectToSignIn(getCurrentRedirectPath(), {
 		clearSession: true,
-		expectedGeneration: rejectedGeneration,
-		rejectedToken: rejectedSnapshot.token,
+		expectedGeneration: decision.expectedGeneration,
+		rejectedToken: decision.rejectedToken,
 	});
 };
 

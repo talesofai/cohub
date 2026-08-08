@@ -79,7 +79,7 @@ export {
   resolveVoiceInputWebsocketUrl,
   resolveWebsocketUrl,
 } from "./environment.js";
-export type { CohubClientOptions, Fetch } from "./transport.js";
+export type { CohubClientOptions, Fetch, HttpTraceContext, UnauthorizedContext } from "./transport.js";
 export type { CohubEnvironment } from "./environment.js";
 export type {
   VoiceInputCallbacks,

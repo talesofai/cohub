@@ -289,6 +289,8 @@ test("final unauthorized callback identifies the rejected retry token", async ()
 	let sessionVersion = 0;
 	const rejectedTokenMatches: boolean[] = [];
 	let rejectedSessionVersion: string | number | null | undefined;
+	let rejectedTraceContext: unknown;
+	let requestCount = 0;
 	const transport = new HttpTransport({
 		baseUrl: "https://api.example.com",
 		getAccessToken: async (options) => {
@@ -299,29 +301,55 @@ test("final unauthorized callback identifies the rejected retry token", async ()
 			return currentToken;
 		},
 		getAuthSessionVersion: () => sessionVersion,
-		onUnauthorized: ({ authSessionVersion, matchesRejectedToken }) => {
+		onUnauthorized: ({ authSessionVersion, matchesRejectedToken, traceContext }) => {
 			rejectedSessionVersion = authSessionVersion;
+			rejectedTraceContext = traceContext;
 			rejectedTokenMatches.push(
 				matchesRejectedToken("fresh"),
 				matchesRejectedToken("stale"),
 			);
     },
-    fetch: async () => jsonResponse(401, { message: "unauthorized" }),
+    fetch: async () => {
+		requestCount += 1;
+		return new Response(JSON.stringify({ message: "unauthorized" }), {
+			status: 401,
+			headers: {
+				"Content-Type": "application/json",
+				"X-Request-Id": `request-${requestCount}`,
+				"X-Trace-Id": `trace-${requestCount}`,
+				"X-Span-Id": `span-${requestCount}`,
+				Traceparent: `00-trace-${requestCount}`,
+			},
+		});
+	},
   });
 
+	let thrownTraceContext: unknown;
 	await assert.rejects(
 		() => transport.request("/still-unauthorized"),
-		(error: unknown) =>
-			error instanceof HttpError &&
-			error.status === 401 &&
-			error.unauthorizedHandled &&
-			error.authSessionVersion === 1 &&
-			!Object.hasOwn(error, "rejectedToken") &&
-			matchesUnauthorizedErrorToken(error, "fresh") === true &&
-			matchesUnauthorizedErrorToken(error, "stale") === false,
+		(error: unknown) => {
+			if (error instanceof HttpError) thrownTraceContext = error.traceContext;
+			return (
+				error instanceof HttpError &&
+				error.status === 401 &&
+				error.unauthorizedHandled &&
+				error.authSessionVersion === 1 &&
+				!Object.hasOwn(error, "rejectedToken") &&
+				matchesUnauthorizedErrorToken(error, "fresh") === true &&
+				matchesUnauthorizedErrorToken(error, "stale") === false
+			);
+		},
 	);
 	assert.deepEqual(rejectedTokenMatches, [true, false]);
 	assert.equal(rejectedSessionVersion, 1);
+	assert.equal(requestCount, 2);
+	assert.deepEqual(rejectedTraceContext, {
+		requestId: "request-2",
+		traceId: "trace-2",
+		spanId: "span-2",
+		traceparent: "00-trace-2",
+	});
+	assert.deepEqual(thrownTraceContext, rejectedTraceContext);
 });
 
 test("a skipped unauthorized callback leaves the error unhandled", async () => {
@@ -332,7 +360,15 @@ test("a skipped unauthorized callback leaves the error unhandled", async () => {
 		onUnauthorized: () => {
 			unauthorizedCalls += 1;
 		},
-		fetch: async () => jsonResponse(401, { message: "unauthorized" }),
+		fetch: async () =>
+			new Response(JSON.stringify({ message: "unauthorized" }), {
+				status: 401,
+				headers: {
+					"Content-Type": "application/json",
+					"X-Request-Id": "skipped-request",
+					"X-Trace-Id": "skipped-trace",
+				},
+			}),
 	});
 
 	await assert.rejects(
@@ -344,6 +380,8 @@ test("a skipped unauthorized callback leaves the error unhandled", async () => {
 			error instanceof HttpError &&
 			error.status === 401 &&
 			!error.unauthorizedHandled &&
+			error.traceContext?.requestId === "skipped-request" &&
+			error.traceContext.traceId === "skipped-trace" &&
 			matchesUnauthorizedErrorToken(error, null) === true,
 	);
 	assert.equal(unauthorizedCalls, 0);

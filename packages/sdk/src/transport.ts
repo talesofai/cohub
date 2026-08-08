@@ -46,11 +46,20 @@ export type AccessTokenRequestOptions = {
 
 export type AuthSessionVersion = string | number | null;
 
+export type HttpTraceContext = {
+  requestId: string | null;
+  traceId: string | null;
+  spanId: string | null;
+  traceparent: string | null;
+};
+
 export type UnauthorizedContext = {
   /** Compare a known candidate without exposing the rejected bearer token. */
   matchesRejectedToken(candidate: string | null | undefined): boolean;
   /** Auth state observed before the rejected request resolved its token. */
   authSessionVersion?: AuthSessionVersion;
+  /** Safe identifiers returned by the final rejected API response. */
+  traceContext?: HttpTraceContext;
 };
 
 export type CohubClientOptions = {
@@ -75,6 +84,21 @@ function errorCodeFromBody(body: unknown): string | null {
   const errorBody = body as { code?: unknown };
   if (typeof errorBody.code === "string" && errorBody.code.trim()) return errorBody.code;
   return null;
+}
+
+function cleanTraceHeader(value: string | null): string | null {
+  if (!value) return null;
+  const cleaned = value.replace(/[\r\n\t\0]/g, "").trim();
+  return cleaned ? cleaned.slice(0, 256) : null;
+}
+
+function traceContextFromResponse(response: Response): HttpTraceContext {
+  return {
+    requestId: cleanTraceHeader(response.headers.get("x-request-id")),
+    traceId: cleanTraceHeader(response.headers.get("x-trace-id")),
+    spanId: cleanTraceHeader(response.headers.get("x-span-id")),
+    traceparent: cleanTraceHeader(response.headers.get("traceparent")),
+  };
 }
 
 /**
@@ -121,6 +145,8 @@ export class HttpError extends Error {
   readonly unauthorizedHandled: boolean;
   /** Auth state observed before the rejected request resolved its token. */
   readonly authSessionVersion?: AuthSessionVersion;
+  /** Safe identifiers returned by the rejected API response. */
+  readonly traceContext?: HttpTraceContext;
 
   constructor(
     message: string,
@@ -129,6 +155,7 @@ export class HttpError extends Error {
     options?: {
       unauthorizedHandled?: boolean;
       authSessionVersion?: AuthSessionVersion;
+      traceContext?: HttpTraceContext;
     },
   ) {
     super(message);
@@ -138,6 +165,7 @@ export class HttpError extends Error {
     this.code = errorCodeFromBody(body);
     this.unauthorizedHandled = Boolean(options?.unauthorizedHandled);
     this.authSessionVersion = options?.authSessionVersion;
+    this.traceContext = options?.traceContext;
   }
 }
 
@@ -341,22 +369,26 @@ export class HttpTransport {
           }
           return retryResponse;
         }
+        response = retryResponse;
       }
     }
 
     if (response.status === 401) {
+      const traceContext = traceContextFromResponse(response);
       let unauthorizedHandled = false;
       if (!skipUnauthorizedHandler && this.onUnauthorized) {
         await this.onUnauthorized({
           matchesRejectedToken: (candidate) =>
             sanitizeAccessToken(candidate) === rejectedToken,
           authSessionVersion: rejectedAuthSessionVersion,
+          traceContext,
         });
         unauthorizedHandled = true;
       }
       const error = new HttpError("unauthorized", 401, null, {
         unauthorizedHandled,
         authSessionVersion: rejectedAuthSessionVersion,
+        traceContext,
       });
       rejectedTokenByError.set(error, rejectedToken);
       throw error;

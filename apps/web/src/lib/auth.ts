@@ -401,14 +401,47 @@ const authRefreshCoordinator = createAuthRefreshCoordinator({
 	},
 });
 
+let lastLoggedEmptyResolutionGeneration: number | null = null;
+
+function logEmptyTokenResolution(options?: AuthTokenRequestOptions) {
+	const snapshot = getAuthSessionSnapshot();
+	const providerSessionPresent = hasLogtoSessionResidue();
+	if (
+		snapshot.lastResolutionSucceeded ||
+		(!snapshot.token && !providerSessionPresent) ||
+		lastLoggedEmptyResolutionGeneration === snapshot.generation
+	) {
+		return;
+	}
+	lastLoggedEmptyResolutionGeneration = snapshot.generation;
+	console.warn(
+		"[auth] Access token resolution returned empty for a recoverable session.",
+		{
+			event: "auth.token_resolution_empty",
+			authSessionGeneration: snapshot.generation,
+			authSessionAttempt: snapshot.attempt,
+			forceRefresh: Boolean(options?.forceRefresh),
+			rejectedCredentialProvided: options?.rejectedToken !== undefined,
+			cachedCredentialPresent: Boolean(snapshot.token),
+			providerSessionPresent,
+			visibilityState:
+				typeof document === "undefined" ? "unknown" : document.visibilityState,
+		},
+	);
+}
+
 /** Resolve a valid API token without allowing parallel refresh exchanges. */
 export const getAuthToken = async (
 	options?: AuthTokenRequestOptions,
 ): Promise<string | null> => {
 	if (typeof window === "undefined") return null;
 	try {
-		return await authRefreshCoordinator.resolveToken(options);
+		const token = await authRefreshCoordinator.resolveToken(options);
+		if (token) lastLoggedEmptyResolutionGeneration = null;
+		else logEmptyTokenResolution(options);
+		return token;
 	} catch (error) {
+		logEmptyTokenResolution(options);
 		console.warn("[auth] Failed to resolve access token:", error);
 		return null;
 	}

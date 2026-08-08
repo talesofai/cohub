@@ -15,6 +15,7 @@ import { applyTraceResponseHeaders, getActiveTraceIdentifiers, getOrCreateReques
 import { verifyUserAccessToken } from "@cohub/identity";
 
 import { getTokenFromRequest, type AuthUserProfile, consumeExecutionAuthFromToken, type ExecutionAuthPrincipal } from "./auth.js";
+import { recordAuthTrace } from "./auth-observability.js";
 import { verifyPreviewSessionToken, type PreviewSessionPrincipal } from "./preview-sessions.js";
 import { verifyWorkSessionToken, type WorkSessionPrincipal } from "./work-sessions.js";
 import { assertRequiredConfig, config } from "./config.js";
@@ -42,7 +43,6 @@ app.use(
   httpInstrumentationMiddleware({
     serviceName: "cohub-api",
     serviceVersion: process.env.IMAGE_TAG ?? "latest",
-    captureRequestHeaders: ["authorization"],
   }),
 );
 
@@ -113,6 +113,11 @@ app.use(async (c, next) => {
     if (executionAuth) {
       c.set("executionAuth", executionAuth);
       c.set("principal", { type: "execution", execution: executionAuth });
+      recordAuthTrace(trace.getActiveSpan(), {
+        credentialPresent: true,
+        principalType: "execution",
+        outcome: "authenticated",
+      });
       await next();
       return;
     }
@@ -122,6 +127,11 @@ app.use(async (c, next) => {
       if (previewSession) {
         c.set("previewSession", previewSession);
         c.set("principal", { type: "preview_session", previewSession });
+        recordAuthTrace(trace.getActiveSpan(), {
+          credentialPresent: true,
+          principalType: "preview_session",
+          outcome: "authenticated",
+        });
         await next();
         return;
       }
@@ -131,6 +141,11 @@ app.use(async (c, next) => {
     if (workSession) {
       c.set("workSession", workSession);
       c.set("principal", { type: "work_session", workSession });
+      recordAuthTrace(trace.getActiveSpan(), {
+        credentialPresent: true,
+        principalType: "work_session",
+        outcome: "authenticated",
+      });
       await next();
       return;
     }
@@ -140,8 +155,26 @@ app.use(async (c, next) => {
       c.set("authUser", authUser);
       c.set("principal", { type: "user", user: authUser });
     } catch {
+      recordAuthTrace(trace.getActiveSpan(), {
+        credentialPresent: true,
+        principalType: "anonymous",
+        outcome: "rejected",
+        failureCategory: "invalid_user_token",
+      });
       return c.json({ message: "unauthorized" }, 401);
     }
+
+    recordAuthTrace(trace.getActiveSpan(), {
+      credentialPresent: true,
+      principalType: "user",
+      outcome: "authenticated",
+    });
+  } else {
+    recordAuthTrace(trace.getActiveSpan(), {
+      credentialPresent: false,
+      principalType: "anonymous",
+      outcome: "anonymous",
+    });
   }
 
   await next();
