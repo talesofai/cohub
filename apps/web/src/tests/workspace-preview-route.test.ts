@@ -4,6 +4,7 @@ import {
 	buildFileIngressMainRoute,
 	encodePreviewParam,
 	isValidPortKey,
+	isValidWorkKey,
 	parsePreviewParam,
 	readPreviewFromSearch,
 	withCurrentPreview,
@@ -22,6 +23,19 @@ test("parsePreviewParam accepts file/board/port", () => {
 	});
 	assert.equal(parsePreviewParam("unknown:x"), null);
 	assert.equal(parsePreviewParam("file:"), null);
+});
+
+test("parsePreviewParam accepts work previews keyed by work id", () => {
+	const workId = "123e4567-e89b-42d3-a456-426614174000";
+	assert.deepEqual(parsePreviewParam(`work:${workId}`), {
+		kind: "work",
+		key: workId,
+	});
+	// The stable key is always an id, so slugs and URLs must not deep-link.
+	assert.equal(parsePreviewParam("work:alice/studio/launch"), null);
+	assert.equal(parsePreviewParam("work:not-an-id"), null);
+	assert.equal(isValidWorkKey(workId), true);
+	assert.equal(isValidWorkKey("launch"), false);
 });
 
 test("parsePreviewParam rejects host-injection port keys", () => {

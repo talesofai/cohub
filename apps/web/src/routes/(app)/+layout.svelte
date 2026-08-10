@@ -16,6 +16,7 @@ import TurnNotificationStack from "$lib/components/TurnNotificationStack.svelte"
 import { createDeferredMount } from "$lib/deferred-mount.svelte";
 import { pointerDrag } from "$lib/drag/pointer-drag.svelte";
 import GlobalMarkCapture from "$lib/features/preview-mark/ui/GlobalMarkCapture.svelte";
+import { startUiCommandListener } from "$lib/features/ui-command/bus";
 import {
 	type DrawerGestureDirection,
 	type DrawerGesturePhase,
@@ -526,10 +527,16 @@ onMount(() => {
 		});
 	}
 
+	let stopUiCommands: (() => void) | null = null;
+
 	void authStore.ensureLoaded().finally(() => {
 		authReady = true;
 		scheduleCacheCleanup();
-		if (authStore.isAuthenticated) turnNotifications.start();
+		if (authStore.isAuthenticated) {
+			turnNotifications.start();
+			// Listen in the shell, not a page, so delivery never depends on route.
+			stopUiCommands = startUiCommandListener();
+		}
 		initSpacePinRealtime();
 	});
 
@@ -542,6 +549,7 @@ onMount(() => {
 
 	return () => {
 		disposed = true;
+		stopUiCommands?.();
 		turnNotifications.stop();
 		vConsole?.destroy();
 		vConsole = null;

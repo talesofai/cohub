@@ -37,6 +37,7 @@ import { type ActiveFsSource, createActiveFsClient } from "./active-fs-client";
 import { createFileAutosaveCoordinator } from "./file-autosave-coordinator";
 import {
 	buildFsEntry,
+	classifySaveConflict,
 	getParentDirPath,
 	makeFsNodes,
 	replaceNodeChildren,
@@ -344,10 +345,7 @@ export function createFileWorkspaceController(
 			await clearPendingDraft(path, context);
 			return;
 		}
-		const baselineMatches =
-			pending.baseContent === file.content &&
-			pending.baseMtimeMs === file.mtimeMs &&
-			pending.baseSize === file.size;
+		const baselineMatches = pending.baseContent === file.content;
 		setInlineFileTab(path, (item) => ({
 			...item,
 			draft: pending.draft,
@@ -1077,19 +1075,76 @@ export function createFileWorkspaceController(
 			syncStatus: "saving",
 			saveError: null,
 		}));
-		try {
-			const result = await sdk.space(context.spaceId).files.write({
+		const write = (expected?: { mtimeMs: number; size: number }) =>
+			sdk.space(context.spaceId).files.write({
 				path,
 				content: nextContent,
 				encoding: "utf-8",
-				expected: force
-					? undefined
-					: { mtimeMs: baseResponse.mtimeMs, size: baseResponse.size },
+				expected,
 				mutationId,
 			});
+		const markConflict = () => {
 			pendingSaveMutationIds.delete(path);
-			const savedSize = result.size;
-			const savedMtimeMs = result.mtimeMs;
+			setInlineFileTab(path, (tab) => ({
+				...tab,
+				saving: false,
+				syncStatus: "conflict",
+				saveError: "Changed elsewhere",
+			}));
+			return "blocked" as const;
+		};
+		try {
+			let saved: {
+				size: number;
+				mtimeMs: number;
+				response?: SpaceFsFileResponse;
+			} | null = null;
+			try {
+				const result = await write(
+					force
+						? undefined
+						: { mtimeMs: baseResponse.mtimeMs, size: baseResponse.size },
+				);
+				saved = { size: result.size, mtimeMs: result.mtimeMs };
+			} catch (error) {
+				if (force || !(error instanceof HttpError && error.status === 409))
+					throw error;
+
+				// Recover once only when fresh content proves the version conflict was stale.
+				const fresh = await readActiveFsFile(path);
+				if (
+					!isCurrentWorkspaceContext(context) ||
+					inlineFileTabs.find((tab) => tab.path === path)?.requestToken !==
+						requestToken
+				)
+					return "blocked" as const;
+				if (!("content" in fresh)) throw new Error("File is not ready");
+				const resolved = await tryResolveTextFileResponse(fresh);
+				if (resolved.error) throw new Error(resolved.error);
+				const resolution = classifySaveConflict(
+					resolved.file,
+					baseResponse.content,
+					nextContent,
+				);
+				if (resolution === "conflict") return markConflict();
+				if (resolution === "already-saved") {
+					saved = {
+						size: resolved.file.size,
+						mtimeMs: resolved.file.mtimeMs,
+						response: resolved.file,
+					};
+				} else {
+					const result = await write({
+						mtimeMs: resolved.file.mtimeMs,
+						size: resolved.file.size,
+					});
+					saved = { size: result.size, mtimeMs: result.mtimeMs };
+				}
+			}
+			if (!saved) throw new Error("File save did not complete");
+			pendingSaveMutationIds.delete(path);
+			const savedSize = saved.size;
+			const savedMtimeMs = saved.mtimeMs;
 			const current = inlineFileTabs.find((tab) => tab.path === path);
 			if (
 				!isCurrentWorkspaceContext(context) ||
@@ -1100,14 +1155,16 @@ export function createFileWorkspaceController(
 			fileSaveRetryAttempts.delete(path);
 			setInlineFileTab(path, (tab) => ({
 				...tab,
-				response: tab.response
-					? ({
-							...tab.response,
-							content: nextContent,
-							size: savedSize,
-							mtimeMs: savedMtimeMs,
-						} as SpaceFsFileResponse)
-					: tab.response,
+				response:
+					saved.response ??
+					(tab.response
+						? ({
+								...tab.response,
+								content: nextContent,
+								size: savedSize,
+								mtimeMs: savedMtimeMs,
+							} as SpaceFsFileResponse)
+						: tab.response),
 				saving: false,
 				syncStatus: tab.draft === nextContent ? "idle" : "dirty",
 				saveError: null,
@@ -1147,24 +1204,22 @@ export function createFileWorkspaceController(
 					requestToken
 			)
 				return "blocked" as const;
-			const conflict = error instanceof HttpError && error.status === 409;
-			if (conflict) pendingSaveMutationIds.delete(path);
-			else pendingSaveMutationIds.set(path, mutationId);
+			if (error instanceof HttpError && error.status === 409)
+				return markConflict();
+			pendingSaveMutationIds.set(path, mutationId);
 			setInlineFileTab(path, (tab) => ({
 				...tab,
 				saving: false,
-				syncStatus: conflict ? "conflict" : "error",
-				saveError: conflict ? "Changed elsewhere" : "Not saved",
+				syncStatus: "error",
+				saveError: "Not saved",
 			}));
-			if (!conflict) {
-				const attempt = (fileSaveRetryAttempts.get(path) ?? 0) + 1;
-				fileSaveRetryAttempts.set(path, attempt);
-				const delays = [2_000, 5_000, 15_000, 30_000];
-				fileAutosave.retry(
-					path,
-					delays[Math.min(attempt - 1, delays.length - 1)],
-				);
-			}
+			const attempt = (fileSaveRetryAttempts.get(path) ?? 0) + 1;
+			fileSaveRetryAttempts.set(path, attempt);
+			const delays = [2_000, 5_000, 15_000, 30_000];
+			fileAutosave.retry(
+				path,
+				delays[Math.min(attempt - 1, delays.length - 1)],
+			);
 			return "blocked" as const;
 		} finally {
 			if (isCurrentWorkspaceContext(context)) {
@@ -1652,6 +1707,9 @@ export function createFileWorkspaceController(
 			return (
 				filePreviewModel(getActiveInlineFile()?.response).kind === "markdown"
 			);
+		},
+		get inlineFileIsCsv() {
+			return filePreviewModel(getActiveInlineFile()?.response).kind === "csv";
 		},
 		get inlineFileIsHtml() {
 			return filePreviewModel(getActiveInlineFile()?.response).kind === "html";

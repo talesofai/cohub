@@ -21,6 +21,7 @@ export function isTextMime(mimeType: string | null | undefined) {
 	return (
 		mime.startsWith("text/") ||
 		mime === "application/json" ||
+		mime === "application/csv" ||
 		mime === "application/xml" ||
 		mime === "application/yaml" ||
 		mime === "application/toml" ||
@@ -50,6 +51,11 @@ function basenameOf(path: string) {
 export function isDotfilePath(path: string) {
 	const name = basenameOf(path);
 	return name.startsWith(".") && name !== "." && name !== "..";
+}
+
+/** `.csv` filenames are text by convention, matching the server MIME map. */
+export function isCsvPath(path: string) {
+	return /\.csv$/i.test(path);
 }
 
 function looksLikeUtf8Text(bytes: Uint8Array) {
@@ -82,7 +88,9 @@ export function coerceInlineTextFile(
 		isDotfilePath(file.path) ||
 		isDotfilePath(file.name) ||
 		isBoardPath(file.path) ||
-		isBoardPath(file.name);
+		isBoardPath(file.name) ||
+		isCsvPath(file.path) ||
+		isCsvPath(file.name);
 	if (!recoverable) return file;
 
 	try {

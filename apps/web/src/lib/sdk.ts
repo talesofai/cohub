@@ -8,6 +8,7 @@ import {
 } from "$lib/auth";
 import { getCurrentRedirectPath, redirectToSignIn } from "$lib/auth-redirect";
 import { decideUnauthorizedRecovery } from "$lib/auth-unauthorized";
+import { getClientInstanceId } from "$lib/client-instance";
 import { billingConversion } from "$lib/stores/billing-conversion.svelte";
 
 type UnauthorizedContext = Parameters<
@@ -104,7 +105,14 @@ const createWebSdk = (options: Partial<CohubClientOptions> = {}) => {
 		setStoredAuthToken: options.setStoredAuthToken ?? setAuthToken,
 		clearStoredAuthToken: options.clearStoredAuthToken ?? clearAuthToken,
 		...options,
-		requestSource: options.requestSource ?? { via: "web" },
+		// Stamp this tab's identity on every request so work it starts (prompts,
+		// agent turns, sandbox CLI calls) can address this UI again later.
+		requestSource:
+			options.requestSource ??
+			(() => {
+				const clientId = getClientInstanceId();
+				return { via: "web", ...(clientId ? { clientId } : {}) };
+			}),
 		fetch: createBillingAwareFetch(baseFetch),
 		websocket: {
 			url: PUBLIC_GATEWAY_ORIGIN ?? undefined,

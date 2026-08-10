@@ -1,6 +1,6 @@
 import { Hono, type Context } from "hono";
 import { and, desc, eq, ne, sql } from "drizzle-orm";
-import { spaces, works, workVersions, workViewerGrants, userProfiles } from "@cohub/db";
+import { spaces, works, workVersions, workViewerGrants, workViewStatsHourly, userProfiles } from "@cohub/db";
 import { createWorkAssetPublicUrl, deleteWorkAssetsByObjectKey, isConfiguredWorkAssetPublicUrl } from "../work-asset-storage.js";
 import { publishWorkAssetInWorker, type WorkPublishAssetJobResult } from "../work-publish-asset-queue.js";
 import type { Permission } from "@cohub/core/permissions";
@@ -28,6 +28,12 @@ import { createWorkPublicUrl } from "../lib/work-public-url.js";
 import { applyRequestSourceToMeta, getRequestSource } from "../lib/request-source.js";
 import { dispatchWorkVersionPublished } from "../work-events.js";
 import { ensureUserProfileByUuid } from "../user-profiles.js";
+import {
+  getWorkViewStats,
+  recordWorkViewStatsHourly,
+  resolveWorkViewSource,
+  type WorkViewSource,
+} from "../work-view-stats.js";
 import {
   createWorkRoom,
   createWorkRoomAdmission,
@@ -208,6 +214,26 @@ async function getWorkById(id: string) {
   return work ?? null;
 }
 
+let lastWorkViewRecordWarningAt = 0;
+
+function recordResolvedWorkView(
+  c: Context,
+  work: typeof works.$inferSelect,
+  fallbackSource: WorkViewSource,
+) {
+  if (work.status !== "published" || !work.currentVersionId) return;
+  void recordWorkViewStatsHourly({
+    workId: work.id,
+    workVersionId: work.currentVersionId,
+    source: resolveWorkViewSource(getRequestSource(c), fallbackSource),
+  }).catch((error) => {
+    const now = Date.now();
+    if (now - lastWorkViewRecordWarningAt < 60_000) return;
+    lastWorkViewRecordWarningAt = now;
+    logger.warn("[works] failed to buffer view", { workId: work.id, error });
+  });
+}
+
 class WorkAssetPublishError extends Error {
   constructor(public result: Extract<WorkPublishAssetJobResult, { ok: false }>) {
     super(result.message);
@@ -377,6 +403,9 @@ router.get("/by-slug/:username/:spaceSlug/:workSlug", async (c) => {
   if (!row.owner.username || !row.space.slug) return c.json({ message: "work public identity is incomplete" }, 409);
   if (requiresSpaceWorkAccess(row.work) && !(await hasPermission(user, "space.view", { spaceId: row.space.id }))) return authzDenied(c);
 
+  recordResolvedWorkView(c, row.work, "web");
+  const content = await getPublishedWorkContent(row.work);
+
   // Public works are anonymous-readable; space works depend on the caller.
   c.header(
     "Cache-Control",
@@ -387,7 +416,7 @@ router.get("/by-slug/:username/:spaceSlug/:workSlug", async (c) => {
     space: { id: row.space.id, slug: row.space.slug, name: row.space.name, userUuid: row.space.userUuid, publicProfile: getSpacePublicProfile(row.space) },
     owner: { ...row.owner, username: row.owner.username },
     publicUrl: createWorkPublicUrl({ ownerUsername: row.owner.username, spaceSlug: row.space.slug, workSlug: row.work.slug, status: row.work.status }),
-    content: await getPublishedWorkContent(row.work),
+    content,
   });
 });
 
@@ -424,11 +453,26 @@ router.get("/:id/public", async (c) => {
   if (!row) return c.json({ message: "work not found" }, 404);
   if (!row.owner.username || !row.space.slug) return c.json({ message: "work public identity is incomplete" }, 409);
   const space = { id: row.space.id, slug: row.space.slug, name: row.space.name, userUuid: row.space.userUuid, publicProfile: getSpacePublicProfile(row.space) };
+  // Content matches what the by-slug page already serves for the same access
+  // model, so an in-workspace preview can render a Work reached by public url.
+  const content = await getPublishedWorkContent(work);
   return c.json({
     work: serializeWork(work),
     space,
     owner: { ...row.owner, username: row.owner.username },
+    content,
   });
+});
+
+router.get("/:id/stats", async (c) => {
+  const user = useAuth(c);
+  if (user instanceof Response) return user;
+  const id = c.req.param("id");
+  if (!requireValidId(id)) return c.json({ message: "work not found" }, 404);
+  const work = await getWorkById(id);
+  if (!work) return c.json({ message: "work not found" }, 404);
+  if (!(await hasPermission(user, "space.edit", { spaceId: work.spaceId }))) return authzDenied(c);
+  return c.json(await getWorkViewStats(work.id));
 });
 
 router.get("/:id", async (c) => {
@@ -451,12 +495,15 @@ router.get("/:id", async (c) => {
   if (!row) return c.json({ message: "work not found" }, 404);
   if (!row.owner.username || !row.space.slug) return c.json({ message: "work public identity is incomplete" }, 409);
   const space = { id: row.space.id, slug: row.space.slug, name: row.space.name, userUuid: row.space.userUuid, publicProfile: getSpacePublicProfile(row.space) };
+  const shouldRecordCliView = getRequestSource(c)?.via === "cli";
+  if (shouldRecordCliView) recordResolvedWorkView(c, work, "cli");
+  const content = await getPublishedWorkContent(work);
   return c.json({
     work: serializeWork(work),
     space,
     owner: { ...row.owner, username: row.owner.username },
     publicUrl: createWorkPublicUrl({ ownerUsername: row.owner.username, spaceSlug: row.space.slug, workSlug: work.slug, status: work.status }),
-    content: await getPublishedWorkContent(work),
+    content,
   });
 });
 
@@ -776,6 +823,7 @@ router.delete("/:id", async (c) => {
   if (!(await hasPermission(user, "space.edit", { spaceId: work.spaceId }))) return authzDenied(c);
   await db.transaction(async (tx) => {
     await tx.delete(workViewerGrants).where(eq(workViewerGrants.workId, work.id));
+    await tx.delete(workViewStatsHourly).where(eq(workViewStatsHourly.workId, work.id));
     await tx.delete(workVersions).where(eq(workVersions.workId, work.id));
     await tx.delete(works).where(eq(works.id, work.id));
   });

@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 import {
   COHUB_SOURCE_HEADER,
+  COHUB_SOURCE_HEADER_NAMES,
   hasRequestSourceIdentity,
   isRequestSourceEmpty,
   mergeRequestSourceIntoMeta,
@@ -85,4 +86,54 @@ test("mergeRequestSourceIntoMeta stores identity only", () => {
     ),
     { note: "ship it", source: { spaceId: SPACE, via: "cli" } },
   );
+});
+
+const CLIENT = "abc123def456abc789def012";
+
+test("clientId travels as identity so UI commands can route back to a frontend", () => {
+  assert.deepEqual(normalizeRequestSource({ clientId: CLIENT, via: "web" }), {
+    clientId: CLIENT,
+    via: "web",
+  });
+  // A web request with only a client id must still be recorded under meta.source,
+  // otherwise the agent cannot address the tab that started the turn.
+  assert.equal(hasRequestSourceIdentity({ clientId: CLIENT, via: "web" }), true);
+  assert.deepEqual(
+    mergeRequestSourceIntoMeta({ note: "x" }, { clientId: CLIENT, via: "web" }),
+    { note: "x", source: { clientId: CLIENT, via: "web" } },
+  );
+});
+
+test("clientId round-trips through headers and sandbox env", () => {
+  const headers = requestSourceToHeaders({ clientId: CLIENT, via: "web" });
+  assert.equal(headers[COHUB_SOURCE_HEADER.client], CLIENT);
+  assert.deepEqual(
+    parseRequestSourceFromHeaders((name) => headers[name] ?? null),
+    { clientId: CLIENT, via: "web" },
+  );
+  assert.deepEqual(
+    readRequestSourceFromEnv({ COHUB_SOURCE_CLIENT_ID: CLIENT }, { via: "cli" }),
+    { clientId: CLIENT, via: "cli" },
+  );
+});
+
+test("every emitted header is a declared name, which CORS allowlists derive from", () => {
+  const headers = requestSourceToHeaders({
+    spaceId: SPACE,
+    sessionId: SESSION,
+    turnId: SPACE,
+    toolCallId: SESSION,
+    clientId: CLIENT,
+    via: "web",
+  });
+  for (const name of Object.keys(headers)) {
+    assert.ok(COHUB_SOURCE_HEADER_NAMES.includes(name), `${name} is not declared`);
+  }
+  assert.equal(Object.keys(headers).length, COHUB_SOURCE_HEADER_NAMES.length);
+});
+
+test("malformed client ids are dropped rather than trusted", () => {
+  assert.equal(normalizeRequestSource({ clientId: "short" })?.clientId, undefined);
+  assert.equal(normalizeRequestSource({ clientId: "has space here!!" })?.clientId, undefined);
+  assert.equal(normalizeRequestSource({ clientId: "a".repeat(65) })?.clientId, undefined);
 });

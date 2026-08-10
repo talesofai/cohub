@@ -28,6 +28,9 @@ const loadRenderedPreview = createLazyModuleLoader(
 const loadPdfPreview = createLazyModuleLoader(
 	() => import("$lib/components/PdfPreview.svelte"),
 );
+const loadCsvPreview = createLazyModuleLoader(
+	() => import("$lib/components/CsvPreview.svelte"),
+);
 
 function formatSize(bytes: number) {
 	if (bytes <= 0) return "0 B";
@@ -54,6 +57,13 @@ function formatSize(bytes: number) {
 				path={file.path}
 				readonly
 			/>
+		{:catch}
+			<div class="preview-message">Preview failed to load.</div>
+		{/await}
+	{:else if model.kind === "csv"}
+		{#await loadCsvPreview() then module}
+			{@const CsvPreview = module.default}
+			<CsvPreview source={source} name={file.name} />
 		{:catch}
 			<div class="preview-message">Preview failed to load.</div>
 		{/await}

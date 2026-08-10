@@ -3,6 +3,7 @@ import type {
 	SpacePublicEndpoint,
 	SpacePublicEndpoints,
 } from "@cohub/protocol/ports";
+import type { WorkComposerChip } from "@cohub/protocol/work-surface";
 import type {
 	BoardOperation,
 	SpacePendingDiffFileResponse,
@@ -19,6 +20,7 @@ import type { FileViewMode } from "$lib/components/file-diff-view";
 import PreviewExpandMenu from "$lib/components/PreviewExpandMenu.svelte";
 import WorkPublishDialog from "$lib/components/WorkPublishDialog.svelte";
 import WorkspacePreviewPane from "$lib/components/WorkspacePreviewPane.svelte";
+import type { WorkSurfaceHost } from "$lib/features/work/surface-host";
 import { DURATION_PANEL, svelteEaseIn } from "$lib/motion.svelte";
 import type { SpaceFsNode } from "$lib/space-fs";
 import { patchCachedSpaceList } from "$lib/stores/space-list-cache";
@@ -32,7 +34,10 @@ import type { FileWorkspaceInlineFile } from "./file-workspace-controller.svelte
 import InlineFilePanel from "./InlineFilePanel.svelte";
 import PortPreviewPanel from "./PortPreviewPanel.svelte";
 import PreviewTabs from "./PreviewTabs.svelte";
+import type { PreviewTab } from "./preview-tabs";
 import { workspaceFilePreviewKind } from "./preview-tabs";
+import WorkPreviewPanel from "./WorkPreviewPanel.svelte";
+import type { InlineWorkPreview } from "./work-preview-controller.svelte";
 
 type PanHandlers = {
 	start: (event: MouseEvent) => void;
@@ -81,7 +86,10 @@ export type SpaceFileDomainProps = {
 	inlinePortPreview: { port: string; url: string } | null;
 	inlinePortTabs: { port: string; url: string }[];
 	activeInlinePort: string | null;
-	activePreviewKind: "file" | "board" | "port" | null;
+	inlineWorkPreview: InlineWorkPreview | null;
+	inlineWorkTabs: InlineWorkPreview[];
+	activeInlineWorkId: string | null;
+	activePreviewKind: "file" | "board" | "port" | "work" | null;
 	inlinePortEndpoint: SpacePublicEndpoint | null;
 	previewEndpoints: SpacePublicEndpoints;
 	inlineFileDownloadUrl: string;
@@ -93,6 +101,7 @@ export type SpaceFileDomainProps = {
 	inlineFileDiffLoading: boolean;
 	inlineFileDiffError: string | null;
 	inlineFileIsMarkdown: boolean;
+	inlineFileIsCsv: boolean;
 	inlineFileIsHtml: boolean;
 	inlineFileCopied: boolean;
 	inlineFileExt: string;
@@ -142,6 +151,11 @@ export type SpaceFileDomainProps = {
 	onCloseInlineBoardTab: (path: string) => void;
 	onActivateInlinePort: (port: string) => void;
 	onCloseInlinePortTab: (port: string) => void;
+	onActivateInlineWork: (workId: string) => void;
+	onCloseInlineWorkTab: (workId: string) => void;
+	onRetryInlineWork: (workId: string) => void;
+	onRegisterWorkSurface: (workId: string, host: WorkSurfaceHost | null) => void;
+	onWorkComposerChip: (workId: string, chip: WorkComposerChip | null) => void;
 	onBackInlineFile: () => void | Promise<void>;
 	onDownloadInlineFile: () => void | Promise<void>;
 	onRetryInlineFile?: () => void | Promise<void>;
@@ -224,6 +238,9 @@ let {
 	inlinePortPreview,
 	inlinePortTabs,
 	activeInlinePort,
+	inlineWorkPreview,
+	inlineWorkTabs,
+	activeInlineWorkId,
 	activePreviewKind,
 	inlinePortEndpoint,
 	previewEndpoints,
@@ -236,6 +253,7 @@ let {
 	inlineFileDiffLoading,
 	inlineFileDiffError,
 	inlineFileIsMarkdown,
+	inlineFileIsCsv,
 	inlineFileIsHtml,
 	inlineFileCopied,
 	inlineFileExt,
@@ -280,6 +298,11 @@ let {
 	onCloseInlineBoardTab,
 	onActivateInlinePort,
 	onCloseInlinePortTab,
+	onActivateInlineWork,
+	onCloseInlineWorkTab,
+	onRetryInlineWork,
+	onRegisterWorkSurface,
+	onWorkComposerChip,
 	onBackInlineFile,
 	onDownloadInlineFile,
 	onRetryInlineFile,
@@ -351,18 +374,28 @@ const previewTabs = $derived([
 		syncStatus: "idle" as const,
 		active: activePreviewKind === "port" && tab.port === activeInlinePort,
 	})),
+	...inlineWorkTabs.map((tab) => ({
+		kind: "work" as const,
+		key: tab.workId,
+		label: tab.label,
+		title: tab.detail?.publicUrl ?? tab.label,
+		syncStatus: tab.error ? ("error" as const) : ("idle" as const),
+		active: activePreviewKind === "work" && tab.workId === activeInlineWorkId,
+	})),
 ]);
 
-function activatePreviewTab(kind: "file" | "board" | "port", key: string) {
+function activatePreviewTab(kind: PreviewTab["kind"], key: string) {
 	if (kind === "file") onActivateInlineFile(key);
 	else if (kind === "board") onActivateInlineBoard(key);
-	else onActivateInlinePort(key);
+	else if (kind === "port") onActivateInlinePort(key);
+	else onActivateInlineWork(key);
 }
 
-function closePreviewTab(kind: "file" | "board" | "port", key: string) {
+function closePreviewTab(kind: PreviewTab["kind"], key: string) {
 	if (kind === "file") onCloseInlineFileTab(key);
 	else if (kind === "board") onCloseInlineBoardTab(key);
-	else onCloseInlinePortTab(key);
+	else if (kind === "port") onCloseInlinePortTab(key);
+	else onCloseInlineWorkTab(key);
 }
 
 function previewContentOut(node: Element) {
@@ -426,6 +459,7 @@ function previewContentOut(node: Element) {
 		{inlineFileDiffLoading}
 		{inlineFileDiffError}
 		{inlineFileIsMarkdown}
+		{inlineFileIsCsv}
 		{inlineFileIsHtml}
 		{activeFsReadonly}
 		{canEditFiles}
@@ -514,6 +548,23 @@ function previewContentOut(node: Element) {
 		onToggleImmersive={onTogglePreviewImmersiveMode}
 		onPublish={() => onOpenWorkPublish("port", inlinePortPreview!.port)}
 		/>
+{/if}
+
+{#if activePreviewKind === "work" && inlineWorkPreview}
+	<WorkPreviewPanel
+		preview={inlineWorkPreview}
+		{previewTabs}
+		{treeVisible}
+		{onToggleTree}
+		onActivatePreviewTab={activatePreviewTab}
+		onClosePreviewTab={closePreviewTab}
+		immersive={previewImmersiveMode}
+		{isMobile}
+		onToggleImmersive={onTogglePreviewImmersiveMode}
+		onRetry={onRetryInlineWork}
+		onRegisterSurface={onRegisterWorkSurface}
+		onComposerChip={onWorkComposerChip}
+	/>
 {/if}
 			</div>
 		</div>

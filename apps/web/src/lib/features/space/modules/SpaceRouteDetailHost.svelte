@@ -40,10 +40,13 @@ type Props = {
 	space: SpaceRecord | null;
 	spaceLoadError: string;
 	spaceHasMinimalAccess: boolean;
+	canEditSpace: boolean;
 	taskRealtimeEvent: TaskRealtimeEvent | null;
 	ownerUsername: string | null;
 	spaceSlug: string | null;
 	onHeaderMeta: (meta: RouteDetailHeaderMeta) => void;
+	/** Show a Work in the workspace preview pane. */
+	onPreviewWork?: (work: WorkRecord) => void;
 };
 
 let {
@@ -52,10 +55,12 @@ let {
 	space,
 	spaceLoadError,
 	spaceHasMinimalAccess,
+	canEditSpace,
 	taskRealtimeEvent,
 	ownerUsername,
 	spaceSlug,
 	onHeaderMeta,
+	onPreviewWork,
 }: Props = $props();
 
 const spaceName = $derived(space?.name ?? space?.title ?? spaceId);
@@ -120,7 +125,9 @@ function handleTaskLoaded(run: TaskRunRecord | null) {
 		routeWorkId={route.workId}
 		{ownerUsername}
 		{spaceSlug}
+		{canEditSpace}
 		onDetailLoaded={handleWorkLoaded}
+		{onPreviewWork}
 	/>
 {:else if route.view === "task"}
 	<TaskRunView

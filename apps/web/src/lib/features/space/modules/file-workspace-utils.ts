@@ -189,3 +189,15 @@ export function updateNodeState(
 		return node;
 	});
 }
+
+/** Classify a failed optimistic save against the content it started from. */
+export function classifySaveConflict(
+	fresh: SpaceFsFileResponse | null | undefined,
+	baseContent: string,
+	attemptedContent: string,
+): "already-saved" | "retry" | "conflict" {
+	if (!fresh || !isTextFileResponse(fresh)) return "conflict";
+	if (fresh.content === attemptedContent) return "already-saved";
+	if (fresh.content === baseContent) return "retry";
+	return "conflict";
+}

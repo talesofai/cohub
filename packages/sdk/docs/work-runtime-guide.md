@@ -771,6 +771,38 @@ new one. The server keeps the participant ID, updates `room.participantId`, and
 closes the superseded connection without emitting a leave event. Without this
 mode, an unclean disconnect can retain its seat lease for up to one minute.
 
+#### UI command calls that complete later
+
+A `preview.show` command with a Surface request stays pending after the Work
+acknowledges it. The host waits for the Work to be mounted and ready, then the
+Work receives the originating `commandId` in the handler context and returns an
+acknowledgement immediately:
+
+```js
+let activeCommandId = null;
+
+client.work.surface.handle("image.open", async (input, { commandId }) => {
+  if (!commandId) throw new Error("image.open must be called by a UI command");
+  activeCommandId = commandId;
+  openImageStudio(input);
+  return { accepted: true };
+});
+
+async function useImage(result) {
+  if (!activeCommandId) return;
+  await client.ui.reportResult(activeCommandId, {
+    status: "applied",
+    result,
+    error: null,
+  });
+  activeCommandId = null;
+}
+```
+
+The Work should persist the command id alongside its local/server-backed draft
+so a reload can restore the pending interaction. A Work session may only report a command that targets that same Work. Existing
+`client.work.surface.handle(method, handler)` usage remains unchanged.
+
 ---
 
 ## 6. Complete working example

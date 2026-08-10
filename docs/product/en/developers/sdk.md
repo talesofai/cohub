@@ -140,6 +140,62 @@ them.
 See the [Work Runtime Guide](https://github.com/talesofai/cohub/blob/main/packages/sdk/docs/work-runtime-guide.md#realtime-rooms-workrealtime)
 for lifecycle, presence, membership, seat, and limit details.
 
+### Callable surface
+
+A Work can expose named methods to the Cohub host embedding it, so an Agent can
+call into the running Work with `cohub ui preview <work> --call <method>`.
+
+```ts
+client.work.surface.handle("image.open", async (input, { commandId }) => {
+  openImageStudio(input, commandId);
+});
+
+await client.ui.reportResult(commandId, {
+  status: "applied",
+  result: selectedImage,
+  error: null,
+});
+```
+
+Only registered methods are reachable. There is no DOM access or script
+execution. A Surface response only acknowledges delivery; the Work reports the
+final result through the same UI command with `client.ui.reportResult()`.
+
+Calls are delivered at-least-once, so prefer methods that are safe to repeat.
+
+### Composer context
+
+A Work running in the workspace preview can attach one compact context chip to
+the Cohub composer. The label stays short while the full content is available to
+the user and sent with each message while attached:
+
+```ts
+client.work.composer.setChip({
+  key: "selection",
+  label: "3 selected",
+  content: "Selected records:\n- customer_123\n- customer_456\n- customer_789",
+});
+
+client.work.composer.clearChip("selection");
+```
+
+Calling `setChip()` again with the same key updates the existing chip. Cohub owns
+the chip's appearance and treats its content as plain text. Labels are limited to
+120 characters and content to 32KB. The chip is only attached while that Work is
+the active preview; closing or reloading the surface clears it.
+
+Because a published Work is publicly embeddable, surface calls and composer
+context are accepted only from an
+explicit list of Cohub app origins (or the Work's own origin), and replies go to
+that origin rather than being broadcast. A Work embedded by any other site
+registers its methods but never answers. The list is deliberately not a
+`*.cohub.run` suffix match, since Works themselves are served from a Cohub
+subdomain. Self-hosted deployments and local development widen it explicitly:
+
+```ts
+client.work.surface.allowHostOrigins(["https://cohub.internal"]);
+```
+
 ## Main client surfaces
 
 The client groups product APIs intentionally:
@@ -155,6 +211,7 @@ The client groups product APIs intentionally:
 | Channels | `client.channels` |
 | Billing / commerce | `client.billing`, `client.workCommerce` |
 | Work runtime | `client.context()`, `client.auth`, `client.work` |
+| Cohub UI commands | `client.ui` |
 
 Use only the surfaces you need. Start with Spaces, sessions, and Works.
 

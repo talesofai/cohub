@@ -21,4 +21,7 @@ export * from "./space-hooks.js";
 export * from "./system-jobs.js";
 export * from "./provenance.js";
 export * from "./public-identifiers.js";
+export * from "./ui-command.js";
 export * from "./work.js";
+export * from "./work-surface.js";
+export * from "./work-view-stats.js";

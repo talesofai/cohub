@@ -105,10 +105,29 @@ cohub -s <spaceId> spaces files diff
 cohub -s <spaceId> works publish demo --file dist/index.html
 cohub -s <spaceId> works publish site --dir dist
 cohub -s <spaceId> works ls --json
+cohub works stats <workId|url|username/space/work>
 ```
 
 Realtime rooms 使用已发布 Work 的 runtime 身份。请在 Work 内使用
 `client.work.realtime`；CLI 不提供房间命令。
+
+### 操作 Cohub 界面
+
+在 Space 中运行的 Agent 可以在发起该对话的 Cohub 标签页里打开 Work 预览，并调用
+Work 自己暴露的方法。
+
+```bash
+cohub ui preview <workId|url|cohub://works/...|username/space/work>
+cohub ui preview <work> --call selection.get
+cohub ui preview <work> --call board.focus --data '{"nodeId":"n1"}'
+```
+
+打开预览是幂等的：重复执行只会重新激活同一个标签页。`--call` 会等待 Work 声明就绪
+后再调用方法。具体有哪些方法由 Work 作者决定，通过
+`client.work.surface.handle(name, handler)` 注册。
+
+命令只会到达发起当前工作的那个前端实例，目标从请求 provenance 推导得出。它无法作用于
+其他用户，也不提供 DOM 访问或脚本执行能力。
 
 ### 本地 Sandbox
 

@@ -1,6 +1,6 @@
 {
   "name": "@neta-art/cohub-cli",
-  "version": "3.6.3",
+  "version": "3.8.0",
   "description": "CLI for Cohub — spaces, sessions, and agent collaboration.",
   "type": "module",
   "license": "Apache-2.0",
@@ -21,7 +21,7 @@
   },
   "dependencies": {
     "@neta-art/cohub": "workspace:*",
-    "@neta-art/generation": "^0.1.18",
+    "@neta-art/generation": "^0.1.19",
     "commander": "^15.0.0",
     "pixi.js": "^8.19.0",
     "sharp": "^0.35.3"

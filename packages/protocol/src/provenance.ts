@@ -5,6 +5,7 @@ export const COHUB_SOURCE_HEADER = {
   session: "X-Cohub-Source-Session",
   turn: "X-Cohub-Source-Turn",
   toolCall: "X-Cohub-Source-Tool-Call",
+  client: "X-Cohub-Source-Client",
   via: "X-Cohub-Source-Via",
 } as const;
 
@@ -19,6 +20,13 @@ export type RequestSource = {
   sessionId?: string;
   turnId?: string;
   toolCallId?: string;
+  /**
+   * Logical id of the frontend instance that originated this chain of work.
+   * Survives reloads and WebSocket reconnects, and is distinct per browser tab.
+   * Used to route UI commands back to the originating client. Routing hint only
+   * — never an authorization input.
+   */
+  clientId?: string;
   via?: RequestSourceVia;
 };
 
@@ -29,6 +37,12 @@ export const isRequestSourceUuid = (value: unknown): value is string =>
   typeof value === "string" && UUID_RE.test(value);
 
 export const REQUEST_SOURCE_VIA_MAX_LENGTH = 64;
+
+/** Opaque, url-safe client instance id. */
+const CLIENT_ID_RE = /^[A-Za-z0-9_-]{8,64}$/;
+
+export const isRequestSourceClientId = (value: unknown): value is string =>
+  typeof value === "string" && CLIENT_ID_RE.test(value);
 
 /** Remove C0 controls and DEL without a control-char regex (biome-friendly). */
 export const stripControlChars = (value: string): string => {
@@ -57,6 +71,11 @@ const asVia = (value: unknown): string | undefined => {
   return cleaned.slice(0, REQUEST_SOURCE_VIA_MAX_LENGTH);
 };
 
+const asClientId = (value: unknown): string | undefined => {
+  const cleaned = asNonEmpty(value);
+  return cleaned && isRequestSourceClientId(cleaned) ? cleaned : undefined;
+};
+
 export const isRequestSourceEmpty = (
   source: RequestSource | null | undefined,
 ): boolean => {
@@ -66,6 +85,7 @@ export const isRequestSourceEmpty = (
     !source.sessionId &&
     !source.turnId &&
     !source.toolCallId &&
+    !source.clientId &&
     !source.via
   );
 };
@@ -74,7 +94,9 @@ export const hasRequestSourceIdentity = (
   source: RequestSource | null | undefined,
 ): boolean => {
   if (!source) return false;
-  return Boolean(source.spaceId || source.sessionId || source.turnId || source.toolCallId);
+  return Boolean(
+    source.spaceId || source.sessionId || source.turnId || source.toolCallId || source.clientId,
+  );
 };
 
 /** Drop invalid UUIDs; via-only is valid. */
@@ -87,12 +109,14 @@ export const normalizeRequestSource = (
   const sessionId = asUuid(record.sessionId);
   const turnId = asUuid(record.turnId);
   const toolCallId = asUuid(record.toolCallId);
+  const clientId = asClientId(record.clientId);
   const via = asVia(record.via);
   const source: RequestSource = {
     ...(spaceId ? { spaceId } : {}),
     ...(sessionId ? { sessionId } : {}),
     ...(turnId ? { turnId } : {}),
     ...(toolCallId ? { toolCallId } : {}),
+    ...(clientId ? { clientId } : {}),
     ...(via ? { via } : {}),
   };
   return isRequestSourceEmpty(source) ? null : source;
@@ -106,6 +130,7 @@ export const parseRequestSourceFromHeaders = (
     sessionId: getHeader(COHUB_SOURCE_HEADER.session),
     turnId: getHeader(COHUB_SOURCE_HEADER.turn),
     toolCallId: getHeader(COHUB_SOURCE_HEADER.toolCall),
+    clientId: getHeader(COHUB_SOURCE_HEADER.client),
     via: getHeader(COHUB_SOURCE_HEADER.via),
   });
 
@@ -119,6 +144,7 @@ export const requestSourceToHeaders = (
   if (normalized.sessionId) headers[COHUB_SOURCE_HEADER.session] = normalized.sessionId;
   if (normalized.turnId) headers[COHUB_SOURCE_HEADER.turn] = normalized.turnId;
   if (normalized.toolCallId) headers[COHUB_SOURCE_HEADER.toolCall] = normalized.toolCallId;
+  if (normalized.clientId) headers[COHUB_SOURCE_HEADER.client] = normalized.clientId;
   if (normalized.via) headers[COHUB_SOURCE_HEADER.via] = normalized.via;
   return headers;
 };
@@ -133,6 +159,7 @@ export const readRequestSourceFromEnv = (
     sessionId: env.COHUB_SESSION_ID,
     turnId: env.COHUB_TURN_ID,
     toolCallId: env.COHUB_TOOL_CALL_ID,
+    clientId: env.COHUB_SOURCE_CLIENT_ID,
     via: env.COHUB_SOURCE_VIA ?? defaults?.via,
   });
 

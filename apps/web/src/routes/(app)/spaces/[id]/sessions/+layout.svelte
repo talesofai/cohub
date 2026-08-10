@@ -15,8 +15,13 @@ const data = $derived({
 	sessionId: (page.data.sessionId as string | null | undefined) ?? null,
 	filePath: (page.data.filePath as string | null | undefined) ?? null,
 	previewKind:
-		(page.data.previewKind as "file" | "board" | "port" | null | undefined) ??
-		null,
+		(page.data.previewKind as
+			| "file"
+			| "board"
+			| "port"
+			| "work"
+			| null
+			| undefined) ?? null,
 	previewKey: (page.data.previewKey as string | null | undefined) ?? null,
 	turnSequence: (page.data.turnSequence as string | null | undefined) ?? null,
 });

@@ -5,6 +5,17 @@ export { WebsocketClient, createWebsocketClient } from "./websocket.js";
 export { VoiceApi, VoiceInputClient, createVoiceInputClient } from "./voice-input.js";
 export { UsersApi } from "./apis/users.js";
 export { WorksApi } from "./apis/works.js";
+export { UiCommandsApi } from "./apis/ui-commands.js";
+export type { CreateUiCommandInput, WaitForUiCommandOptions } from "./apis/ui-commands.js";
+export { WorkSurfaceApi } from "./work-surface.js";
+export type { WorkSurfaceHandler, WorkSurfaceHandlerContext } from "./work-surface.js";
+export {
+  formatWorkRef,
+  isWorkId,
+  parseWorkRef,
+  WorkRefParseError,
+} from "./work-ref.js";
+export type { ParsedWorkRef, WorkPublicRef } from "./work-ref.js";
 export { WorkCommerceApi } from "./apis/work-commerce.js";
 export { WorkRealtimeApi, WorkRoom } from "./apis/work-realtime.js";
 export { ReferencesApi } from "./apis/references.js";
@@ -37,6 +48,7 @@ export {
   COHUB_SOURCE_HEADER,
   COHUB_SOURCE_HEADER_NAMES,
   hasRequestSourceIdentity,
+  isRequestSourceClientId,
   isRequestSourceEmpty,
   isRequestSourceUuid,
   mergeRequestSourceIntoMeta,
@@ -154,7 +166,45 @@ export {
 } from "@cohub/protocol";
 export * from "./board/animation.js";
 export type { CreatePublicAssetUploadInput, CreatePublicAssetUploadResponse, PublicAssetMimeType, PublicAssetPurpose, PublicAssetUploadProgress, PublicAssetUploadProtocol, UploadChatAttachmentInput, UploadChatImageAttachmentInput, UploadPublicAssetInput } from "./apis/public-assets.js";
-export type { WorkAuthorizeResponse, WorkContent, WorkContentDownload, WorkCreateInput, WorkDetailResponse, WorkExtractedPageMeta, WorkGetResponse, WorkMeta, WorkPresentationMeta, WorkPublicOwnerRecord, WorkPublicSpaceRecord, WorkRecord, WorkResolveResponse, WorkSessionResponse, WorkStatus, WorkTargetType, WorkUpdateInput, WorkVersionRecord, WorkVisibility } from "./apis/works.js";
+export type { WorkAuthorizeResponse, WorkContent, WorkContentDownload, WorkCreateInput, WorkDetailResponse, WorkExtractedPageMeta, WorkGetResponse, WorkMeta, WorkPresentationMeta, WorkPublicOwnerRecord, WorkPublicSpaceRecord, WorkRecord, WorkResolveResponse, WorkSessionResponse, WorkStatus, WorkTargetType, WorkUpdateInput, WorkVersionRecord, WorkViewSource, WorkViewStatsResponse, WorkVisibility } from "./apis/works.js";
 export type { WorkArtifactDescriptor, WorkArtifactDownloadDescriptor, WorkArtifactManifest, WorkArtifactManifestFile, WorkBoardArtifactManifest, WorkBoardAsset, WorkContentKind } from "@cohub/protocol";
+export {
+  isTerminalUiCommandStatus,
+  isUiSurfaceMethod,
+  parseUiCommand,
+  UI_COMMAND_DEFAULT_TIMEOUT_MS,
+  UI_COMMAND_MAX_TIMEOUT_MS,
+  UI_COMMAND_PAYLOAD_MAX_BYTES,
+  UI_COMMAND_PENDING_TTL_SECONDS,
+  UI_COMMAND_SETTLEMENT_GRACE_SECONDS,
+  UI_COMMAND_TERMINAL_TTL_SECONDS,
+  UI_COMMAND_VERSION,
+} from "@cohub/protocol/ui-command";
+export type {
+  UiCommand,
+  UiCommandDispatchedPayload,
+  UiCommandError,
+  UiCommandRecord,
+  UiCommandStatus,
+  UiPreviewShowCommand,
+  UiPreviewTarget,
+  UiSurfaceRequest,
+  UiWorkPreviewTarget,
+} from "@cohub/protocol/ui-command";
+export {
+  buildWorkSurfaceRequest,
+  parseWorkSurfaceReady,
+  parseWorkSurfaceResponse,
+  WORK_COMPOSER_CHIP_CONTENT_MAX_BYTES,
+  WORK_COMPOSER_CHIP_KEY_MAX_LENGTH,
+  WORK_COMPOSER_CHIP_LABEL_MAX_LENGTH,
+  WORK_SURFACE_READY_TIMEOUT_MS,
+  WORK_SURFACE_REQUEST_TIMEOUT_MS,
+} from "@cohub/protocol/work-surface";
+export type {
+  WorkComposerChip,
+  WorkSurfaceReadyMessage,
+  WorkSurfaceResponseMessage,
+} from "@cohub/protocol/work-surface";
 export type { WorkCommerceCheckoutStatus, WorkCommerceCreditConsumeResponse, WorkCommerceCreditConsumeStatus, WorkCommerceEntitlement, WorkCommerceEntitlementsResponse, WorkCommerceOrder, WorkCommerceProductResolveResponse, WorkCommercePurchaseResponse } from "./apis/work-commerce.js";
 export type { WorkRuntimeCheckoutState, WorkRuntimeCheckoutStatus, WorkRuntimeContext } from "./work-runtime.js";

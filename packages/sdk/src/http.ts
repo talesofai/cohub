@@ -10,6 +10,7 @@ import { ReferencesApi } from "./apis/references.js";
 import { SessionAccessApi } from "./apis/session-access.js";
 import { SpaceClient, SpacesApi } from "./apis/spaces.js";
 import { TasksApi } from "./apis/tasks.js";
+import { UiCommandsApi } from "./apis/ui-commands.js";
 import { UserApi } from "./apis/user.js";
 import { UsersApi } from "./apis/users.js";
 import { PublicInviteApi } from "./apis/invitations.js";
@@ -38,6 +39,7 @@ export class CohubHttpClient {
   readonly referrals: ReferralsApi;
   readonly works: WorksApi;
   readonly workCommerce: WorkCommerceApi;
+  readonly ui: UiCommandsApi;
 
   private readonly transport: HttpTransport;
 
@@ -67,6 +69,7 @@ export class CohubHttpClient {
     this.referrals = new ReferralsApi(this.transport);
     this.works = new WorksApi(this.transport);
     this.workCommerce = new WorkCommerceApi(this.transport);
+    this.ui = new UiCommandsApi(this.transport);
   }
 
   space(spaceId: string) {

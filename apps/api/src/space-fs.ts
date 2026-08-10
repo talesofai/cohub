@@ -63,6 +63,7 @@ const mimeByExt: Record<string, string> = {
   ".markdown": "text/markdown",
   ".json": "application/json",
   ".jsonl": "application/x-ndjson",
+  ".csv": "text/csv",
   [BOARD_EXTENSION]: BOARD_MIME_TYPE,
   ".js": "text/javascript",
   ".mjs": "text/javascript",

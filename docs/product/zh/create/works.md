@@ -51,7 +51,8 @@ Work 也会出现在 Space 侧栏的 Works 下。
 
 在 Work 管理页你可以：
 
-- 打开公开页
+- 在 workspace 中预览 Work，与管理页并排查看
+- 在新标签页打开公开页
 - 编辑 slug、目标、状态与权限
 - 从当前目标发布新版本
 - 禁用或删除 Work
@@ -99,6 +100,7 @@ cohub -s <spaceId> works publish app --port 5173
 ```bash
 cohub -s <spaceId> works ls --json
 cohub works get <workId|url|username/space/work> --json
+cohub works stats <workId|url|username/space/work>
 cohub works download <workId|url|username/space/work> --output <path>
 cohub works publish-version <workId>
 ```

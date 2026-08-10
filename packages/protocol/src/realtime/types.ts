@@ -8,6 +8,7 @@ import type { SpaceFsChangedPayload } from "../fs/index.js";
 import type { SpacePortsChangedPayload } from "../ports/index.js";
 import type { BoardOperation, BoardPlaybackSnapshot } from "../board.js";
 import type { RequestSource } from "../provenance.js";
+import type { UiCommandDispatchedPayload } from "../ui-command.js";
 import type { WorkArtifactDescriptor, WorkContentKind } from "../work.js";
 import type {
   BoardAwarenessClientPayload,
@@ -84,7 +85,7 @@ export type WsClientEvent =
 export type RealtimeEnvelope = {
   id: string;
   timestamp: number;
-  domain: "system" | "session" | "space" | "label" | "room";
+  domain: "system" | "session" | "space" | "label" | "room" | "ui";
   type: string;
   requestId?: string | null;
   spaceId?: string | null;
@@ -804,6 +805,23 @@ export type LabelAssignmentsUpdatedEvent = {
   };
 };
 
+/**
+ * A UI command addressed at one frontend instance of the acting user. Delivered
+ * to the user room; every client compares `targetClientId` with its own client
+ * id and ignores commands that are not for it.
+ */
+export type UiCommandDispatchedEvent = {
+  id: string;
+  timestamp: number;
+  domain: "ui";
+  type: "ui.command.dispatched";
+  requestId?: string | null;
+  spaceId?: string | null;
+  sessionId?: string | null;
+  rooms?: RealtimeRoom[];
+  payload: UiCommandDispatchedPayload;
+};
+
 export type RealtimeServerEvent =
   | SystemReadyEvent
   | SystemAuthOkEvent
@@ -834,6 +852,7 @@ export type RealtimeServerEvent =
   | TaskCreatedEvent
   | TaskUpdatedEvent
   | LabelAssignmentsUpdatedEvent
+  | UiCommandDispatchedEvent
   | RealtimeRoomEvent
   | RealtimeRoomJoinedEvent
   | RealtimeRoomMemberChangedEvent

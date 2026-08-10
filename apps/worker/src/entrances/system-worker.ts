@@ -22,6 +22,11 @@ import { assertRequiredConfig, config } from "../config.js";
 import { getRegisteredSystemJobs, getSystemJobHandler } from "../system/registry.js";
 import { SANDBOX_IDLE_REAPER_JOB } from "../system/jobs/sandbox-idle-reaper/types.js";
 import { startSystemReferralRewardRetryLoop } from "../system/referral-reward-retry.js";
+import {
+  WORK_VIEW_STATS_FLUSH_INTERVAL_MS,
+  WORK_VIEW_STATS_FLUSH_JOB,
+  WORK_VIEW_STATS_FLUSH_SCHEDULER_ID,
+} from "@cohub/protocol";
 
 import "../system/jobs/index.js";
 
@@ -97,6 +102,30 @@ logger.info("[SystemWorker] BullMQ Redis:", getRedisHost(config.bullmqRedisUrl))
 logger.info("[SystemWorker] App Redis:", getRedisHost(config.redisUrl));
 logger.info("[SystemWorker] Queue:", COHUB_SYSTEM_QUEUE);
 logger.info("[SystemWorker] Registered jobs:", getRegisteredSystemJobs());
+
+try {
+  await systemQueue.upsertJobScheduler(
+    WORK_VIEW_STATS_FLUSH_SCHEDULER_ID,
+    { every: WORK_VIEW_STATS_FLUSH_INTERVAL_MS },
+    {
+      name: WORK_VIEW_STATS_FLUSH_JOB,
+      data: {},
+      opts: {
+        attempts: 3,
+        backoff: { type: "exponential", delay: 1_000 },
+        ...defaultJobRetention,
+      },
+    },
+  );
+  logger.info("[SystemWorker] Ensured Work view stats flush schedule", {
+    schedulerId: WORK_VIEW_STATS_FLUSH_SCHEDULER_ID,
+    intervalMs: WORK_VIEW_STATS_FLUSH_INTERVAL_MS,
+  });
+} catch (error) {
+  logger.error("[SystemWorker] Failed to ensure Work view stats flush schedule", {
+    error: error instanceof Error ? error.message : String(error),
+  });
+}
 
 try {
   await systemQueue.upsertJobScheduler(

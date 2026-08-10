@@ -5,6 +5,7 @@ import {
 	Copy,
 	ExternalLink,
 	Loader2,
+	PanelRight,
 	Pencil,
 	Power,
 	Rocket,
@@ -17,6 +18,7 @@ import {
 	type WorksChangedDetail,
 } from "$lib/features/work/work-realtime";
 import { formatDateTime } from "../space-utils";
+import WorkViewStats from "./WorkViewStats.svelte";
 import { createWorkDetailController } from "./work-detail-controller.svelte";
 import {
 	WORK_SCOPE_OPTIONS,
@@ -29,17 +31,28 @@ type Props = {
 	routeWorkId: string | null;
 	ownerUsername: string | null;
 	spaceSlug: string | null;
+	canEditSpace: boolean;
 	onDetailLoaded?: (work: WorkRecord | null) => void;
+	/** Show this Work in the workspace preview pane, beside the detail page. */
+	onPreviewWork?: (work: WorkRecord) => void;
 };
 
-let { spaceId, routeWorkId, ownerUsername, spaceSlug, onDetailLoaded }: Props =
-	$props();
+let {
+	spaceId,
+	routeWorkId,
+	ownerUsername,
+	spaceSlug,
+	canEditSpace,
+	onDetailLoaded,
+	onPreviewWork,
+}: Props = $props();
 
 const workDetailController = createWorkDetailController({
 	getSpaceId: () => spaceId,
 	getRouteWorkId: () => routeWorkId,
 	getOwnerUsername: () => ownerUsername,
 	getSpaceSlug: () => spaceSlug,
+	getCanViewStats: () => canEditSpace,
 	onDetailLoaded: (work) => onDetailLoaded?.(work),
 });
 
@@ -64,6 +77,9 @@ const workCanToggleHideCohubBar = $derived(
 	workDetailController.hideCohubBarAllowed ||
 		workDetailController.formHideCohubBar,
 );
+const workStats = $derived(workDetailController.stats);
+const workStatsLoading = $derived(workDetailController.statsLoading);
+const workStatsError = $derived(workDetailController.statsError);
 
 $effect(() => {
 	workDetailController.syncRoute();
@@ -133,10 +149,16 @@ onDestroy(() => {
           </div>
         </div>
         <div class="flex shrink-0 flex-col gap-2 sm:flex-row sm:flex-wrap sm:items-center">
+          {#if onPreviewWork && workDetail.status === 'published'}
+            <button type="button" class="inline-flex min-h-9 w-full items-center justify-center gap-1.5 rounded-[5px] bg-brand-muted px-3 py-2 text-[12px] font-medium text-brand transition-colors hover:bg-brand-muted-hover sm:w-auto" onclick={() => onPreviewWork?.(workDetail!)}>
+              <PanelRight class="h-3.5 w-3.5" />
+              <span>Preview</span>
+            </button>
+          {/if}
           {#if publicRoute && workDetail.status === 'published'}
-            <a href={publicRoute} target="_blank" rel="noopener" class="inline-flex min-h-9 w-full items-center justify-center gap-1.5 rounded-[5px] bg-brand-muted px-3 py-2 text-[12px] font-medium text-brand transition-colors hover:bg-brand-muted-hover sm:w-auto">
+            <a href={publicRoute} target="_blank" rel="noopener" class="inline-flex min-h-9 w-full items-center justify-center gap-1.5 rounded-[5px] bg-bg-elevated px-3 py-2 text-[12px] font-medium text-text-secondary transition-colors hover:bg-bg-hover hover:text-text-primary sm:w-auto">
               <ExternalLink class="h-3.5 w-3.5" />
-              <span>Open</span>
+              <span>New tab</span>
             </a>
           {/if}
           <button type="button" class="inline-flex min-h-9 w-full items-center justify-center gap-1.5 rounded-[5px] bg-bg-elevated px-3 py-2 text-[12px] font-medium text-text-secondary transition-colors hover:bg-bg-hover hover:text-text-primary sm:w-auto" onclick={() => { workDetailController.syncFormFromDetail(); workDetailController.editMode = !workDetailController.editMode; }}>
@@ -153,6 +175,15 @@ onDestroy(() => {
           </button>
         </div>
       </header>
+
+      {#if canEditSpace && !workDetailController.editMode}
+        <WorkViewStats
+          stats={workStats}
+          loading={workStatsLoading}
+          error={workStatsError}
+          onRetry={() => void workDetailController.loadStats(workDetail.id)}
+        />
+      {/if}
 
       {#if workDetailController.editMode}
         <form onsubmit={workDetailController.submitUpdate} class="space-y-6">

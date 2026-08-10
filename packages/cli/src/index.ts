@@ -18,6 +18,7 @@ import { registerPrompt, registerSpaces } from "./commands/spaces.js";
 import { maybeHandleRunCommand } from "./commands/run.js";
 import { registerSandbox } from "./commands/sandbox.js";
 import { registerTasks } from "./commands/tasks.js";
+import { registerUi } from "./commands/ui.js";
 import { registerWorks } from "./commands/works.js";
 import { ensureCliSelfUpdated } from "./self-update.js";
 
@@ -56,6 +57,7 @@ Common commands:
   cohub -s <space-id> spaces sessions turns ls <session-id>
   cohub -s <space-id> spaces files ls
   cohub -s <space-id> works publish demo --file dist/index.html
+  cohub ui preview <work-id> --call selection.get
   cohub -s <space-id> spaces commerce products list
   cohub models ls
   cohub models ls --model-type multimodal
@@ -84,6 +86,7 @@ registerReferrals(program);
 registerTasks(program);
 registerCronJobs(program);
 registerWorks(program);
+registerUi(program);
 
 const isVersionRequest = (argv: string[]) => argv.some((arg) => arg === "-v" || arg === "--version");
 

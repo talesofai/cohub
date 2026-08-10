@@ -2,7 +2,7 @@ import { isBoardFile } from "$lib/board/board-file";
 import type { PreviewSyncStatus } from "./preview-sync-status";
 
 export type PreviewTab = {
-	kind: "file" | "board" | "port";
+	kind: "file" | "board" | "port" | "work";
 	key: string;
 	label: string;
 	title: string;

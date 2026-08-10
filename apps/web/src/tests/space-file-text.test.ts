@@ -36,6 +36,37 @@ describe("space-file-text", () => {
 		assert.equal(recovered.content, content);
 	});
 
+	it("recovers misclassified inline .csv binary as text", () => {
+		const content = "name,age\nAlice,30\nBob,25\n";
+		const recovered = coerceInlineTextFile({
+			path: "data/sales.csv",
+			name: "sales.csv",
+			size: content.length,
+			mimeType: null,
+			mtimeMs: Date.now(),
+			kind: "binary",
+			encoding: "base64",
+			content: Buffer.from(content, "utf8").toString("base64"),
+			delivery: "inline",
+		});
+		assert.equal(recovered.kind, "text");
+		assert.equal(recovered.mimeType, "text/plain");
+		assert.equal(recovered.content, content);
+		// Non-text binary with a .csv name is not recovered.
+		const binary = coerceInlineTextFile({
+			path: "data/blob.csv",
+			name: "blob.csv",
+			size: 4,
+			mimeType: null,
+			mtimeMs: Date.now(),
+			kind: "binary",
+			encoding: "base64",
+			content: Buffer.from([0, 1, 2, 3]).toString("base64"),
+			delivery: "inline",
+		});
+		assert.equal(binary.kind, "binary");
+	});
+
 	it("recovers misclassified inline .board binary as JSON text", () => {
 		const content =
 			'{"kind":"cohub.board.manifest","version":1,"boardId":"d1","title":"Board"}\n';

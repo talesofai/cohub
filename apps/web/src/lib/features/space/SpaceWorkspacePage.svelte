@@ -1,6 +1,7 @@
 <script lang="ts">
 import type { SpaceFsChangedPayload } from "@cohub/protocol/fs";
 import type { ChannelEnvelope } from "@cohub/protocol/realtime";
+import type { WorkComposerChip } from "@cohub/protocol/work-surface";
 import type {
 	BoardOperation,
 	Permission,
@@ -58,6 +59,8 @@ import {
 	subscribeSpaceChannel,
 } from "$lib/features/session-chat";
 import SessionChatPanel from "$lib/features/session-chat/SessionChatPanel.svelte";
+import { registerUiCommandHost } from "$lib/features/ui-command/bus";
+import type { WorkSurfaceHost } from "$lib/features/work/surface-host";
 import {
 	createWorkMutationBuffer,
 	dispatchWorksChanged,
@@ -111,6 +114,7 @@ import {
 	uiState,
 } from "$lib/stores/ui.svelte";
 import type { LocalUploadEntry } from "$lib/upload-entries";
+import { workDisplayTitle } from "$lib/work-page-meta";
 import type { WorkspaceFileLinkTarget } from "$lib/workspace-file-links";
 import { resolveWorkspaceSpaceId } from "$lib/workspace-route";
 import { createBoardPreviewController } from "./modules/board-preview-controller.svelte";
@@ -158,6 +162,7 @@ import {
 import { createSpacePresenceController } from "./modules/space-presence-controller.svelte";
 import { createSpaceRealtimeController } from "./modules/space-realtime-controller.svelte";
 import { createSpaceStatusController } from "./modules/space-status-controller.svelte";
+import { createWorkPreviewController } from "./modules/work-preview-controller.svelte";
 import { createWorkspaceLayoutController } from "./modules/workspace-layout-controller.svelte";
 import {
 	encodePreviewParam,
@@ -183,7 +188,7 @@ type Props = {
 			| "task";
 		sessionId?: string | null;
 		filePath?: string | null;
-		previewKind?: "file" | "board" | "port" | null;
+		previewKind?: "file" | "board" | "port" | "work" | null;
 		previewKey?: string | null;
 		checkpointId?: string | null;
 		cronjobId?: string | null;
@@ -287,6 +292,7 @@ const rightSidebarAvailable = $derived(
 	Boolean(space) && !spaceHasMinimalAccess,
 );
 const canEditFiles = $derived(hasAccessPermission("file.edit"));
+const canEditSpace = $derived(hasAccessPermission("space.edit"));
 const spaceOwnerUsername = $derived(
 	space?.ownerProfile?.username ??
 		(space?.userUuid === authStore.userUuid
@@ -374,6 +380,21 @@ const portPreview = createPortPreviewController({
 	},
 	onBeforeOpenPort: () => {},
 });
+const workPreview = createWorkPreviewController({
+	getSpaceId: () => spaceId,
+	onOpenPanel: () => {
+		if (uiState.filesColumnHidden) uiState.setFilesColumnHidden(false);
+		ensurePreviewPanelFits();
+	},
+	onClosePanel: () => {
+		queueMicrotask(() => {
+			if (!activePreviewKind) closePreviewFocusMode();
+		});
+	},
+});
+const inlineWorkPreview = $derived(workPreview.preview);
+const inlineWorkTabs = $derived(workPreview.previews);
+const activeInlineWorkId = $derived(workPreview.activeWorkId);
 const previewEndpoints = $derived(portPreview.endpoints);
 const inlinePortPreview = $derived(portPreview.preview);
 const inlinePortTabs = $derived(portPreview.previews);
@@ -495,6 +516,8 @@ const previewWorkspace = createPreviewWorkspaceController({
 	getActiveBoardPath: () => boardPreview.activeBoardPath,
 	getPortTabs: () => portPreview.previews,
 	getActivePort: () => portPreview.activePort,
+	getWorkTabs: () => workPreview.previews,
+	getActiveWorkId: () => workPreview.activeWorkId,
 	openFile: (path, optionsArg) =>
 		fileWorkspace.openInlineFile(path, optionsArg as never),
 	activateFile: (path) => fileWorkspace.activateInlineFile(path),
@@ -508,6 +531,9 @@ const previewWorkspace = createPreviewWorkspaceController({
 		portPreview.openPort(port, url, optionsArg),
 	activatePort: (port) => portPreview.activatePort(port),
 	closePort: (port) => portPreview.closePort(port ?? undefined),
+	openWork: (input) => workPreview.openWork(input),
+	activateWork: (workId) => workPreview.activateWork(workId),
+	closeWork: (workId) => workPreview.closeWork(workId ?? undefined),
 	getPortEndpointUrl: (port) => previewEndpoints[port]?.url,
 	syncUrl: (ref, replace = true) => syncPreviewQuery(ref, replace),
 	onBudgetCleanup: () => {
@@ -528,6 +554,7 @@ const openWorkPublish = (
 	workPublishTarget = { targetType, targetRef };
 };
 const inlineFileIsMarkdown = $derived(fileWorkspace.inlineFileIsMarkdown);
+const inlineFileIsCsv = $derived(fileWorkspace.inlineFileIsCsv);
 const inlineFileIsHtml = $derived(fileWorkspace.inlineFileIsHtml);
 const inlineFileHasRenderedPreview = $derived(
 	fileWorkspace.inlineFileHasRenderedPreview,
@@ -621,6 +648,18 @@ $effect(() => {
 			path: inlineBoard.path,
 			boardId: inlineBoard.boardId,
 		});
+		return;
+	}
+	if (activePreviewKind === "work" && inlineWorkPreview?.composerChip) {
+		sessionChat.reportActiveSource({
+			kind: "work",
+			workId: inlineWorkPreview.workId,
+			...inlineWorkPreview.composerChip,
+		});
+		return;
+	}
+	if (activePreviewKind === "work") {
+		sessionChat.reportActiveSource(null);
 		return;
 	}
 	if (activePreviewKind === "port" && inlinePortPreview) {
@@ -1889,6 +1928,33 @@ function closeInlineBoardTab(path?: string) {
 function closeInlinePortTab(port?: string) {
 	previewWorkspace.close("port", port ?? activeInlinePort);
 }
+function activateInlineWorkTab(workId: string) {
+	previewWorkspace.activate("work", workId);
+}
+function closeInlineWorkTab(workId?: string) {
+	previewWorkspace.close("work", workId ?? activeInlineWorkId);
+}
+function retryInlineWork(workId: string) {
+	workPreview.retry(workId);
+}
+/**
+ * The panel owns the iframe, so it hands its surface host up on mount and clears
+ * it on unmount. Keep the disposers here so a remount never leaves a stale
+ * invoker pointing at a detached frame.
+ */
+const workSurfaceDisposers = new Map<string, () => void>();
+function handleWorkComposerChip(workId: string, chip: WorkComposerChip | null) {
+	workPreview.setComposerChip(workId, chip);
+}
+function registerWorkSurface(workId: string, host: WorkSurfaceHost | null) {
+	workSurfaceDisposers.get(workId)?.();
+	workSurfaceDisposers.delete(workId);
+	if (!host) return;
+	workSurfaceDisposers.set(
+		workId,
+		workPreview.registerSurface(workId, (input) => host.call(input)),
+	);
+}
 async function downloadInlineFile() {
 	await fileWorkspace.downloadInlineFile();
 }
@@ -2233,7 +2299,54 @@ onMount(() => {
 	document.addEventListener("click", handleResourceActionMenuClickOutside);
 	scheduleStatusRefresh();
 	scheduleDanmakuCatchup();
+	// Serve UI commands addressed at this tab while a workspace is mounted.
+	const offUiCommandHost = registerUiCommandHost(async (command, context) => {
+		if (command.type !== "preview.show") {
+			return {
+				status: "unsupported",
+				error: {
+					code: "unsupported_command",
+					message: `This Cohub version cannot handle "${command.type}".`,
+				},
+			};
+		}
+		// A Work tab lives inside one workspace; refuse rather than navigate away.
+		if (context.source?.spaceId && context.source.spaceId !== spaceId) {
+			return {
+				status: "ui_host_unavailable",
+				error: {
+					code: "space_mismatch",
+					message:
+						"This Cohub tab is showing a different Space than the one the command came from.",
+				},
+			};
+		}
+
+		previewWorkspace.openWork({
+			workId: command.preview.workId,
+			label: command.preview.label,
+			launch: command.preview.launch ?? null,
+		});
+		if (!command.request) return { status: "applied" };
+
+		const called = await workPreview.callSurface({
+			workId: command.preview.workId,
+			method: command.request.method,
+			input: command.request.input,
+			commandId: context.commandId,
+		});
+		if (called.ok) return { status: "pending" };
+		return {
+			status:
+				called.code === "surface_not_supported" ||
+				called.code === "method_not_found"
+					? "unsupported"
+					: "rejected",
+			error: { code: called.code, message: called.message },
+		};
+	});
 	return () => {
+		offUiCommandHost();
 		if (activeSessionId)
 			sessionChat.captureCurrentScrollAnchor(activeSessionId);
 		window.removeEventListener("keydown", handleSessionVimKeydown);
@@ -2247,6 +2360,9 @@ onMount(() => {
 		spaceStatus.dispose();
 		fileWorkspace.dispose();
 		portPreview.dispose();
+		for (const dispose of workSurfaceDisposers.values()) dispose();
+		workSurfaceDisposers.clear();
+		workPreview.dispose();
 		sessionChat.scroll.stopVimScroll();
 		sessionChat.scroll.clearPendingVimG();
 		sessionChat.persistSessionScrollAnchorsNow();
@@ -2456,6 +2572,7 @@ $effect(() => {
 				boardPreview.closeBoard(tab.path);
 			for (const tab of [...portPreview.previews])
 				portPreview.closePort(tab.port);
+			workPreview.closeAll();
 			previewWorkspace.resetForContext();
 			appliedPreviewContextKey = contextKey;
 		}
@@ -2518,6 +2635,9 @@ const spaceFileDomainProps = $derived.by<
 	inlinePortPreview,
 	inlinePortTabs,
 	activeInlinePort,
+	inlineWorkPreview,
+	inlineWorkTabs,
+	activeInlineWorkId,
 	activePreviewKind,
 	inlinePortEndpoint,
 	previewEndpoints,
@@ -2529,6 +2649,7 @@ const spaceFileDomainProps = $derived.by<
 	inlineFileDiffLoading: fileWorkspace.inlineFileDiffLoading,
 	inlineFileDiffError: fileWorkspace.inlineFileDiffError,
 	inlineFileIsMarkdown,
+	inlineFileIsCsv,
 	inlineFileIsHtml,
 	inlineFileCopied,
 	inlineFileExt,
@@ -2572,6 +2693,11 @@ const spaceFileDomainProps = $derived.by<
 	onCloseInlineBoardTab: closeInlineBoardTab,
 	onActivateInlinePort: activateInlinePortTab,
 	onCloseInlinePortTab: closeInlinePortTab,
+	onActivateInlineWork: activateInlineWorkTab,
+	onCloseInlineWorkTab: closeInlineWorkTab,
+	onRetryInlineWork: retryInlineWork,
+	onRegisterWorkSurface: registerWorkSurface,
+	onWorkComposerChip: handleWorkComposerChip,
 	onActivateInlineFile: activateInlineFileTab,
 	onCloseInlineFileTab: closeInlineFileTab,
 	onBackInlineFile: goBackInlineFile,
@@ -2848,11 +2974,18 @@ const headerActions = {
         {space}
         {spaceLoadError}
         {spaceHasMinimalAccess}
+        {canEditSpace}
         {taskRealtimeEvent}
         ownerUsername={spaceOwnerUsername}
         {spaceSlug}
         onHeaderMeta={(meta) => {
           routeDetailHeaderMeta = meta;
+        }}
+        onPreviewWork={(work) => {
+          previewWorkspace.openWork({
+            workId: work.id,
+            label: workDisplayTitle(work.meta, work.slug),
+          });
         }}
       />
     {:else}

@@ -365,6 +365,13 @@
       "when": 1785413874322,
       "tag": "0051_abandoned_talkback",
       "breakpoints": true
+    },
+    {
+      "idx": 52,
+      "version": "7",
+      "when": 1786096889110,
+      "tag": "0052_work_view_stats_hourly",
+      "breakpoints": true
     }
   ]
 }

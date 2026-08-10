@@ -55,13 +55,23 @@ export type ViewportPortContext = {
   url?: string;
 };
 
+export type ViewportWorkContext = {
+  kind: "work";
+  workId: string;
+  key: string;
+  label: string;
+  content: string;
+};
+
 export type ViewportContext =
   | ViewportFileContext
   | ViewportBoardContext
-  | ViewportPortContext;
+  | ViewportPortContext
+  | ViewportWorkContext;
 
 export function viewportContextId(context: ViewportContext): string {
   if (context.kind === "port") return `port:${context.port}`;
+  if (context.kind === "work") return `work:${context.workId}:${context.key}`;
   return `${context.kind}:${context.path}`;
 }
 
@@ -103,6 +113,7 @@ export function formatViewportContextLabel(context: ViewportContext): string {
       : "";
     return `${name}${selected}`;
   }
+  if (context.kind === "work") return context.label;
   return `:${context.port}`;
 }
 
@@ -122,6 +133,11 @@ export function formatViewportContextLine(context: ViewportContext): string {
     ].filter(Boolean);
     const suffix = details.length > 0 ? ` (${details.join("; ")})` : "";
     return `- board: \`${escapeAttachmentPath(context.path)}\`${suffix}`;
+  }
+  if (context.kind === "work") {
+    const label = escapeViewportLabel(context.label);
+    const content = context.content.replace(/\r\n?/g, "\n").trim();
+    return `- work: \`${escapeAttachmentPath(context.workId)}\` (${label})\n${content}`;
   }
   const url = context.url?.trim();
   const suffix = url ? ` (${escapeAttachmentUrl(url)})` : "";
@@ -240,6 +256,22 @@ export function parseViewportContextsFromMeta(
         kind: "port",
         port: record.port,
         ...(typeof record.url === "string" ? { url: record.url } : {}),
+      });
+      continue;
+    }
+    if (
+      record.kind === "work" &&
+      typeof record.workId === "string" &&
+      typeof record.key === "string" &&
+      typeof record.label === "string" &&
+      typeof record.content === "string"
+    ) {
+      result.push({
+        kind: "work",
+        workId: record.workId,
+        key: record.key,
+        label: record.label,
+        content: record.content,
       });
     }
   }

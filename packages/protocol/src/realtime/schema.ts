@@ -148,7 +148,7 @@ export const wsClientEventSchema = z.discriminatedUnion("type", [
 export const realtimeEnvelopeSchema = z.object({
   id: z.string(),
   timestamp: z.number(),
-  domain: z.enum(["system", "session", "space", "label", "room"]),
+  domain: z.enum(["system", "session", "space", "label", "room", "ui"]),
   type: z.string(),
   requestId: z.string().nullable().optional(),
   spaceId: z.string().nullable().optional(),

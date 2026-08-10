@@ -25,6 +25,11 @@ export type ToolExecutionContext = {
   actorUserId?: string | null;
   executionToken?: string | null;
   executionScopes?: Permission[] | null;
+  /**
+   * Frontend instance that originated this work, propagated from request
+   * provenance so `cohub` inside the sandbox can address the same UI.
+   */
+  sourceClientId?: string | null;
   requestId?: string | null;
   metrics?: TurnTelemetryMetrics;
   assistantMessageTiming?: AssistantMessageTimingContext;

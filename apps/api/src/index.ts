@@ -2,7 +2,7 @@ import "dotenv/config";
 import "./tracing.js";
 import { configureBillingRuntime } from "@cohub/billing";
 import { createLogger } from "@cohub/infra/logging";
-
+import { COHUB_SOURCE_HEADER_NAMES } from "@cohub/protocol/provenance";
 
 import { serve } from "@hono/node-server";
 import { Hono } from "hono";
@@ -15,6 +15,7 @@ import { applyTraceResponseHeaders, getActiveTraceIdentifiers, getOrCreateReques
 import { verifyUserAccessToken } from "@cohub/identity";
 
 import { getTokenFromRequest, type AuthUserProfile, consumeExecutionAuthFromToken, type ExecutionAuthPrincipal } from "./auth.js";
+import { describeUserAccessTokenFailure } from "./auth-failure.js";
 import { recordAuthTrace } from "./auth-observability.js";
 import { verifyPreviewSessionToken, type PreviewSessionPrincipal } from "./preview-sessions.js";
 import { verifyWorkSessionToken, type WorkSessionPrincipal } from "./work-sessions.js";
@@ -65,11 +66,9 @@ app.use(
       "Authorization",
       "X-Git-Token",
       "X-Request-Id",
-      "X-Cohub-Source-Space",
-      "X-Cohub-Source-Session",
-      "X-Cohub-Source-Turn",
-      "X-Cohub-Source-Tool-Call",
-      "X-Cohub-Source-Via",
+      // Derived, so a new provenance header cannot be added without being allowed
+      // here — a missing one fails every cross-origin browser request.
+      ...COHUB_SOURCE_HEADER_NAMES,
       "Traceparent",
       "Tracestate",
       "Baggage",
@@ -154,7 +153,13 @@ app.use(async (c, next) => {
       const authUser = await verifyUserAccessToken({ token, logtoEndpoint: config.logtoEndpoint });
       c.set("authUser", authUser);
       c.set("principal", { type: "user", user: authUser });
-    } catch {
+    } catch (error) {
+      const failure = describeUserAccessTokenFailure(error);
+      logger.warn("User access token verification failed", {
+        auth_failure_reason: failure.reason,
+        ...(failure.claim ? { auth_failure_claim: failure.claim } : {}),
+        http_method: c.req.method,
+      });
       recordAuthTrace(trace.getActiveSpan(), {
         credentialPresent: true,
         principalType: "anonymous",

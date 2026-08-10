@@ -57,6 +57,7 @@ test("preview kinds share one workspace pane", () => {
 		"InlineFilePanel.svelte",
 		"BoardPreviewPanel.svelte",
 		"PortPreviewPanel.svelte",
+		"WorkPreviewPanel.svelte",
 	].map((file) => readFileSync(new URL(file, modules), "utf8"));
 	const portPreview = readFileSync(
 		new URL("../lib/components/PortPreview.svelte", import.meta.url),
@@ -129,6 +130,9 @@ test("preview kinds share one workspace pane", () => {
 		/class:cm-wrapper--drawer-swipe=\{allowDrawerSwipe\}/,
 	);
 	assert.match(portPreview, /data-drawer-swipe-ignore/);
+	assert.match(panels[3], /data-drawer-swipe-ignore/);
+	assert.doesNotMatch(panels[3], /<Rocket\b/);
+	assert.doesNotMatch(panels[3], /title=\{publicUrl\}/);
 	assert.match(sharedMobileChrome, /PanelRightOpen/);
 	assert.doesNotMatch(sharedMobileChrome, /FolderOpen/);
 });

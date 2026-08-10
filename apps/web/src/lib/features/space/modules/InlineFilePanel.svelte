@@ -69,6 +69,7 @@ type Props = {
 	inlineFileDiffLoading: boolean;
 	inlineFileDiffError: string | null;
 	inlineFileIsMarkdown: boolean;
+	inlineFileIsCsv: boolean;
 	inlineFileIsHtml: boolean;
 	activeFsReadonly: boolean;
 	canEditFiles: boolean;
@@ -134,6 +135,7 @@ let {
 	inlineFileDiffLoading,
 	inlineFileDiffError,
 	inlineFileIsMarkdown,
+	inlineFileIsCsv,
 	inlineFileIsHtml,
 	activeFsReadonly,
 	canEditFiles,
@@ -190,6 +192,9 @@ const loadFileDiffViewModule = createLazyModuleLoader(
 const loadPdfPreviewModule = createLazyModuleLoader(
 	() => import("$lib/components/PdfPreview.svelte"),
 );
+const loadCsvPreviewModule = createLazyModuleLoader(
+	() => import("$lib/components/CsvPreview.svelte"),
+);
 
 const showDiffMode = $derived(!activeFsReadonly && inlineFileIsText);
 // Bump to force #await to re-subscribe after a cleared lazy-import failure.
@@ -197,6 +202,7 @@ let codeEditorLoadAttempt = $state(0);
 let htmlPreviewLoadAttempt = $state(0);
 let fileDiffLoadAttempt = $state(0);
 let pdfPreviewLoadAttempt = $state(0);
+let csvPreviewLoadAttempt = $state(0);
 let pdfControls = $state<PdfPreviewControls | null>(null);
 let pdfPageDraft = $state("");
 let pdfPageInputFocused = $state(false);
@@ -224,6 +230,10 @@ const fileDiffModulePromise = $derived.by(() => {
 const pdfPreviewModulePromise = $derived.by(() => {
 	pdfPreviewLoadAttempt;
 	return loadPdfPreviewModule();
+});
+const csvPreviewModulePromise = $derived.by(() => {
+	csvPreviewLoadAttempt;
+	return loadCsvPreviewModule();
 });
 let fileActionMenuAnchorEl: HTMLElement | null = $state(null);
 let imageMarkOpen = $state(false);
@@ -358,7 +368,11 @@ $effect(() => {
 					class="segmented-btn"
 					class:active={inlineFileViewMode === "preview"}
 					onclick={() => (inlineFileViewMode = "preview")}
-					title={inlineFileIsMarkdown ? "Preview markdown" : "Preview HTML"}
+					title={inlineFileIsMarkdown
+						? "Preview markdown"
+						: inlineFileIsCsv
+							? "Preview table"
+							: "Preview HTML"}
 				>Preview</button>
 			{/if}
 			{#if showDiffMode}
@@ -612,6 +626,22 @@ $effect(() => {
 	{/if}
 {/snippet}
 
+{#snippet CsvFilePreview()}
+	{#if inlineFile?.response}
+		{#await csvPreviewModulePromise then previewModule}
+			{@const LazyCsvPreview = previewModule.default}
+			<LazyCsvPreview
+				source={inlineFile.draft}
+				name={inlineFile.response.name}
+			/>
+		{:catch}
+			{@render LazyLoadError("Preview failed to load.", () => {
+				csvPreviewLoadAttempt += 1;
+			})}
+		{/await}
+	{/if}
+{/snippet}
+
 {#snippet PdfFilePreview()}
 	{#if inlineFile?.response}
 		{#await pdfPreviewModulePromise then previewModule}
@@ -655,6 +685,8 @@ $effect(() => {
 	{:else if inlineFileViewMode === "preview" && inlineFileHasRenderedPreview}
 		{#if inlineFileIsMarkdown}
 			{@render MarkdownFilePreview()}
+		{:else if inlineFileIsCsv}
+			{@render CsvFilePreview()}
 		{:else}
 			{@render HtmlFilePreview()}
 		{/if}
@@ -729,7 +761,7 @@ $effect(() => {
               <div class="flex items-center gap-0 rounded-md border border-border-subtle bg-bg-input p-[2px]">
                 <button type="button" class="segmented-btn" class:active={inlineFileViewMode === "source"} onclick={() => inlineFileViewMode = "source"} title="Edit source">Source</button>
                 {#if inlineFileHasRenderedPreview}
-                  <button type="button" class="segmented-btn" class:active={inlineFileViewMode === "preview"} onclick={() => inlineFileViewMode = "preview"} title={inlineFileIsMarkdown ? "Preview markdown" : "Preview HTML"}>Preview</button>
+                  <button type="button" class="segmented-btn" class:active={inlineFileViewMode === "preview"} onclick={() => inlineFileViewMode = "preview"} title={inlineFileIsMarkdown ? "Preview markdown" : inlineFileIsCsv ? "Preview table" : "Preview HTML"}>Preview</button>
                 {/if}
                 {#if showDiffMode}
                   <button type="button" class="segmented-btn" class:active={inlineFileViewMode === "diff"} onclick={() => inlineFileViewMode = "diff"} title="Diff since last save">Diff</button>
@@ -885,7 +917,7 @@ $effect(() => {
                       class="segmented-btn"
                       class:active={inlineFileViewMode === "preview"}
                       onclick={() => inlineFileViewMode = "preview"}
-                      title={inlineFileIsMarkdown ? "Preview markdown" : "Preview HTML"}
+                      title={inlineFileIsMarkdown ? "Preview markdown" : inlineFileIsCsv ? "Preview table" : "Preview HTML"}
                     >
                       Preview
                     </button>

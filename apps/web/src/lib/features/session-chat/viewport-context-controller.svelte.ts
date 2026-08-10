@@ -6,6 +6,7 @@ import {
 	type ViewportSelectedNode,
 	type ViewportVisibleLines,
 	type ViewportVisibleRect,
+	type ViewportWorkContext,
 	viewportContextId,
 } from "@cohub/protocol";
 
@@ -29,6 +30,10 @@ export type ActiveViewportSource =
 	| { kind: "file"; path: string }
 	| { kind: "board"; path: string; boardId?: string | null }
 	| { kind: "port"; port: string; url?: string | null }
+	| ({ kind: "work"; workId: string } & Omit<
+			ViewportWorkContext,
+			"kind" | "workId"
+	  >)
 	| null;
 
 function sameVisibleLines(
@@ -118,6 +123,18 @@ function buildPortContext(
 	};
 }
 
+function buildWorkContext(
+	source: Extract<ActiveViewportSource, { kind: "work" }>,
+): ViewportWorkContext {
+	return {
+		kind: "work",
+		workId: source.workId,
+		key: source.key,
+		label: source.label,
+		content: source.content,
+	};
+}
+
 function isSameActiveSource(
 	prev: ActiveViewportSource,
 	next: ActiveViewportSource,
@@ -127,7 +144,20 @@ function isSameActiveSource(
 	if (prev.kind === "port" && next.kind === "port") {
 		return prev.port === next.port && (prev.url ?? null) === (next.url ?? null);
 	}
-	if (prev.kind !== "port" && next.kind !== "port") {
+	if (prev.kind === "work" && next.kind === "work") {
+		return (
+			prev.workId === next.workId &&
+			prev.key === next.key &&
+			prev.label === next.label &&
+			prev.content === next.content
+		);
+	}
+	if (
+		prev.kind !== "port" &&
+		next.kind !== "port" &&
+		prev.kind !== "work" &&
+		next.kind !== "work"
+	) {
 		return prev.path === next.path;
 	}
 	return false;
@@ -139,6 +169,7 @@ export function activeViewportSourceId(
 ): string | null {
 	if (!source) return null;
 	if (source.kind === "port") return `port:${source.port}`;
+	if (source.kind === "work") return `work:${source.workId}:${source.key}`;
 	return `${source.kind}:${source.path}`;
 }
 
@@ -185,6 +216,7 @@ export function createViewportContextController() {
 				boardObservation?.path === source.path ? boardObservation : null;
 			return buildBoardContext(source, observation);
 		}
+		if (source.kind === "work") return buildWorkContext(source);
 		return buildPortContext(source.port, source.url);
 	});
 

@@ -105,11 +105,32 @@ cohub -s <spaceId> spaces files diff
 cohub -s <spaceId> works publish demo --file dist/index.html
 cohub -s <spaceId> works publish site --dir dist
 cohub -s <spaceId> works ls --json
+cohub works stats <workId|url|username/space/work>
 ```
 
 Realtime rooms use a published Work's runtime identity. Use
 `client.work.realtime` inside the Work; the CLI intentionally has no room
 commands.
+
+### Drive the Cohub UI
+
+An Agent running in a Space can show a Work preview in the Cohub tab the chat
+started from, and call methods the Work exposes.
+
+```bash
+cohub ui preview <workId|url|cohub://works/...|username/space/work>
+cohub ui preview <work> --call selection.get
+cohub ui preview <work> --call board.focus --data '{"nodeId":"n1"}'
+```
+
+Showing a preview is idempotent: repeating it re-activates the same tab. `--call`
+waits for the Work to announce readiness, then invokes the method. Which methods
+exist is up to the Work author, registered with
+`client.work.surface.handle(name, handler)`.
+
+Commands only ever reach the frontend instance that originated the current work,
+resolved from request provenance. They cannot target another user, and there is
+no DOM access or script evaluation.
 
 ### Local Sandbox
 

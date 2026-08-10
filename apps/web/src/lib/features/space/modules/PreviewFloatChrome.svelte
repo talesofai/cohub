@@ -7,6 +7,7 @@ import {
 	Minimize2,
 	MousePointer2,
 	PanelRight,
+	Rocket,
 	X,
 } from "lucide-svelte";
 import type { Snippet } from "svelte";
@@ -35,6 +36,7 @@ const kindIcon = {
 	file: FileIcon,
 	board: MousePointer2,
 	port: Globe,
+	work: Rocket,
 } as const;
 
 const activeTab = $derived(tabs.find((tab) => tab.active) ?? tabs[0] ?? null);

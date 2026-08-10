@@ -16,6 +16,7 @@ export function isTextMime(mimeType: string | null | undefined) {
 	return (
 		mime.startsWith("text/") ||
 		mime === "application/json" ||
+		mime === "application/csv" ||
 		mime === "application/xml" ||
 		mime === "application/yaml" ||
 		mime === "application/toml" ||

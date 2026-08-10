@@ -5,6 +5,7 @@ import {
 	MousePointer2,
 	PanelRightClose,
 	PanelRightOpen,
+	Rocket,
 	X,
 } from "lucide-svelte";
 import type { Snippet } from "svelte";
@@ -42,6 +43,7 @@ const kindIcon = {
 	file: FileIcon,
 	board: MousePointer2,
 	port: Globe,
+	work: Rocket,
 } as const;
 
 const showChrome = $derived(

@@ -11,7 +11,7 @@ export type WorkspacePageView =
 	| "task";
 
 type PreviewFields = {
-	previewKind: "file" | "board" | "port" | null;
+	previewKind: "file" | "board" | "port" | "work" | null;
 	previewKey: string | null;
 };
 

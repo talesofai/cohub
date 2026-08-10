@@ -1,4 +1,4 @@
-export type WorkspacePreviewKind = "file" | "board" | "port";
+export type WorkspacePreviewKind = "file" | "board" | "port" | "work";
 
 export type WorkspacePreviewRef = {
 	kind: WorkspacePreviewKind;
@@ -6,6 +6,14 @@ export type WorkspacePreviewRef = {
 };
 
 export const PREVIEW_QUERY_KEY = "preview";
+
+/** Work preview keys are Work ids. */
+const WORK_ID_RE =
+	/^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
+
+export function isValidWorkKey(key: string): boolean {
+	return WORK_ID_RE.test(key);
+}
 
 /** Accept only integer ports in 1..65535. Reject host-injection forms. */
 export function isValidPortKey(key: string): boolean {
@@ -27,8 +35,10 @@ export function parsePreviewParam(
 	const kind = value.slice(0, separator);
 	const key = value.slice(separator + 1);
 	if (!key) return null;
-	if (kind !== "file" && kind !== "board" && kind !== "port") return null;
+	if (kind !== "file" && kind !== "board" && kind !== "port" && kind !== "work")
+		return null;
 	if (kind === "port" && !isValidPortKey(key)) return null;
+	if (kind === "work" && !isValidWorkKey(key)) return null;
 	return { kind, key };
 }
 

@@ -35,6 +35,24 @@ test("text kinds are classified by path, not just MIME", () => {
 	assert.equal(code.kind, "text");
 	assert.equal(code.language, "ts");
 	assert.equal(code.hasRenderedPreview, false);
+	const csv = filePreviewModel(
+		file({ path: "data/sales.csv", kind: "text", encoding: "utf-8" }),
+	);
+	assert.equal(csv.kind, "csv");
+	assert.equal(csv.hasRenderedPreview, true);
+	assert.equal(csv.isText, true);
+	// A text/csv MIME classifies as csv even without a .csv extension.
+	assert.equal(
+		filePreviewModel(file({ path: "data/export", mimeType: "text/csv" })).kind,
+		"csv",
+	);
+	// Uppercase extensions are matched case-insensitively.
+	assert.equal(
+		filePreviewModel(
+			file({ path: "data/report.CSV", kind: "text", encoding: "utf-8" }),
+		).kind,
+		"csv",
+	);
 });
 
 test("media kinds come from MIME, with a PDF extension fallback", () => {

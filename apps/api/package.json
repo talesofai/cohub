@@ -34,7 +34,7 @@
     "@hono/node-server": "2.0.9",
     "@hono/otel": "^1.1.2",
     "@kubernetes/client-node": "^1.4.0",
-    "@neta-art/generation": "^0.1.18",
+    "@neta-art/generation": "^0.1.19",
     "@opentelemetry/api": "^1.9.1",
     "@opentelemetry/exporter-trace-otlp-proto": "^0.220.0",
     "@opentelemetry/instrumentation": "^0.220.0",

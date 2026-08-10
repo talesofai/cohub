@@ -159,6 +159,19 @@ export type WorkGetResponse = WorkDetailResponse;
 
 export type WorkResolveResponse = WorkDetailResponse;
 
+export type WorkViewSource = "web" | "cli" | "api";
+
+export type WorkViewStatsResponse = {
+  summary: {
+    totalViews: number;
+    views24h: number;
+    views7d: number;
+    views30d: number;
+  };
+  daily: Array<{ date: string; views: number }>;
+  sources: Array<{ source: WorkViewSource; views: number }>;
+};
+
 export type WorkSessionResponse = {
   token: string;
   expiresIn: number;
@@ -226,6 +239,10 @@ export class WorksApi {
     return this.transport.request<{ ok: true }>(`/api/works/${id}`, {
       method: "DELETE",
     });
+  }
+
+  getStats(workId: string) {
+    return this.transport.request<WorkViewStatsResponse>(`/api/works/${workId}/stats`);
   }
 
   listVersions(workId: string) {

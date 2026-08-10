@@ -51,7 +51,8 @@ The Work also appears in the Space sidebar under Works.
 
 From the Work management page you can:
 
-- Open the public page
+- Preview the Work in the workspace, beside the management page
+- Open the public page in a new tab
 - Edit slug, target, status, and permissions
 - Publish a new version from the current target
 - Disable or delete the Work
@@ -99,6 +100,7 @@ Useful follow-ups:
 ```bash
 cohub -s <spaceId> works ls --json
 cohub works get <workId|url|username/space/work> --json
+cohub works stats <workId|url|username/space/work>
 cohub works download <workId|url|username/space/work> --output <path>
 cohub works publish-version <workId>
 ```

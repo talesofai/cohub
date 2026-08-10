@@ -3,6 +3,17 @@ import { test } from "node:test";
 import { WorksApi } from "../src/apis/works.js";
 import type { HttpTransport } from "../src/transport.js";
 
+test("WorksApi.getStats requests the fixed analytics range", async () => {
+  const transport = {
+    request: async (path: string) => {
+      assert.equal(path, "/api/works/work-1/stats");
+      return {};
+    },
+  } as unknown as HttpTransport;
+
+  await new WorksApi(transport).getStats("work-1");
+});
+
 test("WorksApi.getBySlug forwards the abort signal", async () => {
   const controller = new AbortController();
   const transport = {

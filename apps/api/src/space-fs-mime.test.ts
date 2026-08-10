@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
+import { getMimeType } from "./space-fs.js";
 import {
 	isTextMime,
 	normalizeMime,
@@ -49,5 +50,12 @@ describe("space-fs-mime", () => {
 			resolveReadMimeType("application/json", "application/octet-stream"),
 			"application/json",
 		);
+	});
+
+	it("classifies .csv as text by extension and MIME", () => {
+		assert.equal(getMimeType("data/sales.csv"), "text/csv");
+		assert.equal(getMimeType("data/SALES.CSV"), "text/csv");
+		assert.equal(isTextMime("text/csv"), true);
+		assert.equal(isTextMime("application/csv"), true);
 	});
 });

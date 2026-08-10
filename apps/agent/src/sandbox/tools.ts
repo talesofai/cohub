@@ -466,6 +466,7 @@ function createRemoteBashOperations(): BashOperations {
               actorUserId: toolCtx?.actorUserId,
               executionToken: toolCtx?.executionToken,
               executionScopes: toolCtx?.executionScopes,
+              sourceClientId: toolCtx?.sourceClientId,
               generationPolicy: toolCtx?.generationPolicy,
               env: toolCtx?.env,
               toolCallId,
@@ -493,6 +494,7 @@ function createRemoteBashOperations(): BashOperations {
                 ...(ctx?.sessionId ? { COHUB_SESSION_ID: ctx.sessionId } : {}),
                 ...(ctx?.turnId ? { COHUB_TURN_ID: ctx.turnId } : {}),
                 ...(ctx?.toolCallId ? { COHUB_TOOL_CALL_ID: ctx.toolCallId } : {}),
+                ...(ctx?.sourceClientId ? { COHUB_SOURCE_CLIENT_ID: ctx.sourceClientId } : {}),
                 ...(actorUserId ? { COHUB_USER_UUID: actorUserId } : {}),
                 ...(executionToken ? { COHUB_EXECUTION_TOKEN: executionToken } : {}),
               };

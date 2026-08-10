@@ -86,6 +86,14 @@
       "types": "./dist/provenance.d.ts",
       "default": "./dist/provenance.js"
     },
+    "./ui-command": {
+      "types": "./dist/ui-command.d.ts",
+      "default": "./dist/ui-command.js"
+    },
+    "./work-surface": {
+      "types": "./dist/work-surface.d.ts",
+      "default": "./dist/work-surface.js"
+    },
     "./public-identifiers": {
       "types": "./dist/public-identifiers.d.ts",
       "default": "./dist/public-identifiers.js"
@@ -101,7 +109,7 @@
     "typecheck": "tsc -p tsconfig.json --noEmit"
   },
   "dependencies": {
-    "@neta-art/generation": "^0.1.18",
+    "@neta-art/generation": "^0.1.19",
     "zod": "^4.4.3"
   },
   "devDependencies": {

@@ -665,6 +665,19 @@ function resolveActorUserId(ownerMeta: Record<string, unknown>) {
   return typeof ownerMeta.userId === "string" && ownerMeta.userId.trim() ? ownerMeta.userId.trim() : null;
 }
 
+/**
+ * Frontend instance that produced this turn, recorded by the API under
+ * `meta.source`. Carried into tool execution so `cohub ui ...` inside the
+ * sandbox reaches the same browser tab the user prompted from.
+ */
+function resolveSourceClientId(ownerMeta: Record<string, unknown>) {
+  const source = ownerMeta.source && typeof ownerMeta.source === "object" && !Array.isArray(ownerMeta.source)
+    ? ownerMeta.source as Record<string, unknown>
+    : null;
+  const clientId = source?.clientId;
+  return typeof clientId === "string" && clientId.trim() ? clientId.trim() : null;
+}
+
 function resolvePromptAccessMode(ownerMeta: Record<string, unknown>): PromptAccessMode {
   return ownerMeta.accessMode === "read_only" ? "read_only" : "full_access";
 }
@@ -842,6 +855,7 @@ export async function processAgentTurnJob(job: Job<AgentTurnJobData>) {
         ? batch.ownerTurn.meta as Record<string, unknown>
         : {});
       const actorUserId = resolveActorUserId(ownerMeta);
+      const sourceClientId = resolveSourceClientId(ownerMeta);
       if (!actorUserId) throw new Error("Agent turn requires actorUserId for execution token");
       const promptContext = ownerMeta.context && typeof ownerMeta.context === "object" && !Array.isArray(ownerMeta.context)
         ? ownerMeta.context as Record<string, unknown>
@@ -987,6 +1001,7 @@ export async function processAgentTurnJob(job: Job<AgentTurnJobData>) {
             actorUserId,
             executionToken,
             executionScopes,
+            sourceClientId,
             fileVisibility,
             requestId,
             metrics: turnMetrics,
@@ -1058,6 +1073,7 @@ export async function processAgentTurnJob(job: Job<AgentTurnJobData>) {
           actorUserId,
           executionToken,
           executionScopes,
+          sourceClientId,
           fileVisibility,
           requestId,
           metrics: turnMetrics,

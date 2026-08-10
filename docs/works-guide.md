@@ -196,6 +196,59 @@ For a focused commerce example, see:
 - `docs/examples/work-capability-lab/commerce-demo.md`
 - `docs/examples/work-capability-lab/commerce-demo.html`
 
+## Preview a Work Inside the Workspace
+
+A Work detail page offers two ways to open the published result:
+
+- **Preview** shows the Work as a tab in the workspace preview pane, beside the
+  detail page, so publish settings and the running Work stay visible together.
+- **New tab** opens the public Work page as before.
+
+The preview tab is keyed by Work id, deep-linkable as `?preview=work:<workId>`,
+and participates in the same tab budget as file, Board, and port previews.
+
+## Let an Agent Drive the Preview
+
+An Agent running in the Space can open the same preview in the Cohub tab the chat
+started from, and call methods the Work exposes:
+
+```bash
+cohub ui preview <workId|url|cohub://works/...|username/space/work>
+cohub ui preview <work> --call selection.get
+cohub ui preview <work> --call board.focus --data '{"nodeId":"n1"}'
+```
+
+Register a method that receives the UI command id and completes it later:
+
+```ts
+client.work.surface.handle("image.open", async (input, { commandId }) => {
+  openImageStudio(input, commandId);
+});
+
+await client.ui.reportResult(commandId, {
+  status: "applied",
+  result: selectedImage,
+  error: null,
+});
+```
+
+Only registered methods are reachable, so a Work decides exactly what an Agent can
+do. There is no DOM access and no script evaluation. Commands are routed by request
+provenance and reach only the frontend instance that originated the work, so they
+cannot touch another user's browser. A Work also answers only a Cohub app origin,
+so embedding it elsewhere cannot invoke its methods. Native file and Board Works can
+be previewed but expose no callable surface.
+
+## View Statistics
+
+Work editors can inspect total, 24-hour, 7-day, and 30-day views with a source breakdown:
+
+```bash
+cohub works stats <workId|url|username/space/work>
+```
+
+Use `--json` to include the 30-day daily trend.
+
 ## Download Published Artifacts
 
 Newly published file and directory Works include an immutable artifact manifest. Download them by id, public URL, mention URI, or public slug reference:
@@ -208,7 +261,7 @@ The CLI reads the small manifest, streams files directly from the CDN with bound
 
 ## Publish Through the API or SDK
 
-The SDK exposes `works.create`, `works.update`, `works.publishVersion`, `works.delete`, `works.get`, `works.getBySlug`, and `works.listBySpace`.
+The SDK exposes `works.create`, `works.update`, `works.publishVersion`, `works.delete`, `works.get`, `works.getBySlug`, `works.getStats`, and `works.listBySpace`.
 
 `works.get(workId)` returns the Work record plus `publicUrl`, `content`, `owner`, and `space` when the Work can be publicly resolved.
 
@@ -274,6 +327,12 @@ List a Space's Works:
 
 ```js
 await sdk.works.listBySpace(spaceId);
+```
+
+Fetch a Work's view statistics:
+
+```js
+await sdk.works.getStats(workId);
 ```
 
 ## Verification

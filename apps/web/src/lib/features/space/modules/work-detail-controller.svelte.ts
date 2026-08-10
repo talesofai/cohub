@@ -1,4 +1,9 @@
-import type { WorkMeta, WorkRecord, WorkVersionRecord } from "@neta-art/cohub";
+import type {
+	WorkMeta,
+	WorkRecord,
+	WorkVersionRecord,
+	WorkViewStatsResponse,
+} from "@neta-art/cohub";
 import { goto } from "$app/navigation";
 import {
 	dispatchWorksChanged,
@@ -58,6 +63,8 @@ export function createWorkDetailController(options: {
 	getRouteWorkId: () => string | null;
 	getOwnerUsername: () => string | null;
 	getSpaceSlug: () => string | null;
+	/** Stats require space.edit; skip the request for read-only viewers. */
+	getCanViewStats: () => boolean;
 	onDetailLoaded?: (work: WorkRecord | null) => void;
 }) {
 	let detail = $state<WorkRecord | null>(null);
@@ -86,6 +93,9 @@ export function createWorkDetailController(options: {
 	let versions = $state<WorkVersionRecord[]>([]);
 	let versionsLoading = $state(false);
 	let versionsError = $state("");
+	let stats = $state<WorkViewStatsResponse | null>(null);
+	let statsLoading = $state(false);
+	let statsError = $state("");
 	let publishSubmitting = $state(false);
 	let publishError = $state("");
 
@@ -160,6 +170,7 @@ export function createWorkDetailController(options: {
 			}
 			void loadHideCohubBarEntitlement();
 			void loadVersions(work.id);
+			if (options.getCanViewStats()) void loadStats(work.id);
 		} catch (cause) {
 			if (!isCurrentRequest()) return;
 			detail = null;
@@ -189,6 +200,27 @@ export function createWorkDetailController(options: {
 			}
 		} finally {
 			if (guard.isCurrent()) versionsLoading = false;
+		}
+	}
+
+	async function loadStats(workId: string) {
+		if (!options.getCanViewStats()) return;
+		const guard = createKeyedRouteRequestGuard({
+			captureKey: () =>
+				`${options.getSpaceId()}:${options.getRouteWorkId() ?? ""}`,
+		});
+		statsLoading = true;
+		statsError = "";
+		try {
+			const nextStats = await sdk.works.getStats(workId);
+			if (guard.isCurrent()) stats = nextStats;
+		} catch (cause) {
+			if (guard.isCurrent()) {
+				statsError =
+					cause instanceof Error ? cause.message : "Failed to load view stats";
+			}
+		} finally {
+			if (guard.isCurrent()) statsLoading = false;
 		}
 	}
 
@@ -383,6 +415,9 @@ export function createWorkDetailController(options: {
 		versions = [];
 		versionsLoading = false;
 		versionsError = "";
+		stats = null;
+		statsLoading = false;
+		statsError = "";
 		editMode = false;
 		actionInProgress = false;
 		deleteInProgress = false;
@@ -511,6 +546,15 @@ export function createWorkDetailController(options: {
 		get versionsError() {
 			return versionsError;
 		},
+		get stats() {
+			return stats;
+		},
+		get statsLoading() {
+			return statsLoading;
+		},
+		get statsError() {
+			return statsError;
+		},
 		get publishSubmitting() {
 			return publishSubmitting;
 		},
@@ -519,6 +563,7 @@ export function createWorkDetailController(options: {
 		},
 		syncFormFromDetail,
 		publicRoute,
+		loadStats,
 		publishVersion,
 		copyId,
 		copyPublicRoute,

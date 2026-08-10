@@ -7,6 +7,7 @@ import {
   timestamp,
   index,
   integer,
+  bigint,
   numeric,
   boolean,
   jsonb,
@@ -309,6 +310,36 @@ export const workVersions = v2.table(
     workIdx: index("v2_idx_work_versions_work_id").on(table.workId),
     workVersionUniqueIdx: uniqueIndex("v2_uq_work_versions_work_version").on(table.workId, table.version),
     contentKindCheck: check("v2_chk_work_versions_content_kind", sql`${table.contentKind} in ('web', 'file', 'board')`),
+  }),
+);
+
+/** Hourly Work view rollups, split by the immutable published version and source. */
+export const workViewStatsHourly = v2.table(
+  "work_view_stats_hourly",
+  {
+    workId: uuid("work_id").notNull(),
+    workVersionId: uuid("work_version_id").notNull(),
+    bucketStartAt: timestamp("bucket_start_at", { withTimezone: true }).notNull(),
+    source: varchar("source", { length: 20 }).notNull(),
+    viewCount: bigint("view_count", { mode: "number" }).notNull().default(0),
+    createdAt: timestamp("created_at", { withTimezone: true }).defaultNow(),
+    updatedAt: timestamp("updated_at", { withTimezone: true }).defaultNow(),
+  },
+  (table) => ({
+    bucketDimensionsUniqueIdx: uniqueIndex("v2_uq_work_view_stats_hourly_bucket_dims").on(
+      table.workId,
+      table.workVersionId,
+      table.bucketStartAt,
+      table.source,
+    ),
+    workBucketIdx: index("v2_idx_work_view_stats_hourly_work_bucket").on(
+      table.workId,
+      table.bucketStartAt,
+    ),
+    workVersionIdx: index("v2_idx_work_view_stats_hourly_work_version").on(
+      table.workId,
+      table.workVersionId,
+    ),
   }),
 );
 

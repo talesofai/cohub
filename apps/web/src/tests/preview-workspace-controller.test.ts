@@ -24,7 +24,7 @@ function createHarness() {
 	let activeFilePath: string | null = null;
 	const reads = new Map<string, Deferred>();
 	const urls: Array<{
-		ref: { kind: "file" | "board" | "port"; key: string } | null;
+		ref: { kind: "file" | "board" | "port" | "work"; key: string } | null;
 		replace: boolean;
 	}> = [];
 
@@ -35,6 +35,8 @@ function createHarness() {
 		getActiveBoardPath: () => null,
 		getPortTabs: () => [],
 		getActivePort: () => null,
+		getWorkTabs: () => [],
+		getActiveWorkId: () => null,
 		openFile: (path) => {
 			activeFilePath = path;
 			if (!fileTabs.some((tab) => tab.path === path))
@@ -59,6 +61,9 @@ function createHarness() {
 		openPort: () => {},
 		activatePort: () => {},
 		closePort: () => {},
+		openWork: () => {},
+		activateWork: () => {},
+		closeWork: () => {},
 		getPortEndpointUrl: () => null,
 		syncUrl: (ref, replace = true) => {
 			urls.push({ ref, replace });

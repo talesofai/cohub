@@ -10,7 +10,7 @@ import type {
 	WorkspacePreviewKind,
 	WorkspacePreviewRef,
 } from "./workspace-preview-route";
-import { isValidPortKey } from "./workspace-preview-route";
+import { isValidPortKey, isValidWorkKey } from "./workspace-preview-route";
 
 export type PreviewTabKind = WorkspacePreviewKind;
 
@@ -30,6 +30,11 @@ type PortTabLike = {
 	url: string;
 };
 
+type WorkTabLike = {
+	workId: string;
+	loading: boolean;
+};
+
 type PreviewWorkspaceOptions = {
 	getFileTabs: () => FileTabLike[];
 	getActiveFilePath: () => string | null;
@@ -37,6 +42,8 @@ type PreviewWorkspaceOptions = {
 	getActiveBoardPath: () => string | null;
 	getPortTabs: () => PortTabLike[];
 	getActivePort: () => string | null;
+	getWorkTabs: () => WorkTabLike[];
+	getActiveWorkId: () => string | null;
 	openFile: (
 		path: string,
 		options?: { preserveHistory?: boolean; position?: unknown },
@@ -54,6 +61,13 @@ type PreviewWorkspaceOptions = {
 	) => void;
 	activatePort: (port: string) => void;
 	closePort: (port?: string | null) => void;
+	openWork: (input: {
+		workId: string;
+		label?: string;
+		launch?: { search?: string; hash?: string } | null;
+	}) => void;
+	activateWork: (workId: string) => void;
+	closeWork: (workId?: string | null) => void;
 	getPortEndpointUrl: (port: string) => string | null | undefined;
 	syncUrl: (ref: WorkspacePreviewRef | null, replace?: boolean) => void;
 	onBudgetCleanup?: () => void;
@@ -123,6 +137,10 @@ export function createPreviewWorkspaceController(
 			const port = options.getActivePort();
 			return port ? { kind: "port", key: port } : null;
 		}
+		if (activeKind === "work") {
+			const workId = options.getActiveWorkId();
+			return workId ? { kind: "work", key: workId } : null;
+		}
 		// Fallback if kind drifted but a surface is still open.
 		const filePath = options.getActiveFilePath();
 		if (filePath) return { kind: "file", key: filePath };
@@ -130,6 +148,8 @@ export function createPreviewWorkspaceController(
 		if (boardPath) return { kind: "board", key: boardPath };
 		const port = options.getActivePort();
 		if (port) return { kind: "port", key: port };
+		const workId = options.getActiveWorkId();
+		if (workId) return { kind: "work", key: workId };
 		return null;
 	}
 
@@ -137,9 +157,11 @@ export function createPreviewWorkspaceController(
 		if (activeKind === "port" && options.getActivePort()) return "port";
 		if (activeKind === "board" && options.getActiveBoardPath()) return "board";
 		if (activeKind === "file" && options.getActiveFilePath()) return "file";
+		if (activeKind === "work" && options.getActiveWorkId()) return "work";
 		if (options.getActiveFilePath()) return "file";
 		if (options.getActiveBoardPath()) return "board";
 		if (options.getActivePort()) return "port";
+		if (options.getActiveWorkId()) return "work";
 		return null;
 	}
 
@@ -163,6 +185,13 @@ export function createPreviewWorkspaceController(
 				weight: 3,
 				protected: false,
 			})),
+			...options.getWorkTabs().map((tab) => ({
+				kind: "work" as const,
+				key: tab.workId,
+				// An embedded Work costs about as much as a port preview.
+				weight: 3,
+				protected: tab.loading,
+			})),
 		];
 		let total = candidates.reduce((sum, tab) => sum + tab.weight, 0);
 		if (total <= weightLimit) return;
@@ -178,7 +207,8 @@ export function createPreviewWorkspaceController(
 			if (total <= weightLimit) break;
 			if (tab.kind === "file") options.closeFile(tab.key, true);
 			else if (tab.kind === "board") options.closeBoard(tab.key);
-			else options.closePort(tab.key);
+			else if (tab.kind === "port") options.closePort(tab.key);
+			else options.closeWork(tab.key);
 			total -= tab.weight;
 			closed += 1;
 		}
@@ -275,6 +305,34 @@ export function createPreviewWorkspaceController(
 		}
 	}
 
+	/**
+	 * Show a Work preview. Idempotent by Work id: repeating re-activates the
+	 * existing tab and refreshes its launch state.
+	 */
+	function openWork(
+		input: {
+			workId: string;
+			label?: string;
+			launch?: { search?: string; hash?: string } | null;
+		},
+		opts: { syncUrl?: boolean; source?: PreviewNavigationSource } = {},
+	) {
+		if (!isValidWorkKey(input.workId)) return;
+		const syncUrl = opts.syncUrl ?? true;
+		const hadPreview = Boolean(currentRef());
+		const ref = { kind: "work" as const, key: input.workId };
+		beginNavigation(ref, opts.source ?? (syncUrl ? "user" : "route"));
+		activeKind = "work";
+		touch("work", input.workId);
+		options.openWork(input);
+		if (syncUrl) options.syncUrl(ref, hadPreview);
+		enforceBudget();
+		if (syncUrl) {
+			const current = currentRef();
+			if (current) options.syncUrl(current, true);
+		}
+	}
+
 	function activate(kind: PreviewTabKind, key: string, syncUrl = true) {
 		const ref = { kind, key };
 		beginNavigation(ref, syncUrl ? "user" : "route");
@@ -282,7 +340,8 @@ export function createPreviewWorkspaceController(
 		touch(kind, key);
 		if (kind === "file") options.activateFile(key);
 		else if (kind === "board") options.activateBoard(key);
-		else options.activatePort(key);
+		else if (kind === "port") options.activatePort(key);
+		else options.activateWork(key);
 		if (syncUrl) options.syncUrl(ref, true);
 	}
 
@@ -293,7 +352,8 @@ export function createPreviewWorkspaceController(
 	) {
 		if (kind === "file") options.closeFile(key, skipConfirm);
 		else if (kind === "board") options.closeBoard(key);
-		else options.closePort(key);
+		else if (kind === "port") options.closePort(key);
+		else options.closeWork(key);
 		activeKind = resolveKind();
 		const ref = currentRef();
 		beginNavigation(ref, "user");
@@ -320,6 +380,9 @@ export function createPreviewWorkspaceController(
 		}
 		for (const tab of [...options.getPortTabs()]) {
 			options.closePort(tab.port);
+		}
+		for (const tab of [...options.getWorkTabs()]) {
+			options.closeWork(tab.workId);
 		}
 		if (syncUrl) options.syncUrl(null, true);
 	}
@@ -362,6 +425,10 @@ export function createPreviewWorkspaceController(
 			void openBoard(ref.key, { syncUrl: false, source: "route" });
 			return { ok: true as const };
 		}
+		if (ref.kind === "work") {
+			openWork({ workId: ref.key }, { syncUrl: false, source: "route" });
+			return { ok: true as const };
+		}
 		// Port routes wait for a trusted endpoint before activating a surface.
 		const url = options.getPortEndpointUrl(ref.key);
 		if (!url) {
@@ -400,6 +467,7 @@ export function createPreviewWorkspaceController(
 		openFile,
 		openBoard,
 		openPort,
+		openWork,
 		activate,
 		close,
 		closeActive,

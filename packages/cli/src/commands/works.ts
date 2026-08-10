@@ -1,10 +1,10 @@
-import { HttpError, type Permission, type WorkCreateInput, type WorkMeta, type WorkStatus, type WorkTargetType, type WorkUpdateInput, type WorkVisibility } from "@neta-art/cohub";
+import { HttpError, type CohubHttpClient, type Permission, type WorkCreateInput, type WorkMeta, type WorkStatus, type WorkTargetType, type WorkUpdateInput, type WorkViewStatsResponse, type WorkVisibility } from "@neta-art/cohub";
 import type { Command } from "commander";
 import { createClient } from "../client.js";
 import { error, handleHttp, json as outJson, jsonRequested, ok, table } from "../output.js";
 import { resolveSpace } from "../space.js";
 import { downloadWork } from "../work-download.js";
-import { getWorkByRef } from "../work-ref.js";
+import { getWorkByRef, parseWorkRef } from "../work-ref.js";
 import { registerWorkCommerce } from "./work-commerce.js";
 
 const WORK_STATUSES = ["published", "disabled"] as const;
@@ -89,6 +89,29 @@ function printWorkUrls(result: { publicUrl?: string | null; content?: { url: str
     result.content?.url ? `Content URL: ${result.content.url}` : null,
   ].filter((line): line is string => Boolean(line));
   if (lines.length) console.log(`\n${lines.join("\n")}`);
+}
+
+function printWorkStats(stats: WorkViewStatsResponse): void {
+  table([stats.summary], [
+    { key: "totalViews", label: "Total" },
+    { key: "views24h", label: "24h" },
+    { key: "views7d", label: "7d" },
+    { key: "views30d", label: "30d" },
+  ]);
+  if (stats.sources.length) {
+    console.log("");
+    table(stats.sources, [
+      { key: "source", label: "Source" },
+      { key: "views", label: "Views" },
+    ]);
+  }
+}
+
+export async function getWorkStatsByRef(client: CohubHttpClient, work: string): Promise<WorkViewStatsResponse> {
+  const ref = parseWorkRef(work);
+  if ("id" in ref) return client.works.getStats(ref.id);
+  const detail = await getWorkByRef(client, work);
+  return client.works.getStats(detail.work.id);
 }
 
 async function confirmDelete(opts: { yes?: boolean }): Promise<void> {
@@ -183,6 +206,21 @@ export function registerWorks(program: Command): void {
         if (jsonRequested(opts)) return outJson(result);
         printWork(result.work);
         printWorkUrls(result);
+      } catch (e: unknown) {
+        handleHttp(e);
+      }
+    });
+
+  worksCmd
+    .command("stats <work>")
+    .description("Show view statistics by id, URL, mention URI, or username/space/work")
+    .option("--json", "Output as JSON")
+    .action(async (work: string, opts: { json?: boolean }) => {
+      const client = createClient();
+      try {
+        const result = await getWorkStatsByRef(client, work);
+        if (jsonRequested(opts)) return outJson(result);
+        printWorkStats(result);
       } catch (e: unknown) {
         handleHttp(e);
       }
