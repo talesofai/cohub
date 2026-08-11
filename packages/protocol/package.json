@@ -113,7 +113,7 @@
     "typecheck": "tsc -p tsconfig.json --noEmit"
   },
   "dependencies": {
-    "@neta-art/generation": "^0.1.19",
+    "@neta-art/generation": "^0.1.20",
     "zod": "^4.4.3"
   },
   "devDependencies": {
