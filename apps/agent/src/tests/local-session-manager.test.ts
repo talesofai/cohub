@@ -4,6 +4,13 @@ import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { SessionManager } from "../runtime/local-session-manager.js";
 
+function firstMessageText(manager: SessionManager): string | undefined {
+  const message = manager.buildSessionContext().messages[0] as
+    | { content?: Array<{ type?: string; text?: string }> }
+    | undefined;
+  return message?.content?.find((part) => part.type === "text")?.text;
+}
+
 const root = await mkdtemp(join(tmpdir(), "cohub-local-session-manager-"));
 try {
   const sessionsDir = join(root, "sessions");
@@ -45,6 +52,74 @@ try {
   });
   const grandchild = await SessionManager.open(grandchildSessionFile, sessionsDir);
   assert.deepEqual(grandchild.getSessionAffinity(), { sessionId: "session", threadId: "grandchild" });
+
+  const unicodeSeparatorText = "before emoji \u{1f680}\u2028between\u2029after";
+  const legacySeparatorFile = join(sessionsDir, "legacy-unicode-separators.jsonl");
+  const legacySeparatorContent = [
+    JSON.stringify({ type: "session", version: 3, id: "legacy-separators", timestamp: new Date().toISOString(), cwd: root }),
+    JSON.stringify({ type: "message", id: "legacy", parentId: null, timestamp: new Date().toISOString(), message: { role: "user", content: [{ type: "text", text: unicodeSeparatorText }], timestamp: Date.now() } }),
+    JSON.stringify({ type: "message", id: "after-legacy", parentId: "legacy", timestamp: new Date().toISOString(), message: { role: "assistant", content: [{ type: "text", text: "still valid" }], timestamp: Date.now() } }),
+    "",
+  ].join("\n");
+  assert.equal(legacySeparatorContent.includes("\u2028"), true);
+  assert.equal(legacySeparatorContent.includes("\u2029"), true);
+  await writeFile(legacySeparatorFile, legacySeparatorContent);
+  const legacySeparators = await SessionManager.open(legacySeparatorFile, sessionsDir, { recoverTrailingPartial: true });
+  assert.equal(legacySeparators.getEntries().length, 2);
+  assert.equal(firstMessageText(legacySeparators), unicodeSeparatorText);
+
+  const chunkBoundaryFile = join(sessionsDir, "chunk-boundary-unicode-separators.jsonl");
+  const chunkBoundaryText = `${"x".repeat(70_000)}\u2028chunk-boundary\u2029end`;
+  await writeFile(chunkBoundaryFile, [
+    JSON.stringify({ type: "session", version: 3, id: "chunk-boundary", timestamp: new Date().toISOString(), cwd: root }),
+    JSON.stringify({ type: "message", id: "chunk-boundary-entry", parentId: null, timestamp: new Date().toISOString(), message: { role: "user", content: [{ type: "text", text: chunkBoundaryText }], timestamp: Date.now() } }),
+    "",
+  ].join("\r\n"));
+  const chunkBoundary = await SessionManager.open(chunkBoundaryFile, sessionsDir);
+  assert.equal(firstMessageText(chunkBoundary), chunkBoundaryText);
+
+  const appendSeparatorFile = join(sessionsDir, "append-unicode-separators.jsonl");
+  const appendSeparators = SessionManager.create(root, sessionsDir);
+  appendSeparators.newSession({ id: "append-separators" });
+  appendSeparators.setSessionFile(appendSeparatorFile);
+  await appendSeparators.flush();
+  appendSeparators.appendMessage({
+    role: "user",
+    content: [{ type: "text", text: unicodeSeparatorText }],
+    timestamp: Date.now(),
+  } as never);
+  await appendSeparators.close();
+  const appendSeparatorContent = await readFile(appendSeparatorFile, "utf-8");
+  assert.equal(appendSeparatorContent.includes("\u2028"), false);
+  assert.equal(appendSeparatorContent.includes("\u2029"), false);
+  assert.equal(appendSeparatorContent.includes("\\u2028"), true);
+  assert.equal(appendSeparatorContent.includes("\\u2029"), true);
+  assert.equal(firstMessageText(await SessionManager.open(appendSeparatorFile, sessionsDir)), unicodeSeparatorText);
+
+  const rewriteSeparatorFile = join(sessionsDir, "rewrite-unicode-separators.jsonl");
+  const rewriteSeparators = SessionManager.create(root, sessionsDir);
+  rewriteSeparators.newSession({ id: "rewrite-separators" });
+  rewriteSeparators.appendMessage({
+    role: "user",
+    content: [{ type: "text", text: unicodeSeparatorText }],
+    timestamp: Date.now(),
+  } as never);
+  rewriteSeparators.setSessionFile(rewriteSeparatorFile);
+  await rewriteSeparators.close();
+  const rewriteSeparatorContent = await readFile(rewriteSeparatorFile, "utf-8");
+  assert.equal(rewriteSeparatorContent.includes("\u2028"), false);
+  assert.equal(rewriteSeparatorContent.includes("\u2029"), false);
+  assert.equal(firstMessageText(await SessionManager.open(rewriteSeparatorFile, sessionsDir)), unicodeSeparatorText);
+
+  const separatorBranchFile = join(sessionsDir, "branch-unicode-separators.jsonl");
+  await rewriteSeparators.createBranchedSession(rewriteSeparators.getBranchEntries().at(-1)?.id ?? "", {
+    id: "branch-separators",
+    filePath: separatorBranchFile,
+  });
+  const separatorBranchContent = await readFile(separatorBranchFile, "utf-8");
+  assert.equal(separatorBranchContent.includes("\u2028"), false);
+  assert.equal(separatorBranchContent.includes("\u2029"), false);
+  assert.equal(firstMessageText(await SessionManager.open(separatorBranchFile, sessionsDir)), unicodeSeparatorText);
 
   const branchedSessionFile = join(sessionsDir, "branched.jsonl");
   await writeFile(branchedSessionFile, [

@@ -1,6 +1,5 @@
 import { createReadStream, createWriteStream, type WriteStream } from "node:fs";
 import { access, copyFile, mkdir, open, readFile, rename, rm, writeFile } from "node:fs/promises";
-import { createInterface } from "node:readline";
 import { basename, dirname, join } from "node:path";
 import { randomUUID } from "node:crypto";
 import type { AgentMessage } from "@earendil-works/pi-agent-core";
@@ -109,6 +108,36 @@ function createSessionId() {
   return randomUUID();
 }
 
+function serializeJsonlEntry(entry: FileEntry): string {
+  const json = JSON.stringify(entry);
+  if (json === undefined) throw new TypeError("Session entry is not JSON serializable");
+  return json.replace(/\u2028/g, "\\u2028").replace(/\u2029/g, "\\u2029");
+}
+
+// Node readline also treats U+2028/U+2029 as line endings, although JSON permits them in strings.
+async function* readLfDelimitedLines(path: string): AsyncGenerator<{ line: string; terminated: boolean }> {
+  const input = createReadStream(path, { encoding: "utf-8" });
+  let fragments: string[] = [];
+
+  for await (const chunk of input) {
+    const text = typeof chunk === "string" ? chunk : chunk.toString("utf-8");
+    let start = 0;
+    while (start < text.length) {
+      const newline = text.indexOf("\n", start);
+      if (newline < 0) break;
+      fragments.push(text.slice(start, newline));
+      let line = fragments.join("");
+      fragments = [];
+      if (line.endsWith("\r")) line = line.slice(0, -1);
+      yield { line, terminated: true };
+      start = newline + 1;
+    }
+    if (start < text.length) fragments.push(text.slice(start));
+  }
+
+  if (fragments.length > 0) yield { line: fragments.join(""), terminated: false };
+}
+
 function getAgentMessageMeta(message: AgentMessage): Record<string, unknown> | null {
   const meta = (message as unknown as { meta?: unknown }).meta;
   return meta && typeof meta === "object" && !Array.isArray(meta) ? meta as Record<string, unknown> : null;
@@ -191,15 +220,10 @@ async function parseEntries(
 ): Promise<FileEntry[]> {
   if (!(await pathExists(path))) return [];
   const entries: FileEntry[] = [];
-  const input = createReadStream(path, { encoding: "utf-8" });
-  let finalByte: number | null = null;
-  input.on("data", (chunk) => {
-    if (chunk.length === 0) return;
-    finalByte = typeof chunk === "string" ? chunk.charCodeAt(chunk.length - 1) : (chunk.at(-1) ?? finalByte);
-  });
-  const lines = createInterface({ input, crlfDelay: Infinity });
+  let finalLineTerminated = true;
   let lineNumber = 0;
-  for await (const line of lines) {
+  for await (const { line, terminated } of readLfDelimitedLines(path)) {
+    finalLineTerminated = terminated;
     lineNumber += 1;
     if (!line.trim()) continue;
     try {
@@ -216,7 +240,7 @@ async function parseEntries(
     }
   }
 
-  if (options.recoverTrailingPartial && options.sessionDir && entries[0]?.type === "session" && finalByte !== 0x0a) {
+  if (options.recoverTrailingPartial && options.sessionDir && entries[0]?.type === "session" && !finalLineTerminated) {
     const archivePath = await repairMissingFinalNewline(path, options.sessionDir);
     if (archivePath) logger.warn(`[SessionManager] repaired missing final JSONL newline path=${path} archive=${archivePath}`);
   }
@@ -725,7 +749,7 @@ export class SessionManager {
       affinity: { sessionId: this.getSessionAffinity().sessionId, threadId: newSessionId },
     };
     await this.ensureSessionDir();
-    const lines = `${[JSON.stringify(header), ...pathEntries.map((entry) => JSON.stringify(entry))].join("\n")}\n`;
+    const lines = `${[serializeJsonlEntry(header), ...pathEntries.map((entry) => serializeJsonlEntry(entry))].join("\n")}\n`;
     await writeFile(newSessionFile, lines, "utf-8");
     return newSessionFile;
   }
@@ -798,7 +822,7 @@ export class SessionManager {
       const stream = this.getAppendStream();
       if (!stream || stream.destroyed) return;
       await new Promise<void>((resolve, reject) => {
-        stream.write(`${JSON.stringify(entry)}\n`, (error) => (error ? reject(error) : resolve()));
+        stream.write(`${serializeJsonlEntry(entry)}\n`, (error) => (error ? reject(error) : resolve()));
       });
     });
   }
@@ -833,7 +857,7 @@ export class SessionManager {
       if (!this.sessionFile || !this.header) return;
       await this.ensureSessionDir();
       await this.closeAppendStream();
-      const lines = [JSON.stringify(this.header), ...this.entries.map((entry) => JSON.stringify(entry))].join("\n");
+      const lines = [serializeJsonlEntry(this.header), ...this.entries.map((entry) => serializeJsonlEntry(entry))].join("\n");
       await writeFile(this.sessionFile, `${lines}${lines ? "\n" : ""}`, "utf-8");
       this.fileReady = true;
     });
