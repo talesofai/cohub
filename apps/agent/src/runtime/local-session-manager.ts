@@ -111,6 +111,8 @@ function createSessionId() {
 function serializeJsonlEntry(entry: FileEntry): string {
   const json = JSON.stringify(entry);
   if (json === undefined) throw new TypeError("Session entry is not JSON serializable");
+  // JSON permits U+2028/U+2029 in strings, but Node readline treats them as line endings.
+  // Escape these two characters so one LF always represents exactly one JSONL record.
   return json.replace(/\u2028/g, "\\u2028").replace(/\u2029/g, "\\u2029");
 }
 
