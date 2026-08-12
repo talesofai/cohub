@@ -16,6 +16,7 @@ export interface WorkerConfig {
   platformConfigRoot: string;
   platformSpaceId: string;
   netaRouterApiKey: string;
+  netaRouterBaseUrl: string;
   turnObjectS3Endpoint?: string;
   turnObjectS3Region: string;
   turnObjectS3Bucket?: string;
@@ -41,6 +42,10 @@ export interface WorkerConfig {
 }
 
 const env = (process.env.ENV === "prod" ? "prod" : "dev") as "dev" | "prod";
+const DEFAULT_NETA_ROUTER_BASE_URL = "https://router.neta.art";
+
+export const resolveNetaRouterBaseUrl = (value: string | undefined): string =>
+  value?.trim().replace(/\/+$/, "") || DEFAULT_NETA_ROUTER_BASE_URL;
 
 const assertRedisUrl = (value: string, envName: string) => {
   if (!value) throw new Error(`Missing required env: ${envName}`);
@@ -72,6 +77,7 @@ export const config: WorkerConfig = {
   platformConfigRoot: process.env.PLATFORM_CONFIG_ROOT ?? "/configs",
   platformSpaceId: process.env.PLATFORM_SPACE_ID ?? "",
   netaRouterApiKey: process.env.NETA_ROUTER_API_KEY ?? "",
+  netaRouterBaseUrl: resolveNetaRouterBaseUrl(process.env.NETA_ROUTER_BASE_URL),
   turnObjectS3Endpoint: process.env.TURN_OBJECT_S3_ENDPOINT ?? "http://127.0.0.1:9000",
   turnObjectS3Region: process.env.TURN_OBJECT_S3_REGION ?? "us-west-1",
   turnObjectS3Bucket: process.env.TURN_OBJECT_S3_BUCKET ?? "cohub-sessions",
