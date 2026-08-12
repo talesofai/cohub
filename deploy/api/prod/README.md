@@ -29,6 +29,7 @@ vim secrets.yaml
 - `DATABASE_URL` - 数据库连接地址
 - `REDIS_URL` - Redis 连接地址
 - `LITELLM_API_KEY` - LiteLLM API key
+- `GENERATION_API_KEY` - Generation SDK API key used by the Worker; configure it on the deployment, not in a Space
 - `GITEA_TOKEN` - Gitea 管理员 API token（用于自动创建托管 Git 账号）
 - `APP_ENCRYPTION_KEY` - 应用级加密密钥（用于加密存储影子账号密码和 access token）
 - `WORKER_SECRET` - Worker 通信密钥
@@ -105,4 +106,3 @@ cp values.example.yaml values.yaml
 ```
 
 Do not commit real `values.yaml` or `secrets.yaml`.
-

@@ -15,7 +15,8 @@ export interface WorkerConfig {
   checkpointAssetThresholdBytes: number;
   platformConfigRoot: string;
   platformSpaceId: string;
-  netaRouterApiKey: string;
+  generationApiKey: string;
+  generationBaseUrl?: string;
   turnObjectS3Endpoint?: string;
   turnObjectS3Region: string;
   turnObjectS3Bucket?: string;
@@ -41,6 +42,9 @@ export interface WorkerConfig {
 }
 
 const env = (process.env.ENV === "prod" ? "prod" : "dev") as "dev" | "prod";
+
+export const normalizeGenerationBaseUrl = (value: string | undefined): string | undefined =>
+  value?.trim().replace(/\/+$/, "") || undefined;
 
 const assertRedisUrl = (value: string, envName: string) => {
   if (!value) throw new Error(`Missing required env: ${envName}`);
@@ -71,7 +75,8 @@ export const config: WorkerConfig = {
   checkpointAssetThresholdBytes: Number(process.env.CHECKPOINT_ASSET_THRESHOLD_BYTES ?? 4 * 1024 * 1024),
   platformConfigRoot: process.env.PLATFORM_CONFIG_ROOT ?? "/configs",
   platformSpaceId: process.env.PLATFORM_SPACE_ID ?? "",
-  netaRouterApiKey: process.env.NETA_ROUTER_API_KEY ?? "",
+  generationApiKey: process.env.GENERATION_API_KEY ?? "",
+  generationBaseUrl: normalizeGenerationBaseUrl(process.env.GENERATION_BASE_URL),
   turnObjectS3Endpoint: process.env.TURN_OBJECT_S3_ENDPOINT ?? "http://127.0.0.1:9000",
   turnObjectS3Region: process.env.TURN_OBJECT_S3_REGION ?? "us-west-1",
   turnObjectS3Bucket: process.env.TURN_OBJECT_S3_BUCKET ?? "cohub-sessions",

@@ -99,9 +99,9 @@ function parseGenerationTaskData(data: unknown): GenerationTaskData {
   };
 }
 
-function getNetaRouterApiKey(): string {
-  if (!config.netaRouterApiKey) throw new GenerationConfigError("Missing required env: NETA_ROUTER_API_KEY");
-  return config.netaRouterApiKey;
+function getGenerationApiKey(): string {
+  if (!config.generationApiKey) throw new GenerationConfigError("Missing required env: GENERATION_API_KEY");
+  return config.generationApiKey;
 }
 
 function summarizeProviderBody(body: string | undefined): string | null {
@@ -387,7 +387,8 @@ registerTask(GENERATION_TASK_TYPE, async (job: Job, context) => {
     const result = await createGenerationClient({
       models: [declaration],
       includeBuiltinModels: false,
-      apiKey: getNetaRouterApiKey(),
+      apiKey: getGenerationApiKey(),
+      ...(config.generationBaseUrl ? { baseUrl: config.generationBaseUrl } : {}),
     }).generateResult({
       model: data.model,
       content: data.content,

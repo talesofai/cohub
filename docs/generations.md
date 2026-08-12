@@ -121,7 +121,7 @@ Generation declarations live in:
 
 Platform declarations are loaded from `platform/.cohub/generations`, and user declarations from `users/<userId>/.cohub/generations`. User declarations override platform declarations with the same `model`.
 
-Declarations use `neta.generation.model.v1`. Adapter credentials and provider base URLs are not stored in model declarations. Worker execution uses `NETA_ROUTER_API_KEY`, while provider routing defaults are handled by `@neta-art/generation`.
+Declarations use `neta.generation.model.v1`. Adapter credentials and provider base URLs are not stored in model declarations. Worker execution uses `GENERATION_API_KEY`. An optional worker-level `GENERATION_BASE_URL` is passed to `@neta-art/generation`; when it is unset, Cohub omits the option and lets the Generation SDK select its own default.
 
 Minimal shape:
 

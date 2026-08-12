@@ -14,7 +14,7 @@ const SECRET_PREFIX_RE =
 // Synthetic fixtures shaped like production payloads for redaction tests.
 const WS_AUTH_MESSAGE = `{"type":"auth","payload":{"token":"eyJhbGciOiJub25lIn0.eyJzdWIiOiJ0ZXN0LXVzZXIiLCJzY29wZSI6ImZha2UifQ.fake-signature-for-redact-tests"}}`;
 
-const SPACE_SECRETS_RESPONSE = `{"secrets":[{"name":"NETA_TOKEN","value":"eyJhbGciOiJub25lIn0.eyJzdWIiOiJ0ZXN0LXVzZXIifQ.fake-signature"},{"name":"NETA_ROUTER_API_KEY","value":"sk-test_fake_key_not_real_000000"},{"name":"GITHUB_PAT","value":"ghp_testfakefakefakefake00"},{"name":"GIT_TOKEN","value":"github_pat_test_fake_not_real_000000000000000000000000000000000000"}],"gitToken":"github_pat_test_fake_not_real_000000000000000000000000000000000000","repoUrl":"https://github.com/example/example-agent.git"}`;
+const SPACE_SECRETS_RESPONSE = `{"secrets":[{"name":"NETA_TOKEN","value":"eyJhbGciOiJub25lIn0.eyJzdWIiOiJ0ZXN0LXVzZXIifQ.fake-signature"},{"name":"PROVIDER_API_KEY","value":"sk-test_fake_key_not_real_000000"},{"name":"GITHUB_PAT","value":"ghp_testfakefakefakefake00"},{"name":"GIT_TOKEN","value":"github_pat_test_fake_not_real_000000000000000000000000000000000000"}],"gitToken":"github_pat_test_fake_not_real_000000000000000000000000000000000000","repoUrl":"https://github.com/example/example-agent.git"}`;
 
 test("redactText scrubs the WebSocket auth token and leaves the message structure intact", () => {
 	const out = redactText(WS_AUTH_MESSAGE);
