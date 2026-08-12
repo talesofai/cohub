@@ -338,7 +338,14 @@ jobs:
             "https://${{ env.API_HOSTNAME }}/healthz" \
             "https://${{ env.GATEWAY_HOSTNAME }}/healthz" \
             "${{ env.WEB_URL }}"; do
-            code=$(curl -s -o /dev/null -w "%{http_code}" "$url" || echo "curl-failed")
+            code=""
+            # 滚动更新后 endpoint/traefik 传播有秒级延迟，重试至多 60s
+            for i in $(seq 1 12); do
+              code=$(curl -s -o /dev/null -w "%{http_code}" "$url" || echo "curl-failed")
+              if [ "$code" = "200" ]; then break; fi
+              echo "  retry $i: $url -> $code"
+              sleep 5
+            done
             echo "$url -> $code"
             if [ "$code" != "200" ]; then
               echo "SMOKE TEST FAILED: $url returned $code"
