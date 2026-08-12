@@ -23,9 +23,10 @@ metadata:
   name: cohub-preview-manager
 rules:
   # Preview namespaces are created by the workflow and deleted on PR close.
+  # kubectl apply issues PATCH, so update/patch are required, not just create.
   - apiGroups: [""]
     resources: ["namespaces"]
-    verbs: ["get", "list", "watch", "create", "delete"]
+    verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
   # Resources deployed into cohub-preview-<n> namespaces.
   - apiGroups: [""]
     resources:
