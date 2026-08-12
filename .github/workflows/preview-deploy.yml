@@ -32,7 +32,9 @@ env:
   GATEWAY_APP_NAME: cohub-gateway-pr-${{ github.event.pull_request.number }}
   API_HOSTNAME: api-${{ github.event.pull_request.number }}-preview.cohub.run
   GATEWAY_HOSTNAME: gateway-${{ github.event.pull_request.number }}-preview.cohub.run
-  WEB_HOSTNAME: web-${{ github.event.pull_request.number }}-preview.cohub.run
+  # Web 域名必须以 dev 开头：auth.ts 的 IS_DEV 按 location.hostname.startsWith("dev")
+  # 运行时判断 Logto 端点（dev-auth vs auth），preview 必须落入 dev 分支
+  WEB_HOSTNAME: dev-${{ github.event.pull_request.number }}-preview.cohub.run
   WEB_WORKER_NAME: cohub-web-pr-${{ github.event.pull_request.number }}
   FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
 
