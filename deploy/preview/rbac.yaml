@@ -10,9 +10,12 @@
 # Apply once as a cluster admin:
 #   kubectl apply -f deploy/preview/rbac.yaml
 #
-# NOTE: this grants cluster-wide access to the listed resource types (RBAC
-# cannot scope a ClusterRoleBinding by namespace name pattern). Only do this on
-# a cluster that is dev-only; the prod cluster should not receive this file.
+# DECISION (2026-08): dev and prod share one cluster (namespaces cohub-dev /
+# cohub). This ClusterRole grants cluster-wide access to the listed resource
+# types, so it also covers the prod namespace. That is accepted because:
+#   - deployments are gated by a maintainer-applied `preview` label
+#   - deployment scripts are pinned to main (PR code never touches kubeconfig)
+# Revisit if preview is ever opened to untrusted (fork) contributors.
 
 apiVersion: rbac.authorization.k8s.io/v1
 kind: ClusterRole
