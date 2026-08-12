@@ -331,9 +331,17 @@ jobs:
           kubectl rollout status deployment/${{ env.API_APP_NAME }} -n ${{ env.PREVIEW_NAMESPACE }} --timeout=300s
           kubectl rollout status statefulset/${{ env.GATEWAY_APP_NAME }} -n ${{ env.PREVIEW_NAMESPACE }} --timeout=300s
 
-          curl -sf "https://${{ env.API_HOSTNAME }}/healthz" > /dev/null
-          curl -sf "https://${{ env.GATEWAY_HOSTNAME }}/healthz" > /dev/null
-          curl -sf "${{ env.WEB_URL }}" > /dev/null
+          for url in \
+            "https://${{ env.API_HOSTNAME }}/healthz" \
+            "https://${{ env.GATEWAY_HOSTNAME }}/healthz" \
+            "${{ env.WEB_URL }}"; do
+            code=$(curl -s -o /dev/null -w "%{http_code}" "$url" || echo "curl-failed")
+            echo "$url -> $code"
+            if [ "$code" != "200" ]; then
+              echo "SMOKE TEST FAILED: $url returned $code"
+              exit 1
+            fi
+          done
 
       - name: Post preview URLs
         run: |
