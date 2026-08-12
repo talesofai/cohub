@@ -55,6 +55,22 @@ jobs:
       # Build first: workspace packages export types/runtime from dist/, so
       # typecheck and tests need the build artifacts present (clean checkout
       # has none). This mirrors the deploy workflows' build-before-check order.
+      # SvelteKit statically inlines $env/static/public at build time; a clean
+      # checkout has no .env, so named imports fail with MISSING_EXPORT.
+      # Use dev values, same as web-deploy-cloudflare.yml.
+      - name: Setup web environment
+        working-directory: apps/web
+        run: |
+          cat > .env <<EOF
+          PUBLIC_COHUB_ENV=dev
+          PUBLIC_API_ORIGIN=https://api-dev.cohub.run
+          PUBLIC_GATEWAY_ORIGIN=https://gateway-dev.cohub.run
+          PUBLIC_PREVIEW_ORIGIN=https://preview-dev.cohub.run
+          PUBLIC_LOGTO_ENDPOINT=https://dev-auth.neta.art/
+          PUBLIC_LOGTO_APP_ID=vpikk7sl9zwvefiptowtn
+          PUBLIC_LOGTO_API_RESOURCE=https://api.talesofai
+          EOF
+
       - name: Build
         run: pnpm build
 
