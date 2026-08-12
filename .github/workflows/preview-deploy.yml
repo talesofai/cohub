@@ -2,7 +2,7 @@ name: Preview Deploy
 
 # 预览环境：维护者打 preview label 后为 PR 部署临时环境（人工 gate，避免不可信代码
 # 自动获得 secrets 执行权）。部署脚本固定用 main 分支（可信），PR 代码只以镜像形式进入。
-# - api / gateway：独立 k8s namespace（cohub-preview-<n>），镜像 tag pr-<n>-<sha>
+# - api / gateway：部署到 cohub-dev namespace（共享 PVC/配置），资源名带 pr-<n> 前缀隔离
 # - web：独立 Cloudflare Worker（cohub-web-pr-<n>），route 绑定 web-<n>-preview.cohub.run
 # 共享 dev：数据库（不跑 migration）、sandbox 镜像、PVC 存储（subpath 隔离）、configs。
 # fork PR 不部署（拿不到 secrets），只跑 CI。
@@ -27,7 +27,7 @@ env:
   IMAGE_NAMESPACE: ${{ secrets.GITEA_OWNER }}
   PR_NUMBER: ${{ github.event.pull_request.number }}
   IMAGE_TAG: pr-${{ github.event.pull_request.number }}-${{ github.event.pull_request.head.sha }}
-  PREVIEW_NAMESPACE: cohub-preview-${{ github.event.pull_request.number }}
+  PREVIEW_NAMESPACE: cohub-dev
   API_APP_NAME: cohub-api-pr-${{ github.event.pull_request.number }}
   GATEWAY_APP_NAME: cohub-gateway-pr-${{ github.event.pull_request.number }}
   API_HOSTNAME: api-${{ github.event.pull_request.number }}-preview.cohub.run
@@ -165,16 +165,15 @@ jobs:
           mkdir -p ~/.kube
           echo "${{ secrets.KUBECONFIG_DEV }}" | base64 -d > ~/.kube/config
 
-      - name: Create preview namespace and RBAC
+      - name: Create preview ServiceAccount and RBAC
         run: |
-          kubectl create namespace "${{ env.PREVIEW_NAMESPACE }}" --dry-run=client -o yaml | kubectl apply -f -
-
-          # API 的 ServiceAccount（deployment 通过 serviceAccountName 引用）
+          # 部署在 cohub-dev（共享 PVC/配置），不建 namespace；
+          # 资源名前缀 pr-<n> 隔离。API 的 ServiceAccount（deployment 通过
+          # serviceAccountName 引用）需要在 cohub-sessions-dev 管理 sandbox pods，
+          # 复用 dev 已有的 Role，只加一个跨 namespace 的 binding
           kubectl create serviceaccount "${{ env.API_APP_NAME }}" \
             -n "${{ env.PREVIEW_NAMESPACE }}" --dry-run=client -o yaml | kubectl apply -f -
 
-          # API 需要在共享的 sessions namespace 中创建 sandbox pods；
-          # 复用 dev 已有的 Role（cohub-api-dev-sessions-manager），只加一个跨 namespace 的 binding
           kubectl create rolebinding "${{ env.API_APP_NAME }}-sessions-manager" \
             -n cohub-sessions-dev \
             --role=cohub-api-dev-sessions-manager \

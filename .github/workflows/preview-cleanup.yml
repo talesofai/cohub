@@ -1,7 +1,8 @@
 name: Preview Cleanup
 
-# PR 关闭/合并后销毁预览环境：删除 k8s namespace、跨 namespace RoleBinding、
-# Cloudflare Worker。幂等，可安全重复执行。
+# PR 关闭/合并后销毁预览环境。预览资源部署在 cohub-dev namespace（资源名带
+# pr-<n> 前缀），所以这里精确删除带前缀的资源，绝不删除 namespace 或任何
+# dev 资源。幂等，可安全重复执行。
 
 on:
   pull_request:
@@ -20,8 +21,9 @@ permissions:
 
 env:
   PR_NUMBER: ${{ github.event.pull_request.number }}
-  PREVIEW_NAMESPACE: cohub-preview-${{ github.event.pull_request.number }}
+  NAMESPACE: cohub-dev
   API_APP_NAME: cohub-api-pr-${{ github.event.pull_request.number }}
+  GATEWAY_APP_NAME: cohub-gateway-pr-${{ github.event.pull_request.number }}
   WEB_WORKER_NAME: cohub-web-pr-${{ github.event.pull_request.number }}
 
 jobs:
@@ -42,11 +44,27 @@ jobs:
           mkdir -p ~/.kube
           echo "${{ secrets.KUBECONFIG_DEV }}" | base64 -d > ~/.kube/config
 
-      - name: Delete k8s resources
+      - name: Delete preview k8s resources
         run: |
-          kubectl delete namespace "${{ env.PREVIEW_NAMESPACE }}" --ignore-not-found --wait=false
+          set -euo pipefail
+          NS="${{ env.NAMESPACE }}"
+
+          # API
+          kubectl delete deployment "${{ env.API_APP_NAME }}" -n "$NS" --ignore-not-found
+          kubectl delete service "${{ env.API_APP_NAME }}" -n "$NS" --ignore-not-found
+          kubectl delete configmap "${{ env.API_APP_NAME }}-config" -n "$NS" --ignore-not-found
+          kubectl delete secret "${{ env.API_APP_NAME }}-secrets" -n "$NS" --ignore-not-found
+          kubectl delete httproute "${{ env.API_APP_NAME }}-route" -n "$NS" --ignore-not-found
+          kubectl delete serviceaccount "${{ env.API_APP_NAME }}" -n "$NS" --ignore-not-found
           kubectl delete rolebinding "${{ env.API_APP_NAME }}-sessions-manager" \
             -n cohub-sessions-dev --ignore-not-found
+
+          # Gateway
+          kubectl delete statefulset "${{ env.GATEWAY_APP_NAME }}" -n "$NS" --ignore-not-found
+          kubectl delete service "${{ env.GATEWAY_APP_NAME }}" -n "$NS" --ignore-not-found
+          kubectl delete configmap "${{ env.GATEWAY_APP_NAME }}-config" -n "$NS" --ignore-not-found
+          kubectl delete secret "${{ env.GATEWAY_APP_NAME }}-secrets" -n "$NS" --ignore-not-found
+          kubectl delete httproute "${{ env.GATEWAY_APP_NAME }}-route" -n "$NS" --ignore-not-found
 
       - name: Delete Cloudflare Worker
         run: |
