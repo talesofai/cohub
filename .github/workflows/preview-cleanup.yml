@@ -1,0 +1,55 @@
+name: Preview Cleanup
+
+# PR 关闭/合并后销毁预览环境：删除 k8s namespace、跨 namespace RoleBinding、
+# Cloudflare Worker。幂等，可安全重复执行。
+
+on:
+  pull_request:
+    types: [closed]
+    paths-ignore:
+      - 'docs/**'
+      - 'assets/**'
+      - '**.md'
+
+concurrency:
+  group: preview-${{ github.event.pull_request.number }}
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+env:
+  PR_NUMBER: ${{ github.event.pull_request.number }}
+  PREVIEW_NAMESPACE: cohub-preview-${{ github.event.pull_request.number }}
+  API_APP_NAME: cohub-api-pr-${{ github.event.pull_request.number }}
+  WEB_WORKER_NAME: cohub-web-pr-${{ github.event.pull_request.number }}
+
+jobs:
+  cleanup:
+    if: ${{ github.event.pull_request.head.repo.full_name == github.repository }}
+    runs-on: ubuntu-latest
+    env:
+      CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+      CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+    steps:
+      - name: Setup kubectl
+        uses: azure/setup-kubectl@v3
+        with:
+          version: 'v1.30.0'
+
+      - name: Configure kubectl
+        run: |
+          mkdir -p ~/.kube
+          echo "${{ secrets.KUBECONFIG_DEV }}" | base64 -d > ~/.kube/config
+
+      - name: Delete k8s resources
+        run: |
+          kubectl delete namespace "${{ env.PREVIEW_NAMESPACE }}" --ignore-not-found --wait=false
+          kubectl delete rolebinding "${{ env.API_APP_NAME }}-sessions-manager" \
+            -n cohub-sessions-dev --ignore-not-found
+
+      - name: Delete Cloudflare Worker
+        run: |
+          curl -sf -X DELETE \
+            "https://api.cloudflare.com/client/v4/accounts/$CLOUDFLARE_ACCOUNT_ID/workers/scripts/${{ env.WEB_WORKER_NAME }}" \
+            -H "Authorization: Bearer $CLOUDFLARE_API_TOKEN" || true

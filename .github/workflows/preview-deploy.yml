@@ -1,0 +1,345 @@
+name: Preview Deploy
+
+# 预览环境：维护者打 preview label 后为 PR 部署临时环境（人工 gate，避免不可信代码
+# 自动获得 secrets 执行权）。部署脚本固定用 main 分支（可信），PR 代码只以镜像形式进入。
+# - api / gateway：独立 k8s namespace（cohub-preview-<n>），镜像 tag pr-<n>-<sha>
+# - web：独立 Cloudflare Worker（cohub-web-pr-<n>），route 绑定 web-<n>-preview.cohub.run
+# 共享 dev：数据库（不跑 migration）、sandbox 镜像、PVC 存储（subpath 隔离）、configs。
+# fork PR 不部署（拿不到 secrets），只跑 CI。
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened, labeled, unlabeled]
+    paths-ignore:
+      - 'docs/**'
+      - 'assets/**'
+      - '**.md'
+
+concurrency:
+  group: preview-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+env:
+  REGISTRY: git.talesofai.com
+  IMAGE_NAMESPACE: ${{ secrets.GITEA_OWNER }}
+  PR_NUMBER: ${{ github.event.pull_request.number }}
+  IMAGE_TAG: pr-${{ github.event.pull_request.number }}-${{ github.event.pull_request.head.sha }}
+  PREVIEW_NAMESPACE: cohub-preview-${{ github.event.pull_request.number }}
+  API_APP_NAME: cohub-api-pr-${{ github.event.pull_request.number }}
+  GATEWAY_APP_NAME: cohub-gateway-pr-${{ github.event.pull_request.number }}
+  API_HOSTNAME: api-${{ github.event.pull_request.number }}-preview.cohub.run
+  GATEWAY_HOSTNAME: gateway-${{ github.event.pull_request.number }}-preview.cohub.run
+  WEB_HOSTNAME: web-${{ github.event.pull_request.number }}-preview.cohub.run
+  WEB_WORKER_NAME: cohub-web-pr-${{ github.event.pull_request.number }}
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+
+jobs:
+  build-images:
+    if: >-
+      contains(github.event.pull_request.labels.*.name, 'preview') &&
+      github.event.pull_request.head.repo.full_name == github.repository
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        app: [api, gateway]
+    env:
+      GITEA_NPM_TOKEN: ${{ secrets.GITEA_NPM_TOKEN }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Login to Docker Registry
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ secrets.GITEA_USERNAME }}
+          password: ${{ secrets.GITEA_PAT }}
+
+      - name: Build and push
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: ./apps/${{ matrix.app }}/Dockerfile
+          cache-from: type=gha,scope=${{ matrix.app }}-build
+          cache-to: type=gha,mode=max,scope=${{ matrix.app }}-build
+          push: true
+          tags: ${{ env.REGISTRY }}/${{ env.IMAGE_NAMESPACE }}/cohub-${{ matrix.app }}:${{ env.IMAGE_TAG }}
+          platforms: linux/amd64
+          secrets: |
+            gitea_npm_token=${{ secrets.GITEA_NPM_TOKEN }}
+
+  deploy-web:
+    if: >-
+      contains(github.event.pull_request.labels.*.name, 'preview') &&
+      github.event.pull_request.head.repo.full_name == github.repository
+    runs-on: ubuntu-latest
+    outputs:
+      web_url: ${{ steps.resolve-url.outputs.web_url }}
+    env:
+      GITEA_NPM_TOKEN: ${{ secrets.GITEA_NPM_TOKEN }}
+      CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+      CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+          cache: 'pnpm'
+
+      - name: Configure Talesofai npm auth
+        run: |
+          if [ -z "$GITEA_NPM_TOKEN" ]; then
+            echo "GITEA_NPM_TOKEN not set; installing without private billing packages"
+          fi
+          if [ -n "$GITEA_NPM_TOKEN" ]; then
+            printf '\n//git.talesofai.com/api/packages/talesofai/npm/:_authToken=%s\n' "$GITEA_NPM_TOKEN" >> ~/.npmrc
+          fi
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Setup web environment
+        working-directory: apps/web
+        run: |
+          # 前端指向 preview 后端；登录用 dev Logto（用户数据在 dev 库）
+          cat > .env <<EOF
+          PUBLIC_COHUB_ENV=dev
+          PUBLIC_API_ORIGIN=https://${{ env.API_HOSTNAME }}
+          PUBLIC_GATEWAY_ORIGIN=https://${{ env.GATEWAY_HOSTNAME }}
+          PUBLIC_PREVIEW_ORIGIN=https://preview-dev.cohub.run
+          PUBLIC_LOGTO_ENDPOINT=https://dev-auth.neta.art/
+          PUBLIC_LOGTO_APP_ID=vpikk7sl9zwvefiptowtn
+          PUBLIC_LOGTO_API_RESOURCE=https://api.talesofai
+          EOF
+
+      - name: Build
+        working-directory: apps/web
+        run: pnpm build
+
+      - name: Deploy to Cloudflare
+        working-directory: apps/web
+        run: pnpm exec wrangler deploy --name ${{ env.WEB_WORKER_NAME }} --routes "${{ env.WEB_HOSTNAME }}/*"
+
+      - name: Resolve preview URL
+        id: resolve-url
+        run: echo "web_url=https://${{ env.WEB_HOSTNAME }}" >> "$GITHUB_OUTPUT"
+
+  deploy-backend:
+    if: >-
+      contains(github.event.pull_request.labels.*.name, 'preview') &&
+      github.event.pull_request.head.repo.full_name == github.repository
+    needs: [build-images, deploy-web]
+    runs-on: ubuntu-latest
+    environment:
+      name: preview-${{ github.event.pull_request.number }}
+      url: ${{ needs.deploy-web.outputs.web_url }}
+    env:
+      WEB_URL: ${{ needs.deploy-web.outputs.web_url }}
+    steps:
+      # 部署脚本/模板必须来自 main（可信）；PR 的代码只以镜像 tag 形式进入
+      - name: Checkout (main)
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.repository.default_branch }}
+
+      - name: Setup kubectl
+        uses: azure/setup-kubectl@v3
+        with:
+          version: 'v1.30.0'
+
+      - name: Configure kubectl
+        run: |
+          mkdir -p ~/.kube
+          echo "${{ secrets.KUBECONFIG_DEV }}" | base64 -d > ~/.kube/config
+
+      - name: Create preview namespace and RBAC
+        run: |
+          kubectl create namespace "${{ env.PREVIEW_NAMESPACE }}" --dry-run=client -o yaml | kubectl apply -f -
+
+          # API 的 ServiceAccount（deployment 通过 serviceAccountName 引用）
+          kubectl create serviceaccount "${{ env.API_APP_NAME }}" \
+            -n "${{ env.PREVIEW_NAMESPACE }}" --dry-run=client -o yaml | kubectl apply -f -
+
+          # API 需要在共享的 sessions namespace 中创建 sandbox pods；
+          # 复用 dev 已有的 Role（cohub-api-dev-sessions-manager），只加一个跨 namespace 的 binding
+          kubectl create rolebinding "${{ env.API_APP_NAME }}-sessions-manager" \
+            -n cohub-sessions-dev \
+            --role=cohub-api-dev-sessions-manager \
+            --serviceaccount="${{ env.PREVIEW_NAMESPACE }}:${{ env.API_APP_NAME }}" \
+            --dry-run=client -o yaml | kubectl apply -f -
+
+      - name: Deploy API
+        working-directory: deploy/api/dev
+        run: |
+          set -euo pipefail
+
+          # secrets 直接复制 dev 的（数据库/Redis/OSS 等全部共享，与 namespace 无关）
+          kubectl get secret cohub-api-dev-secrets -n cohub-dev -o json \
+            | jq --arg n "${{ env.API_APP_NAME }}-secrets" --arg ns "${{ env.PREVIEW_NAMESPACE }}" \
+              'del(.metadata.namespace, .metadata.uid, .metadata.resourceVersion, .metadata.creationTimestamp, .metadata.managedFields) | .metadata.name=$n | .metadata.namespace=$ns' \
+            > secrets.yaml
+
+          # values：继承 dev configmap 的真实配置，覆盖 preview 专属字段
+          get_cm() { kubectl get configmap cohub-api-dev-config -n cohub-dev -o jsonpath="{.data.$1}"; }
+          SPACE_STORAGE_PVC=$(kubectl get deployment cohub-api-dev -n cohub-dev -o jsonpath='{.spec.template.spec.volumes[?(@.name=="space-storage")].persistentVolumeClaim.claimName}')
+          SPACE_SYSTEM_PVC=$(kubectl get deployment cohub-api-dev -n cohub-dev -o jsonpath='{.spec.template.spec.volumes[?(@.name=="system-storage")].persistentVolumeClaim.claimName}')
+          CHECKPOINT_CACHE_PVC=$(kubectl get deployment cohub-api-dev -n cohub-dev -o jsonpath='{.spec.template.spec.volumes[?(@.name=="checkpoint-cache")].persistentVolumeClaim.claimName}')
+          IMAGE_PULL_SECRET=$(kubectl get deployment cohub-api-dev -n cohub-dev -o jsonpath='{.spec.template.spec.imagePullSecrets[0].name}')
+
+          cat > values.yaml <<EOF
+          NAMESPACE: "${{ env.PREVIEW_NAMESPACE }}"
+          APP_NAME: "${{ env.API_APP_NAME }}"
+          IMAGE_REPOSITORY: "${{ env.REGISTRY }}/${{ env.IMAGE_NAMESPACE }}/cohub-api"
+          IMAGE_TAG: "${{ env.IMAGE_TAG }}"
+          IMAGE_PULL_POLICY: "Always"
+          IMAGE_PULL_SECRET: "${IMAGE_PULL_SECRET}"
+          SERVICE_PORT: "8787"
+          CONTAINER_PORT: "8787"
+          REPLICAS: "1"
+          MAX_UNAVAILABLE: "0"
+          MAX_SURGE: "1"
+          TERMINATION_GRACE_PERIOD_SECONDS: "120"
+          REQUEST_CPU: "50m"
+          REQUEST_MEMORY: "128Mi"
+          LIMIT_CPU: "500m"
+          LIMIT_MEMORY: "512Mi"
+          LIVENESS_PATH: "/healthz"
+          LIVENESS_INITIAL_DELAY: "20"
+          LIVENESS_PERIOD: "10"
+          LIVENESS_TIMEOUT: "2"
+          LIVENESS_FAILURE_THRESHOLD: "3"
+          READINESS_PATH: "/readyz"
+          READINESS_INITIAL_DELAY: "5"
+          READINESS_PERIOD: "5"
+          READINESS_TIMEOUT: "2"
+          READINESS_FAILURE_THRESHOLD: "3"
+          LOGTO_ENDPOINT: "$(get_cm LOGTO_ENDPOINT)"
+          LOGTO_MANAGEMENT_API_RESOURCE: "$(get_cm LOGTO_MANAGEMENT_API_RESOURCE)"
+          GITEA_BASE_URL: "$(get_cm GITEA_BASE_URL)"
+          GITEA_MANAGED_EMAIL_DOMAIN: "$(get_cm GITEA_MANAGED_EMAIL_DOMAIN)"
+          WEB_ORIGIN: "${{ env.WEB_URL }}"
+          SANDBOX_IMAGE: "$(get_cm SANDBOX_IMAGE)"
+          SPACE_STORAGE_ROOT: "$(get_cm SPACE_STORAGE_ROOT)"
+          SPACE_SYSTEM_ROOT: "$(get_cm SPACE_SYSTEM_ROOT)"
+          SPACE_STORAGE_PVC: "${SPACE_STORAGE_PVC}"
+          SPACE_SYSTEM_PVC: "${SPACE_SYSTEM_PVC}"
+          CHECKPOINT_CACHE_PVC: "${CHECKPOINT_CACHE_PVC}"
+          SPACE_STORAGE_SUBPATH: "workspaces/preview-${{ env.PR_NUMBER }}"
+          SPACE_SYSTEM_SUBPATH: "preview-${{ env.PR_NUMBER }}"
+          CHECKPOINT_CACHE_SUBPATH: "workspaces/preview-${{ env.PR_NUMBER }}/checkpoints"
+          PLATFORM_CONFIG_ROOT: "$(get_cm PLATFORM_CONFIG_ROOT)"
+          TURN_OBJECT_S3_ENDPOINT: "$(get_cm TURN_OBJECT_S3_ENDPOINT)"
+          TURN_OBJECT_S3_REGION: "$(get_cm TURN_OBJECT_S3_REGION)"
+          TURN_OBJECT_S3_BUCKET: "$(get_cm TURN_OBJECT_S3_BUCKET)"
+          TURN_OBJECT_CDN_BASE_URL: "$(get_cm TURN_OBJECT_CDN_BASE_URL)"
+          PUBLIC_ASSET_OSS_ENDPOINT: "$(get_cm PUBLIC_ASSET_OSS_ENDPOINT)"
+          PUBLIC_ASSET_OSS_PUBLIC_ENDPOINT: "$(get_cm PUBLIC_ASSET_OSS_PUBLIC_ENDPOINT)"
+          PUBLIC_ASSET_OSS_REGION: "$(get_cm PUBLIC_ASSET_OSS_REGION)"
+          PUBLIC_ASSET_OSS_BUCKET: "$(get_cm PUBLIC_ASSET_OSS_BUCKET)"
+          PUBLIC_ASSET_CDN_BASE_URL: "$(get_cm PUBLIC_ASSET_CDN_BASE_URL)"
+          USER_UPLOAD_S3_ENDPOINT: "$(get_cm USER_UPLOAD_S3_ENDPOINT)"
+          USER_UPLOAD_S3_REGION: "$(get_cm USER_UPLOAD_S3_REGION)"
+          CHAT_ATTACHMENT_S3_BUCKET: "$(get_cm CHAT_ATTACHMENT_S3_BUCKET)"
+          CHAT_ATTACHMENT_PUBLIC_BASE_URL: "$(get_cm CHAT_ATTACHMENT_PUBLIC_BASE_URL)"
+          SPACE_UPLOAD_S3_BUCKET: "$(get_cm SPACE_UPLOAD_S3_BUCKET)"
+          WORK_ASSET_CDN_BASE_URL: "$(get_cm WORK_ASSET_CDN_BASE_URL)"
+          CONFIGS_SUBPATH: "configs/dev"
+          SANDBOX_PUBLIC_DOMAINS: "$(get_cm SANDBOX_PUBLIC_DOMAINS)"
+          WORK_CONTENT_HOST_SUFFIXES: "$(get_cm WORK_CONTENT_HOST_SUFFIXES)"
+          CHECKPOINT_GIT_AUTHOR_EMAIL: "$(get_cm CHECKPOINT_GIT_AUTHOR_EMAIL)"
+          ROUTE_ENABLED: "true"
+          API_HOSTNAME: "${{ env.API_HOSTNAME }}"
+          ENV: "dev"
+          LOG_LEVEL: "debug"
+          EOF
+
+          # 不跑 migration：共享 dev 数据库，schema 变更只在 main 合并后迁移
+          bash deploy.sh
+
+      - name: Deploy Gateway
+        working-directory: deploy/gateway/dev
+        run: |
+          set -euo pipefail
+
+          kubectl get secret cohub-gateway-dev-secrets -n cohub-dev -o json \
+            | jq --arg n "${{ env.GATEWAY_APP_NAME }}-secrets" --arg ns "${{ env.PREVIEW_NAMESPACE }}" \
+              'del(.metadata.namespace, .metadata.uid, .metadata.resourceVersion, .metadata.creationTimestamp, .metadata.managedFields) | .metadata.name=$n | .metadata.namespace=$ns' \
+            > secrets.yaml
+
+          get_cm() { kubectl get configmap cohub-gateway-dev-config -n cohub-dev -o jsonpath="{.data.$1}" 2>/dev/null || true; }
+          LOGTO_ENDPOINT=$(get_cm LOGTO_ENDPOINT)
+          if [ -z "$LOGTO_ENDPOINT" ]; then
+            LOGTO_ENDPOINT=$(kubectl get configmap cohub-api-dev-config -n cohub-dev -o jsonpath='{.data.LOGTO_ENDPOINT}')
+          fi
+
+          cat > values.yaml <<EOF
+          NAMESPACE: "${{ env.PREVIEW_NAMESPACE }}"
+          APP_NAME: "${{ env.GATEWAY_APP_NAME }}"
+          IMAGE_REPOSITORY: "${{ env.REGISTRY }}/${{ env.IMAGE_NAMESPACE }}/cohub-gateway"
+          IMAGE_TAG: "${{ env.IMAGE_TAG }}"
+          IMAGE_PULL_POLICY: "Always"
+          IMAGE_PULL_SECRET: "gitea-registry"
+          SERVICE_PORT: "8788"
+          CONTAINER_PORT: "8788"
+          REPLICAS: "1"
+          TERMINATION_GRACE_PERIOD_SECONDS: "120"
+          REQUEST_CPU: "50m"
+          REQUEST_MEMORY: "128Mi"
+          LIMIT_CPU: "500m"
+          LIMIT_MEMORY: "512Mi"
+          LIVENESS_PATH: "/healthz"
+          LIVENESS_INITIAL_DELAY: "10"
+          LIVENESS_PERIOD: "10"
+          LIVENESS_TIMEOUT: "2"
+          LIVENESS_FAILURE_THRESHOLD: "3"
+          READINESS_PATH: "/readyz"
+          READINESS_INITIAL_DELAY: "5"
+          READINESS_PERIOD: "5"
+          READINESS_TIMEOUT: "2"
+          READINESS_FAILURE_THRESHOLD: "3"
+          API_BASE_URL: "http://${{ env.API_APP_NAME }}.${{ env.PREVIEW_NAMESPACE }}.svc.cluster.local:8787"
+          LOGTO_ENDPOINT: "${LOGTO_ENDPOINT}"
+          ROUTE_ENABLED: "true"
+          GATEWAY_HOSTNAME: "${{ env.GATEWAY_HOSTNAME }}"
+          ENV: "dev"
+          LOG_LEVEL: "debug"
+          EOF
+
+          bash deploy.sh
+
+      - name: Wait for rollout and smoke test
+        run: |
+          set -euo pipefail
+
+          kubectl rollout status deployment/${{ env.API_APP_NAME }} -n ${{ env.PREVIEW_NAMESPACE }} --timeout=300s
+          kubectl rollout status statefulset/${{ env.GATEWAY_APP_NAME }} -n ${{ env.PREVIEW_NAMESPACE }} --timeout=300s
+
+          curl -sf "https://${{ env.API_HOSTNAME }}/healthz" > /dev/null
+          curl -sf "https://${{ env.GATEWAY_HOSTNAME }}/healthz" > /dev/null
+          curl -sf "${{ env.WEB_URL }}" > /dev/null
+
+      - name: Post preview URLs
+        run: |
+          cat >> "$GITHUB_STEP_SUMMARY" <<EOF
+          ## Preview environment (PR #${{ env.PR_NUMBER }})
+
+          - Web: ${{ env.WEB_URL }}
+          - API: https://${{ env.API_HOSTNAME }}
+          - Gateway: https://${{ env.GATEWAY_HOSTNAME }}
+
+          Data layer is shared with dev (database, sandbox, PVC storage, configs).
+          Will be destroyed automatically when the PR is closed.
+          EOF
