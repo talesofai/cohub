@@ -23,6 +23,7 @@ export const RESERVED_PLATFORM_PATH_SEGMENTS = Object.freeze([
   "docs",
   "explore",
   "invite",
+  "landing",
   "login",
   "logout",
   "new",
