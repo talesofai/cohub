@@ -2,8 +2,10 @@ name: Preview Deploy
 
 # 预览环境：维护者打 preview label 后为 PR 部署临时环境（人工 gate，避免不可信代码
 # 自动获得 secrets 执行权）。部署脚本固定用 main 分支（可信），PR 代码只以镜像形式进入。
+# - 首次（labeled / reopened）：全量部署 api + gateway + web
+# - 后续 push（synchronize）：按变更路径增量部署（dorny/paths-filter）
 # - api / gateway：部署到 cohub-dev namespace（共享 PVC/配置），资源名带 pr-<n> 前缀隔离
-# - web：独立 Cloudflare Worker（cohub-web-pr-<n>），route 绑定 web-<n>-preview.cohub.run
+# - web：独立 Cloudflare Worker（cohub-web-pr-<n>），route 绑定 dev-<n>-preview.cohub.run
 # 共享 dev：数据库（不跑 migration）、sandbox 镜像、PVC 存储（subpath 隔离）、configs。
 # fork PR 不部署（拿不到 secrets），只跑 CI。
 
@@ -54,6 +56,28 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
+      - name: Detect changed apps
+        id: changes
+        uses: dorny/paths-filter@v3
+        with:
+          filters: |
+            api:
+              - 'apps/api/**'
+              - 'packages/**'
+              - 'package.json'
+              - 'pnpm-lock.yaml'
+              - 'pnpm-workspace.yaml'
+              - '.npmrc'
+              - 'tsconfig.base.json'
+            gateway:
+              - 'apps/gateway/**'
+              - 'packages/**'
+              - 'package.json'
+              - 'pnpm-lock.yaml'
+              - 'pnpm-workspace.yaml'
+              - '.npmrc'
+              - 'tsconfig.base.json'
+
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
 
@@ -65,6 +89,11 @@ jobs:
           password: ${{ secrets.GITEA_PAT }}
 
       - name: Build and push
+        # 首次（labeled/reopened）全量构建；后续按变更路径增量构建
+        if: >-
+          contains(fromJSON('["labeled", "reopened"]'), github.event.action) ||
+          (matrix.app == 'api' && steps.changes.outputs.api == 'true') ||
+          (matrix.app == 'gateway' && steps.changes.outputs.gateway == 'true')
         uses: docker/build-push-action@v6
         with:
           context: .
@@ -82,8 +111,6 @@ jobs:
       contains(github.event.pull_request.labels.*.name, 'preview') &&
       github.event.pull_request.head.repo.full_name == github.repository
     runs-on: ubuntu-latest
-    outputs:
-      web_url: ${{ steps.resolve-url.outputs.web_url }}
     env:
       GITEA_NPM_TOKEN: ${{ secrets.GITEA_NPM_TOKEN }}
       CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
@@ -113,7 +140,24 @@ jobs:
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
 
+      - name: Detect changed apps
+        id: changes
+        uses: dorny/paths-filter@v3
+        with:
+          filters: |
+            web:
+              - 'apps/web/**'
+              - 'packages/**'
+              - 'package.json'
+              - 'pnpm-lock.yaml'
+              - 'pnpm-workspace.yaml'
+              - '.npmrc'
+              - 'tsconfig.base.json'
+
       - name: Setup web environment
+        if: >-
+          contains(fromJSON('["labeled", "reopened"]'), github.event.action) ||
+          steps.changes.outputs.web == 'true'
         working-directory: apps/web
         run: |
           # 前端指向 preview 后端；登录用 dev Logto（用户数据在 dev 库）
@@ -128,14 +172,23 @@ jobs:
           EOF
 
       - name: Build
+        if: >-
+          contains(fromJSON('["labeled", "reopened"]'), github.event.action) ||
+          steps.changes.outputs.web == 'true'
         working-directory: apps/web
         run: pnpm build
 
       - name: Deploy to Cloudflare
+        if: >-
+          contains(fromJSON('["labeled", "reopened"]'), github.event.action) ||
+          steps.changes.outputs.web == 'true'
         working-directory: apps/web
         run: pnpm exec wrangler deploy --name ${{ env.WEB_WORKER_NAME }} --routes "${{ env.WEB_HOSTNAME }}/*"
 
       - name: Resolve preview URL
+        if: >-
+          contains(fromJSON('["labeled", "reopened"]'), github.event.action) ||
+          steps.changes.outputs.web == 'true'
         id: resolve-url
         run: echo "web_url=https://${{ env.WEB_HOSTNAME }}" >> "$GITHUB_OUTPUT"
 
@@ -143,16 +196,17 @@ jobs:
     if: >-
       contains(github.event.pull_request.labels.*.name, 'preview') &&
       github.event.pull_request.head.repo.full_name == github.repository
-    needs: [build-images, deploy-web]
+    # build-images 全 skip（如仅 web 变更）时本 job 自动 skip
+    needs: [build-images]
     runs-on: ubuntu-latest
     permissions:
       contents: read
       pull-requests: write
     environment:
       name: preview-${{ github.event.pull_request.number }}
-      url: ${{ needs.deploy-web.outputs.web_url }}
+      url: https://${{ env.WEB_HOSTNAME }}
     env:
-      WEB_URL: ${{ needs.deploy-web.outputs.web_url }}
+      WEB_URL: https://${{ env.WEB_HOSTNAME }}
     steps:
       # 部署脚本/模板必须来自 main（可信）；PR 的代码只以镜像 tag 形式进入
       - name: Checkout (main)
@@ -170,7 +224,32 @@ jobs:
           mkdir -p ~/.kube
           echo "${{ secrets.KUBECONFIG_DEV }}" | base64 -d > ~/.kube/config
 
+      - name: Detect changed apps
+        id: changes
+        uses: dorny/paths-filter@v3
+        with:
+          filters: |
+            api:
+              - 'apps/api/**'
+              - 'packages/**'
+              - 'package.json'
+              - 'pnpm-lock.yaml'
+              - 'pnpm-workspace.yaml'
+              - '.npmrc'
+              - 'tsconfig.base.json'
+            gateway:
+              - 'apps/gateway/**'
+              - 'packages/**'
+              - 'package.json'
+              - 'pnpm-lock.yaml'
+              - 'pnpm-workspace.yaml'
+              - '.npmrc'
+              - 'tsconfig.base.json'
+
       - name: Create preview ServiceAccount and RBAC
+        if: >-
+          contains(fromJSON('["labeled", "reopened"]'), github.event.action) ||
+          steps.changes.outputs.api == 'true'
         run: |
           # 部署在 cohub-dev（共享 PVC/配置），不建 namespace；
           # 资源名前缀 pr-<n> 隔离。API 的 ServiceAccount（deployment 通过
@@ -186,6 +265,9 @@ jobs:
             --dry-run=client -o yaml | kubectl apply -f -
 
       - name: Deploy API
+        if: >-
+          contains(fromJSON('["labeled", "reopened"]'), github.event.action) ||
+          steps.changes.outputs.api == 'true'
         working-directory: deploy/api/dev
         run: |
           set -euo pipefail
@@ -277,6 +359,9 @@ jobs:
           bash deploy.sh
 
       - name: Deploy Gateway
+        if: >-
+          contains(fromJSON('["labeled", "reopened"]'), github.event.action) ||
+          steps.changes.outputs.gateway == 'true'
         working-directory: deploy/gateway/dev
         run: |
           set -euo pipefail
