@@ -43,9 +43,6 @@ export interface WorkerConfig {
 
 const env = (process.env.ENV === "prod" ? "prod" : "dev") as "dev" | "prod";
 
-export const normalizeGenerationBaseUrl = (value: string | undefined): string | undefined =>
-  value?.trim().replace(/\/+$/, "") || undefined;
-
 const assertRedisUrl = (value: string, envName: string) => {
   if (!value) throw new Error(`Missing required env: ${envName}`);
   try {
@@ -76,7 +73,7 @@ export const config: WorkerConfig = {
   platformConfigRoot: process.env.PLATFORM_CONFIG_ROOT ?? "/configs",
   platformSpaceId: process.env.PLATFORM_SPACE_ID ?? "",
   generationApiKey: process.env.GENERATION_API_KEY ?? "",
-  generationBaseUrl: normalizeGenerationBaseUrl(process.env.GENERATION_BASE_URL),
+  generationBaseUrl: process.env.GENERATION_BASE_URL?.trim() || undefined,
   turnObjectS3Endpoint: process.env.TURN_OBJECT_S3_ENDPOINT ?? "http://127.0.0.1:9000",
   turnObjectS3Region: process.env.TURN_OBJECT_S3_REGION ?? "us-west-1",
   turnObjectS3Bucket: process.env.TURN_OBJECT_S3_BUCKET ?? "cohub-sessions",
