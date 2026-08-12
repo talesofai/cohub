@@ -145,6 +145,9 @@ jobs:
       github.event.pull_request.head.repo.full_name == github.repository
     needs: [build-images, deploy-web]
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pull-requests: write
     environment:
       name: preview-${{ github.event.pull_request.number }}
       url: ${{ needs.deploy-web.outputs.web_url }}
@@ -342,6 +345,59 @@ jobs:
               exit 1
             fi
           done
+
+      - name: Post preview comment
+        uses: actions/github-script@v7
+        env:
+          WEB_URL: ${{ env.WEB_URL }}
+          API_HOSTNAME: ${{ env.API_HOSTNAME }}
+          GATEWAY_HOSTNAME: ${{ env.GATEWAY_HOSTNAME }}
+        with:
+          script: |
+            const marker = "<!-- cohub-preview-deploy -->";
+            const shortSha = context.payload.pull_request.head.sha.slice(0, 7);
+            const webUrl = process.env.WEB_URL;
+            const apiUrl = `https://${process.env.API_HOSTNAME}`;
+            const gatewayUrl = `https://${process.env.GATEWAY_HOSTNAME}`;
+            const updated = new Date().toUTCString();
+
+            const body = `${marker}
+            <img src="https://cohub.run/favicon.svg" width="20" height="20" alt="Cohub" align="left" /> &nbsp;**Cohub Preview Deployed**
+
+            | Status | Name | Commit | Preview URL | Updated (UTC) |
+            |---|---|---|---|---|
+            | ✅ Deployment successful! | \`cohub-web-pr-${context.issue.number}\` | \`${shortSha}\` | [${webUrl.replace("https://", "")}](${webUrl}) | ${updated} |
+
+            - Web: [${webUrl}](${webUrl})
+            - API: [${apiUrl}](${apiUrl})
+            - Gateway: [${gatewayUrl}](${gatewayUrl})
+
+            > Shares the dev data layer (database, storage, configs). Destroyed automatically when this PR closes.
+            `;
+
+            const { data: comments } = await github.rest.issues.listComments({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: context.issue.number,
+            });
+            const existing = comments.find((c) => c.body.includes(marker));
+            if (existing) {
+              await github.rest.issues.updateComment({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                comment_id: existing.id,
+                body,
+              });
+              console.log("Updated preview comment", existing.id);
+            } else {
+              await github.rest.issues.createComment({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                issue_number: context.issue.number,
+                body,
+              });
+              console.log("Created preview comment");
+            }
 
       - name: Post preview URLs
         run: |
