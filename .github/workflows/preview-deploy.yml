@@ -238,9 +238,12 @@ jobs:
           SPACE_STORAGE_PVC: "${SPACE_STORAGE_PVC}"
           SPACE_SYSTEM_PVC: "${SPACE_SYSTEM_PVC}"
           CHECKPOINT_CACHE_PVC: "${CHECKPOINT_CACHE_PVC}"
-          SPACE_STORAGE_SUBPATH: "workspaces/preview-${{ env.PR_NUMBER }}"
-          SPACE_SYSTEM_SUBPATH: "preview-${{ env.PR_NUMBER }}"
-          CHECKPOINT_CACHE_SUBPATH: "workspaces/preview-${{ env.PR_NUMBER }}/checkpoints"
+          # 共享 dev 数据层：数据库已共享，文件 subpath 也必须用 dev 同款，
+          # 否则 preview 打开 dev 的 space 时找不到文件（404）。写入同样落在
+          # dev 数据上，与数据库共享的模型一致。
+          SPACE_STORAGE_SUBPATH: "$(get_cm SPACE_STORAGE_SUBPATH)"
+          SPACE_SYSTEM_SUBPATH: "$(get_cm SPACE_SYSTEM_SUBPATH)"
+          CHECKPOINT_CACHE_SUBPATH: "$(get_cm CHECKPOINT_CACHE_SUBPATH)"
           PLATFORM_CONFIG_ROOT: "$(get_cm PLATFORM_CONFIG_ROOT)"
           TURN_OBJECT_S3_ENDPOINT: "$(get_cm TURN_OBJECT_S3_ENDPOINT)"
           TURN_OBJECT_S3_REGION: "$(get_cm TURN_OBJECT_S3_REGION)"
