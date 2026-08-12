@@ -52,14 +52,17 @@ jobs:
       - name: Lint
         run: pnpm lint
 
+      # Build first: workspace packages export types/runtime from dist/, so
+      # typecheck and tests need the build artifacts present (clean checkout
+      # has none). This mirrors the deploy workflows' build-before-check order.
+      - name: Build
+        run: pnpm build
+
       - name: Typecheck
         run: pnpm typecheck
 
       - name: Test
         run: pnpm test
-
-      - name: Build
-        run: pnpm build
 
   go-checks:
     name: Format, vet, test (sandbox)
