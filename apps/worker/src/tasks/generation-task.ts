@@ -11,6 +11,7 @@ import {
   resolveGenerationUsageType,
 } from "@cohub/billing";
 import type { Job } from "bullmq";
+import { context as otelContext } from "@opentelemetry/api";
 import {
   createGenerationClient,
   GenerationConfigError,
@@ -30,6 +31,7 @@ import {
 } from "@cohub/protocol/generation";
 import type { TaskPayload } from "@cohub/protocol/task";
 import { defaultJobRetention } from "@cohub/infra/bullmq";
+import { getTracer, runInActiveSpan } from "@cohub/infra/tracing/propagator";
 import { config } from "../config.js";
 import { recordGenerationUsageStatsHourly } from "../generation-usage-stats.js";
 import { redisCommandClient } from "../redis.js";
@@ -46,6 +48,7 @@ const billingUsageGate = createBillingUsageGate({
     console.warn("[BillingGate] worker generation billing evaluation failed", { error, gateInput });
   },
 });
+const tracer = getTracer("cohub-worker");
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return !!value && typeof value === "object" && !Array.isArray(value);
@@ -384,17 +387,40 @@ registerTask(GENERATION_TASK_TYPE, async (job: Job, context) => {
         });
     if (billingDecision.status === "blocked") throw new BillingAccessBlockedError(billingDecision);
 
-    const result = await createGenerationClient({
+    const generationClient = createGenerationClient({
       models: [declaration],
       includeBuiltinModels: false,
       apiKey: getGenerationApiKey(),
       ...(config.generationBaseUrl ? { baseUrl: config.generationBaseUrl } : {}),
-    }).generateResult({
-      model: data.model,
-      content: data.content,
-      parameters: data.parameters,
-      meta: data.meta,
     });
+    const result = await runInActiveSpan(
+      tracer,
+      "cohub.generation.wait",
+      {
+        attributes: {
+          "cohub.generation.model": data.model,
+          "cohub.generation.task_run_id": taskRunId,
+          "cohub.space_id": spaceId,
+          "gen_ai.request.model": data.model,
+        },
+      },
+      otelContext.active(),
+      async (span) => {
+        const generationResult = await generationClient.generateResult({
+          model: data.model,
+          content: data.content,
+          parameters: data.parameters,
+          meta: data.meta,
+        });
+        span.setAttributes({
+          "cohub.generation.output_count": generationResult.content.length,
+          ...(generationResult.requestId
+            ? { "cohub.generation.provider_request_id": generationResult.requestId }
+            : {}),
+        });
+        return generationResult;
+      },
+    );
 
     const usageType = resolveGenerationUsageType({
       adapterType: declaration.adapter?.type,
