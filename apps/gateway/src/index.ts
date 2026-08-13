@@ -47,6 +47,7 @@ import {
 } from "./board-awareness-admission.js";
 import { markChannelDegraded, touchChannelOutbound } from "./channel-health.js";
 import { handleAsrWebSocketConnection } from "./asr/session.js";
+import { handleRealtimeVoiceConnection } from "./realtime-voice/session.js";
 import { handleRelayControlConnection, handleRelayDataConnection, handleRelayPeerConnection } from "./relay/index.js";
 import {
   createPubSubRedisClient,
@@ -949,6 +950,7 @@ async function main() {
   const server = serve({ fetch: app.fetch, port: gatewayConfig.port }) as unknown as import("node:http").Server;
   const wss = new WebSocketServer({ noServer: true });
   const asrWss = new WebSocketServer({ noServer: true, maxPayload: 1024 * 1024 });
+  const realtimeVoiceWss = new WebSocketServer({ noServer: true });
   // Local sandbox relay: control (runner⇒gateway), data (runner dial-out), and
   // peer (agent/worker⇒gateway) channels. Large payloads flow on data channels.
   const relayControlWss = new WebSocketServer({ noServer: true, maxPayload: 1024 * 1024 });
@@ -958,6 +960,7 @@ async function main() {
   const websocketRoutes = new Map<string, WebSocketServer>([
     ["/ws", wss],
     ["/asr/ws", asrWss],
+    ["/v1/realtime", realtimeVoiceWss],
     ["/sandbox/relay", relayControlWss],
     ["/sandbox/relay/data", relayDataWss],
   ]);
@@ -994,6 +997,7 @@ async function main() {
   });
 
   asrWss.on("connection", handleAsrWebSocketConnection);
+  realtimeVoiceWss.on("connection", handleRealtimeVoiceConnection);
   relayControlWss.on("connection", (socket, request) => void handleRelayControlConnection(socket, request));
   relayDataWss.on("connection", (socket, request) => handleRelayDataConnection(socket, request));
 

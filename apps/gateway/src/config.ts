@@ -19,6 +19,13 @@ export const gatewayConfig = {
     resourceId: "volc.seedasr.sauc.duration",
     url: "wss://openspeech.bytedance.com/api/v3/sauc/bigmodel_async",
   },
+  // neta-router credentials for the realtime voice relay (apps/gateway is the
+  // caller here, same trust boundary as apps/api/apps/worker's generation
+  // calls -- reuses the same business key convention, just a different route).
+  netaRouter: {
+    baseUrl: normalizeBaseUrl(process.env.GENERATION_BASE_URL ?? "https://router.neta.art"),
+    apiKey: process.env.GENERATION_API_KEY ?? "",
+  },
 };
 
 export type GatewayAuthUser = {
