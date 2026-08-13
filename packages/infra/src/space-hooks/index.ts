@@ -7,6 +7,7 @@ import {
   SPACE_HOOKS_DIR,
   type SpaceHookEventEnvelope,
 } from "@cohub/protocol";
+import { buildAgentRunCommandJobId } from "../agent-queue/index.js";
 
 export type { SpaceHookEventEnvelope };
 
@@ -133,14 +134,29 @@ export function isReentrantSpaceHookEvent(input: {
   type: string;
   payload?: Record<string, unknown> | null;
 }): boolean {
-  if (input.type !== "session.turn.finalized") return false;
-  const payload = isRecord(input.payload) ? input.payload : null;
-  const turn = isRecord(payload?.turn) ? payload.turn : null;
-  const meta = isRecord(turn?.meta) ? turn.meta : null;
-  if (!meta) return false;
-  if (asString(meta.source) === "space_hook") return true;
-  const context = isRecord(meta.context) ? meta.context : null;
-  return asString(context?.kind) === "space_hook";
+  if (input.type === "session.turn.finalized") {
+    const payload = isRecord(input.payload) ? input.payload : null;
+    const turn = isRecord(payload?.turn) ? payload.turn : null;
+    const meta = isRecord(turn?.meta) ? turn.meta : null;
+    if (!meta) return false;
+    if (asString(meta.source) === "space_hook") return true;
+    const context = isRecord(meta.context) ? meta.context : null;
+    return asString(context?.kind) === "space_hook";
+  }
+  if (input.type === "task.updated") {
+    const payload = isRecord(input.payload) ? input.payload : null;
+    const task = isRecord(payload?.task) ? payload.task : null;
+    if (!task) return false;
+    // Hook execution tasks and the run_command children they spawn must not
+    // re-trigger task hooks, or every hook run would loop forever.
+    if (asString(task.type) === SPACE_HOOK_TASK_TYPE) return true;
+    // Hook-spawned run_command children use jobId `run-command-` + the space_hook
+    // execute task id (space-hook-*), see buildSpaceHookTaskId / runCommandHook.
+    const jobId = asString(task.jobId) ?? "";
+    return asString(task.type) === "run_command"
+      && jobId.startsWith(buildAgentRunCommandJobId("space-hook-"));
+  }
+  return false;
 }
 
 function isDuplicateJobError(error: unknown) {

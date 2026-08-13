@@ -93,6 +93,7 @@ Supported events:
 - `session.turn.finalized` — optional `sessionIds` / `ignoreSessionIds` / `sources`
 - `checkpoint.created`
 - `work.version.published`
+- `task.updated` — fires on task run state transitions (`pending`→`running`→`completed`/`failed`); payload carries the task record and `changed` fields. `space_hook` tasks and the `run_command` children they spawn are filtered out to prevent re-entrant loops.
 
 ## Trigger
 
@@ -179,6 +180,11 @@ COHUB_HOOK_CHECKPOINT_ID      # "" unless checkpoint.created
 COHUB_HOOK_WORK_ID             # "" unless work.version.published
 COHUB_HOOK_WORK_VERSION_ID     # "" unless work.version.published
 COHUB_HOOK_WORK_VERSION        # "" unless work.version.published
+COHUB_HOOK_TASK_ID             # "" unless task.updated
+COHUB_HOOK_TASK_TYPE           # "" unless task.updated
+COHUB_HOOK_TASK_STATUS         # "" unless task.updated
+COHUB_HOOK_TASK_CHANGED        # comma-separated changed fields, "" unless task.updated
+COHUB_HOOK_TASK_ERROR          # "" unless task.updated
 ```
 
 `space.fs.changed` extras (always present for that event; empty string when none):

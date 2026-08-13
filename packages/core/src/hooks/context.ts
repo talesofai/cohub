@@ -103,6 +103,18 @@ export function buildSpaceHookEnv(input: SpaceHookContextInput): Record<string, 
     env.COHUB_HOOK_FS_KINDS = summary.kinds.join(",");
   }
 
+  if (event.type === "task.updated") {
+    const task = isRecord(event.payload.task) ? event.payload.task : null;
+    setEnv(env, "COHUB_HOOK_TASK_ID", task ? asString(task.id) : null);
+    setEnv(env, "COHUB_HOOK_TASK_TYPE", task ? asString(task.type) : null);
+    setEnv(env, "COHUB_HOOK_TASK_STATUS", task ? asString(task.status) : null);
+    const changed = Array.isArray(event.payload.changed)
+      ? event.payload.changed.filter((value): value is string => typeof value === "string")
+      : [];
+    setEnv(env, "COHUB_HOOK_TASK_CHANGED", changed.length > 0 ? changed.join(",") : null);
+    setEnv(env, "COHUB_HOOK_TASK_ERROR", task ? asString(task.errorMessage) : null);
+  }
+
   return env;
 }
 
@@ -122,6 +134,11 @@ const PROMPT_CONTEXT_LABELS: Array<{ key: string; label: string }> = [
   { key: "COHUB_HOOK_OCCURRED_AT", label: "occurredAt" },
   { key: "COHUB_HOOK_FS_CHANGE_COUNT", label: "changeCount" },
   { key: "COHUB_HOOK_FS_KINDS", label: "kinds" },
+  { key: "COHUB_HOOK_TASK_ID", label: "taskId" },
+  { key: "COHUB_HOOK_TASK_TYPE", label: "taskType" },
+  { key: "COHUB_HOOK_TASK_STATUS", label: "taskStatus" },
+  { key: "COHUB_HOOK_TASK_CHANGED", label: "taskChanged" },
+  { key: "COHUB_HOOK_TASK_ERROR", label: "taskError" },
 ];
 
 /** Compact prompt appendix mirrored from the shared hook env. */

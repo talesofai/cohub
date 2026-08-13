@@ -330,6 +330,66 @@ run: echo ok
   );
 });
 
+test("spaceHookMatchesEvent matches task.updated events", () => {
+  const hook = parseSpaceHookDefinition(
+    `
+schema: cohub.space-hook.v1
+on:
+  event: task.updated
+run: echo ok
+`,
+    ".cohub/hooks/on-task.yml",
+  );
+
+  const base = {
+    id: "evt-1",
+    type: "task.updated" as const,
+    timestamp: Date.now(),
+    spaceId: "space-1",
+  };
+
+  // Any task.updated payload matches (status filtering is the script's job,
+  // event payload carries COHUB_HOOK_TASK_STATUS).
+  assert.deepEqual(
+    spaceHookMatchesEvent(hook, {
+      ...base,
+      sessionId: "session-1",
+      payload: {
+        task: { id: "task-1", type: "generation", status: "failed", jobId: "job-1" },
+        changed: ["status"],
+      },
+    }),
+    { matched: true },
+  );
+
+  assert.deepEqual(
+    spaceHookMatchesEvent(hook, {
+      ...base,
+      sessionId: "session-1",
+      payload: { task: { id: "task-2", type: "run_command", status: "completed", jobId: "job-2" } },
+    }),
+    { matched: true },
+  );
+
+  assert.deepEqual(
+    spaceHookMatchesEvent(hook, {
+      ...base,
+      sessionId: "session-1",
+      payload: { task: { id: "task-3", type: "generation", status: "running", jobId: "job-3" } },
+    }),
+    { matched: true },
+  );
+
+  assert.deepEqual(
+    spaceHookMatchesEvent(hook, {
+      ...base,
+      type: "checkpoint.created" as const,
+      payload: { checkpointId: "cp-1" },
+    }),
+    { matched: false, reason: "event_mismatch" },
+  );
+});
+
 test("space hook fingerprints change with executable content", () => {
   const first = parseSpaceHookDefinition(
     `

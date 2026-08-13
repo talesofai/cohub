@@ -19,6 +19,7 @@ export const SPACE_HOOKABLE_EVENTS = [
   "session.turn.finalized",
   "checkpoint.created",
   "work.version.published",
+  "task.updated",
 ] as const;
 
 export type SpaceHookableEvent = (typeof SPACE_HOOKABLE_EVENTS)[number];

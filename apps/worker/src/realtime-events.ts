@@ -2,6 +2,7 @@ import { randomUUID } from "node:crypto";
 import { REALTIME_OUTBOUND_CHANNEL, type RealtimeTaskRecord } from "@cohub/protocol/realtime";
 import type { TaskRunStatus } from "@cohub/protocol/task";
 import { redisCommandClient } from "./redis.js";
+import { enqueueSpaceHookFromEvent } from "./space-hooks.js";
 
 const toIsoOrNull = (value: Date | string | null | undefined) => {
   if (!value) return null;
@@ -57,22 +58,42 @@ async function publishTaskEvent(input: {
   const task = toRealtimeTaskRecord(input.task);
   if (!task.spaceId && !task.userId) return;
 
-  await redisCommandClient.publish(
-    REALTIME_OUTBOUND_CHANNEL,
-    JSON.stringify({
-      id: randomUUID(),
-      timestamp: Date.now(),
-      domain: "space",
-      type: input.type,
-      spaceId: task.spaceId,
-      sessionId: task.sessionId,
-      payload: {
-        task,
-        ...(input.changed ? { changed: input.changed } : {}),
-        ...(task.userId && !task.spaceId ? { userId: task.userId } : {}),
-      },
-    }),
-  );
+  const id = randomUUID();
+  const timestamp = Date.now();
+  const payload = {
+    task,
+    ...(input.changed ? { changed: input.changed } : {}),
+    ...(task.userId && !task.spaceId ? { userId: task.userId } : {}),
+  };
+
+  // Same pattern as publishSpaceEvent: realtime push and hook dispatch run in
+  // parallel; hooks only apply to space-scoped events. Re-entrancy protection
+  // (space_hook tasks and their derived run_command children) lives in
+  // maybeEnqueueSpaceHookTask.
+  await Promise.all([
+    redisCommandClient.publish(
+      REALTIME_OUTBOUND_CHANNEL,
+      JSON.stringify({
+        id,
+        timestamp,
+        domain: "space",
+        type: input.type,
+        spaceId: task.spaceId,
+        sessionId: task.sessionId,
+        payload,
+      }),
+    ),
+    task.spaceId
+      ? enqueueSpaceHookFromEvent({
+          id,
+          type: input.type,
+          timestamp,
+          spaceId: task.spaceId,
+          sessionId: task.sessionId,
+          payload,
+        })
+      : Promise.resolve(null),
+  ]);
 }
 
 export const dispatchTaskCreated = (task: Parameters<typeof toRealtimeTaskRecord>[0]) =>

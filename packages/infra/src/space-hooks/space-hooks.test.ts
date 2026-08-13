@@ -194,6 +194,119 @@ test("maybeEnqueueSpaceHookTask skips when cache confirms empty definitions", as
   assert.equal(calls.length, 0);
 });
 
+test("isReentrantSpaceHookEvent blocks hook-generated task events", () => {
+  const basePayload = {
+    task: { id: "task-1", type: "generation", status: "completed", jobId: "job-1" },
+    changed: ["status"],
+  };
+  assert.equal(
+    isReentrantSpaceHookEvent({ type: "task.updated", payload: basePayload }),
+    false,
+  );
+  // Hook execution task itself must not re-trigger task hooks.
+  assert.equal(
+    isReentrantSpaceHookEvent({
+      type: "task.updated",
+      payload: {
+        task: {
+          id: "task-2",
+          type: "space_hook",
+          status: "completed",
+          jobId: "space-hook-abc123",
+        },
+        changed: ["status"],
+      },
+    }),
+    true,
+  );
+  // run_command child spawned by a hook must not re-trigger task hooks.
+  assert.equal(
+    isReentrantSpaceHookEvent({
+      type: "task.updated",
+      payload: {
+        task: {
+          id: "task-3",
+          type: "run_command",
+          status: "completed",
+          jobId: "run-command-space-hook-abc123__hooks-gen.yml",
+        },
+        changed: ["status"],
+      },
+    }),
+    true,
+  );
+  // Plain run_command tasks stay hookable.
+  assert.equal(
+    isReentrantSpaceHookEvent({
+      type: "task.updated",
+      payload: {
+        task: {
+          id: "task-4",
+          type: "run_command",
+          status: "failed",
+          jobId: "run-command-other-task",
+        },
+        changed: ["status"],
+      },
+    }),
+    false,
+  );
+});
+
+test("maybeEnqueueSpaceHookTask accepts task.updated and still skips task.created", async () => {
+  const calls: unknown[] = [];
+  const enqueue = async (name: string, payload: unknown, options: unknown) => {
+    calls.push({ name, payload, options });
+    return { id: "job-1" };
+  };
+
+  const result = await maybeEnqueueSpaceHookTask({
+    event: {
+      id: "event-task-1",
+      type: "task.updated",
+      spaceId: "space-1",
+      sessionId: "session-1",
+      payload: {
+        task: {
+          id: "task-1",
+          type: "generation",
+          status: "failed",
+          errorMessage: "boom",
+          jobId: "job-1",
+        },
+        changed: ["status", "errorMessage"],
+      },
+    },
+    enqueue,
+  });
+
+  assert.ok(result);
+  assert.equal(calls.length, 1);
+  assert.equal(calls[0] && (calls[0] as { name: string }).name, SPACE_HOOK_DISPATCH_JOB);
+  assert.deepEqual(
+    (calls[0] as { options: { jobId: string } }).options.jobId,
+    buildSpaceHookDispatchJobId({
+      spaceId: "space-1",
+      eventId: "event-task-1",
+      eventType: "task.updated",
+    }),
+  );
+
+  assert.equal(
+    await maybeEnqueueSpaceHookTask({
+      event: {
+        id: "event-task-2",
+        type: "task.created",
+        spaceId: "space-1",
+        payload: { task: { id: "task-2", type: "generation", status: "pending", jobId: "job-2" } },
+      },
+      enqueue,
+    }),
+    null,
+  );
+  assert.equal(calls.length, 1);
+});
+
 test("maybeEnqueueSpaceHookTask invalidates empty cache when hooks path changes", async () => {
   const calls: unknown[] = [];
   const redis = {
