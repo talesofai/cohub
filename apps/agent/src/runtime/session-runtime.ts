@@ -31,8 +31,8 @@ export type CohubAgentSession = {
   consumePendingForcedCompaction(): boolean;
   prompt(text: string, options?: { images?: ImageContent[] }): Promise<void>;
   promptMessages(messages: AgentMessage[]): Promise<void>;
-  steer(text: string, images?: ImageContent[]): Promise<void>;
-  enqueueSteer(text: string, images?: ImageContent[]): void;
+  steer(text: string, images?: ImageContent[], meta?: Record<string, unknown>): Promise<void>;
+  enqueueSteer(text: string, images?: ImageContent[], meta?: Record<string, unknown>): void;
   waitForIdle(): Promise<void>;
   setModel(model: Model<Api>): Promise<void>;
   configureRuntimeIdentity(input: { userId?: string | null; spaceOwnerUserId?: string | null; modelRegistry: CohubModelRegistry; imageToTextConfig?: ImageToTextConfig | null; requestedModel?: { provider: string; id: string }; requestedThinkingLevel?: string | null }): Promise<void>;
@@ -675,11 +675,12 @@ function createStreamFn(getRuntime: () => { modelRegistry: CohubModelRegistry; i
   };
 }
 
-function createUserMessage(text: string, images?: ImageContent[]): AgentMessage {
+function createUserMessage(text: string, images?: ImageContent[], meta?: Record<string, unknown>): AgentMessage {
   return {
     role: "user",
     content: [{ type: "text", text }, ...(images ?? [])],
     timestamp: Date.now(),
+    ...(meta ? { meta } : {}),
   } as AgentMessage;
 }
 
@@ -944,12 +945,12 @@ export async function createCohubAgentSession(options: CreateCohubAgentSessionOp
       await runPendingRetries();
       await agent.waitForIdle();
     },
-    async steer(text, images) {
-      agent.steer(createUserMessage(text, images));
+    async steer(text, images, meta) {
+      agent.steer(createUserMessage(text, images, meta));
       await agent.waitForIdle();
     },
-    enqueueSteer(text, images) {
-      agent.steer(createUserMessage(text, images));
+    enqueueSteer(text, images, meta) {
+      agent.steer(createUserMessage(text, images, meta));
     },
     async waitForIdle() {
       await agent.waitForIdle();

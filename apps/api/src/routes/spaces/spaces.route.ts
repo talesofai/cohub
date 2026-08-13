@@ -71,14 +71,23 @@ import {
 import { checkpointFsJsonError, listCheckpointDirectory, readCheckpointFile } from "../../checkpoint-fs.js";
 import type { AuthUser } from "../../lib/middleware.js";
 import { submitSessionPrompt } from "../../session-prompts.js";
-import { ModelUnavailableError, parsePromptEnv, PromptEnvValidationError } from "@cohub/core/sessions";
+import {
+  AGENT_TURN_STEER_CHANNEL,
+  AGENT_TURN_STEER_TTL_SECONDS,
+  ModelUnavailableError,
+  buildAgentTurnSteerEvent,
+  buildAgentTurnSteerMeta,
+  decideCheckpointSteering,
+  getAgentTurnSteerKey,
+  parsePromptEnv,
+  PromptEnvValidationError,
+} from "@cohub/core/sessions";
 import { delegatedPromptAuthFromWorkSession, promptAuthContextFromWorkSession } from "../../prompt-auth-context.js";
 import { buildSessionTurnResponse } from "../../session-turn-response.js";
 import { getSessionTurnById, hydrateTurnAuthorProfiles } from "../../session-turns.js";
 import { InvalidSpaceTurnListQueryError, listSpaceTurns } from "../../space-turns.js";
 import { dispatchTurnUpdated } from "../../session-output.js";
 import { enqueueAgentTurnJob } from "../../agent-turn-queue.js";
-import { requestAgentTurnAbort } from "../../agent-turn-abort.js";
 import { dispatchLabelAssignmentsUpdated } from "../../realtime-events.js";
 import { listSessionForksForSessions, redactSessionForksForViewer } from "../../session-forks.js";
 import { fallbackPublicUserProfile, getProfilesByUuids } from "../../user-profiles.js";
@@ -152,6 +161,7 @@ const sanitizeMeta = (value: Record<string, unknown>) =>
 type SpaceTurnActionResult = {
   turn: NonNullable<Awaited<ReturnType<typeof getSessionTurnById>>>;
   affectedTurns: NonNullable<Awaited<ReturnType<typeof getSessionTurnById>>>[];
+  delivery: ReturnType<typeof decideCheckpointSteering>;
 };
 
 async function promoteQueuedTurnToSteer(input: {
@@ -171,34 +181,39 @@ async function promoteQueuedTurnToSteer(input: {
 
     const [maxSequenceRow] = await tx.select({ max: sql<number>`coalesce(max(${sessionTurns.sequence}), 0)::int` }).from(sessionTurns).where(eq(sessionTurns.sessionId, input.sessionId));
     const nextSequence = (maxSequenceRow?.max ?? target.sequence) + 1;
+    const [activeTurn] = await tx.select({ id: sessionTurns.id, status: sessionTurns.status })
+      .from(sessionTurns)
+      .where(and(
+        eq(sessionTurns.sessionId, input.sessionId),
+        inArray(sessionTurns.status, ["running", "abort_requested"]),
+      ))
+      .orderBy(desc(sessionTurns.sequence))
+      .limit(1);
+    const delivery = decideCheckpointSteering({
+      activeTurn: activeTurn && activeTurn.id !== target.id
+        ? {
+            id: activeTurn.id,
+            status: activeTurn.status === "running" ? "running" : "abort_requested",
+          }
+        : null,
+    });
+
     await tx.update(sessionTurns).set({
       sequence: nextSequence,
       intent: "steer",
       meta: sanitizeMeta({
         ...readMetaRecord(target.meta),
+        ...buildAgentTurnSteerMeta(delivery),
         promotedToSteerAt: now.toISOString(),
         promotedByUserId: input.actorUserId,
         promotedFromIntent: target.intent,
         dispatchIntent: "steer",
+        agentTurnSteerRequestedAt: now.toISOString(),
       }),
       updatedAt: now,
     }).where(eq(sessionTurns.id, target.id));
 
-    const [activeTurn] = await tx.select({ id: sessionTurns.id, status: sessionTurns.status, meta: sessionTurns.meta }).from(sessionTurns).where(and(eq(sessionTurns.sessionId, input.sessionId), inArray(sessionTurns.status, ["running", "abort_requested"]))).orderBy(desc(sessionTurns.sequence)).limit(1);
-    if (activeTurn && activeTurn.id !== target.id) {
-      await tx.update(sessionTurns).set({
-        status: "abort_requested",
-        meta: sanitizeMeta({
-          ...readMetaRecord(activeTurn.meta),
-          abortRequestedAt: now.toISOString(),
-          continuedByTurnId: target.id,
-          abortActorUserId: input.actorUserId,
-        }),
-        updatedAt: now,
-      }).where(and(eq(sessionTurns.id, activeTurn.id), inArray(sessionTurns.status, ["running", "abort_requested"])));
-    }
-
-    return { targetId: target.id, activeTurnId: activeTurn?.id ?? null, activeTurnStatus: activeTurn?.status ?? null, affectedTurnIds: [target.id, ...(activeTurn?.id && activeTurn.id !== target.id ? [activeTurn.id] : [])] };
+    return { targetId: target.id, delivery, affectedTurnIds: [target.id] };
   });
 
   try {
@@ -213,22 +228,25 @@ async function promoteQueuedTurnToSteer(input: {
       completedAt: failedAt,
       updatedAt: failedAt,
     }).where(and(eq(sessionTurns.id, result.targetId), eq(sessionTurns.sessionId, input.sessionId), eq(sessionTurns.status, "queued")));
-    if (result.activeTurnId && result.activeTurnId !== result.targetId && result.activeTurnStatus === "running") {
-      await db.update(sessionTurns).set({ status: "running", updatedAt: failedAt }).where(and(eq(sessionTurns.id, result.activeTurnId), eq(sessionTurns.sessionId, input.sessionId), eq(sessionTurns.status, "abort_requested")));
-    }
     throw new Error("failed to enqueue steered turn");
   }
 
-  if (result.activeTurnId && result.activeTurnId !== result.targetId) {
-    await requestAgentTurnAbort({
+  if (result.delivery.mode === "checkpoint" && result.delivery.targetTurnId) {
+    const event = buildAgentTurnSteerEvent({
+      id: crypto.randomUUID(),
       spaceId: input.spaceId,
       sessionId: input.sessionId,
-      turnId: result.activeTurnId,
-      reason: "interrupt",
-      continuedByTurnId: result.targetId,
+      activeTurnId: result.delivery.targetTurnId,
+      queuedTurnId: result.targetId,
       actorUserId: input.actorUserId,
-    }).catch((error) => {
-      logger.warn("[SessionTurn] failed to publish steer abort", error);
+    });
+    await redisCommandClient.set(
+      getAgentTurnSteerKey(event.queuedTurnId),
+      JSON.stringify(event),
+      "EX",
+      AGENT_TURN_STEER_TTL_SECONDS,
+    ).then(() => redisCommandClient.publish(AGENT_TURN_STEER_CHANNEL, JSON.stringify(event))).catch((error) => {
+      logger.warn(`[SessionTurn] failed to publish checkpoint steer queuedTurnId=${event.queuedTurnId}`, error);
     });
   }
   const turns = (await Promise.all(result.affectedTurnIds.map((turnId) => getSessionTurnById(input.sessionId, turnId))))
@@ -236,7 +254,7 @@ async function promoteQueuedTurnToSteer(input: {
   const hydrated = await hydrateTurnAuthorProfiles(turns);
   const target = hydrated.find((turn) => turn.id === result.targetId);
   if (!target) throw new Error("turn not found");
-  return { turn: target, affectedTurns: hydrated };
+  return { turn: target, affectedTurns: hydrated, delivery: result.delivery };
 }
 
 async function cancelQueuedTurn(input: {
@@ -2057,7 +2075,12 @@ router.post("/:id/sessions/:sessionId/turns/:turnId/steer", async (c) => {
   try {
     const result = await promoteQueuedTurnToSteer({ spaceId, sessionId, turnId, actorUserId: user.uuid });
     await Promise.all(result.affectedTurns.map((turn) => dispatchTurnUpdated({ spaceId, sessionId, turn }).catch((error) => logger.warn("[SessionTurn] failed to dispatch steered turn", error))));
-    return c.json({ ok: true, turn: result.turn, affectedTurns: result.affectedTurns });
+    return c.json({
+      ok: true,
+      turn: result.turn,
+      affectedTurns: result.affectedTurns,
+      steerDelivery: result.delivery,
+    });
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
     if (message === "session not found") return c.json({ message }, 404);

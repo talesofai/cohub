@@ -7,6 +7,14 @@ import type { SessionTurnIntent } from "@cohub/protocol/model";
 import { sessionTurnSegments, sessionTurns, spaceSessions, spaces } from "@cohub/db";
 import { sanitizePostgresJsonValue } from "../content/sanitize.js";
 import { addSessionParticipantMeta, initializeSessionParticipantsMeta } from "./session-meta.js";
+import {
+  AGENT_TURN_STEER_CHANNEL,
+  AGENT_TURN_STEER_TTL_SECONDS,
+  buildAgentTurnSteerEvent,
+  buildAgentTurnSteerMeta,
+  decideSessionPromptSteering,
+  getAgentTurnSteerKey,
+} from "./checkpoint-steering.js";
 import { submitSessionPrompt, type ExpandedPromptTemplate, type ExpandedSkillCommand, expandPromptContent, type SubmitSessionPromptHooks, type SubmitSessionPromptInput, type SubmitSessionPromptOptions } from "./prompt.js";
 
 export type PromptTemplateService = {
@@ -44,9 +52,6 @@ export type AgentTurnQueue = {
 };
 
 export type SessionServices = ReturnType<typeof createSessionServices>;
-
-const AGENT_TURN_ABORT_CHANNEL = "pubsub:agent:turn_abort";
-const getAgentTurnAbortKey = (turnId: string) => `agent:turn:${turnId}:abort`;
 
 const imagePreviewLabel = (count: number) => (count === 1 ? "Image" : `${count} images`);
 
@@ -223,28 +228,6 @@ export function createSessionServices(input: {
     return row ?? null;
   }
 
-  async function requestAgentTurnAbort(abortInput: {
-    spaceId: string;
-    sessionId: string;
-    turnId: string;
-    reason: "interrupt";
-    continuedByTurnId: string;
-    actorUserId?: string | null;
-  }) {
-    const event = {
-      id: randomUUID(),
-      spaceId: abortInput.spaceId,
-      sessionId: abortInput.sessionId,
-      turnId: abortInput.turnId,
-      reason: abortInput.reason,
-      continuedByTurnId: abortInput.continuedByTurnId,
-      actorUserId: abortInput.actorUserId ?? null,
-      timestamp: Date.now(),
-    };
-    await input.redis.set(getAgentTurnAbortKey(abortInput.turnId), JSON.stringify(event), "EX", 60 * 60);
-    await input.redis.publish(AGENT_TURN_ABORT_CHANNEL, JSON.stringify(event));
-  }
-
   async function enqueueSpacePrompt(promptInput: {
     spaceId: string;
     sessionId: string;
@@ -255,30 +238,34 @@ export function createSessionServices(input: {
   }) {
     const actorUserId = typeof promptInput.meta.userId === "string" && promptInput.meta.userId.trim() ? promptInput.meta.userId.trim() : null;
     const dispatchIntent = promptInput.meta.dispatchIntent === "steer" ? "steer" : "followup";
-    const [activeTurn] = await input.db.select({ id: sessionTurns.id })
+    const [activeTurn] = await input.db.select({ id: sessionTurns.id, status: sessionTurns.status })
       .from(sessionTurns)
       .where(and(eq(sessionTurns.sessionId, promptInput.sessionId), inArray(sessionTurns.status, ["running", "abort_requested"])))
       .orderBy(desc(sessionTurns.sequence))
       .limit(1);
 
-    if (dispatchIntent === "followup" && activeTurn && activeTurn.id !== promptInput.turnId) {
-      return;
-    }
+    const activeTarget = activeTurn && activeTurn.id !== promptInput.turnId
+      ? {
+          id: activeTurn.id,
+          status: activeTurn.status === "running" ? "running" as const : "abort_requested" as const,
+        }
+      : null;
+    const steeringDecision = decideSessionPromptSteering({
+      requestedIntent: dispatchIntent,
+      submittedTurnId: promptInput.turnId,
+      activeTurn: activeTarget,
+    });
 
-    if (dispatchIntent === "steer" && activeTurn && activeTurn.id !== promptInput.turnId) {
+    if (steeringDecision) {
       await input.db.update(sessionTurns).set({
-        status: "abort_requested",
-        meta: sql`coalesce(${sessionTurns.meta}, '{}'::jsonb) || ${JSON.stringify({ abortRequestedAt: new Date().toISOString(), continuedByTurnId: promptInput.turnId })}::jsonb`,
+        intent: "steer",
+        meta: sql`coalesce(${sessionTurns.meta}, '{}'::jsonb) || ${JSON.stringify(buildAgentTurnSteerMeta(steeringDecision))}::jsonb`,
         updatedAt: new Date(),
-      }).where(and(eq(sessionTurns.id, activeTurn.id), eq(sessionTurns.sessionId, promptInput.sessionId), inArray(sessionTurns.status, ["running", "abort_requested"])));
-      await requestAgentTurnAbort({
-        spaceId: promptInput.spaceId,
-        sessionId: promptInput.sessionId,
-        turnId: activeTurn.id,
-        reason: "interrupt",
-        continuedByTurnId: promptInput.turnId,
-        actorUserId,
-      }).catch((error) => logger.warn(`[AgentTurn] failed to publish abort for turn=${activeTurn.id}:`, error));
+      }).where(and(
+        eq(sessionTurns.id, promptInput.turnId),
+        eq(sessionTurns.sessionId, promptInput.sessionId),
+        eq(sessionTurns.status, "queued"),
+      ));
     }
 
     const metaContext = promptInput.meta.context && typeof promptInput.meta.context === "object" && !Array.isArray(promptInput.meta.context)
@@ -296,6 +283,25 @@ export function createSessionServices(input: {
       requestId: requestId ?? null,
       trace: injectTrace(),
     });
+
+    if (steeringDecision?.mode === "checkpoint" && activeTarget) {
+      const event = buildAgentTurnSteerEvent({
+        id: randomUUID(),
+        spaceId: promptInput.spaceId,
+        sessionId: promptInput.sessionId,
+        activeTurnId: activeTarget.id,
+        queuedTurnId: promptInput.turnId,
+        actorUserId,
+      });
+      await input.redis.set(
+        getAgentTurnSteerKey(event.queuedTurnId),
+        JSON.stringify(event),
+        "EX",
+        AGENT_TURN_STEER_TTL_SECONDS,
+      ).then(() => input.redis.publish(AGENT_TURN_STEER_CHANNEL, JSON.stringify(event))).catch((error) => {
+        logger.warn(`[AgentTurn] failed to publish checkpoint steer queuedTurnId=${event.queuedTurnId}:`, error);
+      });
+    }
   }
 
   async function submitPrompt(

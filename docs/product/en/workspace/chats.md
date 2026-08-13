@@ -24,7 +24,7 @@ Use multiple Chats when goals diverge. Keep one Chat focused when continuity mat
 
 ## Composer
 
-The composer is how you steer the Agent.
+The composer is how you steer the Agent. A message sent while the Agent is running is delivered to the active Turn at the next safe Pi checkpoint; it does not stop or restart that Turn. **Stop** remains the explicit way to abort active work.
 
 ### Send messages
 
@@ -71,7 +71,7 @@ Useful patterns:
 
 ### Follow-ups
 
-Some queued follow-ups can be steered or cancelled. Use that when the Agent is mid-work and the next instruction should change.
+Messages that cannot reach the active Turn safely remain queued for the next Turn. Queued follow-ups can still be cancelled.
 
 ## Forking
 

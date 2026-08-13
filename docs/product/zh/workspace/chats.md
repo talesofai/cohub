@@ -24,7 +24,7 @@ Chat 是 Space 内的对话上下文。在 CLI / API 中，它是 **session**。
 
 ## Composer
 
-Composer 是你驱动 Agent 的入口。
+Composer 是你驱动 Agent 的入口。Agent 运行期间发送的新消息会在下一个安全的 Pi checkpoint 进入当前 Turn，不会停止或重启该 Turn。只有显式点击 **Stop** 才会中止当前工作。
 
 ### 发送消息
 
@@ -71,7 +71,7 @@ Chats 是 turn-based：
 
 ### Follow-ups
 
-某些排队中的 follow-ups 可被 steer 或 cancel。当 Agent 正在执行、而下一条指令需要改变时使用。
+无法安全进入当前 Turn 的消息会保留在队列中，等下一个 Turn 执行。排队中的 follow-ups 仍可被 cancel。
 
 ## Forking
 

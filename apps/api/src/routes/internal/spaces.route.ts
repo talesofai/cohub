@@ -15,9 +15,15 @@ import {
   updateSpaceStatus,
   SandboxNotReadyError,
 } from "../../space-sessions.js";
-import { abortSessionTurn, failSessionTurn, interruptSessionTurn } from "../../session-turns.js";
+import {
+  CheckpointSteerCompletionError,
+  abortSessionTurn,
+  consumeCheckpointSteerTurn,
+  failSessionTurn,
+  interruptSessionTurn,
+} from "../../session-turns.js";
 import { hasPermission } from "../../permissions.js";
-import { dispatchTurnFinalized } from "../../session-output.js";
+import { dispatchTurnFinalized, dispatchTurnUpdated } from "../../session-output.js";
 import { submitSessionPrompt, type PromptAccessMode, type SubmitSessionPromptContext } from "../../session-prompts.js";
 import { ModelUnavailableError, parsePromptEnv, PromptEnvValidationError } from "@cohub/core/sessions";
 import { verifyWorkSessionToken } from "../../work-sessions.js";
@@ -299,6 +305,58 @@ router.post("/:spaceId/sessions/:sessionId/messages", async (c) => {
   });
 
   return c.json({ ok: true, message: messageNode });
+});
+
+// POST /internal/spaces/:spaceId/sessions/:sessionId/turns/:turnId/checkpoint-steer/complete
+router.post("/:spaceId/sessions/:sessionId/turns/:turnId/checkpoint-steer/complete", async (c) => {
+  const forbidden = ensureInternalRequest(c);
+  if (forbidden) return forbidden;
+
+  const spaceId = c.req.param("spaceId");
+  const sessionId = c.req.param("sessionId");
+  const turnId = c.req.param("turnId");
+  if (!requireValidId(spaceId) || !requireValidId(sessionId) || !requireValidId(turnId)) {
+    return c.json({ message: "turn not found" }, 404);
+  }
+
+  const session = await getSpaceSessionById(sessionId);
+  if (!session || session.spaceId !== spaceId) return c.json({ message: "session not found" }, 404);
+
+  const body = await c.req.json<{
+    targetTurnId?: string | null;
+    userMessageId?: string | null;
+  }>().catch(() => null);
+  const targetTurnId = body?.targetTurnId?.trim();
+  if (!targetTurnId || !requireValidId(targetTurnId)) {
+    return c.json({ message: "targetTurnId is required" }, 400);
+  }
+  const userMessageId = body?.userMessageId?.trim() || null;
+  if (userMessageId && !requireValidId(userMessageId)) {
+    return c.json({ message: "userMessageId is invalid" }, 400);
+  }
+
+  try {
+    const result = await consumeCheckpointSteerTurn({
+      spaceId,
+      sessionId,
+      turnId,
+      targetTurnId,
+      userMessageId,
+    });
+    if (result.consumed) {
+      await dispatchTurnUpdated({ spaceId, sessionId, turn: result.turn })
+        .catch((error) => logger.warn("[SessionTurn] failed to dispatch consumed turn update", error));
+      await dispatchTurnFinalized({ spaceId, sessionId, turn: result.turn })
+        .catch((error) => logger.warn("[SessionTurn] failed to dispatch consumed turn finalization", error));
+    }
+    return c.json({ ok: true, consumed: result.consumed, turn: result.turn });
+  } catch (error) {
+    if (error instanceof CheckpointSteerCompletionError) {
+      const status = error.code === "not_found" || error.code === "session_mismatch" ? 404 : 409;
+      return c.json({ message: error.message, code: error.code }, status);
+    }
+    throw error;
+  }
 });
 
 // POST /internal/spaces/:spaceId/sessions/:sessionId/turns/:turnId/interrupt

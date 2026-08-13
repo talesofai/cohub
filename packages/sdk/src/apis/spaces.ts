@@ -743,7 +743,14 @@ export class SessionClient {
   }
 
   steerTurn(turnId: string, customFetch?: Fetch) {
-    return this.transport.request<{ ok: true; turn: SessionTurnRecord; affectedTurns: SessionTurnRecord[] }>(
+    return this.transport.request<{
+      ok: true;
+      turn: SessionTurnRecord;
+      affectedTurns: SessionTurnRecord[];
+      steerDelivery:
+        | { mode: "checkpoint"; targetTurnId: string }
+        | { mode: "after_run"; targetTurnId: string | null; reason: string };
+    }>(
       `/api/spaces/${this.spaceId}/sessions/${this.id}/turns/${turnId}/steer`,
       { method: "POST", fetch: customFetch },
     );

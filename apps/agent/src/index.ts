@@ -17,6 +17,7 @@ import { processSandboxFsMutationJob, redactSandboxFsMutationJobPayload } from "
 import { processRunCommandJob } from "./run-command.js";
 import { subscribeAbortEvents, closeAbortSubscriber } from "./abort.js";
 import { abortActiveTurnExecutions } from "./active-turns.js";
+import { handleCheckpointSteerEvent } from "./checkpoint-steering.js";
 import { closeDb } from "./db.js";
 import { closeOwnershipRedis } from "./ownership.js";
 import { closeRedisConnections } from "./redis.js";
@@ -113,25 +114,30 @@ process.on("uncaughtException", (error) => {
   void shutdown("uncaughtException", { exitCode: 1 });
 });
 
-await subscribeAbortEvents((event) => {
-  const { controllersAborted, handlesAborted } = abortActiveTurnExecutions(event);
-  if (controllersAborted + handlesAborted === 0) {
-    logger.debug("[AgentAbort] no local active execution", {
+await subscribeAbortEvents({
+  onTurnAbort: (event) => {
+    const { controllersAborted, handlesAborted } = abortActiveTurnExecutions(event);
+    if (controllersAborted + handlesAborted === 0) {
+      logger.debug("[AgentAbort] no local active execution", {
+        spaceId: event.spaceId,
+        sessionId: event.sessionId,
+        turnId: event.turnId,
+        reason: event.reason,
+      });
+      return;
+    }
+    logger.info("[AgentAbort] aborted local active executions", {
       spaceId: event.spaceId,
       sessionId: event.sessionId,
       turnId: event.turnId,
       reason: event.reason,
+      controllersAborted,
+      handlesAborted,
     });
-    return;
-  }
-  logger.info("[AgentAbort] aborted local active executions", {
-    spaceId: event.spaceId,
-    sessionId: event.sessionId,
-    turnId: event.turnId,
-    reason: event.reason,
-    controllersAborted,
-    handlesAborted,
-  });
+  },
+  onTurnSteer: (event) => {
+    void handleCheckpointSteerEvent(event);
+  },
 });
 
 await subscribeSandboxLifecycleEvents((event) => {

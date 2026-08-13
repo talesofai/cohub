@@ -75,6 +75,30 @@ export function removePendingUserMessage(handle: SessionHandle, userMessageId: s
   handle.pendingUserMessages = handle.pendingUserMessages.filter((item) => item.userMessageId.trim() !== normalizedUserMessageId);
 }
 
+function isCheckpointSteerMeta(meta: Record<string, unknown> | null | undefined) {
+  return meta?.checkpointSteer === true;
+}
+
+function resolveExecutionTurnId(
+  meta: Record<string, unknown> | null | undefined,
+  fallback: string | null | undefined,
+) {
+  if (isCheckpointSteerMeta(meta) && typeof meta?.executionTurnId === "string" && meta.executionTurnId.trim()) {
+    return meta.executionTurnId.trim();
+  }
+  return fallback ?? null;
+}
+
+function resolveExecutionTurnSeq(
+  meta: Record<string, unknown> | null | undefined,
+  fallback: number | null | undefined,
+) {
+  if (isCheckpointSteerMeta(meta) && typeof meta?.executionTurnSeq === "number" && Number.isFinite(meta.executionTurnSeq)) {
+    return meta.executionTurnSeq;
+  }
+  return fallback ?? null;
+}
+
 type AssistantMessageContext = {
   turnId: string | null;
   turnSeq: number | null;
@@ -112,6 +136,7 @@ export type SessionHandle = {
   pendingExecutionAuths: Array<{ turnId?: string | null; actorUserId: string | null; executionToken: string | null; executionScopes?: Permission[] | null }>;
   steerDrainPromise: Promise<void> | null;
   pendingSteerCompletions: Array<{
+    userMessageId: string;
     ack: () => Promise<void>;
     reject: (reason: string) => Promise<void>;
     done: () => void;
@@ -788,8 +813,11 @@ export function subscribeSessionEvents(handle: SessionHandle) {
         const pending = handle.pendingUserMessages.shift();
         if (pending) {
           const nextTurnId = pending.turnId ?? (typeof pending.meta?.turnId === "string" ? pending.meta.turnId : null);
+          const checkpointSteer = isCheckpointSteerMeta(pending.meta);
+          const executionTurnId = resolveExecutionTurnId(pending.meta, nextTurnId ?? previousTurnId);
+          const executionTurnSeq = resolveExecutionTurnSeq(pending.meta, pending.turnSeq ?? handle.currentTurnSeq);
           const sameExecutionBatch = previousTurnId && nextTurnId && handle.currentExecutionTurnIds.has(previousTurnId) && handle.currentExecutionTurnIds.has(nextTurnId);
-          if (previousTurnId && nextTurnId && previousTurnId !== nextTurnId && !sameExecutionBatch) {
+          if (!checkpointSteer && previousTurnId && nextTurnId && previousTurnId !== nextTurnId && !sameExecutionBatch) {
             void interruptSessionTurn({
               spaceId: handle.spaceId,
               sessionId: handle.sessionId,
@@ -797,11 +825,13 @@ export function subscribeSessionEvents(handle: SessionHandle) {
               continuedByTurnId: nextTurnId,
             }).catch((error) => logger.warn("[SessionTurn] failed to interrupt previous turn", error));
           }
-          handle.currentTurnId = nextTurnId;
-          handle.currentTurnSeq = pending.turnSeq ?? handle.currentTurnSeq ?? null;
-          handle.currentTurnPatchSeq = 0;
-          handle.currentAssistantMessageOrdinal = null;
-          handle.currentStreamMessageId = null;
+          handle.currentTurnId = executionTurnId;
+          handle.currentTurnSeq = executionTurnSeq;
+          if (!checkpointSteer) {
+            handle.currentTurnPatchSeq = 0;
+            handle.currentAssistantMessageOrdinal = null;
+            handle.currentStreamMessageId = null;
+          }
           handle.currentUserMessageId = pending.userMessageId;
           handle.currentUserMessageContent = pending.content;
           handle.currentUserMessageMeta = pending.meta ?? null;
@@ -856,6 +886,7 @@ export function subscribeSessionEvents(handle: SessionHandle) {
           : null;
         handle.currentUserMessageContent = null;
         handle.currentUserMessageStartedAt = null;
+        const steerCompletion = handle.pendingSteerCompletions.find((item) => item.userMessageId === userMessageId);
 
         schedulePersistence(handle, `user:${userMessageId}`, async () => {
           const span = handle.turnTracer.startSpan("agent.persistence.user_message", {
@@ -868,7 +899,7 @@ export function subscribeSessionEvents(handle: SessionHandle) {
             },
           });
           try {
-            const turnId = handle.currentTurnId;
+            const turnId = typeof meta?.turnId === "string" ? meta.turnId : handle.currentTurnId;
             if (!turnId) throw new Error("User message turn id is required");
             await persistUserMessage({
               spaceId: handle.spaceId,
@@ -880,10 +911,13 @@ export function subscribeSessionEvents(handle: SessionHandle) {
               meta,
               startedAt,
             });
+            await steerCompletion?.ack();
           } catch (error) {
             if (error instanceof Error) span.recordException(error);
+            await steerCompletion?.reject(error instanceof Error ? error.message : String(error));
             throw error;
           } finally {
+            steerCompletion?.done();
             span.end();
           }
         });

@@ -14,7 +14,17 @@ import type {
 import type { ModelThinkingLevel } from "@cohub/protocol";
 import { db } from "./db/index.js";
 import { sessionMessages, sessionTurnSegments, sessionTurns, spaceSessions } from "@cohub/db";
-import { addSessionParticipantMeta, summarizeSessionTurnCompactions } from "@cohub/core/sessions";
+import { AGENT_TURN_STEER_META_KEY, addSessionParticipantMeta, summarizeSessionTurnCompactions } from "@cohub/core/sessions";
+import {
+  CheckpointSteerCompletionError,
+  isCheckpointSteerConsumedForTarget,
+  isCheckpointSteerTargetStatusConsumable,
+} from "./checkpoint-steering.js";
+export {
+  CheckpointSteerCompletionError,
+  isCheckpointSteerConsumedForTarget,
+  isCheckpointSteerTargetStatusConsumable,
+} from "./checkpoint-steering.js";
 import { sanitizePostgresJsonValue, sanitizeContentBlocksForPostgresJson } from "@cohub/core/content/sanitize";
 import { ensureSessionTurnSegments, findSegmentForTurn } from "./session-forks.js";
 import { fallbackPublicUserProfile, getProfilesByUuids } from "./user-profiles.js";
@@ -439,6 +449,127 @@ export const getSessionTurnById = async (sessionId: string, turnId: string) => {
   const [row] = await db.select().from(sessionTurns).where(and(inArray(sessionTurns.sessionId, sourceIds), eq(sessionTurns.id, turnId))).limit(1);
   if (!row || !findSegmentForTurn(segments, { sourceSessionId: row.sessionId, sequence: row.sequence })) return null;
   return withTimelineSource(toTurnRecord(row), sessionId);
+};
+
+export const consumeCheckpointSteerTurn = async (input: {
+  spaceId: string;
+  sessionId: string;
+  turnId: string;
+  targetTurnId: string;
+  userMessageId?: string | null;
+}): Promise<{ turn: SessionTurnRecord; consumed: boolean }> => {
+  if (input.turnId === input.targetTurnId) {
+    throw new CheckpointSteerCompletionError("checkpoint target must be a different turn", "target_mismatch");
+  }
+
+  const now = new Date();
+  const result = await db.transaction(async (tx) => {
+    const [session] = await tx.select({ spaceId: spaceSessions.spaceId })
+      .from(spaceSessions)
+      .where(eq(spaceSessions.id, input.sessionId))
+      .for("update")
+      .limit(1);
+    if (!session || session.spaceId !== input.spaceId) {
+      throw new CheckpointSteerCompletionError("session does not belong to space", "session_mismatch");
+    }
+
+    const [turn] = await tx.select()
+      .from(sessionTurns)
+      .where(and(eq(sessionTurns.id, input.turnId), eq(sessionTurns.sessionId, input.sessionId)))
+      .for("update")
+      .limit(1);
+    if (!turn) throw new CheckpointSteerCompletionError("checkpoint steer turn not found", "not_found");
+
+    const [target] = await tx.select({
+      id: sessionTurns.id,
+      sessionId: sessionTurns.sessionId,
+      status: sessionTurns.status,
+    }).from(sessionTurns)
+      .where(eq(sessionTurns.id, input.targetTurnId))
+      .for("update")
+      .limit(1);
+    if (!target || target.sessionId !== input.sessionId) {
+      throw new CheckpointSteerCompletionError("checkpoint target does not match session", "target_mismatch");
+    }
+
+    const turnMeta = normalizeRecord(turn.meta) ?? {};
+    const delivery = normalizeRecord(turnMeta[AGENT_TURN_STEER_META_KEY]);
+    const deliveryTargetId = typeof delivery?.targetTurnId === "string" ? delivery.targetTurnId : null;
+
+    if (turn.status === "merged") {
+      if (!isCheckpointSteerConsumedForTarget({
+        status: turn.status,
+        intent: turn.intent,
+        meta: turn.meta,
+        targetTurnId: target.id,
+      })) {
+        throw new CheckpointSteerCompletionError("checkpoint steer turn was consumed for another target", "target_mismatch");
+      }
+      return { row: turn, consumed: false };
+    }
+
+    if (turn.status !== "queued" || turn.intent !== "steer") {
+      throw new CheckpointSteerCompletionError("checkpoint steer turn is not queued", "invalid_state");
+    }
+    if (delivery?.status !== "pending" || delivery?.mode !== "checkpoint" || deliveryTargetId !== target.id) {
+      throw new CheckpointSteerCompletionError("checkpoint steer target does not match pending delivery", "target_mismatch");
+    }
+
+    const messageConditions = [
+      eq(sessionMessages.sessionId, input.sessionId),
+      eq(sessionMessages.role, "user"),
+      eq(sessionMessages.turnId, input.turnId),
+      ...(input.userMessageId ? [eq(sessionMessages.id, input.userMessageId)] : []),
+    ];
+    const [userMessage] = await tx.select({ id: sessionMessages.id })
+      .from(sessionMessages)
+      .where(and(...messageConditions))
+      .limit(1);
+    if (!userMessage) {
+      throw new CheckpointSteerCompletionError("checkpoint steer user message is not persisted", "racing_target");
+    }
+    if (!isCheckpointSteerTargetStatusConsumable(target.status)) {
+      throw new CheckpointSteerCompletionError("checkpoint target did not accept the steer", "racing_target");
+    }
+
+    const consumedAt = now.toISOString();
+    const consumedMeta = {
+      ...turnMeta,
+      [AGENT_TURN_STEER_META_KEY]: {
+        ...delivery,
+        status: "consumed",
+        mode: "checkpoint",
+        targetTurnId: target.id,
+        reason: "checkpoint_steer",
+        consumedAt,
+        completedAt: consumedAt,
+        userMessageId: input.userMessageId ?? userMessage.id,
+      },
+      agentTurnSteerConsumedAt: consumedAt,
+      agentTurnSteerReason: "checkpoint_steer",
+      agentTurnSteerMergedIntoTurnId: target.id,
+    };
+    const [updated] = await tx.update(sessionTurns).set({
+      status: "merged",
+      summary: {
+        finishReason: "merged",
+        reason: "checkpoint_steer",
+        mergedIntoTurnId: target.id,
+      },
+      meta: sanitizePostgresJsonValue(consumedMeta),
+      completedAt: now,
+      updatedAt: now,
+    }).where(and(
+      eq(sessionTurns.id, turn.id),
+      eq(sessionTurns.sessionId, input.sessionId),
+      eq(sessionTurns.status, "queued"),
+    )).returning();
+    if (!updated) {
+      throw new CheckpointSteerCompletionError("checkpoint steer turn changed while completing", "racing_target");
+    }
+    return { row: updated, consumed: true };
+  });
+  return { turn: toTurnRecord(result.row), consumed: result.consumed };
 };
 
 export const buildIntermediateObjectsForTurn = async (input: { spaceId: string; sessionId: string; turnId: string }) => {

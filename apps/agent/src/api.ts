@@ -106,3 +106,21 @@ export async function getSpace(input: { spaceId: string }) {
     } | null;
   } | null>;
 }
+
+export async function completeCheckpointSteer(input: {
+  spaceId: string;
+  sessionId: string;
+  steerTurnId: string;
+  targetTurnId: string;
+  userMessageId?: string | null;
+}) {
+  const url = `${INTERNAL_API_BASE_URL}/internal/spaces/${input.spaceId}/sessions/${input.sessionId}/turns/${input.steerTurnId}/checkpoint-steer/complete`;
+  return postJsonWithRetry({
+    url,
+    body: {
+      targetTurnId: input.targetTurnId,
+      userMessageId: input.userMessageId ?? null,
+    },
+    errorPrefix: "Complete checkpoint steer failed",
+  });
+}

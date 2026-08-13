@@ -1,4 +1,5 @@
 export * from "./compaction.js";
+export * from "./checkpoint-steering.js";
 export * from "./content.js";
 export * from "./image-to-text.js";
 export * from "./message-turn-id.js";

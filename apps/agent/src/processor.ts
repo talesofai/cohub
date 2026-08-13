@@ -30,6 +30,11 @@ import { acquireSessionLock } from "./session-lock.js";
 import { defaultJobRetention } from "@cohub/infra/bullmq";
 import { enqueueAgentTurnJob, type AgentTurnJobData } from "./queue.js";
 import { getAbortEvent } from "./abort.js";
+import {
+  catchUpCheckpointSteersForTarget,
+  reconcilePersistedCheckpointSteers,
+  registerCheckpointSteeringTarget,
+} from "./checkpoint-steering.js";
 import { setActiveAbortController, clearActiveAbortController, getActiveAbortEvent, setActiveAbortEvent } from "./active-turns.js";
 import { sendOutput } from "./redis.js";
 import { env } from "./env.js";
@@ -821,8 +826,10 @@ export async function processAgentTurnJob(job: Job<AgentTurnJobData>) {
     let terminalHandled = false;
     let caughtError: unknown = null;
     let drainAfterRelease: PostReleaseDrain = null;
+    let unregisterCheckpointSteeringTarget: (() => void) | null = null;
 
     try {
+      await reconcilePersistedCheckpointSteers({ spaceId: data.spaceId, sessionId: data.sessionId });
       const claim = await claimNextTurnBatch(data);
       if (claim.kind === "noop") {
         clearRetryState(data);
@@ -957,6 +964,13 @@ export async function processAgentTurnJob(job: Job<AgentTurnJobData>) {
         userMessageId: ownerUserMessageId,
         userMeta: ownerMeta,
         llmRound: 0,
+      });
+      unregisterCheckpointSteeringTarget = registerCheckpointSteeringTarget({
+        spaceId: data.spaceId,
+        sessionId: data.sessionId,
+        turnId: batch.ownerTurn.id,
+        handle: activeHandle,
+        abortSignal: abortController.signal,
       });
       activeHandle.currentExecutionTurnIds = new Set(batch.executionBatch.turnIds);
       await drainStreamStateBeforeReset(activeHandle);
@@ -1101,15 +1115,32 @@ export async function processAgentTurnJob(job: Job<AgentTurnJobData>) {
               },
             }, async () => {
               if (messages.length > 0) {
-                await Promise.race([activeHandle.session.promptMessages(messages), abortPromise]);
+                const prompt = activeHandle.session.promptMessages(messages);
+                const catchUp = catchUpCheckpointSteersForTarget({
+                  spaceId: data.spaceId,
+                  sessionId: data.sessionId,
+                  targetTurnId: batch.ownerTurn.id,
+                }).catch((error) => {
+                  logger.warn(`[AgentSteer] checkpoint catch-up failed sessionId=${data.sessionId} turnId=${batch.ownerTurn.id}`, error);
+                  return 0;
+                });
+                await Promise.race([prompt, abortPromise]);
+                await catchUp;
               } else {
-                await Promise.race([
-                  (async () => {
-                    await activeHandle.session.agent.continue();
-                    await activeHandle.session.waitForIdle();
-                  })(),
-                  abortPromise,
-                ]);
+                const continuation = (async () => {
+                  await activeHandle.session.agent.continue();
+                  await activeHandle.session.waitForIdle();
+                })();
+                const catchUp = catchUpCheckpointSteersForTarget({
+                  spaceId: data.spaceId,
+                  sessionId: data.sessionId,
+                  targetTurnId: batch.ownerTurn.id,
+                }).catch((error) => {
+                  logger.warn(`[AgentSteer] checkpoint catch-up failed sessionId=${data.sessionId} turnId=${batch.ownerTurn.id}`, error);
+                  return 0;
+                });
+                await Promise.race([continuation, abortPromise]);
+                await catchUp;
               }
             });
           } catch (error) {
@@ -1182,6 +1213,8 @@ export async function processAgentTurnJob(job: Job<AgentTurnJobData>) {
       }
       throw error;
     } finally {
+      unregisterCheckpointSteeringTarget?.();
+      unregisterCheckpointSteeringTarget = null;
       if (activeTurn) clearActiveAbortController(activeTurn.id, activeTurn.controller);
       const ownerTurnId = claimedBatch?.ownerTurn.id ?? null;
       if (ownerTurnId && !terminalHandled) {
