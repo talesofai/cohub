@@ -1,5 +1,11 @@
 # @neta-art/cohub-cli
 
+## 3.9.3
+
+### Patch Changes
+
+- a44a111: Print file modification times as ISO timestamps in `spaces files ls` and `spaces checkpoints ls-tree`, instead of the raw epoch float the API returns (`1786553072104.8674`). Table columns accept an optional `format` mapper, so `--json` output keeps the machine-readable value.
+
 ## 3.9.2
 
 ### Patch Changes
