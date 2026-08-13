@@ -16,6 +16,7 @@ export {
 export {
   createToolFailure,
   isToolFailureDetails,
+  applyEditsToContent,
   createBashTool,
   createEditTool,
   createFindTool,

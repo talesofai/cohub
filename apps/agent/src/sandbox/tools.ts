@@ -10,6 +10,7 @@ import {
   createLsTool,
   createReadTool,
   createWriteTool,
+  applyEditsToContent,
   type BashOperations,
   type BashExecutionResult,
   type EditOperations,
@@ -433,6 +434,25 @@ function createRemoteEditOperations(): EditOperations {
       await readOps.access(absolutePath);
     },
     writeFile: writeOps.writeFile,
+    // fs.edit runs the read-apply-write atomically inside the sandbox's
+    // per-path lock, so edits always apply to the latest content. Infra
+    // retries are disabled: an edit that succeeded but lost its response must
+    // not be replayed (the oldText would no longer match).
+    async applyEdits(absolutePath, edits) {
+      const path = mapLocalAbsolutePathToSandboxPath(absolutePath);
+      const connection = await getCurrentConnection();
+      if (connection.capabilities?.fsEdit !== true) {
+        // Older sandboxes (e.g. a pinned local sandboxd) do not support
+        // fs.edit: fall back to the plain read-modify-write cycle, matching
+        // the pre-fs.edit behavior.
+        let content = (await readOps.readFile(absolutePath)).toString("utf-8");
+        content = applyEditsToContent(content, edits, absolutePath);
+        await writeOps.writeFile(absolutePath, content);
+        return edits.length;
+      }
+      const result = await tracedRpc(connection, "fs.edit", { path, edits }, undefined, false);
+      return result.applied;
+    },
   };
 }
 

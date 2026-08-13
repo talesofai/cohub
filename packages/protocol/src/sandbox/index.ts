@@ -16,6 +16,7 @@ export type SandboxStatus = (typeof SANDBOX_STATUSES)[number];
 export const RPC_METHODS = [
   "fs.read",
   "fs.write",
+  "fs.edit",
   "fs.mkdir",
   "fs.stat",
   "fs.ls",
@@ -75,6 +76,9 @@ export const RPC_ERROR_CODES = [
   "INVALID_PATH",
   "ACCESS_DENIED",
   "READ_ONLY_FILESYSTEM",
+  "CONFLICT",
+  "EDIT_NOT_FOUND",
+  "EDIT_NOT_UNIQUE",
   "TIMEOUT",
   "PROCESS_SPAWN_FAILED",
   "PROCESS_ABORT_FAILED",
@@ -111,6 +115,10 @@ export type SandboxCapabilities = {
   fsWrite: boolean;
   /** fs.write reports atomic create/modify disposition and created parent directories. */
   fsWriteDisposition?: boolean;
+  /** fs.write honors the expected version baseline (atomic check-and-write). */
+  fsWriteExpected?: boolean;
+  /** Supports the atomic fs.edit read-apply-write method. */
+  fsEdit?: boolean;
   fsMkdir?: boolean;
   fsStat: boolean;
   fsLs: boolean;
@@ -201,6 +209,12 @@ export type FsWriteParams = {
   encoding?: "utf-8" | "base64";
   /** Fail with ALREADY_EXISTS instead of overwriting when the path exists (O_EXCL). */
   exclusive?: boolean;
+  /**
+   * Optimistic concurrency baseline: reject with CONFLICT when the file no
+   * longer matches this version (size + mtimeMs). Checked atomically with the
+   * write inside the sandbox. Only honored for non-exclusive writes.
+   */
+  expected?: { size: number; mtimeMs: number };
 };
 
 export type FsWriteResult = {
@@ -211,6 +225,25 @@ export type FsWriteResult = {
   /** Workspace-relative parent directories created by this write, outermost first. */
   createdDirs?: string[];
   /** File modification time in epoch milliseconds after the write. */
+  mtimeMs?: number;
+};
+
+export type FsEdit = {
+  oldText: string;
+  newText: string;
+};
+
+export type FsEditParams = {
+  path: string;
+  cwd?: string;
+  edits: FsEdit[];
+};
+
+export type FsEditResult = {
+  path: string;
+  /** Number of edits applied. */
+  applied: number;
+  bytesWritten: number;
   mtimeMs?: number;
 };
 
@@ -375,6 +408,10 @@ export type RpcRequestMap = {
   "fs.write": {
     params: FsWriteParams;
     result: FsWriteResult;
+  };
+  "fs.edit": {
+    params: FsEditParams;
+    result: FsEditResult;
   };
   "fs.mkdir": {
     params: FsMkdirParams;

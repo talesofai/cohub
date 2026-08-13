@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto";
 import type { Job } from "bullmq";
-import { matchesSpaceFsVersion } from "@cohub/protocol/fs";
+import { matchesSpaceFsVersion, spaceFsVersionMatches } from "@cohub/protocol/fs";
 import type { RpcEventPayload, RpcMethod, RpcRequestMap } from "@cohub/protocol/sandbox";
 import { SandboxRpcError, type SandboxConnection } from "@cohub/sandbox-client";
 import { getAgentTracer, wrapToolCall } from "@cohub/infra/tracing/agent";
@@ -76,18 +76,28 @@ async function writeMutation(connection: SandboxConnection, mutation: Extract<Ag
     ? await statOrNull(connection, mutation.path)
     : null;
   if (mutation.expected) {
-    if (!current?.exists || current.isDirectory || !matchesSpaceFsVersion(current, mutation.expected)) {
+    if (!spaceFsVersionMatches(current, mutation.expected)) {
       return { ok: false, status: 409, code: "file_conflict", message: "File changed since it was opened." };
     }
   }
   const legacyCreatedDirs = supportsDisposition
     ? []
     : await collectMissingDirectories(connection, parentPath(mutation.path));
+  // Pass expected through to the sandbox: the version check and the write run
+  // atomically under the sandbox's per-path lock, closing the TOCTOU window
+  // between the stat above and the write. mtimeMs is truncated to whole
+  // milliseconds to match the Go RPC's int64 field (see matchesSpaceFsVersion).
+  // Only forwarded when the sandbox advertises fsWriteExpected: older sandboxes
+  // silently ignore unknown fields, which would downgrade a conditional write
+  // to an unconditional one.
   const result = await rpc(connection, "fs.write", {
     path: mutation.path,
     content: mutation.content,
     ...(mutation.encoding ? { encoding: mutation.encoding } : {}),
     ...(mutation.exclusive ? { exclusive: true } : {}),
+    ...(mutation.expected && connection.capabilities?.fsWriteExpected === true
+      ? { expected: { size: mutation.expected.size, mtimeMs: Math.trunc(mutation.expected.mtimeMs) } }
+      : {}),
   });
   return {
     ok: true,
@@ -203,6 +213,8 @@ function mapMutationRpcError(error: unknown): AgentSandboxFsMutationJobResult | 
         return { ok: false, status: 400, code: "path_invalid", message: "Invalid path." };
       case "READ_ONLY_FILESYSTEM":
         return { ok: false, status: 403, code: "read_only", message: "This path is read-only." };
+      case "CONFLICT":
+        return { ok: false, status: 409, code: "file_conflict", message: "File changed since it was opened." };
       case "IO_ERROR":
         return null;
       default:

@@ -129,6 +129,8 @@ func (d *Dispatcher) Handle(request protocol.RPCRequest, ownerIdentity string) (
 		return accepted, d.complete(request, accepted.OpID, d.handleFSRead(request))
 	case "fs.write":
 		return accepted, d.complete(request, accepted.OpID, d.handleFSWrite(request))
+	case "fs.edit":
+		return accepted, d.complete(request, accepted.OpID, d.handleFSEdit(request))
 	case "fs.mkdir":
 		return accepted, d.complete(request, accepted.OpID, d.handleFSMkdir(request))
 	case "fs.stat":
@@ -159,11 +161,39 @@ type fsReadParams struct {
 }
 
 type fsWriteParams struct {
-	Path      string `json:"path"`
-	CWD       string `json:"cwd"`
-	Content   string `json:"content"`
-	Encoding  string `json:"encoding"`
-	Exclusive bool   `json:"exclusive"`
+	Path      string          `json:"path"`
+	CWD       string          `json:"cwd"`
+	Content   string          `json:"content"`
+	Encoding  string          `json:"encoding"`
+	Exclusive bool            `json:"exclusive"`
+	Expected  *fsWriteVersion `json:"expected"`
+}
+
+// fsWriteVersion is the caller's baseline for optimistic concurrency: reject
+// the write when the file no longer matches this version (size + mtimeMs).
+type fsWriteVersion struct {
+	Size    int64 `json:"size"`
+	MtimeMs int64 `json:"mtimeMs"`
+}
+
+type fsEditItem struct {
+	OldText string `json:"oldText"`
+	NewText string `json:"newText"`
+}
+
+type fsEditParams struct {
+	Path  string       `json:"path"`
+	CWD   string       `json:"cwd"`
+	Edits []fsEditItem `json:"edits"`
+}
+
+// editMatchError reports an oldText that matches 0 or multiple regions.
+type editMatchError struct {
+	matches int
+}
+
+func (e *editMatchError) Error() string {
+	return fmt.Sprintf("oldText matched %d regions", e.matches)
 }
 
 type fsMkdirParams struct {
@@ -345,22 +375,57 @@ func (d *Dispatcher) handleFSWrite(request protocol.RPCRequest) interface{} {
 		}
 		data = decoded
 	}
-	createdDirs, err := ensureParentDirs(d.cfg.WorkspaceDir, resolved.path)
-	if err != nil {
-		return d.failedFSMutation(request, err)
-	}
-	created := true
-	if params.Exclusive {
-		// Atomic create: O_EXCL fails if the path already exists, so concurrent
-		// exclusive creates cannot clobber each other.
-		if err := osWriteFileExclusive(resolved.path, data); err != nil {
-			if os.IsExist(err) {
-				return d.failed(request, "", "ALREADY_EXISTS", fmt.Sprintf("path already exists: %s", resolved.path))
+
+	// The version check and the write must be atomic with respect to other
+	// writes to the same path, otherwise a concurrent mutation can land between
+	// the stat and the write (TOCTOU) and the check is meaningless. The
+	// response version (mtimeMs) is also captured under the lock so it cannot
+	// belong to a subsequent writer.
+	var created bool
+	var createdDirs []string
+	var mtimeMs int64
+	lockErr := withPathLock(resolved.path, func() error {
+		if params.Expected != nil && !params.Exclusive {
+			info, err := os.Stat(resolved.path)
+			if err != nil {
+				if os.IsNotExist(err) {
+					return errPathConflict
+				}
+				return err
 			}
-			return d.failedFSMutation(request, err)
+			if info.Size() != params.Expected.Size || info.ModTime().UnixMilli() != params.Expected.MtimeMs {
+				return errPathConflict
+			}
 		}
-	} else if created, err = writeFileWithDisposition(resolved.path, data); err != nil {
-		return d.failedFSMutation(request, err)
+		var err error
+		createdDirs, err = ensureParentDirs(d.cfg.WorkspaceDir, resolved.path)
+		if err != nil {
+			return err
+		}
+		if params.Exclusive {
+			// Atomic create: O_EXCL fails if the path already exists, so concurrent
+			// exclusive creates cannot clobber each other.
+			if err := osWriteFileExclusive(resolved.path, data); err != nil {
+				return err
+			}
+			created = true
+		} else {
+			created, err = writeFileWithDisposition(resolved.path, data)
+			if err != nil {
+				return err
+			}
+		}
+		mtimeMs = statMtimeMs(resolved.path)
+		return nil
+	})
+	if lockErr != nil {
+		if errors.Is(lockErr, errPathConflict) {
+			return d.failed(request, "", "CONFLICT", "file changed since it was opened")
+		}
+		if errors.Is(lockErr, os.ErrExist) {
+			return d.failed(request, "", "ALREADY_EXISTS", fmt.Sprintf("path already exists: %s", resolved.path))
+		}
+		return d.failedFSMutation(request, lockErr)
 	}
 
 	result := map[string]interface{}{
@@ -369,8 +434,84 @@ func (d *Dispatcher) handleFSWrite(request protocol.RPCRequest) interface{} {
 		"created":      created,
 		"createdDirs":  createdDirs,
 	}
-	if info, statErr := os.Stat(resolved.path); statErr == nil {
-		result["mtimeMs"] = info.ModTime().UnixMilli()
+	if mtimeMs > 0 {
+		result["mtimeMs"] = mtimeMs
+	}
+	return result
+}
+
+func (d *Dispatcher) handleFSEdit(request protocol.RPCRequest) interface{} {
+	var params fsEditParams
+	if err := json.Unmarshal(request.Params, &params); err != nil {
+		return d.failed(request, "", "BAD_REQUEST", err.Error())
+	}
+	if len(params.Edits) == 0 {
+		return d.failed(request, "", "BAD_REQUEST", "edits must contain at least one replacement")
+	}
+
+	resolved, errResponse, ok := d.resolvePathForRequest(request, params.Path, params.CWD)
+	if !ok {
+		return errResponse
+	}
+	if isReadOnlyPath(d.cfg, resolved.path) {
+		return d.failed(request, "", "READ_ONLY_FILESYSTEM", fmt.Sprintf("path is read-only: %s", resolved.path))
+	}
+	if info, err := os.Stat(resolved.path); err == nil && info.IsDir() {
+		return d.failed(request, "", "NOT_DIRECTORY", fmt.Sprintf("cannot edit a directory: %s", resolved.path))
+	}
+
+	// Read, edit application, and write run atomically under the per-path
+	// lock: edits are always applied to the latest content, so concurrent
+	// edits to disjoint regions compose instead of losing updates. Each
+	// oldText is matched incrementally against the result of the previous
+	// edit, mirroring the tool-layer semantics it replaces. The response
+	// version (bytesWritten/mtimeMs) is captured under the lock so it cannot
+	// belong to a subsequent writer.
+	var applied int
+	var bytesWritten int64
+	var mtimeMs int64
+	lockErr := withPathLock(resolved.path, func() error {
+		content, err := os.ReadFile(resolved.path)
+		if err != nil {
+			return err
+		}
+		text := string(content)
+		for _, edit := range params.Edits {
+			matches := strings.Count(text, edit.OldText)
+			if matches != 1 {
+				return &editMatchError{matches: matches}
+			}
+			text = strings.Replace(text, edit.OldText, edit.NewText, 1)
+		}
+		applied = len(params.Edits)
+		if err := os.WriteFile(resolved.path, []byte(text), 0o644); err != nil {
+			return err
+		}
+		bytesWritten = int64(len(text))
+		mtimeMs = statMtimeMs(resolved.path)
+		return nil
+	})
+	if lockErr != nil {
+		var matchErr *editMatchError
+		if errors.As(lockErr, &matchErr) {
+			if matchErr.matches == 0 {
+				return d.failed(request, "", "EDIT_NOT_FOUND", fmt.Sprintf("oldText must match exactly one region in %s, found 0", resolved.path))
+			}
+			return d.failed(request, "", "EDIT_NOT_UNIQUE", fmt.Sprintf("oldText must match exactly one region in %s, found %d", resolved.path, matchErr.matches))
+		}
+		if errors.Is(lockErr, os.ErrNotExist) {
+			return d.failed(request, "", "NOT_FOUND", fmt.Sprintf("file not found: %s", resolved.path))
+		}
+		return d.failedFSMutation(request, lockErr)
+	}
+
+	result := map[string]interface{}{
+		"path":         resolved.path,
+		"applied":      applied,
+		"bytesWritten": bytesWritten,
+	}
+	if mtimeMs > 0 {
+		result["mtimeMs"] = mtimeMs
 	}
 	return result
 }

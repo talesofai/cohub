@@ -2,10 +2,13 @@ package rpc
 
 import (
 	"encoding/json"
+	"fmt"
 	"log/slog"
 	"os"
 	"path/filepath"
 	"reflect"
+	"strings"
+	"sync"
 	"testing"
 
 	"github.com/cohub/apps/sandbox/env"
@@ -165,6 +168,180 @@ func writeRequest(t *testing.T, params fsWriteParams) protocol.RPCRequest {
 	}
 }
 
+func editRequest(t *testing.T, params fsEditParams) protocol.RPCRequest {
+	t.Helper()
+	raw, err := json.Marshal(params)
+	if err != nil {
+		t.Fatalf("marshal edit params: %v", err)
+	}
+	return protocol.RPCRequest{
+		RequestScopedMessage: protocol.RequestScopedMessage{RequestID: "req-e"},
+		Method:               "fs.edit",
+		Params:               raw,
+	}
+}
+
+func TestFSEditApplies(t *testing.T) {
+	root := setupTree(t)
+	d := newTreeDispatcher(t, root)
+	if err := os.WriteFile(filepath.Join(root, "a.txt"), []byte("alpha\nbeta\ngamma\n"), 0o644); err != nil {
+		t.Fatalf("seed file: %v", err)
+	}
+
+	res := d.handleFSEdit(editRequest(t, fsEditParams{
+		Path:  "a.txt",
+		Edits: []fsEditItem{{OldText: "beta", NewText: "BETA"}},
+	}))
+	result, ok := res.(map[string]interface{})
+	if !ok {
+		t.Fatalf("expected edit to succeed, got %T (%v)", res, res)
+	}
+	if applied, _ := result["applied"].(int); applied != 1 {
+		t.Fatalf("applied = %v, want 1", result["applied"])
+	}
+	content, err := os.ReadFile(filepath.Join(root, "a.txt"))
+	if err != nil {
+		t.Fatalf("read file: %v", err)
+	}
+	if string(content) != "alpha\nBETA\ngamma\n" {
+		t.Fatalf("content = %q", string(content))
+	}
+}
+
+func TestFSEditMultipleEditsApplyIncrementally(t *testing.T) {
+	root := setupTree(t)
+	d := newTreeDispatcher(t, root)
+	if err := os.WriteFile(filepath.Join(root, "a.txt"), []byte("alpha\nbeta\n"), 0o644); err != nil {
+		t.Fatalf("seed file: %v", err)
+	}
+
+	res := d.handleFSEdit(editRequest(t, fsEditParams{
+		Path: "a.txt",
+		Edits: []fsEditItem{
+			{OldText: "alpha", NewText: "ALPHA"},
+			{OldText: "beta", NewText: "BETA"},
+		},
+	}))
+	if _, ok := res.(map[string]interface{}); !ok {
+		t.Fatalf("expected edit to succeed, got %T (%v)", res, res)
+	}
+	content, err := os.ReadFile(filepath.Join(root, "a.txt"))
+	if err != nil {
+		t.Fatalf("read file: %v", err)
+	}
+	if string(content) != "ALPHA\nBETA\n" {
+		t.Fatalf("content = %q", string(content))
+	}
+}
+
+func TestFSEditMatchErrors(t *testing.T) {
+	root := setupTree(t)
+	d := newTreeDispatcher(t, root)
+	if err := os.WriteFile(filepath.Join(root, "a.txt"), []byte("alpha\nalpha\nbeta\n"), 0o644); err != nil {
+		t.Fatalf("seed file: %v", err)
+	}
+
+	notFound := d.handleFSEdit(editRequest(t, fsEditParams{Path: "a.txt", Edits: []fsEditItem{{OldText: "missing", NewText: "x"}}}))
+	failed, ok := notFound.(protocol.RPCFailed)
+	if !ok {
+		t.Fatalf("expected EDIT_NOT_FOUND, got %T (%v)", notFound, notFound)
+	}
+	if failed.Error.Code != "EDIT_NOT_FOUND" {
+		t.Fatalf("error code = %q, want EDIT_NOT_FOUND", failed.Error.Code)
+	}
+
+	notUnique := d.handleFSEdit(editRequest(t, fsEditParams{Path: "a.txt", Edits: []fsEditItem{{OldText: "alpha", NewText: "x"}}}))
+	failed, ok = notUnique.(protocol.RPCFailed)
+	if !ok {
+		t.Fatalf("expected EDIT_NOT_UNIQUE, got %T (%v)", notUnique, notUnique)
+	}
+	if failed.Error.Code != "EDIT_NOT_UNIQUE" {
+		t.Fatalf("error code = %q, want EDIT_NOT_UNIQUE", failed.Error.Code)
+	}
+
+	// A failed edit must not modify the file.
+	content, err := os.ReadFile(filepath.Join(root, "a.txt"))
+	if err != nil {
+		t.Fatalf("read file: %v", err)
+	}
+	if string(content) != "alpha\nalpha\nbeta\n" {
+		t.Fatalf("failed edit modified content: %q", string(content))
+	}
+}
+
+func TestFSEditMissingFile(t *testing.T) {
+	root := setupTree(t)
+	d := newTreeDispatcher(t, root)
+
+	res := d.handleFSEdit(editRequest(t, fsEditParams{Path: "missing.txt", Edits: []fsEditItem{{OldText: "x", NewText: "y"}}}))
+	failed, ok := res.(protocol.RPCFailed)
+	if !ok {
+		t.Fatalf("expected failure for missing file, got %T (%v)", res, res)
+	}
+	if failed.Error.Code != "NOT_FOUND" {
+		t.Fatalf("error code = %q, want NOT_FOUND", failed.Error.Code)
+	}
+}
+
+func TestFSEditConcurrentDisjointRegions(t *testing.T) {
+	root := setupTree(t)
+	d := newTreeDispatcher(t, root)
+	// A larger file widens the read-modify-write window so the race is
+	// observable without the per-path lock.
+	var seed strings.Builder
+	for i := 0; i < 20000; i++ {
+		fmt.Fprintf(&seed, "line-%05d\n", i)
+	}
+	if err := os.WriteFile(filepath.Join(root, "a.txt"), []byte(seed.String()), 0o644); err != nil {
+		t.Fatalf("seed file: %v", err)
+	}
+
+	// Concurrent edits to disjoint regions must all land: each edit reads the
+	// latest content inside the per-path lock, so no edit is based on stale
+	// content. Without the lock, the last writer would silently drop the
+	// earlier edits.
+	const rounds = 16
+	start := make(chan struct{})
+	var wg sync.WaitGroup
+	for i := 0; i < rounds; i++ {
+		wg.Add(1)
+		go func(i int) {
+			defer wg.Done()
+			<-start
+			var item fsEditItem
+			if i%2 == 0 {
+				item = fsEditItem{OldText: "line-00001", NewText: "ALPHA"}
+			} else {
+				item = fsEditItem{OldText: "line-19999", NewText: "GAMMA"}
+			}
+			raw, err := json.Marshal(fsEditParams{Path: "a.txt", Edits: []fsEditItem{item}})
+			if err != nil {
+				return
+			}
+			req := protocol.RPCRequest{
+				RequestScopedMessage: protocol.RequestScopedMessage{RequestID: fmt.Sprintf("req-%d", i)},
+				Method:               "fs.edit",
+				Params:               raw,
+			}
+			d.handleFSEdit(req)
+		}(i)
+	}
+	close(start)
+	wg.Wait()
+
+	content, err := os.ReadFile(filepath.Join(root, "a.txt"))
+	if err != nil {
+		t.Fatalf("read file: %v", err)
+	}
+	text := string(content)
+	if strings.Contains(text, "line-00001") || strings.Contains(text, "line-19999") {
+		t.Fatalf("concurrent edits lost updates (line-00001 or line-19999 still present)")
+	}
+	if !strings.Contains(text, "ALPHA") || !strings.Contains(text, "GAMMA") {
+		t.Fatalf("concurrent edits did not both land: %q", text[:80])
+	}
+}
+
 func mkdirRequest(t *testing.T, params fsMkdirParams) protocol.RPCRequest {
 	t.Helper()
 	raw, err := json.Marshal(params)
@@ -265,6 +442,121 @@ func TestFSWriteExclusive(t *testing.T) {
 	}
 }
 
+func TestResolvePathLockKeySymlinkAliases(t *testing.T) {
+	root := setupTree(t)
+	target := filepath.Join(root, "target.txt")
+	if err := os.WriteFile(target, []byte("x"), 0o644); err != nil {
+		t.Fatalf("seed target: %v", err)
+	}
+	for _, alias := range []string{"alias-a.txt", "alias-b.txt"} {
+		if err := os.Symlink(target, filepath.Join(root, alias)); err != nil {
+			t.Fatalf("create %s: %v", alias, err)
+		}
+	}
+
+	// Distinct symlink aliases must resolve to the same lock key so writes
+	// through either alias serialize against the same target file.
+	keyA := resolvePathLockKey(filepath.Join(root, "alias-a.txt"))
+	keyB := resolvePathLockKey(filepath.Join(root, "alias-b.txt"))
+	if keyA != keyB {
+		t.Fatalf("alias lock keys differ: %q vs %q", keyA, keyB)
+	}
+	if keyA != target {
+		t.Fatalf("alias lock key = %q, want target %q", keyA, target)
+	}
+
+	// A path that does not exist yet falls back to the lexical path: there is
+	// no symlink to resolve when the file is about to be created.
+	missing := filepath.Join(root, "missing.txt")
+	if key := resolvePathLockKey(missing); key != missing {
+		t.Fatalf("missing path lock key = %q, want lexical %q", key, missing)
+	}
+}
+
+func TestResolvePathLockKeySymlinkedParentMissingLeaf(t *testing.T) {
+	root := setupTree(t)
+	realDir := filepath.Join(root, "real")
+	if err := os.Mkdir(realDir, 0o755); err != nil {
+		t.Fatalf("mkdir real: %v", err)
+	}
+	if err := os.Symlink(realDir, filepath.Join(root, "alias")); err != nil {
+		t.Fatalf("create alias dir: %v", err)
+	}
+
+	// The leaf file does not exist yet, so EvalSymlinks on the full path
+	// fails; the longest existing ancestor (the symlinked parent) must still
+	// be resolved so both aliases share one lock for the about-to-be-created
+	// file.
+	keyReal := resolvePathLockKey(filepath.Join(realDir, "new.txt"))
+	keyAlias := resolvePathLockKey(filepath.Join(root, "alias", "new.txt"))
+	if keyReal != keyAlias {
+		t.Fatalf("symlinked-parent lock keys differ: %q vs %q", keyReal, keyAlias)
+	}
+	if keyReal != filepath.Join(realDir, "new.txt") {
+		t.Fatalf("lock key = %q, want %q", keyReal, filepath.Join(realDir, "new.txt"))
+	}
+}
+
+func TestFSWriteConcurrentSymlinkAliases(t *testing.T) {
+	root := setupTree(t)
+	d := newTreeDispatcher(t, root)
+	target := filepath.Join(root, "target.txt")
+	if err := os.WriteFile(target, []byte(""), 0o644); err != nil {
+		t.Fatalf("seed target: %v", err)
+	}
+	if err := os.Symlink(target, filepath.Join(root, "alias-a.txt")); err != nil {
+		t.Fatalf("create alias-a: %v", err)
+	}
+	if err := os.Symlink(target, filepath.Join(root, "alias-b.txt")); err != nil {
+		t.Fatalf("create alias-b: %v", err)
+	}
+
+	// Writes through distinct symlink aliases target the same file and must
+	// share one per-path lock, otherwise the shorter write can leave the
+	// longer content's tail behind (torn write).
+	contents := []string{
+		strings.Repeat("a", 4096),
+		strings.Repeat("b", 2048),
+	}
+	paths := []string{"alias-a.txt", "alias-b.txt"}
+	const rounds = 12
+	var wg sync.WaitGroup
+	for i := 0; i < rounds; i++ {
+		wg.Add(1)
+		go func(i int) {
+			defer wg.Done()
+			raw, err := json.Marshal(fsWriteParams{Path: paths[i%2], Content: contents[i%2]})
+			if err != nil {
+				return
+			}
+			req := protocol.RPCRequest{
+				RequestScopedMessage: protocol.RequestScopedMessage{RequestID: fmt.Sprintf("req-%d", i)},
+				Method:               "fs.write",
+				Params:               raw,
+			}
+			d.handleFSWrite(req)
+		}(i)
+	}
+	wg.Wait()
+
+	got, err := os.ReadFile(target)
+	if err != nil {
+		t.Fatalf("read target: %v", err)
+	}
+	wantLen := 4096
+	if got[0] == 'b' {
+		wantLen = 2048
+	}
+	if len(got) != wantLen {
+		t.Fatalf("torn write via symlink aliases: length = %d, want %d", len(got), wantLen)
+	}
+	for index, b := range got {
+		if b != got[0] {
+			t.Fatalf("torn write via symlink aliases: mixed content at byte %d", index)
+		}
+	}
+}
+
 func TestFSTreeRootUnreadable(t *testing.T) {
 	root := setupTree(t)
 	d := newTreeDispatcher(t, root)
@@ -272,5 +564,145 @@ func TestFSTreeRootUnreadable(t *testing.T) {
 	res := d.handleFSTree(treeRequest(t, fsTreeParams{Path: "does-not-exist", Depth: 1}))
 	if _, ok := res.(protocol.RPCFailed); !ok {
 		t.Fatalf("expected failure for missing root, got %T", res)
+	}
+}
+
+func writeResultVersion(t *testing.T, res interface{}) (size int64, mtimeMs int64) {
+	t.Helper()
+	result, ok := res.(map[string]interface{})
+	if !ok {
+		t.Fatalf("expected write to succeed, got %T (%v)", res, res)
+	}
+	written, ok := result["bytesWritten"].(int)
+	if !ok {
+		t.Fatalf("write result missing bytesWritten: %v", result)
+	}
+	size = int64(written)
+	mtimeMs, ok = result["mtimeMs"].(int64)
+	if !ok {
+		t.Fatalf("write result missing mtimeMs: %v", result)
+	}
+	return size, mtimeMs
+}
+
+func TestFSWriteExpectedVersionMatches(t *testing.T) {
+	root := setupTree(t)
+	d := newTreeDispatcher(t, root)
+
+	size, mtimeMs := writeResultVersion(t, d.handleFSWrite(writeRequest(t, fsWriteParams{Path: "v.txt", Content: "one"})))
+
+	res := d.handleFSWrite(writeRequest(t, fsWriteParams{
+		Path:     "v.txt",
+		Content:  "two",
+		Expected: &fsWriteVersion{Size: size, MtimeMs: mtimeMs},
+	}))
+	if _, ok := res.(map[string]interface{}); !ok {
+		t.Fatalf("expected versioned write to succeed, got %T (%v)", res, res)
+	}
+	content, err := os.ReadFile(filepath.Join(root, "v.txt"))
+	if err != nil {
+		t.Fatalf("read file: %v", err)
+	}
+	if string(content) != "two" {
+		t.Fatalf("content = %q, want %q", string(content), "two")
+	}
+}
+
+func TestFSWriteExpectedVersionConflict(t *testing.T) {
+	root := setupTree(t)
+	d := newTreeDispatcher(t, root)
+
+	size, mtimeMs := writeResultVersion(t, d.handleFSWrite(writeRequest(t, fsWriteParams{Path: "v.txt", Content: "one"})))
+	// Another writer modifies the file after the baseline was captured.
+	d.handleFSWrite(writeRequest(t, fsWriteParams{Path: "v.txt", Content: "changed by someone else"}))
+
+	res := d.handleFSWrite(writeRequest(t, fsWriteParams{
+		Path:     "v.txt",
+		Content:  "mine",
+		Expected: &fsWriteVersion{Size: size, MtimeMs: mtimeMs},
+	}))
+	failed, ok := res.(protocol.RPCFailed)
+	if !ok {
+		t.Fatalf("expected version conflict, got %T (%v)", res, res)
+	}
+	if failed.Error.Code != "CONFLICT" {
+		t.Fatalf("error code = %q, want CONFLICT", failed.Error.Code)
+	}
+	content, err := os.ReadFile(filepath.Join(root, "v.txt"))
+	if err != nil {
+		t.Fatalf("read file: %v", err)
+	}
+	if string(content) != "changed by someone else" {
+		t.Fatalf("conflicting write clobbered content: got %q", string(content))
+	}
+}
+
+func TestFSWriteExpectedVersionMissingFile(t *testing.T) {
+	root := setupTree(t)
+	d := newTreeDispatcher(t, root)
+
+	res := d.handleFSWrite(writeRequest(t, fsWriteParams{
+		Path:     "missing.txt",
+		Content:  "x",
+		Expected: &fsWriteVersion{Size: 0, MtimeMs: 123},
+	}))
+	failed, ok := res.(protocol.RPCFailed)
+	if !ok {
+		t.Fatalf("expected version conflict for missing file, got %T (%v)", res, res)
+	}
+	if failed.Error.Code != "CONFLICT" {
+		t.Fatalf("error code = %q, want CONFLICT", failed.Error.Code)
+	}
+}
+
+func TestFSWriteConcurrentSamePath(t *testing.T) {
+	root := setupTree(t)
+	d := newTreeDispatcher(t, root)
+	path := filepath.Join(root, "concurrent.txt")
+	if err := os.WriteFile(path, []byte(""), 0o644); err != nil {
+		t.Fatalf("seed file: %v", err)
+	}
+
+	// Unequal lengths are required to expose torn writes: a shorter write that
+	// lands after a longer one leaves the longer content's tail in the file.
+	contents := []string{
+		strings.Repeat("a", 4096),
+		strings.Repeat("b", 2048),
+	}
+	const rounds = 12
+	var wg sync.WaitGroup
+	for i := 0; i < rounds; i++ {
+		wg.Add(1)
+		go func(i int) {
+			defer wg.Done()
+			raw, err := json.Marshal(fsWriteParams{Path: "concurrent.txt", Content: contents[i%2]})
+			if err != nil {
+				return
+			}
+			req := protocol.RPCRequest{
+				RequestScopedMessage: protocol.RequestScopedMessage{RequestID: fmt.Sprintf("req-%d", i)},
+				Method:               "fs.write",
+				Params:               raw,
+			}
+			d.handleFSWrite(req)
+		}(i)
+	}
+	wg.Wait()
+
+	got, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read file: %v", err)
+	}
+	wantLen := 4096
+	if got[0] == 'b' {
+		wantLen = 2048
+	}
+	if len(got) != wantLen {
+		t.Fatalf("torn write: length = %d, want %d", len(got), wantLen)
+	}
+	for index, b := range got {
+		if b != got[0] {
+			t.Fatalf("torn write: mixed content at byte %d", index)
+		}
 	}
 }

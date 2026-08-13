@@ -45,6 +45,8 @@ type SandboxCapabilities struct {
 	FSRead             bool `json:"fsRead"`
 	FSWrite            bool `json:"fsWrite"`
 	FSWriteDisposition bool `json:"fsWriteDisposition,omitempty"`
+	FSWriteExpected    bool `json:"fsWriteExpected,omitempty"`
+	FSEdit             bool `json:"fsEdit,omitempty"`
 	FSMkdir            bool `json:"fsMkdir,omitempty"`
 	FSStat             bool `json:"fsStat"`
 	FSLs               bool `json:"fsLs"`

@@ -105,6 +105,21 @@ export function matchesSpaceFsVersion(
     && Math.trunc(actual.mtimeMs) === Math.trunc(expected.mtimeMs);
 }
 
+/**
+ * Full preflight check used before a conditional write: the file must exist,
+ * must not be a directory, and must match the caller's expected version.
+ * Shared by the API and agent mutation paths so the conflict decision never
+ * diverges.
+ */
+export function spaceFsVersionMatches(
+  current: { exists?: boolean; isDirectory?: boolean; size?: number; mtimeMs?: number } | null | undefined,
+  expected: { size: number; mtimeMs: number },
+) {
+  return current?.exists === true
+    && current.isDirectory !== true
+    && matchesSpaceFsVersion(current, expected);
+}
+
 export type SpaceFsMoveInput = {
   fromPath: string;
   toPath: string;

@@ -7,11 +7,85 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"syscall"
 	"time"
 
 	"github.com/cohub/apps/sandbox/env"
 )
+
+// errPathConflict reports that the target file no longer matches the caller's
+// expected version (size/mtimeMs). The write is rejected instead of silently
+// overwriting a concurrent mutation (optimistic concurrency).
+var errPathConflict = errors.New("file changed since it was opened")
+
+// refCountedMutex serializes filesystem mutations for one resolved path.
+type refCountedMutex struct {
+	mu   sync.Mutex
+	refs int
+	gone bool
+}
+
+var pathLockTable sync.Map // canonical path -> *refCountedMutex
+
+// resolvePathLockKey canonicalizes the lock key through EvalSymlinks so
+// symlink aliases pointing at the same target share one lock (matching the
+// realpath semantics of the upstream mutation queue). When the full path does
+// not exist yet (e.g. a file about to be created), the longest existing
+// ancestor is resolved and the missing leaf components are re-appended, so
+// aliases under a symlinked parent directory still map to the same key.
+func resolvePathLockKey(path string) string {
+	resolved, err := filepath.EvalSymlinks(path)
+	if err == nil {
+		return resolved
+	}
+	probe := path
+	var trailing []string
+	for {
+		resolved, err := filepath.EvalSymlinks(probe)
+		if err == nil {
+			full := resolved
+			for i := len(trailing) - 1; i >= 0; i-- {
+				full = filepath.Join(full, trailing[i])
+			}
+			return full
+		}
+		parent := filepath.Dir(probe)
+		if parent == probe {
+			// Reached the filesystem root without an existing ancestor.
+			return path
+		}
+		trailing = append(trailing, filepath.Base(probe))
+		probe = parent
+	}
+}
+
+// withPathLock runs fn while holding the per-path lock for key. Mutations to
+// the same path are serialized; distinct paths proceed in parallel. Entries are
+// garbage collected when the last waiter leaves so long-running sandboxes do
+// not accumulate locks. The gone flag makes LoadOrStore racing with a delete
+// retry instead of sharing a lock that is about to be removed.
+func withPathLock(key string, fn func() error) error {
+	key = resolvePathLockKey(key)
+	for {
+		value, _ := pathLockTable.LoadOrStore(key, &refCountedMutex{})
+		entry := value.(*refCountedMutex)
+		entry.mu.Lock()
+		if entry.gone {
+			entry.mu.Unlock()
+			continue
+		}
+		entry.refs++
+		err := fn()
+		entry.refs--
+		if entry.refs == 0 {
+			entry.gone = true
+			pathLockTable.Delete(key)
+		}
+		entry.mu.Unlock()
+		return err
+	}
+}
 
 func ensureParentDirs(root, path string) ([]string, error) {
 	return ensureDirs(root, filepath.Dir(path))
@@ -77,6 +151,16 @@ func writeAndClose(file *os.File, content []byte) error {
 		return err
 	}
 	return file.Close()
+}
+
+// statMtimeMs returns the file's modification time in epoch milliseconds, or
+// 0 when the file cannot be statted. Callers holding the per-path lock use it
+// to capture the response version so it always belongs to this mutation.
+func statMtimeMs(path string) int64 {
+	if info, err := os.Stat(path); err == nil {
+		return info.ModTime().UnixMilli()
+	}
+	return 0
 }
 
 // osWriteFileExclusive creates path atomically, failing with os.IsExist when it

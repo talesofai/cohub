@@ -22,6 +22,13 @@ export interface EditOperations {
   readFile: (absolutePath: string) => Promise<Buffer>;
   writeFile: (absolutePath: string, content: string) => Promise<void>;
   access: (absolutePath: string) => Promise<void>;
+  /**
+   * Optional atomic read-apply-write: applies the edits to the latest file
+   * content in one operation (e.g. sandbox fs.edit, which runs under a
+   * per-path lock). When absent, the edit tool falls back to a plain
+   * read-modify-write cycle.
+   */
+  applyEdits?: (absolutePath: string, edits: Array<{ oldText: string; newText: string }>) => Promise<number>;
 }
 
 export interface ToolFailureDetails {
@@ -152,6 +159,27 @@ function resolveToCwd(path: string, cwd: string): string {
   return `${cwd.replace(/\/$/, "")}/${path}`;
 }
 
+/**
+ * Apply exact-text replacements to content, matching each oldText exactly
+ * once. Throws when an oldText is missing or not unique. Shared by the edit
+ * tool's fallback path and sandbox capability-degraded applyEdits so the
+ * matching semantics and error messages never diverge.
+ */
+export function applyEditsToContent(
+  content: string,
+  edits: Array<{ oldText: string; newText: string }>,
+  path: string,
+): string {
+  for (const edit of edits) {
+    const occurrences = content.split(edit.oldText).length - 1;
+    if (occurrences !== 1) {
+      throw new Error(`oldText must match exactly one region in ${path}, found ${occurrences}`);
+    }
+    content = content.replace(edit.oldText, edit.newText);
+  }
+  return content;
+}
+
 export function createReadTool(cwd: string, options: { operations: ReadOperations }): AgentTool {
   const parameters = Type.Object({
     path: Type.String({ description: "Path to the file to read (relative or absolute)" }),
@@ -256,15 +284,16 @@ export function createEditTool(cwd: string, options: { operations: EditOperation
       const params = rawParams as Static<typeof parameters>;
       const absolutePath = resolveToCwd(params.path, cwd);
       await options.operations.access(absolutePath);
-      let content = (await options.operations.readFile(absolutePath)).toString("utf-8");
-      for (const edit of params.edits) {
-        const occurrences = content.split(edit.oldText).length - 1;
-        if (occurrences !== 1) {
-          throw new Error(`oldText must match exactly one region in ${params.path}, found ${occurrences}`);
-        }
-        content = content.replace(edit.oldText, edit.newText);
+      if (options.operations.applyEdits) {
+        // Atomic read-apply-write in the sandbox: edits always apply to the
+        // latest content, so concurrent edits compose instead of losing
+        // updates.
+        await options.operations.applyEdits(absolutePath, params.edits);
+      } else {
+        let content = (await options.operations.readFile(absolutePath)).toString("utf-8");
+        content = applyEditsToContent(content, params.edits, params.path);
+        await options.operations.writeFile(absolutePath, content);
       }
-      await options.operations.writeFile(absolutePath, content);
       return {
         content: [{ type: "text", text: `Applied ${params.edits.length} edit(s) to ${params.path}` }],
         details: undefined,

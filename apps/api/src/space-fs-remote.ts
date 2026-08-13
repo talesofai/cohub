@@ -1,7 +1,7 @@
 import { basename } from "node:path";
 import { SandboxRpcError } from "@cohub/sandbox-client";
 import {
-  matchesSpaceFsVersion,
+  spaceFsVersionMatches,
   type SpaceFsEntry,
   type SpaceFsFileResponse,
   type SpaceFsMoveInput,
@@ -60,6 +60,8 @@ function mapRpcError(error: unknown): never {
         throw new SpaceFsError(400, "path_invalid", "Invalid path.");
       case "READ_ONLY_FILESYSTEM":
         throw new SpaceFsError(403, "read_only", "This path is read-only.");
+      case "CONFLICT":
+        throw new SpaceFsError(409, "file_conflict", "File changed since it was opened.");
       default:
         throw new SpaceFsError(500, "space_fs_error", error.message);
     }
@@ -284,21 +286,28 @@ export async function writeSpaceFile(spaceId: string, input: SpaceFsWriteFileInp
       ? await callSandboxRpc(spaceId, "fs.stat", { path })
       : null;
     if (input.expected) {
-      if (
-        !current?.exists ||
-        current.isDirectory ||
-        !matchesSpaceFsVersion(current, input.expected)
-      ) {
+      if (!spaceFsVersionMatches(current, input.expected)) {
         throw new SpaceFsError(409, "file_conflict", "File changed since it was opened.");
       }
     }
     const legacyCreatedDirs = supportsDisposition
       ? []
       : await collectMissingRemoteDirectories(spaceId, parentPath(path));
+    // Pass expected through to the sandbox: the version check and the write
+    // run atomically under the sandbox's per-path lock, closing the TOCTOU
+    // window between the stat above and the write. mtimeMs is truncated to
+    // whole milliseconds to match the Go RPC's int64 field (see
+    // matchesSpaceFsVersion). Only forwarded when the sandbox advertises
+    // fsWriteExpected: older sandboxes silently ignore unknown fields, which
+    // would downgrade a conditional write to an unconditional one.
+    const supportsExpected = capabilities?.fsWriteExpected === true;
     const result = await callSandboxRpc(spaceId, "fs.write", {
       path,
       content: input.content,
       encoding: input.encoding,
+      ...(input.expected && supportsExpected
+        ? { expected: { size: input.expected.size, mtimeMs: Math.trunc(input.expected.mtimeMs) } }
+        : {}),
     });
     return {
       path,
