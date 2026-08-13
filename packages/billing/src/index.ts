@@ -63,7 +63,7 @@ export {
   COHUB_BILLING_TOKEN_TYPES,
   COHUB_BILLING_USAGE_TYPES,
 } from "./interfaces.js";
-export { COHUB_BILLING_POLICY } from "./constants.js";
+export { COHUB_BILLING_POLICY, REALTIME_VOICE_BILLING } from "./constants.js";
 export {
   createBillingConversionIntent,
   createFeatureGateConversionIntent,
