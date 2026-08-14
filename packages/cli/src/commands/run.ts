@@ -1,4 +1,7 @@
-import type { TaskRunDetailResponse } from "@neta-art/cohub";
+import type {
+  SpaceRunCommandResponse,
+  TaskRunDetailResponse,
+} from "@neta-art/cohub";
 import { createClient } from "../client.js";
 import { error, handleHttp, json as outJson, spinner } from "../output.js";
 
@@ -7,6 +10,8 @@ type RunCliOptions = {
   json: boolean;
   async: boolean;
   command: string;
+  cron: string | null;
+  timezone: string | null;
 };
 
 type RunCommandResult = {
@@ -63,7 +68,7 @@ function parseSpaceId(tokens: string[]): string | undefined {
   return undefined;
 }
 
-function parseRunCliOptions(argv: string[]): RunCliOptions {
+export function parseRunCliOptions(argv: string[]): RunCliOptions {
   const runIndex = topLevelRunIndex(argv);
   if (runIndex < 0) return error("Invalid invocation", "Use `cohub run [options] <command>`");
 
@@ -73,6 +78,8 @@ function parseRunCliOptions(argv: string[]): RunCliOptions {
   let spaceId = parseSpaceId(beforeRun) ?? process.env.COHUB_SPACE_ID?.trim() ?? "";
   let json = beforeRun.includes("--json");
   let async = false;
+  let cron: string | null = null;
+  let timezone: string | null = null;
   let commandOption: string | null = null;
   let positionalTokens: string[] = [];
 
@@ -91,6 +98,27 @@ function parseRunCliOptions(argv: string[]): RunCliOptions {
 
     if (token === "--json") {
       json = true;
+      continue;
+    }
+
+    if (token === "--cron" || token === "--timezone") {
+      const value = afterRun[index + 1]?.trim();
+      if (!value) return error("Missing schedule value", `${token} requires a value`);
+      if (token === "--cron") cron = value;
+      else timezone = value;
+      index += 1;
+      continue;
+    }
+
+    if (token.startsWith("--cron=")) {
+      cron = token.slice("--cron=".length).trim();
+      if (!cron) return error("Missing schedule value", "--cron requires a value");
+      continue;
+    }
+
+    if (token.startsWith("--timezone=")) {
+      timezone = token.slice("--timezone=".length).trim();
+      if (!timezone) return error("Missing schedule value", "--timezone requires a value");
       continue;
     }
 
@@ -137,8 +165,17 @@ function parseRunCliOptions(argv: string[]): RunCliOptions {
   if (!spaceId) {
     return error("Missing required space", "Add -s, --space <id> before `run` or set COHUB_SPACE_ID.");
   }
+  if (cron && !timezone) {
+    return error("Missing timezone", "--timezone is required with --cron");
+  }
+  if (!cron && timezone) {
+    return error("Missing cron expression", "--cron is required with --timezone");
+  }
+  if (cron && async) {
+    return error("Conflicting options", "Scheduled commands are already asynchronous; remove --async.");
+  }
 
-  return { spaceId, json, async, command };
+  return { spaceId, json, async, command, cron, timezone };
 }
 
 function printRunHelp(): void {
@@ -150,12 +187,15 @@ Usage:
 Options:
   -c, --command <command>  Shell command to execute in the space workspace
       --async              Queue the command and return immediately
+      --cron <expression>  Run the command on a recurring 5-field cron schedule
+      --timezone <tz>      IANA timezone required by --cron
       --json               Output as JSON
   -h, --help               Show this help
 
 Examples:
   cohub -s <spaceId> run --command "git status"
   cohub -s <spaceId> run --async --command "pnpm test"
+  cohub -s <spaceId> run --cron "*/5 * * * *" --timezone UTC --command "./reconcile.sh"
   cohub -s <spaceId> run -- git status -sb
 
 Notes:
@@ -237,7 +277,32 @@ async function handleRunCli(argv: string[]): Promise<void> {
   const client = createClient();
 
   try {
-    const { taskRunId } = await client.space(opts.spaceId).runCommand({ command: opts.command });
+    let response: SpaceRunCommandResponse;
+    if (opts.cron && opts.timezone) {
+      response = await client.space(opts.spaceId).runCommand({
+        command: opts.command,
+        title: `scheduled command: ${opts.command.slice(0, 80)}`,
+        schedule: {
+          mode: "repeat",
+          cronExpression: opts.cron,
+          timezone: opts.timezone,
+        },
+      });
+    } else {
+      response = await client.space(opts.spaceId).runCommand({
+        command: opts.command,
+      });
+    }
+
+    if (response.mode === "repeat") {
+      if (opts.json) return outJson(response);
+      process.stderr.write(
+        `  Command scheduled — cronJobId: ${response.cronJobId}, nextRunAt: ${response.nextRunAt}, timezone: ${response.timezone}\n`,
+      );
+      return;
+    }
+
+    const { taskRunId } = response;
 
     if (opts.async) {
       if (opts.json) return outJson({ taskRunId });

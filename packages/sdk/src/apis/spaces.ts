@@ -1238,7 +1238,40 @@ export class SpaceSandboxApi {
   }
 }
 
-export type SpaceRunCommandResponse = { taskRunId: string };
+export type SpaceRunCommandImmediateInput = {
+  command: string;
+  schedule?: { mode?: "immediate" };
+};
+
+export type SpaceRunCommandRepeatInput = {
+  command: string;
+  title?: string;
+  schedule: {
+    mode: "repeat";
+    cronExpression: string;
+    timezone: string;
+  };
+};
+
+export type SpaceRunCommandInput =
+  | SpaceRunCommandImmediateInput
+  | SpaceRunCommandRepeatInput;
+
+export type SpaceRunCommandImmediateResponse = {
+  mode: "immediate";
+  taskRunId: string;
+};
+
+export type SpaceRunCommandRepeatResponse = {
+  mode: "repeat";
+  cronJobId: string;
+  nextRunAt: string;
+  timezone: string;
+};
+
+export type SpaceRunCommandResponse =
+  | SpaceRunCommandImmediateResponse
+  | SpaceRunCommandRepeatResponse;
 
 export class SpaceLabelsApi {
   constructor(
@@ -2243,7 +2276,14 @@ export class SpaceClient {
     );
   }
 
-  runCommand(input: { command: string }) {
+  runCommand(
+    input: SpaceRunCommandRepeatInput,
+  ): Promise<SpaceRunCommandRepeatResponse>;
+  runCommand(
+    input: SpaceRunCommandImmediateInput,
+  ): Promise<SpaceRunCommandImmediateResponse>;
+  runCommand(input: SpaceRunCommandInput): Promise<SpaceRunCommandResponse>;
+  runCommand(input: SpaceRunCommandInput): Promise<SpaceRunCommandResponse> {
     return this.transport.request<SpaceRunCommandResponse>(
       `/api/spaces/${this.id}/commands`,
       {

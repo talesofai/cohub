@@ -144,6 +144,12 @@ export type {
   SpaceChannelBindingRecord,
   SpaceEventName,
   SpaceTurnListOptions,
+  SpaceRunCommandImmediateInput,
+  SpaceRunCommandImmediateResponse,
+  SpaceRunCommandInput,
+  SpaceRunCommandRepeatInput,
+  SpaceRunCommandRepeatResponse,
+  SpaceRunCommandResponse,
   WebSocketConnectionState,
 } from "./apis/spaces.js";
 export type {

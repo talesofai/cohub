@@ -9,7 +9,6 @@ import {
   validatePublicIdentifierAssignment,
 } from "@cohub/protocol/public-identifiers";
 import { normalizeGenerationPolicy } from "@cohub/protocol/generation";
-import * as cronParser from "cron-parser";
 import { db } from "../../db/index.js";
 import { getPostgresErrorConstraint, isPostgresUniqueViolation } from "../../db/postgres-error.js";
 import {
@@ -88,6 +87,8 @@ import { parseChannelConfigPatch, mergeChannelConfig, validateChannelModelConfig
 import { redisCommandClient } from "../../redis.js";
 import { featureGateResponse } from "../../lib/feature-gate.js";
 import { billingBlockedResponse } from "../../lib/billing-blocked.js";
+import { validateRepeatSchedule } from "../../lib/repeat-schedule.js";
+import { parseSpaceCommandRequest } from "../../lib/space-command-request.js";
 import { applyRequestSourceToMeta, getRequestSource, resolveSessionSourceFromRequest } from "../../lib/request-source.js";
 import { validatePromptModel } from "../../llm/models.js";
 
@@ -96,7 +97,6 @@ const logger = createLogger({ serviceName: "cohub-api" });
 const getSpaceSaveCheckpointLockKey = (spaceId: string) => `cohub:space:${spaceId}:save-checkpoint`;
 
 const router = new Hono();
-const { CronExpressionParser } = cronParser;
 
 type SpaceRouteSessionRecord = NonNullable<Awaited<ReturnType<typeof getSpaceSessionById>>>;
 
@@ -502,15 +502,6 @@ function promptInputError(error: unknown): string | null {
 
 const isPositiveSafeInteger = (value: number) => Number.isSafeInteger(value) && value > 0;
 
-const validateTimezone = (timezone: string) => {
-  try {
-    new Intl.DateTimeFormat("en-US", { timeZone: timezone }).format(new Date());
-    return true;
-  } catch {
-    return false;
-  }
-};
-
 const parseScheduledAt = (sendAt: string) => {
   const trimmed = sendAt.trim();
   if (!hasExplicitTimezone(trimmed)) {
@@ -522,22 +513,6 @@ const parseScheduledAt = (sendAt: string) => {
   }
   if (scheduledAt.getTime() <= Date.now()) throw new Error("sendAt must be in the future");
   return scheduledAt;
-};
-
-const validateRepeatSchedule = (input: { cronExpression: string; timezone: string }) => {
-  const cronExpression = input.cronExpression.trim();
-  const timezone = input.timezone.trim();
-  if (cronExpression.split(/\s+/).length !== 5) {
-    throw new Error("cronExpression must have 5 fields, e.g. 0 9 * * *");
-  }
-  if (!validateTimezone(timezone)) throw new Error("timezone must be an IANA timezone, e.g. Asia/Shanghai or UTC");
-  const interval = CronExpressionParser.parse(cronExpression, { tz: timezone });
-  const nextRun = interval.next().toDate();
-  const secondRun = interval.next().toDate();
-  if (secondRun.getTime() - nextRun.getTime() < 60_000) {
-    throw new Error("cron interval must be at least 1 minute");
-  }
-  return { cronExpression, timezone, nextRun };
 };
 
 // ── Provisioning params builder ──────────────────────────────────────────────
@@ -1760,8 +1735,6 @@ router.post("/:id/sandbox/recreate", async (c) => {
   return c.json(result);
 });
 
-const MAX_COMMAND_LENGTH = 16 * 1024;
-
 router.post("/:id/commands", async (c) => {
   const user = useAuth(c);
   if (user instanceof Response) return user;
@@ -1769,26 +1742,56 @@ router.post("/:id/commands", async (c) => {
   if (!requireValidId(spaceId)) return c.json({ message: "space not found" }, 404);
   if (!(await hasPermission(user, "command.execute", { spaceId }))) return authzDenied(c);
 
-  const body = await c.req.json<{ command?: string }>().catch(() => null);
-  const command = body?.command?.trim();
-  if (!command) return c.json({ message: "command is required" }, 400);
-  if (command.length > MAX_COMMAND_LENGTH) return c.json({ message: `command is too long; max ${MAX_COMMAND_LENGTH} characters` }, 400);
+  const body = await c.req.json<unknown>().catch(() => null);
+  let request: ReturnType<typeof parseSpaceCommandRequest>;
+  try {
+    request = parseSpaceCommandRequest(body);
+  } catch (error) {
+    return c.json({
+      message: error instanceof Error ? error.message : "invalid command request",
+    }, 400);
+  }
   const cwd = "/workspace";
   const sourceClientId = getRequestSource(c)?.clientId;
+  const taskData = {
+    command: request.command,
+    cwd,
+    source: request.mode === "repeat" ? "scheduled_command" : "command_palette",
+    ...(sourceClientId ? { sourceClientId } : {}),
+  };
+
+  if (request.mode === "repeat") {
+    if (!(await hasPermission(user, "cronjob.manage", { spaceId }))) {
+      return authzDenied(c);
+    }
+    const cronJob = await createCronJob({
+      userId: user.uuid,
+      title: request.title,
+      taskType: RUN_COMMAND_TASK_TYPE,
+      payload: taskData,
+      schedule: {
+        pattern: request.cronExpression,
+        timezone: request.timezone,
+      },
+      spaceId,
+    });
+
+    return c.json({
+      mode: "repeat",
+      cronJobId: cronJob.id,
+      nextRunAt: request.nextRun.toISOString(),
+      timezone: request.timezone,
+    });
+  }
 
   const { taskRunId } = await enqueueTask({
     type: RUN_COMMAND_TASK_TYPE,
     spaceId,
     userId: user.uuid,
-    data: {
-      command,
-      cwd,
-      source: "command_palette",
-      ...(sourceClientId ? { sourceClientId } : {}),
-    },
+    data: taskData,
   });
 
-  return c.json({ taskRunId });
+  return c.json({ mode: "immediate", taskRunId });
 });
 
 // ── Sessions ─────────────────────────────────────────────────────────────────

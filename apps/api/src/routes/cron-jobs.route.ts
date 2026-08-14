@@ -1,5 +1,4 @@
 import { Hono } from "hono";
-import * as cronParser from "cron-parser";
 import { db } from "../db/index.js";
 import { cronJobs, taskRuns } from "@cohub/db";
 import { eq, and, isNull, desc, lt, or } from "drizzle-orm";
@@ -9,9 +8,9 @@ import { hasPermission } from "../permissions.js";
 import { disableCronJob, enableCronJob, removeCronJob, updateCronJob } from "../tasks.js";
 import { fallbackPublicUserProfile, getProfilesByUuids } from "../user-profiles.js";
 import { sanitizeTaskRunPricingForViewer } from "../task-run-privacy.js";
+import { validateRepeatSchedule } from "../lib/repeat-schedule.js";
 
 const router = new Hono();
-const { CronExpressionParser } = cronParser;
 
 const MAX_RUNS_LIMIT = 100;
 
@@ -28,31 +27,6 @@ async function hydrateCronJobUserProfiles<T extends { userUuid: string }>(jobs: 
     ...job,
     userProfile: profiles.get(job.userUuid) ?? fallbackPublicUserProfile(job.userUuid),
   }));
-}
-
-function validateTimezone(timezone: string) {
-  try {
-    new Intl.DateTimeFormat("en-US", { timeZone: timezone }).format(new Date());
-    return true;
-  } catch {
-    return false;
-  }
-}
-
-function validateCronSchedule(input: { cronExpression: string; timezone: string }) {
-  const cronExpression = input.cronExpression.trim();
-  const timezone = input.timezone.trim();
-  if (cronExpression.split(/\s+/).length !== 5) {
-    throw new Error("cronExpression must have 5 fields, e.g. 0 9 * * *");
-  }
-  if (!validateTimezone(timezone)) throw new Error("timezone must be an IANA timezone, e.g. Asia/Shanghai or UTC");
-  const interval = CronExpressionParser.parse(cronExpression, { tz: timezone });
-  const nextRun = interval.next().toDate();
-  const secondRun = interval.next().toDate();
-  if (secondRun.getTime() - nextRun.getTime() < 60_000) {
-    throw new Error("cron interval must be at least 1 minute");
-  }
-  return { cronExpression, timezone };
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -259,7 +233,7 @@ router.patch("/:id", async (c) => {
     if (nextCronExpression !== undefined && typeof nextCronExpression !== "string") return c.json({ message: "cronExpression must be a string" }, 400);
     if (nextTimezone !== undefined && typeof nextTimezone !== "string") return c.json({ message: "timezone must be a string" }, 400);
     try {
-      const schedule = validateCronSchedule({
+      const schedule = validateRepeatSchedule({
         cronExpression: nextCronExpression === undefined ? job.cronExpression : nextCronExpression,
         timezone: nextTimezone === undefined ? job.timezone : nextTimezone,
       });
