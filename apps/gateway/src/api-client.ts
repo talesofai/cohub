@@ -100,6 +100,73 @@ export const authenticateRealtimeToken = async (input: { token: string }): Promi
   };
 };
 
+export type RealtimeVoiceAcquireResult = {
+  session_id: string;
+  user_uuid: string;
+  config: { idle_timeout_s: number; max_duration_s: number };
+};
+
+/** Runs the billing preflight gate and issues a ticket-backed session id. Throws (with `.status`) on 401/402/503. */
+export const acquireRealtimeVoiceSession = async (input: {
+  token: string;
+  service: string;
+}): Promise<RealtimeVoiceAcquireResult> => {
+  const response = await fetch(`${gatewayConfig.apiBaseUrl}/internal/realtime-voice/session/acquire`, {
+    method: "POST",
+    headers: {
+      "content-type": "application/json",
+      "x-worker-secret": gatewayConfig.workerSecret,
+      authorization: `Bearer ${input.token}`,
+      ...buildTraceHeaders(),
+    },
+    body: JSON.stringify({ service: input.service }),
+  });
+  if (!response.ok) {
+    const body = await parseJson<{ detail?: string; message?: string }>(response);
+    const error = new Error(body?.detail ?? body?.message ?? `session acquire failed: ${response.status}`) as Error & { status?: number };
+    error.status = response.status;
+    throw error;
+  }
+  const data = await parseJson<RealtimeVoiceAcquireResult>(response);
+  if (!data?.session_id || !data.user_uuid || !data.config) {
+    throw new Error("Realtime voice session acquire returned an invalid response");
+  }
+  return data;
+};
+
+export type RealtimeVoiceHeartbeatResult = {
+  success: boolean;
+  billing?: { allowed: boolean; charged?: number; remaining_usd?: number; reason?: string };
+};
+
+export const heartbeatRealtimeVoiceSession = async (sessionId: string): Promise<RealtimeVoiceHeartbeatResult> => {
+  const response = await fetch(`${gatewayConfig.apiBaseUrl}/internal/realtime-voice/session/heartbeat`, {
+    method: "POST",
+    headers: {
+      "content-type": "application/json",
+      "x-worker-secret": gatewayConfig.workerSecret,
+      ...buildTraceHeaders(),
+    },
+    body: JSON.stringify({ session_id: sessionId }),
+  });
+  if (!response.ok) throw new Error(`Realtime voice heartbeat failed: ${response.status}`);
+  const data = await parseJson<RealtimeVoiceHeartbeatResult>(response);
+  if (!data) throw new Error("Realtime voice heartbeat returned an invalid response");
+  return data;
+};
+
+export const releaseRealtimeVoiceSession = async (sessionId: string): Promise<void> => {
+  await fetch(`${gatewayConfig.apiBaseUrl}/internal/realtime-voice/session/${sessionId}`, {
+    method: "DELETE",
+    headers: {
+      "x-worker-secret": gatewayConfig.workerSecret,
+      ...buildTraceHeaders(),
+    },
+  }).catch(() => {
+    // best-effort: an unreleased ticket just expires on its own (TICKET_TTL_MS).
+  });
+};
+
 export const requestGatewayChannelReconcile = async (): Promise<{ stats: unknown }> => {
   const response = await fetch(`${gatewayConfig.apiBaseUrl}/internal/gateway/reconcile-channels`, {
     method: "POST",

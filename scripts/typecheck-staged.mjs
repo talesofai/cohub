@@ -108,7 +108,10 @@ async function run(pnpmArgs) {
   const command = npmExecPath ? process.execPath : "pnpm";
   const args = npmExecPath ? [npmExecPath, ...fullArgs] : fullArgs;
   return new Promise((resolve) => {
-    const child = spawn(command, args, { stdio: "inherit" });
+    // Windows: child_process.spawn only resolves .cmd/.bat shims (like pnpm's)
+  // through a shell; without it this fails with ENOENT even though `pnpm` is
+  // on PATH.
+  const child = spawn(command, args, { stdio: "inherit", shell: process.platform === "win32" });
     child.once("error", (error) => {
       console.error(`typecheck: failed to spawn pnpm: ${error.message}`);
       resolve(1);

@@ -5,13 +5,18 @@ export const COHUB_ENVIRONMENTS = {
     apiBaseUrl: "https://api.cohub.run",
     websocketUrl: "wss://gateway.cohub.run/ws",
     voiceInputWebsocketUrl: "wss://gateway.cohub.run/asr/ws",
+    realtimeVoiceWebsocketUrl: "wss://gateway.cohub.run/v1/realtime",
   },
   dev: {
     apiBaseUrl: "https://api-dev.cohub.run",
     websocketUrl: "wss://gateway-dev.cohub.run/ws",
     voiceInputWebsocketUrl: "wss://gateway-dev.cohub.run/asr/ws",
+    realtimeVoiceWebsocketUrl: "wss://gateway-dev.cohub.run/v1/realtime",
   },
-} as const satisfies Record<CohubEnvironment, { apiBaseUrl: string; websocketUrl: string; voiceInputWebsocketUrl: string }>;
+} as const satisfies Record<
+  CohubEnvironment,
+  { apiBaseUrl: string; websocketUrl: string; voiceInputWebsocketUrl: string; realtimeVoiceWebsocketUrl: string }
+>;
 
 const readRuntimeEnv = (): string | undefined => {
   const runtime = globalThis as typeof globalThis & {
@@ -45,6 +50,9 @@ export const normalizeWebsocketUrl = (input: string) => normalizeWebsocketPath(i
 export const normalizeVoiceInputWebsocketUrl = (input: string) =>
   normalizeWebsocketPath(input, "/asr/ws", ["/ws"]);
 
+export const normalizeRealtimeVoiceWebsocketUrl = (input: string) =>
+  normalizeWebsocketPath(input, "/v1/realtime", ["/ws", "/asr/ws"]);
+
 export const resolveApiBaseUrl = (options: {
   baseUrl?: string;
   env?: CohubEnvironment;
@@ -67,4 +75,12 @@ export const resolveVoiceInputWebsocketUrl = (options: {
 } = {}) => {
   if (options.url) return normalizeVoiceInputWebsocketUrl(options.url);
   return COHUB_ENVIRONMENTS[resolveCohubEnvironment(options.env)].voiceInputWebsocketUrl;
+};
+
+export const resolveRealtimeVoiceWebsocketUrl = (options: {
+  url?: string;
+  env?: CohubEnvironment;
+} = {}) => {
+  if (options.url) return normalizeRealtimeVoiceWebsocketUrl(options.url);
+  return COHUB_ENVIRONMENTS[resolveCohubEnvironment(options.env)].realtimeVoiceWebsocketUrl;
 };

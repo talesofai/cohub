@@ -11,6 +11,7 @@ export type BillingUsageKind =
   | "generation.video"
   | "generation.music"
   | "sandbox.compute"
+  | "realtime.voice"
   | (string & {});
 
 export type BillingUsageSource =

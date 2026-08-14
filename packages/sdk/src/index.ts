@@ -3,6 +3,7 @@ export { BillingApi } from "./apis/billing.js";
 export { CohubClient, createCohubClient } from "./client.js";
 export { WebsocketClient, createWebsocketClient } from "./websocket.js";
 export { VoiceApi, VoiceInputClient, createVoiceInputClient } from "./voice-input.js";
+export { RealtimeVoiceClient, createRealtimeVoiceClient } from "./realtime-voice.js";
 export { UsersApi } from "./apis/users.js";
 export { WorksApi } from "./apis/works.js";
 export { UiCommandsApi } from "./apis/ui-commands.js";
@@ -84,10 +85,12 @@ export type { RawHttpResponse } from "./transport.js";
 export {
   COHUB_ENVIRONMENTS,
   normalizeBaseUrl,
+  normalizeRealtimeVoiceWebsocketUrl,
   normalizeVoiceInputWebsocketUrl,
   normalizeWebsocketUrl,
   resolveApiBaseUrl,
   resolveCohubEnvironment,
+  resolveRealtimeVoiceWebsocketUrl,
   resolveVoiceInputWebsocketUrl,
   resolveWebsocketUrl,
 } from "./environment.js";
@@ -99,6 +102,11 @@ export type {
   VoiceInputCreateOptions,
   VoiceInputEvent,
 } from "./voice-input.js";
+export type {
+  RealtimeVoiceCallbacks,
+  RealtimeVoiceClientOptions,
+  RealtimeVoiceEvent,
+} from "./realtime-voice.js";
 export type {
   SessionPatchApplyInput,
   SessionPatchApplyResult,
