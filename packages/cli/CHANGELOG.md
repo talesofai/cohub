@@ -1,5 +1,16 @@
 # @neta-art/cohub-cli
 
+## 3.10.1
+
+### Patch Changes
+
+- d32ab93: Accept UUID v6-v8 identifiers consistently across SDK and CLI resource parsing.
+- 4decc5c: Add generic and Meta Work promotion links with aggregated landing and readiness analytics.
+- Updated dependencies [d32ab93]
+- Updated dependencies [4decc5c]
+- Updated dependencies [de8d59e]
+  - @neta-art/cohub@5.8.1
+
 ## 3.10.0
 
 ### Minor Changes

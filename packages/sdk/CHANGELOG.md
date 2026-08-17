@@ -1,5 +1,13 @@
 # @neta-art/cohub
 
+## 5.8.1
+
+### Patch Changes
+
+- d32ab93: Accept UUID v6-v8 identifiers consistently across SDK and CLI resource parsing.
+- 4decc5c: Add generic and Meta Work promotion links with aggregated landing and readiness analytics.
+- de8d59e: Carry Work promotion attribution through authentication and checkout, and expose registration, purchase-confirmation, and checkout-start conversion events to configured promotion providers.
+
 ## 5.8.0
 
 ### Minor Changes
