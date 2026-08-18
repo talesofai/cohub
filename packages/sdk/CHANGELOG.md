@@ -1,5 +1,11 @@
 # @neta-art/cohub
 
+## 5.9.0
+
+### Minor Changes
+
+- 7844146: Support Space file previews from the CLI: `cohub ui preview` accepts `file://<path>` or a relative Space path (resolved against the active space), alongside the existing Work refs and the new `work://` scheme. The SDK now exports `UiFilePreviewTarget` for the extended `preview.show` command.
+
 ## 5.8.2
 
 ### Patch Changes
