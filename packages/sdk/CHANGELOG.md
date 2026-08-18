@@ -1,5 +1,11 @@
 # @neta-art/cohub
 
+## 5.10.0
+
+### Minor Changes
+
+- 057a590: Add persisted Board backgrounds, semantic camera focus clips, summary and mutation SDK helpers, semantic CLI commands for nodes, connections, appearance, playback policy, effects and sequences, safe Board target resolution, and atomic exports.
+
 ## 5.9.0
 
 ### Minor Changes
