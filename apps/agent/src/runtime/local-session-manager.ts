@@ -479,9 +479,15 @@ export class SessionManager {
           if (foundFirstKept) appendMessage(entry);
         }
       }
-      for (let i = compactionIdx + 1; i < branch.length; i++) {
-        const entry = branch[i];
-        if (entry) appendMessage(entry);
+      if (compactionIdx > 0) {
+        // Post-compaction entries only in pre-rewrite layouts. When the
+        // compaction entry is the root, the post-rewrite loop above already
+        // appended every kept entry once — appending again would duplicate
+        // the entire context in every request.
+        for (let i = compactionIdx + 1; i < branch.length; i++) {
+          const entry = branch[i];
+          if (entry) appendMessage(entry);
+        }
       }
     } else {
       for (const entry of branch) appendMessage(entry);

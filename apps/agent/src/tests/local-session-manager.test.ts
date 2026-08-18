@@ -175,6 +175,103 @@ try {
     () => SessionManager.open(terminatedBadFile, sessionsDir, { recoverTrailingPartial: true }),
     /Invalid session JSONL/,
   );
+
+  // Regression: buildSessionContext must not duplicate kept messages when the
+  // compaction entry is the root (post-rewrite layout, normal state after the
+  // first compaction). A duplication here would double the whole request context.
+  const postRewriteFile = join(sessionsDir, "post-rewrite.jsonl");
+  const postRewriteEntry = (id: string, parentId: string | null, role: "user" | "assistant") => ({
+    type: "message",
+    id,
+    parentId,
+    timestamp: new Date().toISOString(),
+    message: { role, content: [{ type: "text", text: id }], timestamp: Date.now() },
+  });
+  await writeFile(postRewriteFile, [
+    JSON.stringify({ type: "session", version: 3, id: "post-rewrite", timestamp: new Date().toISOString(), cwd: root }),
+    JSON.stringify({ type: "compaction", id: "c1", parentId: null, timestamp: new Date().toISOString(), summary: "s1", firstKeptEntryId: "k1", tokensBefore: 100 }),
+    JSON.stringify(postRewriteEntry("k1", "c1", "user")),
+    JSON.stringify(postRewriteEntry("k2", "k1", "assistant")),
+    JSON.stringify(postRewriteEntry("k3", "k2", "user")),
+    "",
+  ].join("\n"));
+  const postRewrite = await SessionManager.open(postRewriteFile, sessionsDir);
+  const postRewriteMessages = postRewrite.buildSessionContext().messages;
+  assert.equal(postRewriteMessages.length, 4, "post-rewrite layout must not duplicate kept messages");
+  assert.equal(postRewriteMessages[0]?.role, "compactionSummary");
+  assert.equal(postRewriteMessages[1]?.role, "user");
+  assert.equal(postRewriteMessages[2]?.role, "assistant");
+  assert.equal(postRewriteMessages[3]?.role, "user");
+
+  // Pre-rewrite layout (compaction at end): entries from firstKeptEntryId up to
+  // the compaction entry, plus entries appended after it.
+  const preRewriteFile = join(sessionsDir, "pre-rewrite.jsonl");
+  await writeFile(preRewriteFile, [
+    JSON.stringify({ type: "session", version: 3, id: "pre-rewrite", timestamp: new Date().toISOString(), cwd: root }),
+    JSON.stringify(postRewriteEntry("old1", null, "user")),
+    JSON.stringify(postRewriteEntry("old2", "old1", "assistant")),
+    JSON.stringify(postRewriteEntry("keep1", "old2", "user")),
+    JSON.stringify(postRewriteEntry("keep2", "keep1", "assistant")),
+    JSON.stringify({ type: "compaction", id: "c2", parentId: "keep2", timestamp: new Date().toISOString(), summary: "s2", firstKeptEntryId: "keep1", tokensBefore: 100 }),
+    JSON.stringify(postRewriteEntry("after1", "c2", "assistant")),
+    "",
+  ].join("\n"));
+  const preRewrite = await SessionManager.open(preRewriteFile, sessionsDir);
+  const preRewriteTexts = preRewrite.buildSessionContext().messages.map((message) => {
+    const record = message as { role?: string; content?: Array<{ text?: string }> };
+    return record.role === "compactionSummary" ? "summary" : record.content?.[0]?.text;
+  });
+  assert.deepEqual(preRewriteTexts, ["summary", "keep1", "keep2", "after1"]);
+
+  // Pre-rewrite layout with firstKeptEntryId missing: include all pre-compaction
+  // entries (fallback) plus post-compaction entries, without duplicates.
+  const preRewriteMissingFile = join(sessionsDir, "pre-rewrite-missing.jsonl");
+  await writeFile(preRewriteMissingFile, [
+    JSON.stringify({ type: "session", version: 3, id: "pre-rewrite-missing", timestamp: new Date().toISOString(), cwd: root }),
+    JSON.stringify(postRewriteEntry("old1", null, "user")),
+    JSON.stringify(postRewriteEntry("old2", "old1", "assistant")),
+    JSON.stringify({ type: "compaction", id: "c3", parentId: "old2", timestamp: new Date().toISOString(), summary: "s3", firstKeptEntryId: "missing", tokensBefore: 100 }),
+    JSON.stringify(postRewriteEntry("after1", "c3", "assistant")),
+    "",
+  ].join("\n"));
+  const preRewriteMissing = await SessionManager.open(preRewriteMissingFile, sessionsDir);
+  const preRewriteMissingTexts = preRewriteMissing.buildSessionContext().messages.map((message) => {
+    const record = message as { role?: string; content?: Array<{ text?: string }> };
+    return record.role === "compactionSummary" ? "summary" : record.content?.[0]?.text;
+  });
+  assert.deepEqual(preRewriteMissingTexts, ["summary", "old1", "old2", "after1"]);
+
+  // Regression: multiple consecutive compaction cycles through the real
+  // appendCompaction + archiveAndRewrite flow must never duplicate context.
+  const multiCompactFile = join(sessionsDir, "multi-compact.jsonl");
+  const multiCompact = SessionManager.create(root, sessionsDir);
+  multiCompact.newSession({ id: "multi-compact" });
+  multiCompact.setSessionFile(multiCompactFile);
+  const msg = (text: string, role: "user" | "assistant") =>
+    multiCompact.appendMessage({ role, content: [{ type: "text", text }], timestamp: Date.now() } as never);
+  msg("m1", "user");
+  msg("m2", "assistant");
+  const cm3 = msg("m3", "user");
+  msg("m4", "assistant");
+  const cm5 = msg("m5", "user");
+  msg("m6", "assistant");
+  const compactContextTexts = () => multiCompact.buildSessionContext().messages.map((message) => {
+    const record = message as { role?: string; content?: Array<{ text?: string }> };
+    return record.role === "compactionSummary" ? "summary" : record.content?.[0]?.text;
+  });
+  const c1 = multiCompact.appendCompaction("s1", cm3, 100);
+  await multiCompact.archiveAndRewrite(c1, cm3);
+  assert.deepEqual(compactContextTexts(), ["summary", "m3", "m4", "m5", "m6"]);
+  msg("m7", "user");
+  const cm8 = msg("m8", "assistant");
+  assert.deepEqual(compactContextTexts(), ["summary", "m3", "m4", "m5", "m6", "m7", "m8"]);
+  const c2 = multiCompact.appendCompaction("s2", cm5, 100);
+  await multiCompact.archiveAndRewrite(c2, cm5);
+  assert.deepEqual(compactContextTexts(), ["summary", "m5", "m6", "m7", "m8"]);
+  msg("m9", "user");
+  const c3 = multiCompact.appendCompaction("s3", cm8, 100);
+  await multiCompact.archiveAndRewrite(c3, cm8);
+  assert.deepEqual(compactContextTexts(), ["summary", "m8", "m9"]);
 } finally {
   await rm(root, { recursive: true, force: true });
 }
