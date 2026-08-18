@@ -59,7 +59,7 @@ jobs:
         run: pnpm build
 
       - name: Restore typecheck cache
-        uses: actions/cache@v6
+        uses: actions/cache/restore@v6
         with:
           path: |
             node_modules/.cache/tsbuildinfo
@@ -73,6 +73,15 @@ jobs:
 
       - name: Test
         run: pnpm test
+
+      - name: Save typecheck cache
+        if: ${{ github.ref == 'refs/heads/main' }}
+        uses: actions/cache/save@v6
+        with:
+          path: |
+            node_modules/.cache/tsbuildinfo
+            apps/web/.svelte-kit/.svelte-check
+          key: typecheck-v1-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('pnpm-lock.yaml', 'tsconfig.base.json', 'apps/**/tsconfig*.json', 'packages/**/tsconfig*.json', 'apps/web/svelte.config.js', 'scripts/typecheck-web.mjs') }}-${{ github.sha }}
 
   go-checks:
     name: Format, vet, test (sandbox)

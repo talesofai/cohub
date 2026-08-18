@@ -56,7 +56,12 @@ jobs:
             base="$(git rev-parse "$HEAD_SHA^")"
           fi
 
-          changed="$(git diff --name-only "$base" "$HEAD_SHA")"
+          if ! git cat-file -e "${base}^{commit}" 2>/dev/null; then
+            echo "Base commit $base is unavailable; using the full deploy scope."
+            changed="$(printf '%s\n' 'apps/agent/' 'apps/api/' 'apps/gateway/' 'apps/worker/' 'apps/web/' 'apps/sandbox/')"
+          else
+            changed="$(git diff --name-only "$base" "$HEAD_SHA")"
+          fi
           if [[ -n "$changed" ]]; then
             echo "Changed files:"
             echo "$changed"
