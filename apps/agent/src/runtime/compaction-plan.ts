@@ -21,12 +21,21 @@ export function resolveCompactionScope(
     : { scope: "between_turns", ownerTurnId: null };
 }
 
+/**
+ * Reject compactions whose retained context is not meaningfully smaller than
+ * what would have been sent. Threshold-triggered compactions require at least
+ * a 20% reduction — image-dominated contexts that compaction cannot shrink
+ * would otherwise compact on every round without reducing the payload.
+ * Overflow-recovery (force) compactions only require any reduction.
+ */
 export function validateCompactionEffect(input: {
   estimatedTokensBefore: number;
   estimatedTokensAfter: number;
   inputBudget: number;
+  force?: boolean;
 }): "compaction_no_effect" | "compaction_still_over_budget" | null {
-  if (input.estimatedTokensAfter >= input.estimatedTokensBefore) {
+  const minimumReduction = input.force ? 0 : 0.2;
+  if (input.estimatedTokensAfter >= input.estimatedTokensBefore * (1 - minimumReduction)) {
     return "compaction_no_effect";
   }
   if (input.estimatedTokensAfter >= input.inputBudget) {

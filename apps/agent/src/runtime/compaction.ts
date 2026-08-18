@@ -277,6 +277,7 @@ export async function maybeAutoCompact(
         estimatedTokensBefore: Math.max(thresholdTokens, result.tokensBefore),
         estimatedTokensAfter,
         inputBudget: Math.max(1, contextWindow - settings.reserveTokens),
+        force,
       });
       if (invalidEffect) {
         span.setAttribute("agent.compaction.error", invalidEffect);

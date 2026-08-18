@@ -16,6 +16,7 @@ import { mergeHeaders } from "@cohub/infra/config-runtime/models";
 import type { ImageToTextConfig } from "@cohub/infra/config-runtime/image-to-text";
 import { ModelUnavailableError } from "@cohub/core/sessions";
 import { prepareAgentImagesForModel } from "./image-to-text.js";
+import { OMITTED_IMAGE_TEXT } from "./compaction-policy.js";
 import type { SpaceModListItem } from "@cohub/core/space-mods";
 
 export type CohubAgentSessionEvent = AgentEvent;
@@ -48,7 +49,6 @@ type ToolLike = AgentTool;
 const AGENT_RETRY_MAX_RETRIES = 2;
 const AGENT_RETRY_BASE_DELAY_MS = 1000;
 const LLM_REQUEST_MAX_BYTES = 30 * 1024 * 1024;
-const LLM_REQUEST_IMAGE_OMISSION_TEXT = "Image omitted from this LLM request to stay under request size limit.";
 
 const COMPACTION_SUMMARY_PREFIX = "The conversation history before this point was compacted into the following summary:\n\n<summary>\n";
 const COMPACTION_SUMMARY_SUFFIX = "\n</summary>";
@@ -317,7 +317,7 @@ function applyLlmRequestSizeGuard(messages: unknown[]) {
     omittedImages += 1;
     omittedBytes += image.bytes;
     image.block.type = "text" as never;
-    image.block.text = LLM_REQUEST_IMAGE_OMISSION_TEXT;
+    image.block.text = OMITTED_IMAGE_TEXT;
     delete (image.block as Partial<typeof image.block>).data;
     delete (image.block as Partial<typeof image.block>).mimeType;
     estimatedBytes = estimateLlmPayloadBytes(messages);

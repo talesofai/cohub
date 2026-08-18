@@ -72,14 +72,40 @@ test("compaction effect must reduce context and fit the next input budget", () =
     estimatedTokensAfter: 100,
     inputBudget: 90,
   }), "compaction_no_effect");
+  // Threshold compactions need a meaningful reduction (>=20%); marginal
+  // shrinks are rejected so image-dominated contexts don't re-compact on
+  // every round without reducing the actual payload.
   assert.equal(validateCompactionEffect({
     estimatedTokensBefore: 100,
     estimatedTokensAfter: 95,
     inputBudget: 90,
+  }), "compaction_no_effect");
+  assert.equal(validateCompactionEffect({
+    estimatedTokensBefore: 100,
+    estimatedTokensAfter: 81,
+    inputBudget: 90,
+  }), "compaction_no_effect");
+  assert.equal(validateCompactionEffect({
+    estimatedTokensBefore: 100,
+    estimatedTokensAfter: 70,
+    inputBudget: 90,
+  }), null);
+  assert.equal(validateCompactionEffect({
+    estimatedTokensBefore: 100,
+    estimatedTokensAfter: 70,
+    inputBudget: 60,
+  }), "compaction_still_over_budget");
+  // Overflow-recovery compactions only require any reduction at all.
+  assert.equal(validateCompactionEffect({
+    estimatedTokensBefore: 100,
+    estimatedTokensAfter: 95,
+    inputBudget: 90,
+    force: true,
   }), "compaction_still_over_budget");
   assert.equal(validateCompactionEffect({
     estimatedTokensBefore: 100,
-    estimatedTokensAfter: 60,
+    estimatedTokensAfter: 100,
     inputBudget: 90,
-  }), null);
+    force: true,
+  }), "compaction_no_effect");
 });

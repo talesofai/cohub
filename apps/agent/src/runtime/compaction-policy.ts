@@ -12,13 +12,18 @@ const RESERVE_TOKENS_CAP = 32_768;
 const RESERVE_TOKENS_RATIO = 0.25;
 
 // Some provider proxies tokenize inline base64 image payloads as raw text
-// instead of charging vision tokens. Observed ratio on the cohub proxy is
-// ~1.97 chars/token, so one normalized image can bill ~100k tokens while pi's
-// heuristic estimates a flat 1.2k. Without this lower bound the accurate
-// provider usage stays far below the threshold and auto-compaction never runs
-// until the request hard-fails with a context-overflow error.
-const BASE64_CHARS_PER_TOKEN = 2;
+// instead of charging vision tokens (observed ratio on the cohub proxy is
+// ~1.97 chars/token). Accounting for compaction must not follow that billing
+// quirk: images are bounded at ingestion (see image-normalizer: <=1984px
+// webp), so a resized image costs a predictable amount under vision billing.
+// Count every image block as a flat token estimate instead of its raw base64
+// length — same approach as pi (1.2k tokens/image) and codex (~1.8k
+// tokens/image). 1984px is 16 vision tiles ≈ 2.8k tokens.
+export const FLAT_IMAGE_TOKEN_ESTIMATE = 2_800;
 const TEXT_CHARS_PER_TOKEN = 4;
+
+/** Placeholder text replacing image blocks omitted from request/estimate views. */
+export const OMITTED_IMAGE_TEXT = "Image omitted from this LLM request to stay under request size limit.";
 
 /** Resolve reserveTokens for a model context window. */
 export function resolveReserveTokens(contextWindow: number): number {
@@ -37,7 +42,7 @@ function safeBlockLength(block: Record<string, unknown>): number {
 /** Estimate context tokens the way a base64-counting proxy would bill them. */
 export function estimateProxyContextTokens(messages: AgentMessage[]): number {
   let textChars = 0;
-  let base64Chars = 0;
+  let imageTokens = 0;
 
   for (const message of messages) {
     const recordMessage = message as unknown as { content?: unknown; summary?: unknown };
@@ -54,7 +59,7 @@ export function estimateProxyContextTokens(messages: AgentMessage[]): number {
       const record = block as Record<string, unknown>;
       if (record.type === "image") {
         // Data-less image blocks carry no payload to bill.
-        if (typeof record.data === "string") base64Chars += record.data.length;
+        if (typeof record.data === "string") imageTokens += FLAT_IMAGE_TOKEN_ESTIMATE;
         continue;
       }
       if (typeof record.text === "string") {
@@ -69,5 +74,5 @@ export function estimateProxyContextTokens(messages: AgentMessage[]): number {
     }
   }
 
-  return Math.ceil(textChars / TEXT_CHARS_PER_TOKEN) + Math.ceil(base64Chars / BASE64_CHARS_PER_TOKEN);
+  return Math.ceil(textChars / TEXT_CHARS_PER_TOKEN) + imageTokens;
 }
