@@ -113,7 +113,7 @@
     "build": "tsdown",
     "lint": "biome lint .",
     "lint:fix": "biome lint --write .",
-    "test": "node ../../scripts/test/run.mjs 'src/**/*.test.ts' 'tests/**/*.test.ts'",
+    "test": "node ../../scripts/test/run.mjs --test-concurrency=2 'src/**/*.test.ts' 'tests/**/*.test.ts'",
     "typecheck": "tsc -p tsconfig.json --noEmit"
   },
   "dependencies": {

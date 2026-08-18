@@ -37,7 +37,6 @@ env:
   # 运行时判断 Logto 端点（dev-auth vs auth），preview 必须落入 dev 分支
   WEB_HOSTNAME: dev-${{ github.event.pull_request.number }}-preview.cohub.live
   WEB_WORKER_NAME: cohub-web-pr-${{ github.event.pull_request.number }}
-  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
 
 jobs:
   build-images:
@@ -53,11 +52,11 @@ jobs:
       GITEA_NPM_TOKEN: ${{ secrets.GITEA_NPM_TOKEN }}
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
 
       - name: Detect changed apps
         id: changes
-        uses: dorny/paths-filter@v3
+        uses: dorny/paths-filter@v4
         with:
           filters: |
             api:
@@ -78,10 +77,10 @@ jobs:
               - 'tsconfig.base.json'
 
       - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@v3
+        uses: docker/setup-buildx-action@v4
 
       - name: Login to Docker Registry
-        uses: docker/login-action@v3
+        uses: docker/login-action@v4
         with:
           registry: ${{ env.REGISTRY }}
           username: ${{ secrets.GITEA_USERNAME }}
@@ -93,7 +92,7 @@ jobs:
           contains(fromJSON('["labeled", "reopened"]'), github.event.action) ||
           (matrix.app == 'api' && steps.changes.outputs.api == 'true') ||
           (matrix.app == 'gateway' && steps.changes.outputs.gateway == 'true')
-        uses: docker/build-push-action@v6
+        uses: docker/build-push-action@v7
         with:
           context: .
           file: ./apps/${{ matrix.app }}/Dockerfile
@@ -116,13 +115,13 @@ jobs:
       CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
 
       - name: Setup pnpm
-        uses: pnpm/action-setup@v4
+        uses: pnpm/action-setup@v6
 
       - name: Setup Node.js
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@v7
         with:
           node-version: '24'
           cache: 'pnpm'
@@ -141,7 +140,7 @@ jobs:
 
       - name: Detect changed apps
         id: changes
-        uses: dorny/paths-filter@v3
+        uses: dorny/paths-filter@v4
         with:
           filters: |
             web:
@@ -210,12 +209,12 @@ jobs:
     steps:
       # 部署脚本/模板必须来自 main（可信）；PR 的代码只以镜像 tag 形式进入
       - name: Checkout (main)
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
         with:
           ref: ${{ github.event.repository.default_branch }}
 
       - name: Setup kubectl
-        uses: azure/setup-kubectl@v3
+        uses: azure/setup-kubectl@v5
         with:
           version: 'v1.30.0'
 
@@ -226,7 +225,7 @@ jobs:
 
       - name: Detect changed apps
         id: changes
-        uses: dorny/paths-filter@v3
+        uses: dorny/paths-filter@v4
         with:
           filters: |
             api:
@@ -439,7 +438,7 @@ jobs:
           done
 
       - name: Post preview comment
-        uses: actions/github-script@v7
+        uses: actions/github-script@v9
         env:
           WEB_URL: ${{ env.WEB_URL }}
           API_HOSTNAME: ${{ env.API_HOSTNAME }}

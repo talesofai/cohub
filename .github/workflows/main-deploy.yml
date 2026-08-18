@@ -1,0 +1,192 @@
+name: Main Deploy
+
+on:
+  push:
+    branches:
+      - main
+    tags:
+      - 'v*.*.*'
+
+concurrency:
+  group: main-deploy-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: write
+
+jobs:
+  changes:
+    name: Detect deploy scope
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    outputs:
+      verify: ${{ steps.scope.outputs.verify }}
+      agent: ${{ steps.scope.outputs.agent }}
+      api: ${{ steps.scope.outputs.api }}
+      gateway: ${{ steps.scope.outputs.gateway }}
+      worker: ${{ steps.scope.outputs.worker }}
+      web: ${{ steps.scope.outputs.web }}
+      sandbox: ${{ steps.scope.outputs.sandbox }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+          ref: ${{ github.sha }}
+
+      - name: Detect changed services
+        id: scope
+        env:
+          BASE_SHA: ${{ github.event.before }}
+          HEAD_SHA: ${{ github.sha }}
+          REF: ${{ github.ref }}
+        run: |
+          set -euo pipefail
+
+          if [[ "$REF" == refs/tags/v* ]]; then
+            for service in verify agent api gateway worker web sandbox; do
+              echo "$service=true" >> "$GITHUB_OUTPUT"
+            done
+            exit 0
+          fi
+
+          base="$BASE_SHA"
+          if [[ -z "$base" || "$base" == 0000000000000000000000000000000000000000 ]]; then
+            base="$(git rev-parse "$HEAD_SHA^")"
+          fi
+
+          changed="$(git diff --name-only "$base" "$HEAD_SHA")"
+          if [[ -n "$changed" ]]; then
+            echo "Changed files:"
+            echo "$changed"
+          else
+            echo "No files changed"
+          fi
+
+          matches() {
+            printf '%s\n' "$changed" | grep -Eq "$1"
+          }
+
+          verify=false
+          if matches '^(apps/|packages/|deploy/|scripts/|\.github/workflows/|\.npmrc$|package\.json$|pnpm-lock\.yaml$|pnpm-workspace\.yaml$|tsconfig\.base\.json$|biome\.json$|LICENSE$|NOTICE$|\.dockerignore$)'; then
+            verify=true
+          fi
+
+          node_shared=false
+          if matches '^(packages/|\.npmrc$|package\.json$|pnpm-lock\.yaml$|pnpm-workspace\.yaml$|tsconfig\.base\.json$)'; then
+            node_shared=true
+          fi
+
+          container_shared=false
+          if matches '^(LICENSE$|NOTICE$|\.dockerignore$)'; then
+            container_shared=true
+          fi
+
+          agent=$node_shared
+          api=$node_shared
+          gateway=$node_shared
+          worker=$node_shared
+          web=$node_shared
+          sandbox=false
+
+          if [[ "$container_shared" == true ]]; then
+            agent=true
+            api=true
+            gateway=true
+            worker=true
+          fi
+
+          matches '^apps/agent/|^deploy/agent/|^\.github/workflows/agent-docker-build-push\.yml$' && agent=true || true
+          matches '^apps/api/|^deploy/api/|^\.github/workflows/api-docker-build-push\.yml$' && api=true || true
+          matches '^apps/gateway/|^deploy/gateway/|^\.github/workflows/gateway-docker-build-push\.yml$' && gateway=true || true
+          matches '^apps/worker/|^deploy/worker/|^\.github/workflows/worker-docker-build-push\.yml$' && worker=true || true
+          matches '^apps/web/|^\.github/workflows/web-deploy-cloudflare\.yml$' && web=true || true
+          matches '^apps/sandbox/|^\.github/workflows/sandbox-docker-build-push\.yml$' && sandbox=true || true
+
+          echo "verify=$verify" >> "$GITHUB_OUTPUT"
+          echo "agent=$agent" >> "$GITHUB_OUTPUT"
+          echo "api=$api" >> "$GITHUB_OUTPUT"
+          echo "gateway=$gateway" >> "$GITHUB_OUTPUT"
+          echo "worker=$worker" >> "$GITHUB_OUTPUT"
+          echo "web=$web" >> "$GITHUB_OUTPUT"
+          echo "sandbox=$sandbox" >> "$GITHUB_OUTPUT"
+
+  verify:
+    name: Full verification
+    needs: changes
+    if: ${{ needs.changes.outputs.verify == 'true' }}
+    uses: ./.github/workflows/verify.yml
+    secrets: inherit
+
+  deploy-agent:
+    name: Agent
+    needs: [changes, verify]
+    if: ${{ needs.changes.outputs.agent == 'true' && needs.verify.result == 'success' }}
+    uses: ./.github/workflows/agent-docker-build-push.yml
+    with:
+      source_sha: ${{ github.sha }}
+      skip_preflight: true
+    secrets: inherit
+
+  deploy-api:
+    name: API
+    needs: [changes, verify]
+    if: ${{ needs.changes.outputs.api == 'true' && needs.verify.result == 'success' }}
+    uses: ./.github/workflows/api-docker-build-push.yml
+    with:
+      source_sha: ${{ github.sha }}
+      base_sha: ${{ github.event.before }}
+      skip_preflight: true
+    secrets: inherit
+
+  deploy-gateway:
+    name: Gateway
+    needs: [changes, verify]
+    if: ${{ needs.changes.outputs.gateway == 'true' && needs.verify.result == 'success' }}
+    uses: ./.github/workflows/gateway-docker-build-push.yml
+    with:
+      source_sha: ${{ github.sha }}
+      skip_preflight: true
+    secrets: inherit
+
+  deploy-worker:
+    name: Worker
+    needs: [changes, verify]
+    if: ${{ needs.changes.outputs.worker == 'true' && needs.verify.result == 'success' }}
+    uses: ./.github/workflows/worker-docker-build-push.yml
+    with:
+      source_sha: ${{ github.sha }}
+      skip_preflight: true
+    secrets: inherit
+
+  deploy-web:
+    name: Web
+    needs: [changes, verify]
+    if: ${{ needs.changes.outputs.web == 'true' && needs.verify.result == 'success' }}
+    uses: ./.github/workflows/web-deploy-cloudflare.yml
+    with:
+      source_sha: ${{ github.sha }}
+      skip_preflight: true
+    secrets: inherit
+
+  deploy-sandbox:
+    name: Sandbox
+    needs: [changes, verify]
+    if: ${{ needs.changes.outputs.sandbox == 'true' && needs.verify.result == 'success' }}
+    uses: ./.github/workflows/sandbox-docker-build-push.yml
+    with:
+      source_sha: ${{ github.sha }}
+      skip_preflight: true
+    secrets: inherit
+
+  release-sandbox-binaries:
+    name: Sandbox binaries
+    needs: verify
+    permissions:
+      contents: write
+    if: ${{ startsWith(github.ref, 'refs/tags/v') && needs.verify.result == 'success' }}
+    uses: ./.github/workflows/sandbox-binaries-build.yml
+    with:
+      source_sha: ${{ github.sha }}
+    secrets: inherit

@@ -8,7 +8,7 @@
 		"build": "vite build",
 		"lint": "biome lint .",
 		"lint:fix": "biome lint --write .",
-		"test": "node ../../scripts/test/run.mjs --native-types --import ./scripts/register-alias.mjs 'src/tests/**/*.test.ts'",
+		"test": "node ../../scripts/test/run.mjs --native-types --test-isolation=none --import ./scripts/register-alias.mjs 'src/tests/**/*.test.ts'",
 		"typecheck": "node ../../scripts/typecheck-web.mjs",
 		"preview": "pnpm build && wrangler dev",
 		"preview:prod": "pnpm build && wrangler dev --config wrangler.prod.toml",

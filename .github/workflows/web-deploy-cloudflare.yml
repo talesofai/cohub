@@ -1,14 +1,15 @@
 name: Web Deploy to Cloudflare Workers
 
 on:
-  push:
-    branches:
-      - main
-    tags:
-      - 'v*.*.*'
-    paths:
-      - 'apps/web/**'
-      - 'packages/**'
+  workflow_call:
+    inputs:
+      source_sha:
+        required: false
+        type: string
+      skip_preflight:
+        required: false
+        type: boolean
+        default: false
   workflow_dispatch:
     inputs:
       environment:
@@ -23,9 +24,6 @@ on:
 permissions:
   contents: read
 
-env:
-  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
-
 jobs:
   deploy:
     if: ${{ !startsWith(github.ref, 'refs/tags/') || startsWith(github.ref, 'refs/tags/v') }}
@@ -34,13 +32,15 @@ jobs:
       GITEA_NPM_TOKEN: ${{ secrets.GITEA_NPM_TOKEN }}
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
+        with:
+          ref: ${{ inputs.source_sha || github.sha }}
 
       - name: Setup pnpm
-        uses: pnpm/action-setup@v4
+        uses: pnpm/action-setup@v6
 
       - name: Setup Node.js
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@v7
         with:
           node-version: '24'
           cache: 'pnpm'
@@ -101,10 +101,12 @@ jobs:
           fi
 
       - name: Lint
+        if: ${{ !inputs.skip_preflight }}
         run: pnpm lint
         working-directory: apps/web
 
       - name: Typecheck
+        if: ${{ !inputs.skip_preflight }}
         run: pnpm typecheck
         working-directory: apps/web
 

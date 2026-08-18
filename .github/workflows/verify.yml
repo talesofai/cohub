@@ -1,0 +1,100 @@
+name: Verify
+
+on:
+  workflow_call:
+
+permissions:
+  contents: read
+
+jobs:
+  js-checks:
+    name: Lint, typecheck, test, build
+    runs-on: ubuntu-latest
+    env:
+      GITEA_NPM_TOKEN: ${{ secrets.GITEA_NPM_TOKEN }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v6
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v7
+        with:
+          node-version: '24'
+          cache: 'pnpm'
+
+      - name: Configure Talesofai npm auth
+        run: |
+          if [ -z "$GITEA_NPM_TOKEN" ]; then
+            echo "GITEA_NPM_TOKEN not set; installing without private billing packages"
+          fi
+          if [ -n "$GITEA_NPM_TOKEN" ]; then
+            printf '\n//git.talesofai.com/api/packages/talesofai/npm/:_authToken=%s\n' "$GITEA_NPM_TOKEN" >> ~/.npmrc
+          fi
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Lint
+        run: pnpm lint
+
+      # Workspace packages export types/runtime from dist/, so typecheck and
+      # tests need the build artifacts present on a clean checkout.
+      - name: Setup web environment
+        working-directory: apps/web
+        run: |
+          cat > .env <<EOF
+          PUBLIC_COHUB_ENV=dev
+          PUBLIC_API_ORIGIN=https://api-dev.cohub.live
+          PUBLIC_GATEWAY_ORIGIN=https://gateway-dev.cohub.live
+          PUBLIC_PREVIEW_ORIGIN=https://preview-dev.cohub.live
+          PUBLIC_LOGTO_ENDPOINT=https://dev-auth.neta.art/
+          PUBLIC_LOGTO_APP_ID=vpikk7sl9zwvefiptowtn
+          PUBLIC_LOGTO_API_RESOURCE=https://api.talesofai
+          EOF
+
+      - name: Build
+        run: pnpm build
+
+      - name: Restore typecheck cache
+        uses: actions/cache@v6
+        with:
+          path: |
+            node_modules/.cache/tsbuildinfo
+            apps/web/.svelte-kit/.svelte-check
+          key: typecheck-v1-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('pnpm-lock.yaml', 'tsconfig.base.json', 'apps/**/tsconfig*.json', 'packages/**/tsconfig*.json', 'apps/web/svelte.config.js', 'scripts/typecheck-web.mjs') }}-${{ github.sha }}
+          restore-keys: |
+            typecheck-v1-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('pnpm-lock.yaml', 'tsconfig.base.json', 'apps/**/tsconfig*.json', 'packages/**/tsconfig*.json', 'apps/web/svelte.config.js', 'scripts/typecheck-web.mjs') }}-
+
+      - name: Typecheck
+        run: pnpm typecheck
+
+      - name: Test
+        run: pnpm test
+
+  go-checks:
+    name: Format, vet, test (sandbox)
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Setup Go
+        uses: actions/setup-go@v7
+        with:
+          go-version: '1.24'
+          cache-dependency-path: apps/sandbox/go.sum
+
+      - name: Check formatting
+        working-directory: apps/sandbox
+        run: test -z "$(gofmt -l .)"
+
+      - name: Vet
+        working-directory: apps/sandbox
+        run: go vet ./...
+
+      - name: Test
+        working-directory: apps/sandbox
+        run: go test ./...
