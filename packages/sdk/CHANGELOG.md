@@ -1,5 +1,11 @@
 # @neta-art/cohub
 
+## 5.8.2
+
+### Patch Changes
+
+- 8dcd9a4: Support direct generation mode in create-space prompts: optional `mode` and `generation` fields on `CreateSpacePromptInput`, optional `content`, and `execution` kind on immediate responses.
+
 ## 5.8.1
 
 ### Patch Changes
