@@ -286,7 +286,21 @@ export async function maybeAutoCompact(
         return { compacted: false, reason: invalidEffect };
       }
 
-      // ── 2. Session file: append compaction entry, archive, rewrite ──
+      // ── 2. Resolve turn placement before mutating the session file ──
+      // Must run before archiveAndRewrite: for in-turn cuts the current turn's
+      // user message (the only branch entry carrying meta.turnId — assistant
+      // entries never do) sits before the cut and is removed by the rewrite.
+      // Resolving afterwards leaves no entry with a turnId to resolve from,
+      // silently degrading in-turn compactions to "between_turns" and
+      // appending the compact turn at the end of the timeline.
+      const firstKeptTurnStartEntryId = handle.sessionManager.findTurnStartEntryId(firstKeptEntryId);
+      const firstKeptTurnId =
+        (firstKeptTurnStartEntryId
+          ? handle.sessionManager.getEntryTurnId(firstKeptTurnStartEntryId)
+          : null) ?? handle.sessionManager.getFirstKeptTurnId(firstKeptEntryId);
+      const { scope, ownerTurnId } = resolveCompactionScope(preparation, firstKeptTurnId);
+
+      // ── 3. Session file: append compaction entry, archive, rewrite ──
       const compactionEntryId = handle.sessionManager.appendCompaction(
         result.summary,
         firstKeptEntryId,
@@ -312,21 +326,14 @@ export async function maybeAutoCompact(
       }
       archivePathForRecovery = archivePath;
 
-      // ── 3. Rebuild agent state ──
+      // ── 4. Rebuild agent state ──
       const sessionContext = handle.sessionManager.buildSessionContext();
       handle.session.agent.state.messages = sessionContext.messages;
       await refreshSessionHandleFileSignature(handle);
 
       span.setAttribute("agent.compaction.archive_path", archivePath);
 
-      // ── 4. Resolve whether the cut is between turns or inside its containing turn ──
-      const firstKeptTurnStartEntryId = handle.sessionManager.findTurnStartEntryId(firstKeptEntryId);
-      const firstKeptTurnId =
-        (firstKeptTurnStartEntryId
-          ? handle.sessionManager.getEntryTurnId(firstKeptTurnStartEntryId)
-          : null) ?? handle.sessionManager.getFirstKeptTurnId(firstKeptEntryId);
-      const { scope, ownerTurnId } = resolveCompactionScope(preparation, firstKeptTurnId);
-
+      // ── 5. Resolve DB sequence for the compact turn ──
       let insertBeforeTurnSequence: number | null = null;
       if (scope === "between_turns") {
         if (firstKeptTurnId) {
@@ -344,7 +351,7 @@ export async function maybeAutoCompact(
         }
       }
 
-      // ── 5. DB persistence ──
+      // ── 6. DB persistence ──
       const toolContext = getCurrentToolExecutionContext();
       const dbResult = await persistCompactionEvent({
         spaceId: handle.spaceId,
