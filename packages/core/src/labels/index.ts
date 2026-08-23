@@ -221,13 +221,22 @@ export { assignSessionParticipantSystemLabels, getSessionUserLabelSystemKey, par
 export { assignSessionSourceSystemLabel, getSessionSourceLabelSystemKey, resolveKnownSessionSourceLabelSystemKey, resolveSessionSourceLabelRef, resolveSessionSourceLabelSystemKey, SESSION_SOURCE_LABEL_SYSTEM_KEY_PREFIX, SESSION_SOURCE_ROOT_LABEL_SYSTEM_KEY } from "./session-source.js";
 export { assignSessionChannelSystemLabel, getSessionChannelLabelSystemKey, parseSessionChannelLabelSystemKey, SESSION_CHANNEL_LABEL_SYSTEM_KEY_PREFIX, SESSION_CHANNEL_ROOT_LABEL_SYSTEM_KEY } from "./session-channel.js";
 export type { LabelResourceType } from "./resource-events.js";
-export type { UserLabelAssignment } from "./user-labels.js";
+export type { UserLabelAssignment, UserSpaceGroup } from "./user-labels.js";
 export {
+  buildUserSpaceGroupSnapshot,
+  createUserLabel,
+  deleteUserLabel,
   ensurePinnedLabel,
   getPinnedSpaceIds,
   getUserResourceLabelAssignments,
+  isProtectedUserLabel,
+  isReservedUserLabelName,
+  listUserLabels,
+  listUserSpaceGroups,
+  MAX_CUSTOM_USER_LABELS,
   patchUserResourceLabels,
   PINNED_LABEL_NAME,
   PINNED_LABEL_SYSTEM_KEY,
+  UserLabelError,
   USER_LABEL_SCOPE_TYPE,
 } from "./user-labels.js";

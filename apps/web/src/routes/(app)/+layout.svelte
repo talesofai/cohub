@@ -40,6 +40,7 @@ import {
 } from "$lib/navigation-transition";
 import { activateSpaceStyle, deactivateSpaceStyle } from "$lib/space-style";
 import { authStore } from "$lib/stores/auth.svelte";
+import { initSpaceGroupRealtime } from "$lib/stores/space-groups.svelte";
 import { initSpacePinRealtime } from "$lib/stores/space-pins.svelte";
 import { turnNotifications } from "$lib/stores/turn-notifications.svelte";
 import {
@@ -571,6 +572,7 @@ onMount(() => {
 			stopDesktopCommands = startDesktopCommandListener();
 		}
 		initSpacePinRealtime();
+		initSpaceGroupRealtime();
 	});
 
 	// Register PWA Service Worker (conservative update: closes all tabs to activate)

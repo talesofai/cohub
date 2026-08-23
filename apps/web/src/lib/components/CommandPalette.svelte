@@ -10,6 +10,7 @@ import {
 	Search,
 	Tag,
 	TerminalSquare,
+	X,
 } from "lucide-svelte";
 import { onMount, tick } from "svelte";
 import { goto } from "$app/navigation";
@@ -32,14 +33,33 @@ import {
 	getRemoteResourceTypes,
 	typeLabelFor,
 } from "$lib/command-palette/scope";
+import {
+	type IndexedPaletteItem,
+	SPACE_ID_MIME,
+	sectionMineSpaceItems,
+} from "$lib/command-palette/space-groups";
 import type { CommandPaletteItem } from "$lib/command-palette/types";
 import SpaceAvatar from "$lib/components/SpaceAvatar.svelte";
+import SpacePickerMineGroups from "$lib/components/SpacePickerMineGroups.svelte";
 import ToolCallList from "$lib/components/ToolCallList.svelte";
 import UserAvatar from "$lib/components/UserAvatar.svelte";
 import { isComposingKeyboardEvent } from "$lib/keyboard";
 import { sdk } from "$lib/sdk";
 import { buildUserNewSessionRoute } from "$lib/space-routes";
 import { authStore } from "$lib/stores/auth.svelte";
+import {
+	getCollapsedSpaceGroupIds,
+	setCollapsedSpaceGroupIds,
+} from "$lib/stores/space-group-collapse";
+import {
+	addSpaceToGroup,
+	createSpaceGroup,
+	deleteSpaceGroup,
+	fetchSpaceGroupsWithCache,
+	getCachedSpaceGroups,
+	onSpaceGroupsCacheUpdated,
+	removeSpaceFromGroup,
+} from "$lib/stores/space-groups.svelte";
 import {
 	fetchSpaceListWithCache,
 	getCachedSpaceListMeta,
@@ -125,6 +145,12 @@ let runPollTimer: number | null = null;
 // in space-selection mode (query starts with `a:` or intent is new-chat).
 type SpaceFilter = SpaceFilterPref;
 let spaceFilter = $state<SpaceFilter>("all");
+let spaceGroups = $state(getCachedSpaceGroups() ?? []);
+let collapsedGroupIds = $state(getCollapsedSpaceGroupIds());
+let dropTargetGroupId = $state<string | null>(null);
+let creatingGroup = $state(false);
+let createGroupName = $state("");
+let createGroupError = $state<string | null>(null);
 
 // Pagination for Space Picker mode: load larger page sizes (e.g. 50 items per page)
 // and dynamically render more as user scrolls.
@@ -230,9 +256,21 @@ const mergedItems = $derived.by(() => {
 	return mergedItemsRaw;
 });
 const isSearching = $derived(!localDone || !remoteDone || !defaultDone);
-const renderedItems = $derived(
+const baseRenderedItems = $derived(
 	mergedItems.length > 0 || !isSearching ? mergedItems : settledItems,
 );
+const mineView = $derived.by(() => {
+	if (!isSpacePickerMode || spaceFilter !== "mine" || runMode) return null;
+	return sectionMineSpaceItems({
+		items: baseRenderedItems,
+		groups: spaceGroups,
+		ownerUuid: myUserUuid,
+		query: trimmedQuery.length >= MIN_QUERY_LENGTH ? trimmedQuery : "",
+		collapsedGroupIds,
+	});
+});
+const renderedItems = $derived(mineView?.rows ?? baseRenderedItems);
+const showingMineGroups = $derived(Boolean(mineView));
 const showingSettledItems = $derived(
 	isSearching && mergedItems.length === 0 && settledItems.length > 0,
 );
@@ -264,6 +302,81 @@ function profileFor(item: CommandPaletteItem) {
 	return item.ownerProfile?.userUuid && item.ownerProfile.displayName
 		? item.ownerProfile
 		: null;
+}
+
+function resetGroupEditor() {
+	creatingGroup = false;
+	createGroupName = "";
+	createGroupError = null;
+	dropTargetGroupId = null;
+}
+
+function toggleGroupCollapsed(groupId: string) {
+	const next = new Set(collapsedGroupIds);
+	if (next.has(groupId)) next.delete(groupId);
+	else next.add(groupId);
+	collapsedGroupIds = next;
+	setCollapsedSpaceGroupIds(next);
+}
+
+async function handleCreateGroup() {
+	const name = createGroupName.trim();
+	if (!name) return;
+	createGroupError = null;
+	try {
+		await createSpaceGroup(name);
+		spaceGroups = getCachedSpaceGroups() ?? spaceGroups;
+		resetGroupEditor();
+	} catch (error) {
+		const body =
+			error && typeof error === "object" && "body" in error
+				? (error as { body?: { message?: unknown } }).body
+				: null;
+		createGroupError =
+			typeof body?.message === "string"
+				? body.message
+				: error instanceof Error
+					? error.message
+					: "Could not create group";
+	}
+}
+
+async function handleDeleteGroup(name: string) {
+	try {
+		await deleteSpaceGroup(name);
+		spaceGroups = getCachedSpaceGroups() ?? spaceGroups;
+	} catch (error) {
+		console.warn("[palette] delete group failed", error);
+	}
+}
+
+async function handleDropSpaceOnGroup(groupId: string, spaceId: string) {
+	const group = spaceGroups.find((item) => item.id === groupId);
+	if (!group || group.spaceIds.includes(spaceId)) return;
+	try {
+		await addSpaceToGroup(spaceId, group.name);
+		spaceGroups = getCachedSpaceGroups() ?? spaceGroups;
+	} catch (error) {
+		console.warn("[palette] add to group failed", error);
+	}
+}
+
+async function handleRemoveSpaceFromGroup(spaceId: string, groupId: string) {
+	const group = spaceGroups.find((item) => item.id === groupId);
+	if (!group) return;
+	try {
+		await removeSpaceFromGroup(spaceId, group.name);
+		spaceGroups = getCachedSpaceGroups() ?? spaceGroups;
+	} catch (error) {
+		console.warn("[palette] remove from group failed", error);
+	}
+}
+
+function handleSpaceDragStart(event: DragEvent, spaceId: string) {
+	if (!event.dataTransfer) return;
+	event.dataTransfer.setData(SPACE_ID_MIME, spaceId);
+	event.dataTransfer.setData("text/plain", spaceId);
+	event.dataTransfer.effectAllowed = "copy";
 }
 
 function armPointerHover() {
@@ -367,6 +480,9 @@ function openPalette(detail?: OpenCommandPaletteDetail) {
 	query = detail?.query ?? "";
 	openIntent = detail?.intent ?? "navigate";
 	spaceFilter = getCachedSpaceFilterPref();
+	spaceGroups = getCachedSpaceGroups() ?? spaceGroups;
+	collapsedGroupIds = getCollapsedSpaceGroupIds();
+	resetGroupEditor();
 	forceSpaceRefreshForNextSearch = Boolean(detail?.refreshSpaces);
 	activeIndex = 0;
 	armPointerHover();
@@ -382,6 +498,7 @@ function closePalette() {
 	placeholder = DEFAULT_PLACEHOLDER;
 	openIntent = "navigate";
 	spaceFilter = getCachedSpaceFilterPref();
+	resetGroupEditor();
 	activeIndex = 0;
 	settledItems = [];
 	refreshingSpaces = false;
@@ -724,6 +841,19 @@ $effect(() => {
 });
 
 $effect(() => {
+	if (!open || !isSpacePickerMode || runMode) return;
+	const cached = getCachedSpaceGroups();
+	if (cached) spaceGroups = cached;
+	void fetchSpaceGroupsWithCache()
+		.then((groups) => {
+			spaceGroups = groups;
+		})
+		.catch((error) => {
+			console.warn("[command-palette] space groups refresh failed", error);
+		});
+});
+
+$effect(() => {
 	if (mergedItems.length > 0 || !isSearching) settledItems = mergedItems;
 });
 
@@ -746,6 +876,9 @@ onMount(() => {
 	const offSpaceListCache = onSpaceListCacheUpdated(() => {
 		if (open && !runMode) spaceListRefreshToken += 1;
 	});
+	const offSpaceGroupsCache = onSpaceGroupsCacheUpdated(({ groups }) => {
+		spaceGroups = groups;
+	});
 	return () => {
 		window.removeEventListener("keydown", handleGlobalKeydown, {
 			capture: true,
@@ -755,6 +888,7 @@ onMount(() => {
 			handleOpenPaletteEvent,
 		);
 		offSpaceListCache();
+		offSpaceGroupsCache();
 		localController?.abort();
 		remoteController?.abort();
 		if (debounceTimer != null) window.clearTimeout(debounceTimer);
@@ -835,7 +969,100 @@ onMount(() => {
 				</div>
 			{:else}
 				<div bind:this={resultsEl} class:searching={showingSettledItems} class="command-results" role="listbox" aria-label="Search results" onscroll={handleResultsScroll}>
-					{#if renderedItems.length === 0}
+					{#snippet paletteRow(item: CommandPaletteItem, index: number, groupId: string | null)}
+						{@const meta = typeMeta(item.type)}
+						{@const Icon = meta.icon}
+						{@const profile = profileFor(item)}
+						{@const timestamp = itemTimestamp(item)}
+						<div
+							class:active={index === activeIndex}
+							class="command-result"
+							onpointermove={() => handleResultPointerMove(index)}
+							role="option"
+							aria-selected={index === activeIndex}
+							tabindex="-1"
+						>
+							<button
+								type="button"
+								class="command-result-main"
+								draggable={showingMineGroups && item.type === "space"}
+								onclick={() => void activate(item)}
+								ondragstart={(event) => {
+									if (item.type !== "space") return;
+									handleSpaceDragStart(event, item.spaceId);
+								}}
+							>
+								{#if item.type === "space"}
+									<SpaceAvatar name={item.title || item.spaceName || item.spaceId} profile={item.spaceProfile} size="sm" />
+								{:else}
+									<div class={`command-type-mark ${meta.className}`} aria-label={item.type}>
+										<Icon class="h-3.5 w-3.5" />
+									</div>
+								{/if}
+								<div class="min-w-0 flex-1 text-left">
+									<div class="flex min-w-0 items-center gap-2">
+										<span class="truncate text-[13px] font-medium text-text-primary">{item.title}</span>
+									</div>
+									<div class="command-context-row">
+										{#if profile}
+											<span class="command-profile" title={profile.displayName}>
+												<UserAvatar name={profile.displayName} avatarUrl={profile.avatarUrl} size="xxs" class="border-0 bg-bg-primary text-[8px]" />
+												<span class="truncate">{profile.displayName}</span>
+											</span>
+											<span class="command-context-separator">·</span>
+										{/if}
+										<span class="command-context" title={contextFor(item)}>{contextFor(item)}</span>
+										{#if timestamp}
+											<span class="command-context-separator">·</span>
+											<time class="command-time" datetime={item.updatedAt ?? undefined} title={timestamp.title}>{timestamp.label}</time>
+										{/if}
+									</div>
+								</div>
+								<div class="command-enter">↵</div>
+							</button>
+							{#if showingMineGroups && groupId && item.type === "space"}
+								<button
+									type="button"
+									class="command-pin-btn command-ungroup-btn"
+									title={`Remove from group`}
+									aria-label={`Remove ${item.title} from group`}
+									onclick={(event) => {
+										event.stopPropagation();
+										void handleRemoveSpaceFromGroup(item.spaceId, groupId);
+									}}
+								>
+									<X class="h-3.5 w-3.5" />
+								</button>
+							{/if}
+							{#if isSpacePickerMode && item.type === "space"}
+								<button
+									type="button"
+									class="command-pin-btn"
+									class:pinned={item.isPinned}
+									title={item.isPinned ? "Unpin" : "Pin"}
+									aria-label={item.isPinned ? `Unpin ${item.title}` : `Pin ${item.title}`}
+									onclick={(e) => {
+								e.stopPropagation();
+								const wasPinned = item.isPinned ?? false;
+								syncPinStateInItems(item.spaceId, !wasPinned);
+								void toggleSpacePin(item.spaceId).catch((err) => {
+									console.warn("[palette] pin toggle failed", err);
+									syncPinStateInItems(item.spaceId, wasPinned);
+								});
+							}}
+								>
+									<Pin class="h-3.5 w-3.5" />
+								</button>
+							{/if}
+						</div>
+					{/snippet}
+					{#snippet mineCommandRow(row: IndexedPaletteItem)}
+						{@render paletteRow(row.item, row.index, null)}
+					{/snippet}
+					{#snippet mineSpaceRow(row: IndexedPaletteItem, groupId: string | null)}
+						{@render paletteRow(row.item, row.index, groupId)}
+					{/snippet}
+					{#if renderedItems.length === 0 && !mineView?.sections.length}
 						<div class="command-empty">
 							<div class="command-empty-mark"><CornerDownRight class="h-4 w-4" /></div>
 							<div>
@@ -853,6 +1080,8 @@ onMount(() => {
 								<div class="mt-1 text-[12px] text-text-tertiary">
 									{#if isSpacePickerMode && spaceFilter === "pinned"}
 										Pin a space to bookmark it here.
+									{:else if isSpacePickerMode && spaceFilter === "mine"}
+										Create a group to organize the Spaces you own.
 									{:else if trimmedQuery.length < MIN_QUERY_LENGTH && !hasLabelScope}
 										Try label:bug for labels, a: for spaces, or t: for turns.
 									{:else}
@@ -861,74 +1090,57 @@ onMount(() => {
 								</div>
 							</div>
 						</div>
+						{#if showingMineGroups}
+							<SpacePickerMineGroups
+								commands={[]}
+								sections={[]}
+								ungrouped={[]}
+								{collapsedGroupIds}
+								dropTargetId={dropTargetGroupId}
+								creating={creatingGroup}
+								createName={createGroupName}
+								createError={createGroupError}
+								commandRow={mineCommandRow}
+								spaceRow={mineSpaceRow}
+								onToggleCollapsed={toggleGroupCollapsed}
+								onDeleteGroup={(name) => void handleDeleteGroup(name)}
+								onDropSpace={(groupId, spaceId) => void handleDropSpaceOnGroup(groupId, spaceId)}
+								onDragOverGroup={(groupId) => { dropTargetGroupId = groupId; }}
+								onStartCreate={() => { creatingGroup = true; createGroupError = null; }}
+								onCancelCreate={resetGroupEditor}
+								onCreateNameInput={(value) => { createGroupName = value; }}
+								onSubmitCreate={() => void handleCreateGroup()}
+							/>
+						{/if}
+					{:else if showingMineGroups && mineView}
+						<SpacePickerMineGroups
+							commands={mineView.commands}
+							sections={mineView.sections}
+							ungrouped={mineView.ungrouped}
+							{collapsedGroupIds}
+							dropTargetId={dropTargetGroupId}
+							creating={creatingGroup}
+							createName={createGroupName}
+							createError={createGroupError}
+							commandRow={mineCommandRow}
+							spaceRow={mineSpaceRow}
+							onToggleCollapsed={toggleGroupCollapsed}
+							onDeleteGroup={(name) => void handleDeleteGroup(name)}
+							onDropSpace={(groupId, spaceId) => void handleDropSpaceOnGroup(groupId, spaceId)}
+							onDragOverGroup={(groupId) => { dropTargetGroupId = groupId; }}
+							onStartCreate={() => { creatingGroup = true; createGroupError = null; }}
+							onCancelCreate={resetGroupEditor}
+							onCreateNameInput={(value) => { createGroupName = value; }}
+							onSubmitCreate={() => void handleCreateGroup()}
+						/>
+						{#if isSpacePickerMode && mergedItemsRaw.length > spaceDisplayLimit}
+							<div class="flex items-center justify-center py-2 text-[11px] text-text-tertiary">
+								<span>Showing {spaceDisplayLimit} of {mergedItemsRaw.length} spaces · scroll for more</span>
+							</div>
+						{/if}
 					{:else}
 						{#each renderedItems as item, index (`${item.type}:${item.id || item.turnId || item.sessionId || item.spaceId}`)}
-							{@const meta = typeMeta(item.type)}
-							{@const Icon = meta.icon}
-							{@const profile = profileFor(item)}
-							{@const timestamp = itemTimestamp(item)}
-							<div
-								class:active={index === activeIndex}
-								class="command-result"
-								onpointermove={() => handleResultPointerMove(index)}
-								role="option"
-								aria-selected={index === activeIndex}
-								tabindex="-1"
-							>
-								<button
-									type="button"
-									class="command-result-main"
-									onclick={() => void activate(item)}
-								>
-									{#if item.type === "space"}
-										<SpaceAvatar name={item.title || item.spaceName || item.spaceId} profile={item.spaceProfile} size="sm" />
-									{:else}
-										<div class={`command-type-mark ${meta.className}`} aria-label={item.type}>
-											<Icon class="h-3.5 w-3.5" />
-										</div>
-									{/if}
-									<div class="min-w-0 flex-1 text-left">
-										<div class="flex min-w-0 items-center gap-2">
-											<span class="truncate text-[13px] font-medium text-text-primary">{item.title}</span>
-										</div>
-										<div class="command-context-row">
-											{#if profile}
-												<span class="command-profile" title={profile.displayName}>
-													<UserAvatar name={profile.displayName} avatarUrl={profile.avatarUrl} size="xxs" class="border-0 bg-bg-primary text-[8px]" />
-													<span class="truncate">{profile.displayName}</span>
-												</span>
-												<span class="command-context-separator">·</span>
-											{/if}
-											<span class="command-context" title={contextFor(item)}>{contextFor(item)}</span>
-											{#if timestamp}
-												<span class="command-context-separator">·</span>
-												<time class="command-time" datetime={item.updatedAt ?? undefined} title={timestamp.title}>{timestamp.label}</time>
-											{/if}
-										</div>
-									</div>
-									<div class="command-enter">↵</div>
-								</button>
-								{#if isSpacePickerMode && item.type === "space"}
-									<button
-										type="button"
-										class="command-pin-btn"
-										class:pinned={item.isPinned}
-										title={item.isPinned ? "Unpin" : "Pin"}
-										aria-label={item.isPinned ? `Unpin ${item.title}` : `Pin ${item.title}`}
-										onclick={(e) => {
-									e.stopPropagation();
-									const wasPinned = item.isPinned ?? false;
-									syncPinStateInItems(item.spaceId, !wasPinned);
-									void toggleSpacePin(item.spaceId).catch((err) => {
-										console.warn("[palette] pin toggle failed", err);
-										syncPinStateInItems(item.spaceId, wasPinned);
-									});
-								}}
-									>
-										<Pin class="h-3.5 w-3.5" />
-									</button>
-								{/if}
-							</div>
+							{@render paletteRow(item, index, null)}
 						{/each}
 						{#if isSpacePickerMode && mergedItemsRaw.length > spaceDisplayLimit}
 							<div class="flex items-center justify-center py-2 text-[11px] text-text-tertiary">
@@ -1084,6 +1296,10 @@ onMount(() => {
 	.command-pin-btn.pinned {
 		opacity: 1;
 		color: var(--brand);
+	}
+
+	.command-ungroup-btn:hover {
+		color: var(--error-700);
 	}
 
 	.command-pin-btn:hover {
@@ -1339,6 +1555,10 @@ onMount(() => {
 		.command-pin-btn:not(.pinned) {
 			width: 44px;
 			height: 44px;
+			opacity: 1;
+		}
+
+		.command-ungroup-btn {
 			opacity: 1;
 		}
 

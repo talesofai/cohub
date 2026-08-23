@@ -515,18 +515,28 @@ export function registerSpaces(program: Command): void {
     .description("List all spaces")
     .option("--mine", "Only spaces you own")
     .option("--pinned", "Only pinned spaces")
+    .option("--group <name>", "Only spaces in this personal group")
     .option("--json", "Output as JSON")
-    .action(async (opts: { mine?: boolean; pinned?: boolean; json?: boolean }) => {
+    .action(async (opts: { mine?: boolean; pinned?: boolean; group?: string; json?: boolean }) => {
       const client = createClient();
       try {
-        const [items, me] = await Promise.all([
+        const [items, me, groups] = await Promise.all([
           client.spaces.list(),
           opts.mine ? client.user.getMe() : Promise.resolve(null),
+          opts.group ? client.user.labels.listSpaceGroups() : Promise.resolve(null),
         ]);
         const myUuid = me?.uuid ?? null;
+        const groupName = opts.group?.trim().toLowerCase() ?? "";
+        const groupSpaceIds = groupName
+          ? new Set(groups?.groups.find((group) => group.name.toLowerCase() === groupName)?.spaceIds ?? [])
+          : null;
+        if (opts.group && groupSpaceIds && !groups?.groups.some((group) => group.name.toLowerCase() === groupName)) {
+          return error("Group not found", `No personal group named "${opts.group.trim()}".`);
+        }
         const filtered = items.filter((item) => {
           if (opts.mine && myUuid && item.userUuid !== myUuid) return false;
           if (opts.pinned && !item.isPinned) return false;
+          if (groupSpaceIds && !groupSpaceIds.has(item.id)) return false;
           return true;
         });
         if (jsonRequested(opts)) return outJson(filtered);
@@ -748,6 +758,90 @@ export function registerSpaces(program: Command): void {
       try {
         await client.user.labels.patchResourceLabels("space", id.trim(), { removeLabelRefs: ["Pinned"] });
         ok("Space unpinned");
+      } catch (e: unknown) {
+        handleHttp(e);
+      }
+    });
+
+  // ── spaces groups (personal user-scope labels; not Space-scoped labels) ──
+  const groupsCmd = spacesCmd
+    .command("groups")
+    .description("Manage personal Space groups");
+
+  groupsCmd
+    .command("ls")
+    .alias("list")
+    .description("List personal Space groups")
+    .option("--json", "Output as JSON")
+    .action(async (opts: { json?: boolean }) => {
+      const client = createClient();
+      try {
+        const result = await client.user.labels.listSpaceGroups();
+        if (jsonRequested(opts)) return outJson(result.groups);
+        table(result.groups.map((group) => ({
+          name: group.name,
+          systemKey: group.systemKey ?? "",
+          spaces: group.spaceIds.length,
+        })), [
+          { key: "name", label: "Name" },
+          { key: "systemKey", label: "System" },
+          { key: "spaces", label: "Spaces" },
+        ]);
+      } catch (e: unknown) {
+        handleHttp(e);
+      }
+    });
+
+  groupsCmd
+    .command("create <name>")
+    .description("Create a personal Space group")
+    .option("--json", "Output as JSON")
+    .action(async (name: string, opts: { json?: boolean }) => {
+      const client = createClient();
+      try {
+        const result = await client.user.labels.create(name);
+        if (jsonRequested(opts)) return outJson(result.label);
+        ok(`Group "${result.label.name}" created`);
+      } catch (e: unknown) {
+        handleHttp(e);
+      }
+    });
+
+  groupsCmd
+    .command("rm <name>")
+    .alias("delete")
+    .description("Delete a personal Space group")
+    .action(async (name: string) => {
+      const client = createClient();
+      try {
+        await client.user.labels.remove(name);
+        ok(`Group "${name}" deleted`);
+      } catch (e: unknown) {
+        handleHttp(e);
+      }
+    });
+
+  groupsCmd
+    .command("add <name> <id>")
+    .description("Add a space to a personal group")
+    .action(async (name: string, id: string) => {
+      const client = createClient();
+      try {
+        await client.user.labels.patchResourceLabels("space", id.trim(), { addLabelRefs: [name] });
+        ok(`Space added to "${name}"`);
+      } catch (e: unknown) {
+        handleHttp(e);
+      }
+    });
+
+  groupsCmd
+    .command("remove <name> <id>")
+    .description("Remove a space from a personal group")
+    .action(async (name: string, id: string) => {
+      const client = createClient();
+      try {
+        await client.user.labels.patchResourceLabels("space", id.trim(), { removeLabelRefs: [name] });
+        ok(`Space removed from "${name}"`);
       } catch (e: unknown) {
         handleHttp(e);
       }

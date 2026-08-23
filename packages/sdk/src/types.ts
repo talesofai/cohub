@@ -1398,6 +1398,15 @@ export type LabelListItem = LabelRecord & {
   children?: LabelListItem[];
 };
 
+/** Personal Space group — a user-scope label plus ordered space assignment ids. */
+export type UserSpaceGroup = {
+  id: string;
+  name: string;
+  systemKey: string | null;
+  rank: number;
+  spaceIds: string[];
+};
+
 export type LabelAssignmentRecord = {
   id: string;
   labelId: string;

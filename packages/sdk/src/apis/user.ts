@@ -1,5 +1,5 @@
 import { HttpError, type HttpTransport, type Fetch } from "../transport.js";
-import type { LabelAssignmentRecord, LabelResourceType, MeResponse, SessionRecord, SpaceRecord, UserActivityQuery, UserActivityResponse, UserProfile, UserRulesResponse, UserSessionsResponse } from "../types.js";
+import type { LabelAssignmentRecord, LabelRecord, LabelResourceType, MeResponse, SessionRecord, SpaceRecord, UserActivityQuery, UserActivityResponse, UserProfile, UserRulesResponse, UserSessionsResponse, UserSpaceGroup } from "../types.js";
 
 const usageDate = (value: string | Date) => value instanceof Date ? value.toISOString() : value;
 
@@ -122,5 +122,28 @@ export class UserLabelsApi {
         body: JSON.stringify(input),
       },
     );
+  }
+
+  list() {
+    return this.transport.request<{ labels: LabelRecord[] }>("/api/me/labels");
+  }
+
+  create(name: string) {
+    return this.transport.request<{ label: LabelRecord }>("/api/me/labels", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ name }),
+    });
+  }
+
+  remove(name: string) {
+    const params = new URLSearchParams({ name });
+    return this.transport.request<{ ok: true }>(`/api/me/labels?${params.toString()}`, {
+      method: "DELETE",
+    });
+  }
+
+  listSpaceGroups() {
+    return this.transport.request<{ groups: UserSpaceGroup[] }>("/api/me/space-groups");
   }
 }

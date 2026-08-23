@@ -1,9 +1,14 @@
-import { Hono } from "hono";
+import { Hono, type Context } from "hono";
 import { db } from "../db/index.js";
 import { useAuth, requireValidId } from "../lib/middleware.js";
 import {
+  createUserLabel,
+  deleteUserLabel,
   getUserResourceLabelAssignments,
+  listUserLabels,
+  listUserSpaceGroups,
   patchUserResourceLabels,
+  UserLabelError,
 } from "@cohub/core/labels";
 import type { LabelResourceType } from "@cohub/core/labels";
 import { hasPermission } from "../permissions.js";
@@ -17,6 +22,14 @@ const MAX_LABEL_REFS = 20;
 
 function parseResourceType(value: string): LabelResourceType | null {
   return RESOURCE_TYPES.has(value as LabelResourceType) ? value as LabelResourceType : null;
+}
+
+function userLabelHttpError(c: Context, error: unknown) {
+  if (error instanceof UserLabelError) {
+    if (error.kind === "not_found") return c.json({ message: error.message }, 404);
+    return c.json({ message: error.message }, 409);
+  }
+  return c.json({ message: error instanceof Error ? error.message : String(error) }, 400);
 }
 
 function parseLabelRefs(value: unknown): string[] | null {
@@ -79,6 +92,69 @@ router.patch("/resources/:resourceType/labels", async (c) => {
   );
   await dispatchUserLabelAssignmentsUpdated(user.uuid, resourceType, resourceRef, assignments.map((a) => a.labelId));
   return c.json({ assignments });
+});
+
+/**
+ * GET /api/me/labels
+ * List the viewer's private user-scope labels, including the built-in Pinned label when present.
+ * Auth-only: this is private viewer data, never another user's labels.
+ */
+router.get("/labels", async (c) => {
+  const user = useAuth(c);
+  if (user instanceof Response) return user;
+  const labels = await listUserLabels(db, user.uuid);
+  return c.json({ labels });
+});
+
+/**
+ * POST /api/me/labels
+ * Create a custom user-scope label (empty group). Body: { name }
+ * Refuses reserved Pinned; idempotent if the name already exists.
+ */
+router.post("/labels", async (c) => {
+  const user = useAuth(c);
+  if (user instanceof Response) return user;
+  const body = await c.req.json().catch(() => null);
+  if (!body || typeof body !== "object") return c.json({ message: "invalid json body" }, 400);
+  const name = (body as { name?: unknown }).name;
+  if (typeof name !== "string") return c.json({ message: "name is required" }, 400);
+  try {
+    const label = await db.transaction((tx) => createUserLabel(tx, user.uuid, name));
+    await dispatchUserLabelAssignmentsUpdated(user.uuid, "space", "", [label.id]);
+    return c.json({ label }, 201);
+  } catch (error) {
+    return userLabelHttpError(c, error);
+  }
+});
+
+/**
+ * DELETE /api/me/labels?name=
+ * Delete a custom user-scope label and its assignments. Refuses Pinned.
+ */
+router.delete("/labels", async (c) => {
+  const user = useAuth(c);
+  if (user instanceof Response) return user;
+  const name = c.req.query("name")?.trim() ?? "";
+  if (!name) return c.json({ message: "name is required" }, 400);
+  try {
+    const label = await db.transaction((tx) => deleteUserLabel(tx, user.uuid, name));
+    await dispatchUserLabelAssignmentsUpdated(user.uuid, "space", "", [label.id]);
+    return c.json({ ok: true });
+  } catch (error) {
+    return userLabelHttpError(c, error);
+  }
+});
+
+/**
+ * GET /api/me/space-groups
+ * Snapshot of the viewer's user labels with ordered space assignment ids.
+ * Includes Pinned when it exists; Mine UI hides systemKey === 'user:pinned'.
+ */
+router.get("/space-groups", async (c) => {
+  const user = useAuth(c);
+  if (user instanceof Response) return user;
+  const groups = await listUserSpaceGroups(db, user.uuid);
+  return c.json({ groups });
 });
 
 /**
