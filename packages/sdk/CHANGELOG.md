@@ -1,5 +1,11 @@
 # @neta-art/cohub
 
+## 8.0.1
+
+### Patch Changes
+
+- 7e0f977: Align the realtime event domain for desktop commands: introduce a dedicated `desktop` domain in `REALTIME_DOMAINS` (distinct from `ui`) so `DesktopCommandDispatchedEvent` routes correctly, and add a compile-time assertion that every realtime server event carries a valid domain.
+
 ## 8.0.0
 
 ### Major Changes
