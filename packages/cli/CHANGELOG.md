@@ -1,5 +1,29 @@
 # @neta-art/cohub-cli
 
+## 6.0.0
+
+### Major Changes
+
+- 5c0c0b2: Rename the Work commands to App/Desktop vocabulary in the CLI.
+
+  **Breaking changes**
+
+  - `cohub apps` is the canonical command for managing published Apps (replacing `cohub works`).
+  - `cohub desktop open` is the canonical command for opening a surface/tab (replacing `cohub ui preview`).
+
+  **Compatibility**
+
+  - `cohub works` and `cohub ui preview` remain as deprecated aliases, so existing scripts and muscle-memory keep working until the next breaking release.
+  - The CLI now reads and writes the canonical App wire vocabulary end to end.
+
+### Patch Changes
+
+- Updated dependencies [53ca326]
+- Updated dependencies [ef6d8dd]
+- Updated dependencies [8bfcc4e]
+- Updated dependencies [5c0c0b2]
+  - @neta-art/cohub@8.0.0
+
 ## 5.0.0
 
 ### Major Changes
