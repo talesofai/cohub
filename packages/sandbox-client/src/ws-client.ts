@@ -126,12 +126,19 @@ type SandboxStatusHooks = {
   onRefreshWsUrl?: (input: { spaceId: string; currentWsUrl: string; error?: Error }) => string | null | Promise<string | null>;
 };
 
+type SandboxClientRun = {
+  generation: number;
+  controller: AbortController;
+};
+
 type SandboxClientRegistration = {
   spaceId: string;
   wsUrl: string;
   identity: string;
   headers?: Record<string, string>;
   started: boolean;
+  generation: number;
+  activeRun: SandboxClientRun | null;
   connection: SandboxConnection | null;
   resolveWaiters: Array<(connection: SandboxConnection) => void>;
   hooks?: SandboxStatusHooks;
@@ -369,6 +376,8 @@ function getOrCreateRegistration(spaceId: string, wsUrl: string, identity: strin
     identity,
     headers,
     started: false,
+    generation: 0,
+    activeRun: null,
     connection: null,
     resolveWaiters: [],
     hooks,
@@ -417,20 +426,45 @@ export async function waitForSandboxConnection(spaceId: string, timeoutMs = 3000
   });
 }
 
+function isCurrentRun(registration: SandboxClientRegistration, run: SandboxClientRun) {
+  return registration.started
+    && registration.activeRun === run
+    && registration.generation === run.generation
+    && !run.controller.signal.aborted;
+}
+
 export async function startSandboxWsClient(input: { spaceId: string; wsUrl: string; identity: string; headers?: Record<string, string>; hooks?: SandboxStatusHooks }) {
   const spaceId = input.spaceId;
   const wsUrl = input.wsUrl;
   const registration = getOrCreateRegistration(spaceId, wsUrl, input.identity, input.headers, input.hooks);
   if (registration.started) return;
-  registration.started = true;
 
-  void runLoop(registration);
+  const run: SandboxClientRun = {
+    generation: registration.generation + 1,
+    controller: new AbortController(),
+  };
+  registration.started = true;
+  registration.generation = run.generation;
+  registration.activeRun = run;
+
+  void runLoop(registration, run)
+    .catch((error) => {
+      logger.error(`[SandboxWS] Client run failed for ${registration.spaceId}:`, error);
+    })
+    .finally(() => {
+      if (registration.activeRun !== run) return;
+      registration.started = false;
+      registration.activeRun = null;
+    });
 }
 
 export function disconnectSandboxWsClient(spaceId: string, reason = "ownership lost") {
   const registration = registrations.get(spaceId);
   if (!registration) return;
+  const activeRun = registration.activeRun;
   registration.started = false;
+  registration.generation += 1;
+  registration.activeRun = null;
   const previous = registration.connection;
   setActiveConnection(spaceId, null);
 
@@ -456,6 +490,7 @@ export function disconnectSandboxWsClient(spaceId: string, reason = "ownership l
   }
 
   previous?.close(reason);
+  activeRun?.controller.abort();
   logger.info(`[SandboxWS] disconnect spaceId=${spaceId} reason=${reason}`);
   callHookSafely(spaceId, "onDisconnected", () => registration.hooks?.onDisconnected?.({ spaceId, reason }));
 }
@@ -468,16 +503,18 @@ export function hasPendingSandboxRequests(spaceId: string) {
   return (registrations.get(spaceId)?.pendingByRequestId.size ?? 0) > 0;
 }
 
-async function runLoop(registration: SandboxClientRegistration) {
+async function runLoop(registration: SandboxClientRegistration, run: SandboxClientRun) {
   let attempt = 0;
   let lastRefreshAt = 0;
 
   for (;;) {
-    if (!registration.started) return;
+    if (!isCurrentRun(registration, run)) return;
     try {
-      await connectOnce(registration);
+      await connectOnce(registration, run);
+      if (!isCurrentRun(registration, run)) return;
       attempt = 0;
     } catch (error) {
+      if (!isCurrentRun(registration, run)) return;
       logger.error(`[SandboxWS] Client loop failed for ${registration.spaceId}:`, error);
       attempt += 1;
       if (error instanceof Error) {
@@ -499,6 +536,7 @@ async function runLoop(registration: SandboxClientRegistration) {
           logger.warn(`[SandboxWS] wsUrl refresh failed spaceId=${registration.spaceId}:`, refreshError);
           return null;
         });
+        if (!isCurrentRun(registration, run)) return;
         if (nextWsUrl && nextWsUrl !== currentWsUrl) {
           registration.wsUrl = nextWsUrl;
           attempt = 0;
@@ -507,41 +545,77 @@ async function runLoop(registration: SandboxClientRegistration) {
       }
     }
 
-    if (!registration.started) return;
+    if (!isCurrentRun(registration, run)) return;
     const delayMs = RECONNECT_DELAYS_MS[Math.min(Math.max(attempt - 1, 0), RECONNECT_DELAYS_MS.length - 1)];
-    await sleep(delayMs);
+    try {
+      await sleep(delayMs, undefined, { signal: run.controller.signal });
+    } catch (error) {
+      if (run.controller.signal.aborted) return;
+      throw error;
+    }
   }
 }
 
-async function connectOnce(registration: SandboxClientRegistration) {
+async function connectOnce(registration: SandboxClientRegistration, run: SandboxClientRun) {
   await new Promise<void>((resolve, reject) => {
     const socket = new WebSocket(registration.wsUrl, registration.headers ? { headers: registration.headers } : undefined);
+    const signal = run.controller.signal;
     let heartbeat: SandboxHeartbeat | null = null;
     let connection: SandboxConnection | null = null;
     let attached = false;
     let settled = false;
     let attachSent = false;
+    let onAbort: (() => void) | null = null;
     const attachRequestId = randomUUID();
 
     const isActiveConnection = () => registrations.get(registration.spaceId)?.connection === connection;
+    const cleanupAbortListener = () => {
+      if (onAbort) signal.removeEventListener("abort", onAbort);
+    };
 
     const finishResolve = () => {
       if (settled) return;
       settled = true;
+      cleanupAbortListener();
       resolve();
     };
 
     const finishReject = (error: Error) => {
       if (settled) return;
       settled = true;
+      cleanupAbortListener();
       reject(error);
     };
 
+    const closeSupersededSocket = () => {
+      if (socket.readyState === WebSocket.CONNECTING) {
+        socket.terminate();
+      } else if (socket.readyState === WebSocket.OPEN) {
+        socket.close(1000, "sandbox client superseded");
+      }
+    };
+
+    onAbort = () => {
+      closeSupersededSocket();
+      finishResolve();
+    };
+    signal.addEventListener("abort", onAbort, { once: true });
+
     socket.on("open", () => {
+      if (!isCurrentRun(registration, run)) {
+        closeSupersededSocket();
+        finishResolve();
+        return;
+      }
       logger.info(`[SandboxWS] Connected ${registration.spaceId} to ${registration.wsUrl}`);
     });
 
     socket.on("message", (data: RawData) => {
+      if (!isCurrentRun(registration, run)) {
+        closeSupersededSocket();
+        finishResolve();
+        return;
+      }
       try {
         const raw = typeof data === "string" ? data : data.toString("utf8");
         const message = JSON.parse(raw) as AgentSandboxMessage;
@@ -638,14 +712,21 @@ async function connectOnce(registration: SandboxClientRegistration) {
       connection?.dispose();
       const reasonStr = reason?.toString() || "unknown";
       const isActive = isActiveConnection();
+      const isCurrent = isCurrentRun(registration, run);
       if (isActive) {
         setActiveConnection(registration.spaceId, null);
-        callHookSafely(registration.spaceId, "onDisconnected", () => registration.hooks?.onDisconnected?.({
-          spaceId: registration.spaceId,
-          reason: reasonStr,
-        }));
+        if (isCurrent) {
+          callHookSafely(registration.spaceId, "onDisconnected", () => registration.hooks?.onDisconnected?.({
+            spaceId: registration.spaceId,
+            reason: reasonStr,
+          }));
+        }
       }
       if (!attached) {
+        if (!isCurrent) {
+          finishResolve();
+          return;
+        }
         logger.warn(`[SandboxWS] closed before attach spaceId=${registration.spaceId} reason=${reasonStr}`);
         finishReject(new Error(`Sandbox websocket closed before attach: ${reasonStr}`));
         return;
@@ -659,6 +740,10 @@ async function connectOnce(registration: SandboxClientRegistration) {
     });
 
     socket.on("error", (error: Error) => {
+      if (!isCurrentRun(registration, run)) {
+        finishResolve();
+        return;
+      }
       logger.error(`[SandboxWS] Socket error for ${registration.spaceId}:`, error);
       const normalizedError = error instanceof Error ? error : new Error(String(error));
       connection?.dispose(normalizedError);
