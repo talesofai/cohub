@@ -1,5 +1,11 @@
 # @neta-art/cohub
 
+## 8.2.0
+
+### Minor Changes
+
+- 5d2a4b7: Export `AppViewerGrantRecord` from the package root so apps can type the rows returned by `apps.listMyGrants()` without redefining them locally.
+
 ## 8.1.0
 
 ### Minor Changes
