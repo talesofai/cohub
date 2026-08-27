@@ -988,7 +988,6 @@
 	"model_avail_latency_value": "{avg} avg · {p90} p90",
 	"model_avail_checked": "Checked",
 	"model_avail_every_seconds": " · every {s}s",
-	"model_avail_samples": "Samples 1h",
 	"model_avail_no_status": "No status data available for this model yet.",
 	"model_avail_ago_s": "{n}s ago",
 	"model_avail_ago_m": "{n}m ago",

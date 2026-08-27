@@ -1,4 +1,4 @@
-/** Per-model availability status, derived from periodic probe results. */
+/** Per-model availability status, derived from observed traffic with probe fallback. */
 
 export type ModelAvailabilityStatus = "operational" | "degraded" | "outage";
 
@@ -16,7 +16,6 @@ export type ModelStatusEntry = {
 	/** 1-hour average / P90 response duration in milliseconds. */
 	latencyAvgMs: number | null;
 	latencyP90Ms: number | null;
-	samples1h: number | null;
 	checkedAt: string | null;
 	probeIntervalSeconds: number | null;
 	/** 24-hour history in 15-minute buckets (oldest → newest), or null. */

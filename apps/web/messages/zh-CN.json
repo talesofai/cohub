@@ -988,7 +988,6 @@
 	"model_avail_latency_value": "平均 {avg} · p90 {p90}",
 	"model_avail_checked": "检测时间",
 	"model_avail_every_seconds": " · 每 {s} 秒",
-	"model_avail_samples": "1 小时采样",
 	"model_avail_no_status": "该模型暂无状态数据。",
 	"model_avail_ago_s": "{n} 秒前",
 	"model_avail_ago_m": "{n} 分钟前",

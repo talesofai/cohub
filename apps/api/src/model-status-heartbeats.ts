@@ -1,5 +1,6 @@
 export type RawOnlineHeartbeat = {
   start?: string;
+  has_data?: boolean;
   success_rate?: number;
   sample_count?: number;
 };
@@ -32,6 +33,7 @@ export function resampleModelStatusHeartbeats(
       ? Date.parse(heartbeat.start)
       : Number.NaN;
     if (
+      heartbeat.has_data === false ||
       !Number.isFinite(timestamp) ||
       typeof heartbeat.success_rate !== "number"
     ) {
