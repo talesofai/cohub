@@ -54,8 +54,9 @@ export type AppConfig = {
   checkpointAssetOssBucket?: string;
   checkpointAssetOssAccessKeyId?: string;
   checkpointAssetOssSecretAccessKey?: string;
-  /** Router status probe API base URL, used to derive per-model availability. */
-  routerStatusUrl: string;
+  /** Optional router-status service URL. router-status publishes model health,
+   * observed traffic, and probe history for availability indicators. */
+  routerStatusUrl?: string;
   /** Hostnames accepted for file preview requests. */
   previewHostnames: string[];
   /** Public domains for sandbox port hostnames; the first is the primary. */
@@ -221,7 +222,7 @@ export const config: AppConfig = {
   checkpointAssetOssBucket: process.env.CHECKPOINT_ASSET_OSS_BUCKET ?? process.env.TURN_OBJECT_S3_BUCKET,
   checkpointAssetOssAccessKeyId: process.env.CHECKPOINT_ASSET_OSS_ACCESS_KEY_ID ?? process.env.TURN_OBJECT_S3_ACCESS_KEY_ID,
   checkpointAssetOssSecretAccessKey: process.env.CHECKPOINT_ASSET_OSS_SECRET_ACCESS_KEY ?? process.env.TURN_OBJECT_S3_SECRET_ACCESS_KEY,
-  routerStatusUrl: (process.env.ROUTER_STATUS_URL ?? "https://router-status.neta.art/api/v1/status").trim(),
+  routerStatusUrl: process.env.ROUTER_STATUS_URL?.trim() || undefined,
   previewHostnames: parseDomainList(
     process.env.PREVIEW_HOSTNAMES ?? process.env.PREVIEW_HOSTNAME,
     [],

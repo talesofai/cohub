@@ -799,7 +799,7 @@ function fmtRate(rate: number | null | undefined): string {
 }
 
 /**
- * Rate-based bar color, matching router-status.neta.art's 6-tier scheme.
+ * Rate-based bar color, matching the router-status observed-traffic scale.
  * Used for hover-card history bars; the selector dot itself stays 3-level.
  */
 function rateToBarColor(rate: number | null | undefined): string {

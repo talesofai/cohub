@@ -13,7 +13,8 @@ const logger = createLogger({ serviceName: "cohub-api" });
 
 /**
  * Redis-cached, slimmed view of per-model availability derived from the
- * router-status probe service. The multi-megabyte upstream payload carries
+ * optional router-status service. router-status publishes model health,
+ * observed traffic, and probe history; the multi-megabyte payload carries
  * raw per-probe samples we don't need; we cache only the aggregated fields the
  * UI consumes (~10–15KB). TTL matches the probe cadence so freshness is
  * never worse than fetching directly.
@@ -24,7 +25,9 @@ const STATUS_CACHE_TTL_SEC = 30;
 let inflightPromise: Promise<ModelStatusResponse> | null = null;
 
 async function fetchUpstream(): Promise<ModelStatusResponse> {
-	const res = await fetch(config.routerStatusUrl, {
+	const routerStatusUrl = config.routerStatusUrl;
+	if (!routerStatusUrl) throw new Error("ROUTER_STATUS_URL is not configured");
+	const res = await fetch(routerStatusUrl, {
 		headers: { accept: "application/json" },
 	});
 	if (!res.ok) {
@@ -44,6 +47,7 @@ async function fetchUpstream(): Promise<ModelStatusResponse> {
 }
 
 async function loadStatus(): Promise<ModelStatusResponse> {
+	if (!config.routerStatusUrl) throw new Error("ROUTER_STATUS_URL is not configured");
 	if (inflightPromise) return inflightPromise;
 
 	const promise = (async () => {
@@ -71,6 +75,10 @@ const router = new Hono();
 router.get("/", async (c) => {
 	const user = useAuth(c);
 	if (user instanceof Response) return user;
+
+	if (!config.routerStatusUrl) {
+		return c.json({ message: "model status is not configured; set ROUTER_STATUS_URL" }, 503);
+	}
 
 	try {
 		return c.json(await loadStatus());

@@ -43,6 +43,8 @@ LOGTO_MANAGEMENT_API_RESOURCE: "https://default.logto.app/api"
 GITEA_BASE_URL: "https://gitea.example.com"
 GITEA_MANAGED_EMAIL_DOMAIN: "example.com"
 WEB_ORIGIN: "https://app.example.com"
+# Optional: URL of a router-status service for model health and availability data.
+ROUTER_STATUS_URL: ""
 SANDBOX_IMAGE: "git.talesofai.com/talesofai/cohub-sandbox:v1.33.0"
 SPACE_STORAGE_ROOT: "/space-storage"
 SPACE_SYSTEM_ROOT: "/system-storage"
