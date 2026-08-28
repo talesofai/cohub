@@ -16,6 +16,7 @@ type RunCommandResult = {
     exitCode: number | null;
     timeoutSecs?: number;
     message?: string;
+    outputTruncated?: boolean;
   };
   durationMs: number;
   output: string;
@@ -195,11 +196,12 @@ function parseRunResult(detail: TaskRunDetailResponse): RunCommandResult {
           exitCode: typeof terminationRecord.exitCode === "number" ? terminationRecord.exitCode : null,
           ...(typeof terminationRecord.timeoutSecs === "number" ? { timeoutSecs: terminationRecord.timeoutSecs } : {}),
           ...(typeof terminationRecord.message === "string" ? { message: terminationRecord.message } : {}),
+          ...(typeof terminationRecord.outputTruncated === "boolean" ? { outputTruncated: terminationRecord.outputTruncated } : {}),
         }
       : undefined,
     durationMs: typeof result?.durationMs === "number" ? result.durationMs : 0,
     output: typeof result?.output === "string" ? result.output : "",
-    truncated: Boolean(result?.truncated),
+    truncated: Boolean(result?.truncated) || Boolean(result?.outputTruncated) || Boolean(terminationRecord?.outputTruncated),
   };
 }
 

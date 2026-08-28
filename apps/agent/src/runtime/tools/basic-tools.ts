@@ -78,10 +78,11 @@ export type BashTermination = {
   exitCode: number | null;
   timeoutSecs?: number;
   message?: string;
+  outputTruncated?: boolean;
 };
 
 export type BashExecutionResult =
-  | { exitCode: number | null; termination?: BashTermination }
+  | { exitCode: number | null; termination?: BashTermination; outputTruncated?: boolean }
   | { failure: ToolFailureDetails };
 
 export type BashCommandRequest = {
@@ -105,8 +106,11 @@ export interface BashOperations {
   startBackground?: (input: BashBackgroundRequest) => Promise<{ taskRunId: string }>;
 }
 
-function normalizeBashTermination(result: { exitCode: number | null; termination?: BashTermination }): BashTermination {
-  return result.termination ?? { reason: "exited", exitCode: result.exitCode };
+function normalizeBashTermination(result: { exitCode: number | null; termination?: BashTermination; outputTruncated?: boolean }): BashTermination {
+  const termination = result.termination ?? { reason: "exited", exitCode: result.exitCode };
+  return result.outputTruncated === true || termination.outputTruncated === true
+    ? { ...termination, outputTruncated: true }
+    : termination;
 }
 
 function formatBashTerminationNote(termination: BashTermination) {
@@ -362,15 +366,19 @@ export function createBashTool(cwd: string, options: { operations: BashOperation
       const output = Buffer.concat(chunks).toString("utf-8");
       const termination = normalizeBashTermination(result);
       const note = formatBashTerminationNote(termination);
-      const renderedOutput = note ? `${output}${output ? "\n\n" : ""}[${note}]` : output || "(no output)";
-      const truncated = truncateHead(renderedOutput, { maxLines: DEFAULT_MAX_LINES, maxBytes: DEFAULT_MAX_BYTES });
+      const outputTruncated = result.outputTruncated === true || termination.outputTruncated === true;
+      const truncationNote = outputTruncated ? "[Output truncated by sandbox transport.]" : "";
+      const renderedOutput = [note ? `[${note}]` : "", truncationNote].filter(Boolean).join("\n");
+      const fullOutput = output ? `${output}${renderedOutput ? `\n\n${renderedOutput}` : ""}` : renderedOutput || "(no output)";
+      const truncated = truncateHead(fullOutput, { maxLines: DEFAULT_MAX_LINES, maxBytes: DEFAULT_MAX_BYTES });
       return {
-        content: [{ type: "text", text: truncated.truncated ? truncated.content : renderedOutput }],
+        content: [{ type: "text", text: truncated.truncated ? truncated.content : fullOutput }],
         details: {
           exitCode: result.exitCode,
           termination,
-          rawOutput: renderedOutput,
-          truncation: truncated.truncated ? truncated : undefined,
+          rawOutput: fullOutput,
+          outputTruncated,
+          truncation: truncated.truncated || outputTruncated ? { ...truncated, truncated: true } : undefined,
         },
       };
     },

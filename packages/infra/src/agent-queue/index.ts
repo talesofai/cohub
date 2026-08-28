@@ -58,7 +58,9 @@ export type AgentRunCommandJobResult = {
     exitCode: number | null;
     timeoutSecs?: number;
     message?: string;
+    outputTruncated?: boolean;
   };
+  outputTruncated?: boolean;
   durationMs: number;
   output: string;
   truncated: boolean;

@@ -12,6 +12,26 @@ test("bash hides the background execution parameter from its schema", () => {
   assert.doesNotMatch(tool.description, /run_in_background/);
 });
 
+test("bash preserves transport output truncation without treating it as infrastructure failure", async () => {
+  const tool = createBashTool(CWD, {
+    operations: {
+      async exec() {
+        return { exitCode: 0, outputTruncated: true };
+      },
+    },
+  });
+
+  const result = await tool.execute("call-truncated", { command: "printf output" });
+  const details = result.details as Record<string, unknown>;
+  const termination = details.termination as Record<string, unknown>;
+  const text = result.content[0]?.type === "text" ? result.content[0].text : "";
+
+  assert.equal(details.outputTruncated, true);
+  assert.equal(termination.outputTruncated, true);
+  assert.notEqual(details.isError, true);
+  assert.match(text, /Output truncated by sandbox transport/);
+});
+
 test("bash keeps compatibility with the hidden background parameter", async () => {
   let request: { command: string; cwd: string; timeout?: number; toolCallId: string } | undefined;
   const tool = createBashTool(CWD, {

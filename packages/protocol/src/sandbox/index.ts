@@ -388,6 +388,7 @@ export type ProcessTermination = {
   exitCode: number | null;
   timeoutSecs?: number;
   message?: string;
+  outputTruncated?: boolean;
 };
 
 export type ProcessStartResult = {

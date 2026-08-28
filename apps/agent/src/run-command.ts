@@ -59,19 +59,31 @@ function getTermination(result: unknown): RunCommandTermination | null {
   const exitCode = (termination as { exitCode?: unknown }).exitCode;
   const timeoutSecs = (termination as { timeoutSecs?: unknown }).timeoutSecs;
   const message = (termination as { message?: unknown }).message;
+  const outputTruncated = (termination as { outputTruncated?: unknown }).outputTruncated;
   return {
     reason: reason as RunCommandTermination["reason"],
     exitCode: typeof exitCode === "number" ? exitCode : null,
     ...(typeof timeoutSecs === "number" ? { timeoutSecs } : {}),
     ...(typeof message === "string" ? { message } : {}),
+    ...(typeof outputTruncated === "boolean" ? { outputTruncated } : {}),
   };
 }
 
 function getOutputTruncation(result: unknown) {
   if (!result || typeof result !== "object") return false;
-  const details = (result as { details?: unknown }).details;
+  const record = result as { outputTruncated?: unknown; details?: unknown };
+  if (record.outputTruncated === true) return true;
+  const details = record.details;
   if (!details || typeof details !== "object") return false;
   return Boolean((details as { truncation?: unknown }).truncation);
+}
+
+function getTransportOutputTruncation(result: unknown) {
+  if (!result || typeof result !== "object") return false;
+  const record = result as { outputTruncated?: unknown; details?: unknown };
+  if (record.outputTruncated === true) return true;
+  const details = record.details;
+  return Boolean(details && typeof details === "object" && (details as { outputTruncated?: unknown }).outputTruncated === true);
 }
 
 function getFailureDetails(result: unknown) {
@@ -200,8 +212,12 @@ export async function processRunCommandJob(job: Job<AgentRunCommandJobData>): Pr
       }
       latestOutput = extractToolResultText(result) || latestOutput;
       const exitCode = getExitCode(result);
-      const termination = getTermination(result) ?? { reason: "exited" as const, exitCode };
-      const truncated = getOutputTruncation(result);
+      const terminationBase = getTermination(result) ?? { reason: "exited" as const, exitCode };
+      const outputTruncated = getTransportOutputTruncation(result) || terminationBase.outputTruncated === true;
+      const termination = outputTruncated && !terminationBase.outputTruncated
+        ? { ...terminationBase, outputTruncated: true }
+        : terminationBase;
+      const truncated = getOutputTruncation(result) || outputTruncated;
       const durationMs = Date.now() - startAt;
       const content = buildRunCommandToolContent({
         toolCallId,
@@ -221,6 +237,7 @@ export async function processRunCommandJob(job: Job<AgentRunCommandJobData>): Pr
         durationMs,
         output: latestOutput,
         truncated,
+        outputTruncated,
         content,
       } satisfies AgentRunCommandJobResult;
     } catch (error) {
