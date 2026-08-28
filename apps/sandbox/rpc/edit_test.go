@@ -32,13 +32,36 @@ func TestApplyFSEditsKeepsNormalizedDuplicateMatchesAmbiguous(t *testing.T) {
 	}
 }
 
-func TestApplyFSEditsPreservesBOM(t *testing.T) {
-	updated, err := applyFSEdits("\uFEFFalpha\n", []fsEditItem{{OldText: "alpha", NewText: "beta"}})
+func TestApplyFSEditsPreservesBOMWhetherOldTextIncludesItOrNot(t *testing.T) {
+	for _, oldText := range []string{"alpha", "\uFEFFalpha"} {
+		updated, err := applyFSEdits("\uFEFFalpha\n", []fsEditItem{{OldText: oldText, NewText: "beta"}})
+		if err != nil {
+			t.Fatalf("apply edits with oldText %q: %v", oldText, err)
+		}
+		if updated != "\uFEFFbeta\n" {
+			t.Fatalf("updated content = %q, want BOM-preserving replacement", updated)
+		}
+	}
+}
+
+func TestApplyFSEditsUsesSameFirstLineEndingForMixedNewlines(t *testing.T) {
+	updated, err := applyFSEdits("a\rb\n", []fsEditItem{{OldText: "a\nb", NewText: "x\ny"}})
 	if err != nil {
 		t.Fatalf("apply edits: %v", err)
 	}
-	if updated != "\uFEFFbeta\n" {
-		t.Fatalf("updated content = %q, want BOM-preserving replacement", updated)
+	if updated != "x\ry\n" {
+		t.Fatalf("updated content = %q, want first-ending preservation", updated)
+	}
+}
+
+func TestApplyFSEditsCapsHighFrequencyMatchDiagnostics(t *testing.T) {
+	_, err := applyFSEdits(strings.Repeat("a", 2_000_000), []fsEditItem{{OldText: "a", NewText: "b"}})
+	matchErr, ok := err.(*editMatchError)
+	if !ok {
+		t.Fatalf("error = %T (%v), want editMatchError", err, err)
+	}
+	if !matchErr.truncated || matchErr.matches != maxEditMatches || len(matchErr.lines) != maxEditMatches {
+		t.Fatalf("match error = %+v, want capped and truncated diagnostics", matchErr)
 	}
 }
 

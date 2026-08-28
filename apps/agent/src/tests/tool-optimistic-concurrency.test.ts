@@ -60,9 +60,52 @@ test("edit tolerates line ending and trailing whitespace differences", () => {
   assert.equal(updated, "prefix  \r\nnew\r\nsuffix\t\r\n");
 });
 
-test("edit preserves a UTF-8 BOM", () => {
-  const updated = applyEditsToContent("\uFEFFalpha\n", [{ oldText: "alpha", newText: "beta" }], PATH);
-  assert.equal(updated, "\uFEFFbeta\n");
+test("edit preserves a UTF-8 BOM whether oldText includes it or not", () => {
+  assert.equal(
+    applyEditsToContent("\uFEFFalpha\n", [{ oldText: "alpha", newText: "beta" }], PATH),
+    "\uFEFFbeta\n",
+  );
+  assert.equal(
+    applyEditsToContent("\uFEFFalpha\n", [{ oldText: "\uFEFFalpha", newText: "beta" }], PATH),
+    "\uFEFFbeta\n",
+  );
+});
+
+test("edit uses the same first line ending for mixed newline files", () => {
+  const updated = applyEditsToContent("a\rb\n", [{ oldText: "a\nb", newText: "x\ny" }], PATH);
+  assert.equal(updated, "x\ry\n");
+});
+
+test("edit rejects empty edits before touching the filesystem", async () => {
+  let accesses = 0;
+  let writes = 0;
+  const tool = createEditTool(CWD, {
+    operations: {
+      async access() {
+        accesses += 1;
+      },
+      async readFile() {
+        throw new Error("readFile must not be called");
+      },
+      async writeFile() {
+        writes += 1;
+      },
+    },
+  });
+
+  await assert.rejects(
+    tool.execute("call-1", { path: PATH, edits: [] }),
+    /edits must contain at least one replacement/,
+  );
+  assert.equal(accesses, 0);
+  assert.equal(writes, 0);
+});
+
+test("edit caps high-frequency match diagnostics", () => {
+  assert.throws(
+    () => applyEditsToContent("a".repeat(2_000_000), [{ oldText: "a", newText: "b" }], PATH),
+    /found 9\+ at lines \[1, 1, 1, 1, 1, 1, 1, 1, \.\.\.,?\]/,
+  );
 });
 
 test("edit matches all replacements against the original snapshot", () => {

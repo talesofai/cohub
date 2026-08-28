@@ -167,17 +167,28 @@ type EditMatch = {
 
 type NormalizedEditText = {
   text: string;
-  offsets: number[];
 };
+
+type EditOccurrenceSearch = {
+  positions: number[];
+  truncated: boolean;
+};
+
+type EditMatchSearch = {
+  matches: EditMatch[];
+  truncated: boolean;
+};
+
+const MAX_EDIT_MATCHES = 9;
 
 /**
  * Normalize only representation-level differences that are safe to repair:
- * line endings and spaces or tabs at the end of a line. The boundary map lets
- * a fuzzy match replace the original range without rewriting untouched bytes.
+ * line endings and spaces or tabs at the end of a line. Match offsets are
+ * mapped back lazily so a failed high-frequency search never allocates one
+ * entry per source character.
  */
 function normalizeEditText(text: string): NormalizedEditText {
   let normalized = "";
-  const offsets = [0];
 
   for (let lineStart = 0; lineStart < text.length;) {
     let lineEnd = lineStart;
@@ -186,87 +197,187 @@ function normalizeEditText(text: string): NormalizedEditText {
     let contentEnd = lineEnd;
     while (contentEnd > lineStart && (text[contentEnd - 1] === " " || text[contentEnd - 1] === "\t")) contentEnd -= 1;
     normalized += text.slice(lineStart, contentEnd);
-    for (let index = lineStart; index < contentEnd; index += 1) offsets.push(index + 1);
 
     if (lineEnd === text.length) break;
     let newlineEnd = lineEnd + 1;
     if (text[lineEnd] === "\r" && text[newlineEnd] === "\n") newlineEnd += 1;
     normalized += "\n";
-    offsets.push(newlineEnd);
     lineStart = newlineEnd;
   }
 
-  return { text: normalized, offsets };
+  return { text: normalized };
 }
 
-function findEditOccurrences(text: string, pattern: string): number[] {
-  if (pattern.length === 0) return [];
-  const occurrences: number[] = [];
+function findEditOccurrences(text: string, pattern: string): EditOccurrenceSearch {
+  if (pattern.length === 0) return { positions: [], truncated: false };
+  const positions: number[] = [];
   for (let cursor = 0; cursor <= text.length - pattern.length;) {
     const index = text.indexOf(pattern, cursor);
     if (index === -1) break;
-    occurrences.push(index);
+    positions.push(index);
+    if (positions.length >= MAX_EDIT_MATCHES) return { positions, truncated: true };
     cursor = index + pattern.length;
   }
-  return occurrences;
+  return { positions, truncated: false };
 }
 
-function findEditMatches(content: string, oldText: string): EditMatch[] {
+function originalOffsetForNormalizedBoundary(text: string, target: number): number | undefined {
+  if (target < 0) return undefined;
+  if (text.length === 0) return target === 0 ? 0 : undefined;
+
+  let normalizedOffset = 0;
+  for (let lineStart = 0; lineStart < text.length;) {
+    let lineEnd = lineStart;
+    while (lineEnd < text.length && text[lineEnd] !== "\n" && text[lineEnd] !== "\r") lineEnd += 1;
+
+    let contentEnd = lineEnd;
+    while (contentEnd > lineStart && (text[contentEnd - 1] === " " || text[contentEnd - 1] === "\t")) contentEnd -= 1;
+    const contentLength = contentEnd - lineStart;
+    if (target <= normalizedOffset + contentLength) return lineStart + target - normalizedOffset;
+    normalizedOffset += contentLength;
+
+    if (lineEnd === text.length) return target === normalizedOffset ? contentEnd : undefined;
+    let newlineEnd = lineEnd + 1;
+    if (text[lineEnd] === "\r" && text[newlineEnd] === "\n") newlineEnd += 1;
+    normalizedOffset += 1;
+    if (target <= normalizedOffset) return newlineEnd;
+    lineStart = newlineEnd;
+  }
+
+  return target === normalizedOffset ? text.length : undefined;
+}
+
+function findEditMatches(content: string, oldText: string): EditMatchSearch {
   const exactOccurrences = findEditOccurrences(content, oldText);
-  if (exactOccurrences.length > 0) {
-    return exactOccurrences.map((start) => ({ start, end: start + oldText.length, fuzzy: false }));
+  if (exactOccurrences.positions.length > 0) {
+    return {
+      matches: exactOccurrences.positions.map((start) => ({ start, end: start + oldText.length, fuzzy: false })),
+      truncated: exactOccurrences.truncated,
+    };
   }
 
   const normalizedContent = normalizeEditText(content);
   const normalizedOldText = normalizeEditText(oldText);
-  if (normalizedOldText.text.length === 0) return [];
+  if (normalizedOldText.text.length === 0) return { matches: [], truncated: false };
 
-  return findEditOccurrences(normalizedContent.text, normalizedOldText.text).flatMap((start) => {
+  const normalizedOccurrences = findEditOccurrences(normalizedContent.text, normalizedOldText.text);
+  const matches = normalizedOccurrences.positions.flatMap((start) => {
     const end = start + normalizedOldText.text.length;
-    const originalStart = normalizedContent.offsets[start];
-    const originalEnd = normalizedContent.offsets[end];
+    const originalStart = originalOffsetForNormalizedBoundary(content, start);
+    const originalEnd = originalOffsetForNormalizedBoundary(content, end);
     return originalStart === undefined || originalEnd === undefined
       ? []
       : [{ start: originalStart, end: originalEnd, fuzzy: true }];
   });
+  return { matches, truncated: normalizedOccurrences.truncated };
 }
 
 function editLineNumber(content: string, offset: number): number {
-  return content.slice(0, offset).split(/\r\n|\r|\n/).length;
+  const end = Math.min(Math.max(offset, 0), content.length);
+  let line = 1;
+  for (let index = 0; index < end; index += 1) {
+    if (content[index] === "\r") {
+      line += 1;
+      if (content[index + 1] === "\n") index += 1;
+    } else if (content[index] === "\n") {
+      line += 1;
+    }
+  }
+  return line;
+}
+
+function editLineBounds(content: string, start: number): { end: number; nextStart: number } {
+  let end = start;
+  while (end < content.length && content[end] !== "\n" && content[end] !== "\r") end += 1;
+  if (end === content.length) return { end, nextStart: end };
+  let nextStart = end + 1;
+  if (content[end] === "\r" && content[nextStart] === "\n") nextStart += 1;
+  return { end, nextStart };
+}
+
+function formatEditHintLine(content: string, start: number, end: number, lineNumber: number): string {
+  const preview = Array.from(content.slice(start, Math.min(end, start + 480))).slice(0, 240).join("");
+  return `${lineNumber}: ${preview}${end - start > 240 ? "..." : ""}`;
+}
+
+function collectEditHintCandidates(text: string): string[] {
+  const candidates: string[] = [];
+  const add = (raw: string) => {
+    const candidate = Array.from(raw.trim()).slice(0, 240).join("");
+    if (candidate.length < 4 || candidates.includes(candidate)) return;
+    candidates.push(candidate);
+    candidates.sort((left, right) => right.length - left.length);
+    if (candidates.length > 16) candidates.pop();
+  };
+
+  let line: string[] = [];
+  let token: string[] = [];
+  const flushLine = () => {
+    add(line.join(""));
+    line = [];
+  };
+  const flushToken = () => {
+    add(token.join(""));
+    token = [];
+  };
+
+  for (const character of text) {
+    if (character === "\r" || character === "\n") {
+      flushLine();
+      flushToken();
+      continue;
+    }
+    if (line.length < 240) line.push(character);
+    if (/^[A-Za-z0-9_./:-]$/.test(character)) {
+      if (token.length < 240) token.push(character);
+    } else {
+      flushToken();
+    }
+  }
+  flushLine();
+  flushToken();
+  return candidates;
 }
 
 function findEditHintBlock(content: string, oldText: string): string | undefined {
-  const contentLines = content.split(/\r\n|\r|\n/);
-  const oldLines = oldText.split(/\r\n|\r|\n/);
-  const anchors = oldLines
-    .map((line) => line.trim())
-    .filter((line) => line.length >= 4)
-    .sort((left, right) => right.length - left.length);
-  const tokens = oldText.match(/[A-Za-z0-9_./:-]{4,}/g) ?? [];
-  const candidates = [...anchors, ...[...new Set(tokens)].sort((left, right) => right.length - left.length)];
-
+  const candidates = collectEditHintCandidates(oldText);
   for (const candidate of candidates) {
-    const lineIndex = contentLines.findIndex((line) => line.includes(candidate));
-    if (lineIndex === -1) continue;
-    const start = Math.max(0, lineIndex - 1);
-    const end = Math.min(contentLines.length, lineIndex + 2);
-    return contentLines
-      .slice(start, end)
-      .map((line, index) => {
-        const lineCharacters = Array.from(line);
-        const displayLine = lineCharacters.length > 240 ? `${lineCharacters.slice(0, 240).join("")}...` : line;
-        return `${start + index + 1}: ${displayLine}`;
-      })
-      .join("\n");
+    let lineStart = 0;
+    let lineNumber = 1;
+    let previousLine: string | undefined;
+    while (lineStart <= content.length) {
+      const { end, nextStart } = editLineBounds(content, lineStart);
+      const candidateStart = content.indexOf(candidate, lineStart);
+      if (candidateStart >= lineStart && candidateStart < end) {
+        const lines = previousLine ? [previousLine] : [];
+        lines.push(formatEditHintLine(content, lineStart, end, lineNumber));
+        if (end < content.length) {
+          const nextBounds = editLineBounds(content, nextStart);
+          lines.push(formatEditHintLine(content, nextStart, nextBounds.end, lineNumber + 1));
+        }
+        return lines.join("\n");
+      }
+      previousLine = formatEditHintLine(content, lineStart, end, lineNumber);
+      if (end === content.length) break;
+      lineStart = nextStart;
+      lineNumber += 1;
+    }
   }
   return undefined;
 }
 
+function detectEditLineEnding(content: string): "\r\n" | "\r" | "\n" {
+  for (let index = 0; index < content.length; index += 1) {
+    if (content[index] === "\r") return content[index + 1] === "\n" ? "\r\n" : "\r";
+    if (content[index] === "\n") return "\n";
+  }
+  return "\n";
+}
+
 function restoreEditLineEndings(text: string, content: string): string {
   const normalized = text.replace(/\r\n/g, "\n").replace(/\r/g, "\n");
-  if (content.includes("\r\n")) return normalized.replace(/\n/g, "\r\n");
-  if (content.includes("\r")) return normalized.replace(/\n/g, "\r");
-  return normalized;
+  const ending = detectEditLineEnding(content);
+  return ending === "\n" ? normalized : normalized.replace(/\n/g, ending);
 }
 
 function formatEditMatchError(
@@ -276,6 +387,7 @@ function formatEditMatchError(
   index: number,
   total: number,
   matches: EditMatch[],
+  truncated: boolean,
 ): string {
   const label = total === 1 ? "oldText" : `edits[${index}].oldText`;
   if (matches.length === 0) {
@@ -286,8 +398,9 @@ function formatEditMatchError(
     return `${label} must match exactly one region in ${path}, found 0. Re-read the file and retry with the current text, including whitespace, newlines, and escaping.${hint}`;
   }
   const lines = matches.slice(0, 8).map((match) => editLineNumber(content, match.start));
-  const suffix = matches.length > lines.length ? ", ..." : "";
-  return `${label} must match exactly one region in ${path}, found ${matches.length} at lines [${lines.join(", ")}${suffix}]. Add surrounding context to oldText`;
+  const suffix = truncated || matches.length > lines.length ? ", ..." : "";
+  const count = truncated ? `${matches.length}+` : `${matches.length}`;
+  return `${label} must match exactly one region in ${path}, found ${count} at lines [${lines.join(", ")}${suffix}]. Add surrounding context to oldText`;
 }
 
 /**
@@ -300,20 +413,22 @@ export function applyEditsToContent(
   edits: Array<{ oldText: string; newText: string }>,
   path: string,
 ): string {
+  if (edits.length === 0) throw new Error("edits must contain at least one replacement");
   const bom = content.startsWith("\uFEFF") ? "\uFEFF" : "";
   const original = bom ? content.slice(1) : content;
   const replacements: Array<{ start: number; end: number; newText: string; index: number }> = [];
 
   for (const [index, edit] of edits.entries()) {
-    if (edit.oldText.length === 0) throw new Error(`edits[${index}].oldText must not be empty in ${path}`);
-    if (edit.oldText === edit.newText) throw new Error(`edits[${index}].oldText and newText must differ in ${path}`);
+    const oldText = edit.oldText.startsWith("\uFEFF") ? edit.oldText.slice(1) : edit.oldText;
+    if (oldText.length === 0) throw new Error(`edits[${index}].oldText must not be empty in ${path}`);
+    if (oldText === edit.newText) throw new Error(`edits[${index}].oldText and newText must differ in ${path}`);
 
-    const matches = findEditMatches(original, edit.oldText);
-    if (matches.length !== 1) {
-      throw new Error(formatEditMatchError(original, edit.oldText, path, index, edits.length, matches));
+    const search = findEditMatches(original, oldText);
+    if (search.matches.length !== 1) {
+      throw new Error(formatEditMatchError(original, oldText, path, index, edits.length, search.matches, search.truncated));
     }
 
-    const match = matches[0];
+      const match = search.matches[0];
     if (!match) throw new Error(`No match was available for edits[${index}] in ${path}`);
     replacements.push({
       start: match.start,
@@ -444,6 +559,7 @@ export function createEditTool(cwd: string, options: { operations: EditOperation
     parameters,
     async execute(_toolCallId, rawParams) {
       const params = rawParams as Static<typeof parameters>;
+      if (params.edits.length === 0) throw new Error("edits must contain at least one replacement");
       const absolutePath = resolveToCwd(params.path, cwd);
       await options.operations.access(absolutePath);
       if (options.operations.applyEdits) {

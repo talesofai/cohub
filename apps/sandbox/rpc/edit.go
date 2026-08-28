@@ -20,9 +20,10 @@ type editMatch struct {
 }
 
 type editMatchError struct {
-	index   int
-	matches int
-	lines   []int
+	index     int
+	matches   int
+	lines     []int
+	truncated bool
 }
 
 func (e *editMatchError) Error() string {
@@ -35,6 +36,9 @@ type editInputError struct {
 }
 
 func (e *editInputError) Error() string {
+	if e.index < 0 {
+		return e.message
+	}
 	return fmt.Sprintf("edits[%d].%s", e.index, e.message)
 }
 
@@ -48,17 +52,28 @@ func (e *editOverlapError) Error() string {
 }
 
 type normalizedEditText struct {
-	text    string
-	offsets []int
+	text string
+}
+
+const maxEditMatches = 9
+
+type editOccurrenceSearch struct {
+	positions []int
+	truncated bool
+}
+
+type editMatchSearch struct {
+	matches   []editMatch
+	truncated bool
 }
 
 // normalizeEditText only removes representational differences that are safe to
 // repair without changing untouched lines: CRLF/CR line endings and spaces or
-// tabs at the end of a line. offsets maps normalized byte boundaries back to
-// the original content so fuzzy edits preserve the rest of the file verbatim.
+// tabs at the end of a line. Match boundaries are mapped back lazily so a
+// high-frequency failed search never allocates one entry per source byte.
 func normalizeEditText(text string) normalizedEditText {
 	var normalized strings.Builder
-	offsets := make([]int, 1, len(text)+1)
+	normalized.Grow(len(text))
 
 	for lineStart := 0; lineStart < len(text); {
 		lineEnd := lineStart
@@ -71,9 +86,6 @@ func normalizeEditText(text string) normalizedEditText {
 			contentEnd--
 		}
 		normalized.WriteString(text[lineStart:contentEnd])
-		for index := lineStart; index < contentEnd; index++ {
-			offsets = append(offsets, index+1)
-		}
 
 		if lineEnd == len(text) {
 			break
@@ -83,18 +95,17 @@ func normalizeEditText(text string) normalizedEditText {
 			newlineEnd++
 		}
 		normalized.WriteByte('\n')
-		offsets = append(offsets, newlineEnd)
 		lineStart = newlineEnd
 	}
 
-	return normalizedEditText{text: normalized.String(), offsets: offsets}
+	return normalizedEditText{text: normalized.String()}
 }
 
-func findEditOccurrences(text, pattern string) []int {
+func findEditOccurrences(text, pattern string) editOccurrenceSearch {
 	if pattern == "" {
-		return nil
+		return editOccurrenceSearch{}
 	}
-	occurrences := make([]int, 0, 1)
+	occurrences := make([]int, 0, maxEditMatches)
 	for cursor := 0; cursor <= len(text)-len(pattern); {
 		relative := strings.Index(text[cursor:], pattern)
 		if relative < 0 {
@@ -102,40 +113,82 @@ func findEditOccurrences(text, pattern string) []int {
 		}
 		index := cursor + relative
 		occurrences = append(occurrences, index)
+		if len(occurrences) >= maxEditMatches {
+			return editOccurrenceSearch{positions: occurrences, truncated: true}
+		}
 		cursor = index + len(pattern)
 	}
-	return occurrences
+	return editOccurrenceSearch{positions: occurrences}
 }
 
-func findEditMatches(content, oldText string) []editMatch {
+func originalOffsetForNormalizedBoundary(text string, target int) (int, bool) {
+	if target < 0 {
+		return 0, false
+	}
+	if len(text) == 0 {
+		return 0, target == 0
+	}
+
+	normalizedOffset := 0
+	for lineStart := 0; lineStart < len(text); {
+		lineEnd := lineStart
+		for lineEnd < len(text) && text[lineEnd] != '\n' && text[lineEnd] != '\r' {
+			lineEnd++
+		}
+
+		contentEnd := lineEnd
+		for contentEnd > lineStart && (text[contentEnd-1] == ' ' || text[contentEnd-1] == '\t') {
+			contentEnd--
+		}
+		contentLength := contentEnd - lineStart
+		if target <= normalizedOffset+contentLength {
+			return lineStart + target - normalizedOffset, true
+		}
+		normalizedOffset += contentLength
+
+		if lineEnd == len(text) {
+			return contentEnd, target == normalizedOffset
+		}
+		newlineEnd := lineEnd + 1
+		if text[lineEnd] == '\r' && text[newlineEnd] == '\n' {
+			newlineEnd++
+		}
+		normalizedOffset++
+		if target <= normalizedOffset {
+			return newlineEnd, true
+		}
+		lineStart = newlineEnd
+	}
+	return len(text), target == normalizedOffset
+}
+
+func findEditMatches(content, oldText string) editMatchSearch {
 	exactOccurrences := findEditOccurrences(content, oldText)
-	if len(exactOccurrences) > 0 {
-		matches := make([]editMatch, 0, len(exactOccurrences))
-		for _, start := range exactOccurrences {
+	if len(exactOccurrences.positions) > 0 {
+		matches := make([]editMatch, 0, len(exactOccurrences.positions))
+		for _, start := range exactOccurrences.positions {
 			matches = append(matches, editMatch{start: start, end: start + len(oldText)})
 		}
-		return matches
+		return editMatchSearch{matches: matches, truncated: exactOccurrences.truncated}
 	}
 
 	normalizedContent := normalizeEditText(content)
 	normalizedOldText := normalizeEditText(oldText)
 	if normalizedOldText.text == "" {
-		return nil
+		return editMatchSearch{}
 	}
 	normalizedOccurrences := findEditOccurrences(normalizedContent.text, normalizedOldText.text)
-	matches := make([]editMatch, 0, len(normalizedOccurrences))
-	for _, start := range normalizedOccurrences {
+	matches := make([]editMatch, 0, len(normalizedOccurrences.positions))
+	for _, start := range normalizedOccurrences.positions {
 		end := start + len(normalizedOldText.text)
-		if start >= len(normalizedContent.offsets) || end >= len(normalizedContent.offsets) {
+		originalStart, startOK := originalOffsetForNormalizedBoundary(content, start)
+		originalEnd, endOK := originalOffsetForNormalizedBoundary(content, end)
+		if !startOK || !endOK {
 			continue
 		}
-		matches = append(matches, editMatch{
-			start: normalizedContent.offsets[start],
-			end:   normalizedContent.offsets[end],
-			fuzzy: true,
-		})
+		matches = append(matches, editMatch{start: originalStart, end: originalEnd, fuzzy: true})
 	}
-	return matches
+	return editMatchSearch{matches: matches, truncated: normalizedOccurrences.truncated}
 }
 
 func editLineNumber(content string, offset int) int {
@@ -145,15 +198,32 @@ func editLineNumber(content string, offset int) int {
 	if offset > len(content) {
 		offset = len(content)
 	}
-	return len(splitEditLines(content[:offset]))
+	line := 1
+	for index := 0; index < offset; index++ {
+		switch content[index] {
+		case '\r':
+			line++
+			if index+1 < offset && content[index+1] == '\n' {
+				index++
+			}
+		case '\n':
+			line++
+		}
+	}
+	return line
 }
 
 func editLineEnding(content string) string {
-	if strings.Contains(content, "\r\n") {
-		return "\r\n"
-	}
-	if strings.Contains(content, "\r") && !strings.Contains(content, "\n") {
-		return "\r"
+	for index := 0; index < len(content); index++ {
+		switch content[index] {
+		case '\r':
+			if index+1 < len(content) && content[index+1] == '\n' {
+				return "\r\n"
+			}
+			return "\r"
+		case '\n':
+			return "\n"
+		}
 	}
 	return "\n"
 }
@@ -167,33 +237,97 @@ func restoreEditLineEndings(text, content string) string {
 	return strings.ReplaceAll(normalized, "\n", ending)
 }
 
-func splitEditLines(text string) []string {
-	return strings.Split(strings.ReplaceAll(strings.ReplaceAll(text, "\r\n", "\n"), "\r", "\n"), "\n")
-}
-
-func editTokens(text string) []string {
-	var tokens []string
-	var current strings.Builder
-	flush := func() {
-		if current.Len() >= 4 {
-			tokens = append(tokens, current.String())
+func collectEditHintCandidates(text string) []string {
+	candidates := make([]string, 0, 16)
+	add := func(raw string) {
+		candidate := strings.TrimSpace(raw)
+		runes := []rune(candidate)
+		if len(runes) < 4 {
+			return
 		}
-		current.Reset()
+		if len(runes) > 240 {
+			candidate = string(runes[:240])
+		}
+		for _, existing := range candidates {
+			if existing == candidate {
+				return
+			}
+		}
+		candidates = append(candidates, candidate)
+		sort.SliceStable(candidates, func(left, right int) bool { return len(candidates[left]) > len(candidates[right]) })
+		if len(candidates) > 16 {
+			candidates = candidates[:16]
+		}
+	}
+
+	var line strings.Builder
+	var token strings.Builder
+	lineRunes := 0
+	tokenRunes := 0
+	flushLine := func() {
+		add(line.String())
+		line.Reset()
+		lineRunes = 0
+	}
+	flushToken := func() {
+		add(token.String())
+		token.Reset()
+		tokenRunes = 0
 	}
 	for _, char := range text {
-		if (char >= 'a' && char <= 'z') || (char >= 'A' && char <= 'Z') || (char >= '0' && char <= '9') || strings.ContainsRune("_./:-", char) {
-			current.WriteRune(char)
+		if char == '\n' || char == '\r' {
+			flushLine()
+			flushToken()
 			continue
 		}
-		flush()
+		if lineRunes < 240 {
+			line.WriteRune(char)
+			lineRunes++
+		}
+		if (char >= 'a' && char <= 'z') || (char >= 'A' && char <= 'Z') || (char >= '0' && char <= '9') || strings.ContainsRune("_./:-", char) {
+			if tokenRunes < 240 {
+				token.WriteRune(char)
+				tokenRunes++
+			}
+		} else {
+			flushToken()
+		}
 	}
-	flush()
-	return tokens
+	flushLine()
+	flushToken()
+	return candidates
+}
+
+func editLineBounds(content string, start int) (end int, nextStart int) {
+	end = start
+	for end < len(content) && content[end] != '\n' && content[end] != '\r' {
+		end++
+	}
+	if end == len(content) {
+		return end, end
+	}
+	nextStart = end + 1
+	if content[end] == '\r' && nextStart < len(content) && content[nextStart] == '\n' {
+		nextStart++
+	}
+	return end, nextStart
+}
+
+func formatEditHintLine(content string, start, end, lineNumber int) string {
+	line := content[start:end]
+	runeCount := 0
+	for index := range line {
+		if runeCount == 240 {
+			line = line[:index] + "..."
+			break
+		}
+		runeCount++
+	}
+	return fmt.Sprintf("%d: %s", lineNumber, line)
 }
 
 func editHintBlock(content, oldText string) string {
-	contentLines := splitEditLines(content)
-	oldLines := splitEditLines(oldText)
+	oldLines := strings.Split(strings.ReplaceAll(strings.ReplaceAll(oldText, "\r\n", "\n"), "\r", "\n"), "\n")
 	candidates := make([]string, 0, len(oldLines)+4)
 	for _, line := range oldLines {
 		line = strings.TrimSpace(line)
@@ -201,40 +335,37 @@ func editHintBlock(content, oldText string) string {
 			candidates = append(candidates, line)
 		}
 	}
-	candidates = append(candidates, editTokens(oldText)...)
+	candidates = append(candidates, collectEditHintCandidates(oldText)...)
 	sort.SliceStable(candidates, func(left, right int) bool { return len(candidates[left]) > len(candidates[right]) })
+	if len(candidates) > 16 {
+		candidates = candidates[:16]
+	}
 	for _, candidate := range candidates {
-		lineIndex := -1
-		for index, line := range contentLines {
-			if strings.Contains(line, candidate) {
-				lineIndex = index
+		lineStart := 0
+		lineNumber := 1
+		previousLine := ""
+		for lineStart <= len(content) {
+			lineEnd, nextStart := editLineBounds(content, lineStart)
+			candidateStart := strings.Index(content[lineStart:lineEnd], candidate)
+			if candidateStart >= 0 {
+				lines := make([]string, 0, 3)
+				if previousLine != "" {
+					lines = append(lines, previousLine)
+				}
+				lines = append(lines, formatEditHintLine(content, lineStart, lineEnd, lineNumber))
+				if lineEnd < len(content) {
+					nextEnd, _ := editLineBounds(content, nextStart)
+					lines = append(lines, formatEditHintLine(content, nextStart, nextEnd, lineNumber+1))
+				}
+				return strings.Join(lines, "\n")
+			}
+			previousLine = formatEditHintLine(content, lineStart, lineEnd, lineNumber)
+			if lineEnd == len(content) {
 				break
 			}
+			lineStart = nextStart
+			lineNumber++
 		}
-		if lineIndex < 0 {
-			continue
-		}
-		start := lineIndex - 1
-		if start < 0 {
-			start = 0
-		}
-		end := lineIndex + 2
-		if end > len(contentLines) {
-			end = len(contentLines)
-		}
-		var hint strings.Builder
-		for index := start; index < end; index++ {
-			line := contentLines[index]
-			lineRunes := []rune(line)
-			if len(lineRunes) > 240 {
-				line = string(lineRunes[:240]) + "..."
-			}
-			if hint.Len() > 0 {
-				hint.WriteByte('\n')
-			}
-			fmt.Fprintf(&hint, "%d: %s", index+1, line)
-		}
-		return hint.String()
 	}
 	return ""
 }
@@ -259,13 +390,20 @@ func formatFSEditMatchError(path, content string, matchErr *editMatchError, oldT
 		}
 	}
 	suffix := ""
-	if len(matchErr.lines) > len(lineValues) {
+	if matchErr.truncated || len(matchErr.lines) > len(lineValues) {
 		suffix = ", ..."
 	}
-	return fmt.Sprintf("%s must match exactly one region in %s, found %d at lines [%s%s]. Add surrounding context to oldText", label, path, matchErr.matches, strings.Join(lineValues, ", "), suffix)
+	count := fmt.Sprintf("%d", matchErr.matches)
+	if matchErr.truncated {
+		count += "+"
+	}
+	return fmt.Sprintf("%s must match exactly one region in %s, found %s at lines [%s%s]. Add surrounding context to oldText", label, path, count, strings.Join(lineValues, ", "), suffix)
 }
 
 func applyFSEdits(content string, edits []fsEditItem) (string, error) {
+	if len(edits) == 0 {
+		return "", &editInputError{index: -1, message: "edits must contain at least one replacement"}
+	}
 	bom := ""
 	matchingContent := content
 	if strings.HasPrefix(matchingContent, "\uFEFF") {
@@ -275,23 +413,24 @@ func applyFSEdits(content string, edits []fsEditItem) (string, error) {
 
 	replacements := make([]editReplacement, 0, len(edits))
 	for index, edit := range edits {
-		if edit.OldText == "" {
+		oldText := strings.TrimPrefix(edit.OldText, "\uFEFF")
+		if oldText == "" {
 			return "", &editInputError{index: index, message: "oldText must not be empty"}
 		}
-		if edit.OldText == edit.NewText {
+		if oldText == edit.NewText {
 			return "", &editInputError{index: index, message: "oldText and newText must differ"}
 		}
 
-		matches := findEditMatches(matchingContent, edit.OldText)
-		if len(matches) != 1 {
-			lines := make([]int, 0, len(matches))
-			for _, match := range matches {
+		search := findEditMatches(matchingContent, oldText)
+		if len(search.matches) != 1 {
+			lines := make([]int, 0, len(search.matches))
+			for _, match := range search.matches {
 				lines = append(lines, editLineNumber(matchingContent, match.start))
 			}
-			return "", &editMatchError{index: index, matches: len(matches), lines: lines}
+			return "", &editMatchError{index: index, matches: len(search.matches), lines: lines, truncated: search.truncated}
 		}
 
-		match := matches[0]
+		match := search.matches[0]
 		newText := edit.NewText
 		if match.fuzzy {
 			newText = restoreEditLineEndings(edit.NewText, matchingContent)
