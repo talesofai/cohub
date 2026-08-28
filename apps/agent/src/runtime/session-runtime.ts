@@ -694,7 +694,7 @@ function toolSnippets(toolName: string): string | undefined {
   switch (toolName) {
     case "read": return "Read file contents";
     case "bash": return "Execute bash commands";
-    case "edit": return "Make precise file edits with exact text replacement";
+    case "edit": return "Read the target first, copy oldText verbatim, and use unique surrounding context for precise edits";
     case "write": return "Create or overwrite files";
     case "grep": return "Search file contents";
     case "find": return "Search files by glob pattern";

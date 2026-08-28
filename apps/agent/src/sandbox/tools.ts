@@ -426,6 +426,7 @@ function createRemoteWriteOperations(): WriteOperations {
 }
 
 function createRemoteEditOperations(): EditOperations {
+  const tracer = getAgentTracer();
   const readOps = createRemoteReadOperations();
   const writeOps = createRemoteWriteOperations();
   return {
@@ -439,19 +440,34 @@ function createRemoteEditOperations(): EditOperations {
     // retries are disabled: an edit that succeeded but lost its response must
     // not be replayed (the oldText would no longer match).
     async applyEdits(absolutePath, edits) {
-      const path = mapLocalAbsolutePathToSandboxPath(absolutePath);
-      const connection = await getCurrentConnection();
-      if (connection.capabilities?.fsEdit !== true) {
-        // Older sandboxes (e.g. a pinned local sandboxd) do not support
-        // fs.edit: fall back to the plain read-modify-write cycle, matching
-        // the pre-fs.edit behavior.
-        let content = (await readOps.readFile(absolutePath)).toString("utf-8");
-        content = applyEditsToContent(content, edits, absolutePath);
-        await writeOps.writeFile(absolutePath, content);
-        return edits.length;
-      }
-      const result = await tracedRpc(connection, "fs.edit", { path, edits }, undefined, false);
-      return result.applied;
+      const spaceId = getCurrentSpaceId();
+      const toolCtx = getCurrentToolExecutionContext();
+      incrementToolCallCount(toolCtx?.metrics);
+      const toolCallId = randomUUID();
+      return runWithToolExecutionContext({
+        spaceId: toolCtx?.spaceId ?? spaceId,
+        sessionId: toolCtx?.sessionId ?? "",
+        turnId: toolCtx?.turnId,
+        toolCallId,
+      }, async () => wrapToolCall(tracer, {
+        toolName: "edit",
+        input: { path: absolutePath, edits: edits.length },
+        ...getCurrentTraceContext(),
+      }, async () => {
+        const path = mapLocalAbsolutePathToSandboxPath(absolutePath);
+        const connection = await getCurrentConnection();
+        if (connection.capabilities?.fsEdit !== true) {
+          // Older sandboxes (e.g. a pinned local sandboxd) do not support
+          // fs.edit: fall back to the plain read-modify-write cycle, matching
+          // the pre-fs.edit behavior.
+          let content = (await readOps.readFile(absolutePath)).toString("utf-8");
+          content = applyEditsToContent(content, edits, absolutePath);
+          await writeOps.writeFile(absolutePath, content);
+          return edits.length;
+        }
+        const result = await tracedRpc(connection, "fs.edit", { path, edits }, undefined, false);
+        return result.applied;
+      }));
     },
   };
 }

@@ -159,25 +159,187 @@ function resolveToCwd(path: string, cwd: string): string {
   return `${cwd.replace(/\/$/, "")}/${path}`;
 }
 
+type EditMatch = {
+  start: number;
+  end: number;
+  fuzzy: boolean;
+};
+
+type NormalizedEditText = {
+  text: string;
+  offsets: number[];
+};
+
 /**
- * Apply exact-text replacements to content, matching each oldText exactly
- * once. Throws when an oldText is missing or not unique. Shared by the edit
- * tool's fallback path and sandbox capability-degraded applyEdits so the
- * matching semantics and error messages never diverge.
+ * Normalize only representation-level differences that are safe to repair:
+ * line endings and spaces or tabs at the end of a line. The boundary map lets
+ * a fuzzy match replace the original range without rewriting untouched bytes.
+ */
+function normalizeEditText(text: string): NormalizedEditText {
+  let normalized = "";
+  const offsets = [0];
+
+  for (let lineStart = 0; lineStart < text.length;) {
+    let lineEnd = lineStart;
+    while (lineEnd < text.length && text[lineEnd] !== "\n" && text[lineEnd] !== "\r") lineEnd += 1;
+
+    let contentEnd = lineEnd;
+    while (contentEnd > lineStart && (text[contentEnd - 1] === " " || text[contentEnd - 1] === "\t")) contentEnd -= 1;
+    normalized += text.slice(lineStart, contentEnd);
+    for (let index = lineStart; index < contentEnd; index += 1) offsets.push(index + 1);
+
+    if (lineEnd === text.length) break;
+    let newlineEnd = lineEnd + 1;
+    if (text[lineEnd] === "\r" && text[newlineEnd] === "\n") newlineEnd += 1;
+    normalized += "\n";
+    offsets.push(newlineEnd);
+    lineStart = newlineEnd;
+  }
+
+  return { text: normalized, offsets };
+}
+
+function findEditOccurrences(text: string, pattern: string): number[] {
+  if (pattern.length === 0) return [];
+  const occurrences: number[] = [];
+  for (let cursor = 0; cursor <= text.length - pattern.length;) {
+    const index = text.indexOf(pattern, cursor);
+    if (index === -1) break;
+    occurrences.push(index);
+    cursor = index + pattern.length;
+  }
+  return occurrences;
+}
+
+function findEditMatches(content: string, oldText: string): EditMatch[] {
+  const exactOccurrences = findEditOccurrences(content, oldText);
+  if (exactOccurrences.length > 0) {
+    return exactOccurrences.map((start) => ({ start, end: start + oldText.length, fuzzy: false }));
+  }
+
+  const normalizedContent = normalizeEditText(content);
+  const normalizedOldText = normalizeEditText(oldText);
+  if (normalizedOldText.text.length === 0) return [];
+
+  return findEditOccurrences(normalizedContent.text, normalizedOldText.text).flatMap((start) => {
+    const end = start + normalizedOldText.text.length;
+    const originalStart = normalizedContent.offsets[start];
+    const originalEnd = normalizedContent.offsets[end];
+    return originalStart === undefined || originalEnd === undefined
+      ? []
+      : [{ start: originalStart, end: originalEnd, fuzzy: true }];
+  });
+}
+
+function editLineNumber(content: string, offset: number): number {
+  return content.slice(0, offset).split(/\r\n|\r|\n/).length;
+}
+
+function findEditHintBlock(content: string, oldText: string): string | undefined {
+  const contentLines = content.split(/\r\n|\r|\n/);
+  const oldLines = oldText.split(/\r\n|\r|\n/);
+  const anchors = oldLines
+    .map((line) => line.trim())
+    .filter((line) => line.length >= 4)
+    .sort((left, right) => right.length - left.length);
+  const tokens = oldText.match(/[A-Za-z0-9_./:-]{4,}/g) ?? [];
+  const candidates = [...anchors, ...[...new Set(tokens)].sort((left, right) => right.length - left.length)];
+
+  for (const candidate of candidates) {
+    const lineIndex = contentLines.findIndex((line) => line.includes(candidate));
+    if (lineIndex === -1) continue;
+    const start = Math.max(0, lineIndex - 1);
+    const end = Math.min(contentLines.length, lineIndex + 2);
+    return contentLines
+      .slice(start, end)
+      .map((line, index) => {
+        const lineCharacters = Array.from(line);
+        const displayLine = lineCharacters.length > 240 ? `${lineCharacters.slice(0, 240).join("")}...` : line;
+        return `${start + index + 1}: ${displayLine}`;
+      })
+      .join("\n");
+  }
+  return undefined;
+}
+
+function restoreEditLineEndings(text: string, content: string): string {
+  const normalized = text.replace(/\r\n/g, "\n").replace(/\r/g, "\n");
+  if (content.includes("\r\n")) return normalized.replace(/\n/g, "\r\n");
+  if (content.includes("\r")) return normalized.replace(/\n/g, "\r");
+  return normalized;
+}
+
+function formatEditMatchError(
+  content: string,
+  oldText: string,
+  path: string,
+  index: number,
+  total: number,
+  matches: EditMatch[],
+): string {
+  const label = total === 1 ? "oldText" : `edits[${index}].oldText`;
+  if (matches.length === 0) {
+    const hintBlock = findEditHintBlock(content, oldText);
+    const hint = hintBlock
+      ? `\nCurrent nearby text:\n${hintBlock}\nCopy the current text exactly; do not reuse stale oldText.`
+      : "";
+    return `${label} must match exactly one region in ${path}, found 0. Re-read the file and retry with the current text, including whitespace, newlines, and escaping.${hint}`;
+  }
+  const lines = matches.slice(0, 8).map((match) => editLineNumber(content, match.start));
+  const suffix = matches.length > lines.length ? ", ..." : "";
+  return `${label} must match exactly one region in ${path}, found ${matches.length} at lines [${lines.join(", ")}${suffix}]. Add surrounding context to oldText`;
+}
+
+/**
+ * Apply replacements against one original snapshot. Exact matching remains
+ * the first choice; normalized matching is accepted only when it is unique.
+ * No write occurs unless every edit validates and no ranges overlap.
  */
 export function applyEditsToContent(
   content: string,
   edits: Array<{ oldText: string; newText: string }>,
   path: string,
 ): string {
-  for (const edit of edits) {
-    const occurrences = content.split(edit.oldText).length - 1;
-    if (occurrences !== 1) {
-      throw new Error(`oldText must match exactly one region in ${path}, found ${occurrences}`);
+  const bom = content.startsWith("\uFEFF") ? "\uFEFF" : "";
+  const original = bom ? content.slice(1) : content;
+  const replacements: Array<{ start: number; end: number; newText: string; index: number }> = [];
+
+  for (const [index, edit] of edits.entries()) {
+    if (edit.oldText.length === 0) throw new Error(`edits[${index}].oldText must not be empty in ${path}`);
+    if (edit.oldText === edit.newText) throw new Error(`edits[${index}].oldText and newText must differ in ${path}`);
+
+    const matches = findEditMatches(original, edit.oldText);
+    if (matches.length !== 1) {
+      throw new Error(formatEditMatchError(original, edit.oldText, path, index, edits.length, matches));
     }
-    content = content.replace(edit.oldText, edit.newText);
+
+    const match = matches[0];
+    if (!match) throw new Error(`No match was available for edits[${index}] in ${path}`);
+    replacements.push({
+      start: match.start,
+      end: match.end,
+      newText: match.fuzzy ? restoreEditLineEndings(edit.newText, original) : edit.newText,
+      index,
+    });
   }
-  return content;
+
+  replacements.sort((left, right) => left.start - right.start);
+  for (let index = 1; index < replacements.length; index += 1) {
+    const previous = replacements[index - 1];
+    const current = replacements[index];
+    if (!previous || !current) continue;
+    if (previous.end > current.start) {
+      throw new Error(`edits[${previous.index}] and edits[${current.index}] overlap in ${path}; merge nearby changes into one edit`);
+    }
+  }
+
+  let updated = original;
+  for (let index = replacements.length - 1; index >= 0; index -= 1) {
+    const replacement = replacements[index];
+    if (!replacement) continue;
+    updated = updated.slice(0, replacement.start) + replacement.newText + updated.slice(replacement.end);
+  }
+  return bom + updated;
 }
 
 export function createReadTool(cwd: string, options: { operations: ReadOperations }): AgentTool {
@@ -271,14 +433,14 @@ export function createEditTool(cwd: string, options: { operations: EditOperation
   const parameters = Type.Object({
     path: Type.String({ description: "Path to the file to edit (relative or absolute)" }),
     edits: Type.Array(Type.Object({
-      oldText: Type.String({ description: "Exact text for one targeted replacement. It must match a unique region in the original file." }),
-      newText: Type.String({ description: "Replacement text for this targeted edit." }),
-    }), { description: "One or more targeted replacements." }),
+      oldText: Type.String({ description: "Text copied verbatim from a recent read result. Include real newlines and whitespace; do not use the two characters \\n for a newline. It must match one unique region in the current file." }),
+      newText: Type.String({ description: "Literal replacement text for this targeted edit. Use an empty string to delete the match." }),
+    }), { description: "One or more targeted replacements. All oldText values are checked against the same original file snapshot and must not overlap." }),
   });
   return {
     name: "edit",
     label: "edit",
-    description: "Edit a file by applying exact text replacements.",
+    description: "Edit a file by applying targeted text replacements. Read the target file first and copy oldText verbatim, including whitespace, newlines, and escaping. Use enough surrounding context to make each oldText unique; do not guess file contents or use literal \\n where the file has a real newline. Nearby changes should be merged into one edit, and edits must not overlap.",
     parameters,
     async execute(_toolCallId, rawParams) {
       const params = rawParams as Static<typeof parameters>;

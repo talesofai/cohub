@@ -195,15 +195,6 @@ type fsEditParams struct {
 	Edits []fsEditItem `json:"edits"`
 }
 
-// editMatchError reports an oldText that matches 0 or multiple regions.
-type editMatchError struct {
-	matches int
-}
-
-func (e *editMatchError) Error() string {
-	return fmt.Sprintf("oldText matched %d regions", e.matches)
-}
-
 type fsMkdirParams struct {
 	Path string `json:"path"`
 	CWD  string `json:"cwd"`
@@ -474,29 +465,27 @@ func (d *Dispatcher) handleFSEdit(request protocol.RPCRequest) interface{} {
 		return d.failed(request, "", "NOT_DIRECTORY", fmt.Sprintf("cannot edit a directory: %s", resolved.path))
 	}
 
-	// Read, edit application, and write run atomically under the per-path
-	// lock: edits are always applied to the latest content, so concurrent
-	// edits to disjoint regions compose instead of losing updates. Each
-	// oldText is matched incrementally against the result of the previous
-	// edit, mirroring the tool-layer semantics it replaces. The response
-	// version (bytesWritten/mtimeMs) is captured under the lock so it cannot
-	// belong to a subsequent writer.
+	// Read, edit validation, and write run atomically under the per-path lock:
+	// all edits are matched against the same latest snapshot, then applied only
+	// after every range is valid and non-overlapping. The response version
+	// (bytesWritten/mtimeMs) is captured under the lock so it cannot belong to a
+	// subsequent writer.
 	var applied int
 	var bytesWritten int64
 	var mtimeMs int64
+	var currentContent string
 	lockErr := withPathLock(resolved.path, func() error {
 		content, err := os.ReadFile(resolved.path)
 		if err != nil {
 			return err
 		}
 		text := string(content)
-		for _, edit := range params.Edits {
-			matches := strings.Count(text, edit.OldText)
-			if matches != 1 {
-				return &editMatchError{matches: matches}
-			}
-			text = strings.Replace(text, edit.OldText, edit.NewText, 1)
+		currentContent = text
+		updated, err := applyFSEdits(text, params.Edits)
+		if err != nil {
+			return err
 		}
+		text = updated
 		applied = len(params.Edits)
 		if err := os.WriteFile(resolved.path, []byte(text), 0o644); err != nil {
 			return err
@@ -508,10 +497,19 @@ func (d *Dispatcher) handleFSEdit(request protocol.RPCRequest) interface{} {
 	if lockErr != nil {
 		var matchErr *editMatchError
 		if errors.As(lockErr, &matchErr) {
+			message := formatFSEditMatchError(resolved.path, currentContent, matchErr, params.Edits[matchErr.index].OldText, len(params.Edits))
 			if matchErr.matches == 0 {
-				return d.failed(request, "", "EDIT_NOT_FOUND", fmt.Sprintf("oldText must match exactly one region in %s, found 0", resolved.path))
+				return d.failed(request, "", "EDIT_NOT_FOUND", message)
 			}
-			return d.failed(request, "", "EDIT_NOT_UNIQUE", fmt.Sprintf("oldText must match exactly one region in %s, found %d", resolved.path, matchErr.matches))
+			return d.failed(request, "", "EDIT_NOT_UNIQUE", message)
+		}
+		var inputErr *editInputError
+		if errors.As(lockErr, &inputErr) {
+			return d.failed(request, "", "BAD_REQUEST", inputErr.Error())
+		}
+		var overlapErr *editOverlapError
+		if errors.As(lockErr, &overlapErr) {
+			return d.failed(request, "", "BAD_REQUEST", overlapErr.Error()+"; merge nearby changes into one edit")
 		}
 		if errors.Is(lockErr, os.ErrNotExist) {
 			return d.failed(request, "", "NOT_FOUND", fmt.Sprintf("file not found: %s", resolved.path))
