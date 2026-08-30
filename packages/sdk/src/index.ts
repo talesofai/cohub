@@ -19,6 +19,17 @@ export type { ParsedAppRef, AppPublicRef } from "./app-ref.js";
 export { isUuid } from "@cohub/protocol/identifiers";
 export { AppCommerceApi } from "./apis/app-commerce.js";
 export { AppRealtimeApi, AppRoom } from "./apis/app-realtime.js";
+export { LocalAgentApi } from "./apis/local-agent.js";
+export type {
+  LocalAgentDevice,
+  LocalAgentAttachResponse,
+  WorkspaceSnapshotPrepareInput,
+  WorkspaceSnapshotPrepareResponse,
+  WorkspaceReplicaStateResponse,
+  WorkspaceReplicaOverviewResponse,
+  NativeIngestInlineInput,
+  NativeIngestPrepareInput,
+} from "./apis/local-agent.js";
 export { ReferencesApi } from "./apis/references.js";
 export { ReferralsApi } from "./apis/referrals.js";
 export { buildSpaceInvitePath, buildSpacePath } from "./apis/invitations.js";

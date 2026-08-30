@@ -4,8 +4,10 @@ import * as remote from "./space-fs-remote.js";
 import { getSpaceSandboxBySpaceId } from "./space-sandboxes.js";
 import { isSandboxDialable } from "@cohub/sandbox-controller";
 import type { AgentSandboxFsMutationOperation } from "@cohub/infra/agent-queue";
+import type { WorkspaceMutationLease } from "./workspace-writer-lease.js";
 import { enqueueSandboxFsMutationJob, SandboxFsMutationTimeoutError } from "./sandbox-fs-mutation-queue.js";
 import { SpaceFsError, assertSafeRelativePath } from "./space-fs.js";
+import { withWorkspacePhysicalLock } from "./workspace-physical-lock.js";
 
 // Provider-aware facade over the space filesystem. Cloud spaces read/write the
 // shared PVC directly (the existing implementation); local spaces are served
@@ -40,6 +42,8 @@ type SandboxWriteResult = { path: string; size: number; mtimeMs: number; created
 type SandboxMkdirResult = { path: string; mtimeMs: number; created: boolean; createdDirs: string[] };
 type SandboxDeleteResult = { path: string; deleted: boolean; nodeType: "file" | "dir" | "unknown" };
 type SandboxMoveResult = { fromPath: string; toPath: string; nodeType: "file" | "dir" | "unknown"; createdDirs: string[] };
+
+type WorkspaceMutationOptions = { workspaceLease?: WorkspaceMutationLease | null };
 
 type SandboxMutationResultFor<Op extends AgentSandboxFsMutationOperation> =
   Op extends { operation: "write" } ? SandboxWriteResult
@@ -94,10 +98,16 @@ async function runCloudSandboxMutation<Op extends AgentSandboxFsMutationOperatio
   spaceId: string,
   mutation: Op,
   mutationId?: string,
+  workspaceLease?: WorkspaceMutationLease | null,
 ): Promise<SandboxMutationResultFor<Op>> {
   try {
     const result = await enqueueSandboxFsMutationJob({
       spaceId,
+      workspaceLease: workspaceLease ? {
+        holderKind: workspaceLease.holderKind,
+        holderId: workspaceLease.holderId,
+        epoch: workspaceLease.epoch,
+      } : null,
       mutationId: normalizeMutationId(mutationId),
       mutation: validateSandboxMutationPaths(mutation),
     });
@@ -142,6 +152,7 @@ export async function readSpaceFiles(spaceId: string, paths: string[], options?:
 export async function writeSpaceFile(
   spaceId: string,
   input: Parameters<typeof direct.writeSpaceFile>[1],
+  options?: WorkspaceMutationOptions,
 ): Promise<ApiEventOutcome<Awaited<ReturnType<typeof direct.writeSpaceFile>>> | SandboxEventOutcome<SandboxWriteResult>> {
   if (await isLocal(spaceId)) {
     // The API relay connection does not forward watcher events, so the route
@@ -150,37 +161,48 @@ export async function writeSpaceFile(
   }
   if (await isCloudSandboxDialable(spaceId)) {
     const { mutationId, ...mutation } = input;
-    return asSandboxOutcome(await runCloudSandboxMutation(spaceId, { operation: "write", ...mutation }, mutationId));
+    return asSandboxOutcome(await runCloudSandboxMutation(spaceId, { operation: "write", ...mutation }, mutationId, options?.workspaceLease));
   }
-  return asApiEventOutcome(await direct.writeSpaceFile(spaceId, input));
+  const result = options?.workspaceLease
+    ? await withWorkspacePhysicalLock(spaceId, () => direct.writeSpaceFile(spaceId, input))
+    : await direct.writeSpaceFile(spaceId, input);
+  return asApiEventOutcome(result);
 }
 
 export async function createSpaceFileExclusive(
   spaceId: string,
   input: Parameters<typeof direct.createSpaceFileExclusive>[1],
+  options?: WorkspaceMutationOptions,
 ): Promise<ApiEventOutcome<Awaited<ReturnType<typeof direct.createSpaceFileExclusive>>> | SandboxEventOutcome<SandboxWriteResult>> {
   if (await isLocal(spaceId)) {
     return asApiEventOutcome(await remote.createSpaceFileExclusive(spaceId, input));
   }
   if (await isCloudSandboxDialable(spaceId)) {
     const { mutationId, ...mutation } = input;
-    return asSandboxOutcome(await runCloudSandboxMutation(spaceId, { operation: "write", ...mutation, exclusive: true }, mutationId));
+    return asSandboxOutcome(await runCloudSandboxMutation(spaceId, { operation: "write", ...mutation, exclusive: true }, mutationId, options?.workspaceLease));
   }
-  return asApiEventOutcome(await direct.createSpaceFileExclusive(spaceId, input));
+  const result = options?.workspaceLease
+    ? await withWorkspacePhysicalLock(spaceId, () => direct.createSpaceFileExclusive(spaceId, input))
+    : await direct.createSpaceFileExclusive(spaceId, input);
+  return asApiEventOutcome(result);
 }
 
 export async function createSpaceDirectory(
   spaceId: string,
   path: string,
   mutationId?: string,
+  options?: WorkspaceMutationOptions,
 ): Promise<ApiEventOutcome<Awaited<ReturnType<typeof direct.createSpaceDirectory>>> | SandboxEventOutcome<SandboxMkdirResult>> {
   if (await isLocal(spaceId)) {
     return asApiEventOutcome(await remote.createSpaceDirectory(spaceId, path));
   }
   if (await isCloudSandboxDialable(spaceId)) {
-    return asSandboxOutcome(await runCloudSandboxMutation(spaceId, { operation: "mkdir", path }, mutationId));
+    return asSandboxOutcome(await runCloudSandboxMutation(spaceId, { operation: "mkdir", path }, mutationId, options?.workspaceLease));
   }
-  return asApiEventOutcome(await direct.createSpaceDirectory(spaceId, path));
+  const result = options?.workspaceLease
+    ? await withWorkspacePhysicalLock(spaceId, () => direct.createSpaceDirectory(spaceId, path))
+    : await direct.createSpaceDirectory(spaceId, path);
+  return asApiEventOutcome(result);
 }
 
 export async function deleteSpaceNode(
@@ -188,33 +210,42 @@ export async function deleteSpaceNode(
   path: string,
   recursive = false,
   mutationId?: string,
+  options?: WorkspaceMutationOptions,
 ): Promise<ApiEventOutcome<Awaited<ReturnType<typeof direct.deleteSpaceNode>>> | SandboxEventOutcome<SandboxDeleteResult>> {
   if (await isLocal(spaceId)) {
     return asApiEventOutcome(await remote.deleteSpaceNode(spaceId, path, recursive));
   }
   if (await isCloudSandboxDialable(spaceId)) {
-    return asSandboxOutcome(await runCloudSandboxMutation(spaceId, { operation: "delete", path, recursive }, mutationId));
+    return asSandboxOutcome(await runCloudSandboxMutation(spaceId, { operation: "delete", path, recursive }, mutationId, options?.workspaceLease));
   }
-  return asApiEventOutcome(await direct.deleteSpaceNode(spaceId, path, recursive));
+  const result = options?.workspaceLease
+    ? await withWorkspacePhysicalLock(spaceId, () => direct.deleteSpaceNode(spaceId, path, recursive))
+    : await direct.deleteSpaceNode(spaceId, path, recursive);
+  return asApiEventOutcome(result);
 }
 
 export async function moveSpaceNode(
   spaceId: string,
   input: Parameters<typeof direct.moveSpaceNode>[1] & { mutationId?: string },
+  options?: WorkspaceMutationOptions,
 ): Promise<ApiEventOutcome<Awaited<ReturnType<typeof direct.moveSpaceNode>>> | SandboxEventOutcome<SandboxMoveResult>> {
   const { mutationId, ...move } = input;
   if (await isLocal(spaceId)) {
     return asApiEventOutcome(await remote.moveSpaceNode(spaceId, move));
   }
   if (await isCloudSandboxDialable(spaceId)) {
-    return asSandboxOutcome(await runCloudSandboxMutation(spaceId, { operation: "move", fromPath: move.fromPath, toPath: move.toPath }, mutationId));
+    return asSandboxOutcome(await runCloudSandboxMutation(spaceId, { operation: "move", fromPath: move.fromPath, toPath: move.toPath }, mutationId, options?.workspaceLease));
   }
-  return asApiEventOutcome(await direct.moveSpaceNode(spaceId, move));
+  const result = options?.workspaceLease
+    ? await withWorkspacePhysicalLock(spaceId, () => direct.moveSpaceNode(spaceId, move))
+    : await direct.moveSpaceNode(spaceId, move);
+  return asApiEventOutcome(result);
 }
 
-export async function uploadSpaceFiles(spaceId: string, files: File[], targetDir: string) {
-  return (await isLocal(spaceId))
-    ? remote.uploadSpaceFiles(spaceId, files, targetDir)
+export async function uploadSpaceFiles(spaceId: string, files: File[], targetDir: string, options?: WorkspaceMutationOptions) {
+  if (await isLocal(spaceId)) return remote.uploadSpaceFiles(spaceId, files, targetDir);
+  return options?.workspaceLease
+    ? withWorkspacePhysicalLock(spaceId, () => direct.uploadSpaceFiles(spaceId, files, targetDir))
     : direct.uploadSpaceFiles(spaceId, files, targetDir);
 }
 

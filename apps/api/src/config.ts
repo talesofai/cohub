@@ -47,6 +47,11 @@ export type AppConfig = {
   chatAttachmentS3Bucket?: string;
   chatAttachmentPublicBaseUrl?: string;
   spaceUploadS3Bucket?: string;
+  workspaceObjectEndpoint?: string;
+  workspaceObjectRegion: string;
+  workspaceObjectBucket?: string;
+  workspaceObjectAccessKeyId?: string;
+  workspaceObjectSecretAccessKey?: string;
   appAssetCdnBaseUrl?: string;
   checkpointAssetOssEndpoint?: string;
   checkpointAssetOssPublicEndpoint?: string;
@@ -72,6 +77,11 @@ export type AppConfig = {
   metaPromotionClientIpHeader?: string;
   /** Optional Meta Events Manager test code; omit in normal production traffic. */
   metaPromotionTestEventCode?: string;
+  workspaceReplicationEnabled: boolean;
+  nativeAgentMirrorEnabled: boolean;
+  nativeAgentPiEnabled: boolean;
+  nativeAgentClaudeEnabled: boolean;
+  nativeAgentCodexEnabled: boolean;
 };
 
 export type SandboxToleration = {
@@ -92,6 +102,14 @@ const getDefaultSandboxImage = (env: "dev" | "prod") => {
 };
 
 const env = (process.env.ENV === "prod" ? "prod" : "dev") as "dev" | "prod";
+
+const parseBoolean = (value: string | undefined, fallback: boolean, name: string) => {
+  if (value == null || value.trim() === "") return fallback;
+  const normalized = value.trim().toLowerCase();
+  if (["1", "true", "yes", "on"].includes(normalized)) return true;
+  if (["0", "false", "no", "off"].includes(normalized)) return false;
+  throw new Error(`${name} must be true or false`);
+};
 
 const parseCommaList = (value: string | undefined) => {
   return (value ?? "")
@@ -211,6 +229,11 @@ export const config: AppConfig = {
   chatAttachmentS3Bucket: process.env.CHAT_ATTACHMENT_S3_BUCKET,
   chatAttachmentPublicBaseUrl: process.env.CHAT_ATTACHMENT_PUBLIC_BASE_URL?.replace(/\/+$/, ""),
   spaceUploadS3Bucket: process.env.SPACE_UPLOAD_S3_BUCKET,
+  workspaceObjectEndpoint: process.env.WORKSPACE_OBJECT_ENDPOINT ?? process.env.USER_UPLOAD_S3_ENDPOINT,
+  workspaceObjectRegion: process.env.WORKSPACE_OBJECT_REGION ?? process.env.USER_UPLOAD_S3_REGION ?? "auto",
+  workspaceObjectBucket: process.env.WORKSPACE_OBJECT_BUCKET ?? process.env.SPACE_UPLOAD_S3_BUCKET,
+  workspaceObjectAccessKeyId: process.env.WORKSPACE_OBJECT_ACCESS_KEY_ID ?? process.env.USER_UPLOAD_S3_ACCESS_KEY_ID,
+  workspaceObjectSecretAccessKey: process.env.WORKSPACE_OBJECT_SECRET_ACCESS_KEY ?? process.env.USER_UPLOAD_S3_SECRET_ACCESS_KEY,
   // APP_* is canonical; the WORK_* spelling stays as a fallback for clusters
   // not yet migrated (both are set during the transition).
   appAssetCdnBaseUrl:
@@ -241,6 +264,11 @@ export const config: AppConfig = {
   metaPromotionApiVersion: process.env.COHUB_META_API_VERSION?.trim() || "v21.0",
   metaPromotionClientIpHeader: process.env.COHUB_META_CLIENT_IP_HEADER?.trim().toLowerCase() || undefined,
   metaPromotionTestEventCode: process.env.COHUB_META_TEST_EVENT_CODE?.trim() || undefined,
+  workspaceReplicationEnabled: parseBoolean(process.env.WORKSPACE_REPLICATION_ENABLED, env === "dev", "WORKSPACE_REPLICATION_ENABLED"),
+  nativeAgentMirrorEnabled: parseBoolean(process.env.NATIVE_AGENT_MIRROR_ENABLED, env === "dev", "NATIVE_AGENT_MIRROR_ENABLED"),
+  nativeAgentPiEnabled: parseBoolean(process.env.NATIVE_AGENT_PI_ENABLED, env === "dev", "NATIVE_AGENT_PI_ENABLED"),
+  nativeAgentClaudeEnabled: parseBoolean(process.env.NATIVE_AGENT_CLAUDE_ENABLED, false, "NATIVE_AGENT_CLAUDE_ENABLED"),
+  nativeAgentCodexEnabled: parseBoolean(process.env.NATIVE_AGENT_CODEX_ENABLED, false, "NATIVE_AGENT_CODEX_ENABLED"),
 };
 
 export const sessionsNamespace = getSessionsNamespace(config.env);
@@ -257,5 +285,11 @@ export const assertRequiredConfig = () => {
   }
   if (!config.bullmqRedisUrl) {
     throw new Error("Missing required env: BULLMQ_REDIS_URL");
+  }
+  if (config.workspaceReplicationEnabled) {
+    if (!config.workspaceObjectEndpoint) throw new Error("Missing required env: WORKSPACE_OBJECT_ENDPOINT");
+    if (!config.workspaceObjectBucket) throw new Error("Missing required env: WORKSPACE_OBJECT_BUCKET");
+    if (!config.workspaceObjectAccessKeyId) throw new Error("Missing required env: WORKSPACE_OBJECT_ACCESS_KEY_ID");
+    if (!config.workspaceObjectSecretAccessKey) throw new Error("Missing required env: WORKSPACE_OBJECT_SECRET_ACCESS_KEY");
   }
 };

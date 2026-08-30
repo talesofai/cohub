@@ -28,6 +28,9 @@ SYSTEM_REQUEST_MEMORY: "128Mi"
 SYSTEM_LIMIT_CPU: "500m"
 SYSTEM_LIMIT_MEMORY: "512Mi"
 SYSTEM_WORKER_CONCURRENCY: "4"
+WORKSPACE_REPLICATION_ENABLED: "true"
+WORKER_LOCK_DB_POOL_MAX: "6"
+WORKSPACE_SYNC_WORKER_CONCURRENCY: "4"
 SANDBOX_IDLE_REAPER_LIMIT: "50"
 
 # ========== Worker 配置 ==========
@@ -64,6 +67,11 @@ PUBLIC_ASSET_OSS_BUCKET: "cohub-public"
 CHECKPOINT_ASSET_OSS_ENDPOINT: "https://s3.example.com"
 CHECKPOINT_ASSET_OSS_REGION: "us-east-1"
 CHECKPOINT_ASSET_OSS_BUCKET: "cohub-checkpoint-assets"
+# Workspace snapshot manifests and content-addressed blobs. Use the same
+# private bucket as Space uploads only when its lifecycle and IAM policy permit.
+WORKSPACE_OBJECT_ENDPOINT: "https://account-id.r2.cloudflarestorage.com"
+WORKSPACE_OBJECT_REGION: "auto"
+WORKSPACE_OBJECT_BUCKET: "cohub-space-uploads"
 MAX_UNAVAILABLE: "0"
 MAX_SURGE: "1"
 TERMINATION_GRACE_PERIOD_SECONDS: "360"

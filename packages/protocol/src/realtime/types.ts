@@ -23,7 +23,7 @@ export const REALTIME_OUTBOUND_CHANNEL = "pubsub:realtime:outbound";
 export const AGENT_REALTIME_PATCH_CHANNEL = "pubsub:realtime:agent_patches";
 export const REALTIME_ROOM_KEY_PREFIX = "cohub:realtime-room:v1";
 
-export const REALTIME_DOMAINS = ["system", "session", "space", "label", "room", "ui", "desktop"] as const;
+export const REALTIME_DOMAINS = ["system", "session", "space", "workspace", "label", "room", "ui", "desktop"] as const;
 export type RealtimeDomain = (typeof REALTIME_DOMAINS)[number];
 
 export const isRealtimeDomain = (value: unknown): value is RealtimeDomain =>
@@ -599,6 +599,49 @@ export type SessionMessagePersistedEvent = {
   payload: { message: RealtimeMessageRecord };
 };
 
+export type WorkspaceStateUpdatedEvent = {
+  id: string;
+  timestamp: number;
+  domain: "workspace";
+  type: "workspace.state.updated";
+  requestId?: string | null;
+  spaceId: string;
+  sessionId?: null;
+  rooms?: RealtimeRoom[];
+  payload: {
+    workspace: {
+      canonicalSnapshotId: string | null;
+      cloudAppliedSnapshotId: string | null;
+      generation: number;
+      status: string;
+      activeCycleId: string | null;
+      lastWriterKind: string | null;
+      updatedAt: string;
+    };
+    replica?: {
+      id: string;
+      kind: "cloud" | "local";
+      status: string;
+      currentSnapshotId: string | null;
+      appliedSnapshotId: string | null;
+      lastCommonSnapshotId: string | null;
+      updatedAt: string;
+    } | null;
+    openConflictCount?: number;
+    lease?: {
+      holderKind: string;
+      epoch: number;
+      baseSnapshotId: string | null;
+      expiresAt: string;
+      lastHeartbeatAt: string;
+      maximumDurationAt: string | null;
+      takeoverRequiresConfirmation: boolean;
+      updatedAt: string;
+    } | null;
+    reason?: string | null;
+  };
+};
+
 export type SpaceFsChangedEvent = {
   id: string;
   timestamp: number;
@@ -861,6 +904,7 @@ export type RealtimeServerEvent =
   | SessionTurnFinalizedEvent
   | SessionTurnNotifyEvent
   | SessionMessagePersistedEvent
+  | WorkspaceStateUpdatedEvent
   | SpaceFsChangedEvent
   | SpacePortsChangedEvent
   | SpacePresenceUpdatedEvent

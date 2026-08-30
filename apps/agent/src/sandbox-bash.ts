@@ -8,6 +8,8 @@ import { runWithToolExecutionContext } from "./tool-context.js";
 import { logger } from "./logger.js";
 import type { AgentSandboxBashUploadJobData } from "./queue.js";
 import { loadSpaceEnvSnapshot } from "./runtime/env-cache.js";
+import { withAgentWorkspaceLease } from "./workspace-lease.js";
+import { acquireWorkspacePhysicalLock } from "./workspace-physical-lock.js";
 
 const SCRIPT_PATH = new URL("./jobs/sandbox-bash/upload-files.sh", import.meta.url);
 const tools = createSandboxCodingTools();
@@ -123,7 +125,10 @@ export async function processSandboxBashJob(job: Job<AgentSandboxBashUploadJobDa
   });
 
   const spaceEnv = await loadSpaceEnvSnapshot(data.spaceId);
-  await runWithToolExecutionContext({
+  const workspacePhysicalLock = data.workspaceLease ? await acquireWorkspacePhysicalLock(data.spaceId) : null;
+  if (data.workspaceLease && !workspacePhysicalLock) throw new Error("workspace_physical_writer_active");
+  try {
+    await runWithToolExecutionContext({
     spaceId: data.spaceId,
     sessionId: data.sessionId,
     spaceEnv,
@@ -139,15 +144,19 @@ export async function processSandboxBashJob(job: Job<AgentSandboxBashUploadJobDa
     toolCallId,
     requestId: data.requestId ?? undefined,
   }, async () => {
-    const result = await bashTool.execute(
-      toolCallId,
-      { command, timeout: 3600 } as never,
-      undefined,
-      (partial) => {
-        const text = extractResultText(partial);
-        if (text) latestOutput = text;
-      },
-    );
+    const result = await withAgentWorkspaceLease({
+      spaceId: data.spaceId,
+      lease: data.workspaceLease ?? null,
+      run: (leaseSignal) => bashTool.execute(
+        toolCallId,
+        { command, timeout: 3600 } as never,
+        leaseSignal,
+        (partial) => {
+          const text = extractResultText(partial);
+          if (text) latestOutput = text;
+        },
+      ),
+    });
     latestOutput = extractResultText(result) || latestOutput;
     const exitCode = getExitCode(result);
     if (exitCode !== 0) {
@@ -164,8 +173,13 @@ export async function processSandboxBashJob(job: Job<AgentSandboxBashUploadJobDa
       if (exitCode === 3) throw new UnrecoverableError(`upload_size_mismatch: ${error.message}`);
       if (exitCode === 2 || exitCode === 127) throw new UnrecoverableError(error.message);
       throw error;
-    }
-  }));
+      }
+    }));
+  } finally {
+    await workspacePhysicalLock?.release().catch((error) => {
+      logger.error("[WorkspaceLock] failed to release sandbox upload lock", { spaceId: data.spaceId, error });
+    });
+  }
 
   try {
     const uploaded = parseUploadedLines(latestOutput, data);

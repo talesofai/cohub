@@ -272,6 +272,57 @@ try {
   const c3 = multiCompact.appendCompaction("s3", cm8, 100);
   await multiCompact.archiveAndRewrite(c3, cm8);
   assert.deepEqual(compactContextTexts(), ["summary", "m8", "m9"]);
+
+  const barrierFile = join(sessionsDir, "native-visibility-barrier.jsonl");
+  const barrier = SessionManager.create(root, sessionsDir);
+  barrier.newSession({ id: "native-visibility-barrier" });
+  barrier.setSessionFile(barrierFile);
+  const visibleRootId = barrier.appendMessage({
+    role: "user",
+    content: [{ type: "text", text: "visible root" }],
+    timestamp: Date.now(),
+  } as never, { id: "visible-root" });
+  const nativeEntryId = barrier.appendMessage({
+    role: "assistant",
+    content: [{ type: "text", text: "hidden until projection" }],
+    timestamp: Date.now(),
+    meta: { cohubNativeIngestId: "ingest-1" },
+  } as never, { id: "native-entry" });
+  assert.equal(nativeEntryId, "native-entry");
+  assert.deepEqual(
+    barrier.buildSessionContext().messages.map((message) => (message as { content?: Array<{ text?: string }> }).content?.[0]?.text),
+    ["visible root"],
+  );
+  barrier.appendCustomEntry("cohub_transcript_commit", {
+    protocolVersion: 1,
+    ingestId: "ingest-1",
+    entryIds: [nativeEntryId],
+    finalEntryHash: "hash",
+    previousVisibleLeafId: visibleRootId,
+  }, { id: "commit-marker" });
+  barrier.appendMessage({
+    role: "user",
+    content: [{ type: "text", text: "cloud continuation" }],
+    timestamp: Date.now(),
+  } as never, { id: "cloud-after-marker" });
+  await barrier.close();
+  assert.deepEqual(
+    barrier.buildSessionContext().messages.map((message) => (message as { content?: Array<{ text?: string }> }).content?.[0]?.text),
+    ["visible root", "hidden until projection", "cloud continuation"],
+  );
+  assert.deepEqual(barrier.getVisibleEntries().map((entry) => [entry.id, entry.parentId]), [
+    ["visible-root", null],
+    ["native-entry", "visible-root"],
+    ["cloud-after-marker", "native-entry"],
+  ]);
+  const barrierForkFile = join(sessionsDir, "native-visibility-barrier-fork.jsonl");
+  await barrier.createBranchedSession("cloud-after-marker", { id: "barrier-fork", filePath: barrierForkFile });
+  const barrierFork = await SessionManager.open(barrierForkFile, sessionsDir);
+  assert.deepEqual(barrierFork.getBranchEntries().map((entry) => [entry.id, entry.parentId]), [
+    ["visible-root", null],
+    ["native-entry", "visible-root"],
+    ["cloud-after-marker", "native-entry"],
+  ]);
 } finally {
   await rm(root, { recursive: true, force: true });
 }

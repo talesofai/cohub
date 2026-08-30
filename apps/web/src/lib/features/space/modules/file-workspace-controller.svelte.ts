@@ -45,6 +45,7 @@ import {
 } from "./file-workspace-utils";
 import type { WindowSyncStatus } from "./window-sync-status";
 import { workspaceFilePreviewKind } from "./windows";
+import { workspaceFileSaveBlockMessage } from "./workspace-file-save-error";
 
 export type { ActiveFsSource, FileViewMode };
 
@@ -1237,6 +1238,16 @@ export function createFileWorkspaceController(
 			}));
 			return "blocked" as const;
 		};
+		const markWorkspaceBlocked = (message: string) => {
+			pendingSaveMutationIds.set(path, mutationId);
+			setInlineFileTab(path, (tab) => ({
+				...tab,
+				saving: false,
+				syncStatus: "error",
+				saveError: message,
+			}));
+			return "blocked" as const;
+		};
 		try {
 			let saved: {
 				size: number;
@@ -1251,8 +1262,12 @@ export function createFileWorkspaceController(
 				);
 				saved = { size: result.size, mtimeMs: result.mtimeMs };
 			} catch (error) {
-				if (force || !(error instanceof HttpError && error.status === 409))
-					throw error;
+				const recoverableConflict =
+					error instanceof HttpError &&
+					error.status === 409 &&
+					(error.code === "file_conflict" ||
+						error.code === "workspace_mutation_duplicate");
+				if (force || !recoverableConflict) throw error;
 
 				// Recover once only when fresh content proves the version conflict was stale.
 				const fresh = await readActiveFsFile(path);
@@ -1348,8 +1363,14 @@ export function createFileWorkspaceController(
 					requestToken
 			)
 				return "blocked" as const;
-			if (error instanceof HttpError && error.status === 409)
-				return markConflict();
+			if (error instanceof HttpError) {
+				const workspaceMessage = workspaceFileSaveBlockMessage(
+					error.status,
+					error.code,
+				);
+				if (workspaceMessage) return markWorkspaceBlocked(workspaceMessage);
+				if (error.status === 409) return markConflict();
+			}
 			pendingSaveMutationIds.set(path, mutationId);
 			setInlineFileTab(path, (tab) => ({
 				...tab,

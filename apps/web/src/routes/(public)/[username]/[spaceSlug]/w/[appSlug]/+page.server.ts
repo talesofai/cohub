@@ -25,7 +25,7 @@ export const load: PageServerLoad = async ({
 		});
 		return {
 			mode: "ready" as const,
-			work: result.detail.app,
+			app: result.detail.app,
 			space: result.detail.space,
 			owner: result.detail.owner,
 			content: result.detail.content,

@@ -60,6 +60,22 @@ describe("object presigning", () => {
     });
   });
 
+  it("signs a content checksum for local-agent objects", () => {
+    const checksum = Buffer.alloc(32, 7).toString("base64");
+    const signed = createPresignedPutObjectUrl(
+      storage,
+      "local-agent/blob/space/hash",
+      "application/octet-stream",
+      "private, max-age=0",
+      null,
+      { contentLength: 12, checksumSha256Base64: checksum },
+    );
+    const url = new URL(signed.uploadUrl);
+
+    assert.match(url.searchParams.get("X-Amz-SignedHeaders") ?? "", /x-amz-checksum-sha256/);
+    assert.equal(signed.headers?.["x-amz-checksum-sha256"], checksum);
+  });
+
   it("keeps the legacy POST policy signer available for avatars and old clients", () => {
     const signed = createPresignedPostObject({
       storage,

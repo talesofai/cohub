@@ -10,6 +10,7 @@ import {
   attachWorkerEventLogger,
   closeWorkerGracefully,
   COHUB_TASKS_QUEUE,
+  COHUB_WORKSPACE_SYNC_QUEUE,
   createBullmqRedisConnection,
   createQueueTelemetry,
   getRedisHost,
@@ -18,6 +19,10 @@ import { context, SpanStatusCode, trace } from "@opentelemetry/api";
 import { getTracer, extractTrace } from "@cohub/infra/tracing/propagator";
 import { config, assertRequiredConfig } from "./config.js";
 import { getTaskHandler, getRegisteredTasks, markTaskRunFailed } from "./tasks/registry.js";
+import { processWorkspaceSyncJob } from "./workspace-sync.js";
+import type { WorkspaceSyncJobData } from "@cohub/protocol";
+import { closeWorkspaceSyncSweeper, sweepWorkspaceSyncWork } from "./workspace-sync-sweeper.js";
+import { closeDb } from "./db.js";
 
 const logger = createLogger({ serviceName: "cohub-worker" });
 // Auto-register all tasks
@@ -67,6 +72,25 @@ const taskWorker = new Worker(COHUB_TASKS_QUEUE, processor, {
   telemetry: createQueueTelemetry("cohub-worker"),
 });
 
+const workspaceConnection = config.workspaceReplicationEnabled
+  ? createBullmqRedisConnection(config.bullmqRedisUrl)
+  : null;
+const workspaceWorker = workspaceConnection
+  ? new Worker<WorkspaceSyncJobData>(COHUB_WORKSPACE_SYNC_QUEUE, async (job) => processWorkspaceSyncJob(job), {
+      connection: workspaceConnection,
+      concurrency: resolveQueueConcurrencyPerWorkerByName(COHUB_WORKSPACE_SYNC_QUEUE),
+      telemetry: createQueueTelemetry("cohub-worker-workspace-sync"),
+    })
+  : null;
+
+if (workspaceWorker) {
+  attachWorkerEventLogger(workspaceWorker, {
+    serviceName: "WorkspaceSyncWorker",
+    queueName: COHUB_WORKSPACE_SYNC_QUEUE,
+    logCompletedResult: true,
+  });
+}
+
 attachWorkerEventLogger(taskWorker, {
   serviceName: "Worker",
   queueName: COHUB_TASKS_QUEUE,
@@ -85,15 +109,36 @@ logger.info("[Worker] BullMQ Redis:", getRedisHost(config.bullmqRedisUrl));
 logger.info("[Worker] App Redis:", getRedisHost(config.redisUrl));
 logger.info("[Worker] Registered tasks:", getRegisteredTasks());
 
+const workspaceSweepTimer = config.workspaceReplicationEnabled
+  ? setInterval(() => {
+      void sweepWorkspaceSyncWork().catch((error) => logger.warn("[WorkspaceSync] sweeper failed", error));
+    }, 15_000)
+  : null;
+workspaceSweepTimer?.unref();
+if (config.workspaceReplicationEnabled) {
+  void sweepWorkspaceSyncWork().catch((error) => logger.warn("[WorkspaceSync] initial sweep failed", error));
+}
+
 // Graceful shutdown
 const shutdown = async (signal: string) => {
   logger.info(`[Worker] Received ${signal}, shutting down...`);
+  if (workspaceSweepTimer) clearInterval(workspaceSweepTimer);
+  if (config.workspaceReplicationEnabled) await closeWorkspaceSyncSweeper().catch(() => undefined);
+  if (workspaceWorker) {
+    await closeWorkerGracefully(workspaceWorker, {
+      serviceName: "WorkspaceSyncWorker",
+      timeoutMs: Number(process.env.TASK_WORKER_SHUTDOWN_TIMEOUT_MS ?? 30_000),
+      pauseBeforeClose: true,
+    });
+  }
   await closeWorkerGracefully(taskWorker, {
     serviceName: "Worker",
     timeoutMs: Number(process.env.TASK_WORKER_SHUTDOWN_TIMEOUT_MS ?? 30_000),
     pauseBeforeClose: true,
   });
+  await workspaceConnection?.quit().catch(() => undefined);
   await connection.quit().catch(() => undefined);
+  await closeDb();
   process.exit(0);
 };
 

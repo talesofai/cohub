@@ -9,12 +9,13 @@ import {
   createQueueTelemetry,
 } from "@cohub/infra/bullmq";
 import { env } from "./env.js";
-import { AGENT_SANDBOX_BASH_JOB_NAME, AGENT_RUN_COMMAND_JOB_NAME, AGENT_SESSION_FORK_JOB_NAME, AGENT_TURN_JOB_NAME, AGENT_TURN_QUEUE_NAME, AGENT_SANDBOX_FS_MUTATION_JOB_NAME, type AgentJobData, type AgentTurnJobData, type AgentSessionForkJobData, type AgentSandboxBashUploadJobData, type AgentRunCommandJobData, type AgentSandboxFsMutationJobData } from "./queue.js";
+import { AGENT_SANDBOX_BASH_JOB_NAME, AGENT_RUN_COMMAND_JOB_NAME, AGENT_SESSION_FORK_JOB_NAME, NATIVE_AGENT_INGEST_JOB_NAME, AGENT_TURN_JOB_NAME, AGENT_TURN_QUEUE_NAME, AGENT_SANDBOX_FS_MUTATION_JOB_NAME, type AgentJobData, type AgentTurnJobData, type AgentSessionForkJobData, type NativeAgentIngestJobData, type AgentSandboxBashUploadJobData, type AgentRunCommandJobData, type AgentSandboxFsMutationJobData } from "./queue.js";
 import { processAgentTurnJob, disposeAllSessionHandles } from "./processor.js";
 import { processSessionForkJob } from "./fork.js";
 import { processSandboxBashJob } from "./sandbox-bash.js";
 import { processSandboxFsMutationJob, redactSandboxFsMutationJobPayload } from "./sandbox-fs-mutation.js";
 import { processRunCommandJob } from "./run-command.js";
+import { processNativeAgentIngestJob } from "./native-ingest.js";
 import { subscribeAbortEvents, closeAbortSubscriber } from "./abort.js";
 import { abortActiveTurnExecutions } from "./active-turns.js";
 import { closeDb } from "./db.js";
@@ -24,6 +25,8 @@ import { logger } from "./logger.js";
 import { invalidateSandboxConnection, closeSandboxPool } from "./sandbox-pool.js";
 import { closeSandboxLifecycleEventSubscriber, subscribeSandboxLifecycleEvents } from "./sandbox-events.js";
 import { SandboxRpcError } from "@cohub/sandbox-client";
+import { sweepNativeAgentIngests } from "./native-ingest-sweeper.js";
+import { cleanupPublishedSessionRealtimeOutbox, dispatchSessionRealtimeOutbox, recoverStaleSessionRealtimeOutbox } from "./realtime-outbox.js";
 
 export const __test = {
   runInSessionOperation: async <T>(_handle: unknown, fn: () => Promise<T>) => fn(),
@@ -37,6 +40,10 @@ const processor: Processor<AgentJobData> = async (job) => {
   }
   if (job.name === AGENT_TURN_JOB_NAME) {
     return processAgentTurnJob(job as Job<AgentTurnJobData>);
+  }
+  if (job.name === NATIVE_AGENT_INGEST_JOB_NAME) {
+    if (!env.NATIVE_AGENT_MIRROR_ENABLED) throw new Error("native_agent_mirror_disabled");
+    return processNativeAgentIngestJob(job as Job<NativeAgentIngestJobData>);
   }
   if (job.name === AGENT_SANDBOX_BASH_JOB_NAME) {
     return processSandboxBashJob(job as Job<AgentSandboxBashUploadJobData>);
@@ -151,10 +158,38 @@ logger.info("[AgentWorker] Starting BullMQ agent worker...");
 logger.info("[AgentWorker] Queue:", AGENT_TURN_QUEUE_NAME);
 logger.info("[AgentWorker] Concurrency:", env.AGENT_WORKER_CONCURRENCY);
 
+const nativeIngestSweepTimer = env.NATIVE_AGENT_MIRROR_ENABLED
+  ? setInterval(() => {
+      void sweepNativeAgentIngests().catch((error) => logger.warn("[NativeIngest] sweeper failed", error));
+    }, 15_000)
+  : null;
+nativeIngestSweepTimer?.unref();
+const realtimeOutboxTimer = setInterval(() => {
+  void dispatchSessionRealtimeOutbox().catch((error) => logger.warn("[RealtimeOutbox] dispatcher failed", error));
+}, 1_000);
+realtimeOutboxTimer.unref();
+const cleanupRealtimeOutbox = () => cleanupPublishedSessionRealtimeOutbox(
+  new Date(Date.now() - env.SESSION_REALTIME_OUTBOX_RETENTION_DAYS * 24 * 60 * 60 * 1_000),
+);
+const realtimeOutboxCleanupTimer = setInterval(() => {
+  void cleanupRealtimeOutbox().catch((error) => logger.warn("[RealtimeOutbox] cleanup failed", error));
+}, 60 * 60 * 1_000);
+realtimeOutboxCleanupTimer.unref();
+void recoverStaleSessionRealtimeOutbox()
+  .then(() => Promise.all([
+    ...(env.NATIVE_AGENT_MIRROR_ENABLED ? [sweepNativeAgentIngests()] : []),
+    dispatchSessionRealtimeOutbox(),
+    cleanupRealtimeOutbox(),
+  ]))
+  .catch((error) => logger.warn("[AgentRecovery] initial durable-work sweep failed", error));
+
 let shuttingDown = false;
 async function shutdown(signal: string, options?: { exitCode?: number }) {
   if (shuttingDown) return;
   shuttingDown = true;
+  if (nativeIngestSweepTimer) clearInterval(nativeIngestSweepTimer);
+  clearInterval(realtimeOutboxTimer);
+  clearInterval(realtimeOutboxCleanupTimer);
   logger.info(`[AgentWorker] Received ${signal}, draining...`);
   await closeWorkerGracefully(worker, {
     serviceName: "AgentWorker",

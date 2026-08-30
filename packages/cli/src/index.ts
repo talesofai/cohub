@@ -21,6 +21,8 @@ import { registerSandbox } from "./commands/sandbox.js";
 import { registerTasks } from "./commands/tasks.js";
 import { registerDesktop, registerLegacyUi } from "./commands/desktop.js";
 import { registerApps } from "./commands/apps.js";
+import { registerWorkspace } from "./commands/workspace.js";
+import { registerAgentHooks } from "./commands/agent-hooks.js";
 
 const VERSION = (() => {
   try {
@@ -51,6 +53,7 @@ Common commands:
   cohub -s <space-id> completion "Summarize AGENTS.md" --system-prompt AGENTS.md --stream
   cohub -s <space-id> run -- git status
   cohub sandbox up ./my-project
+  cohub workspace attach <space-id> ./my-project
   cohub search "release notes"
   cohub -s <space-id> boards inspect <board-id>
   cohub -s <space-id> spaces turns ls --author others
@@ -88,6 +91,8 @@ registerReferrals(program);
 registerTasks(program);
 registerCronJobs(program);
 registerApps(program);
+registerWorkspace(program);
+registerAgentHooks(program);
 registerDesktop(program);
 registerLegacyUi(program);
 

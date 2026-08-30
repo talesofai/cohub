@@ -79,6 +79,41 @@ cohub -s <spaceId> spaces prompt "message" --json
 COHUB_SPACE_ID=<spaceId> cohub spaces prompt "message" --json
 ```
 
+## Local workspace replicas
+
+Install the pinned, checksummed local runtime, attach a folder, then install only the provider integration you use:
+
+```bash
+cohub agent runtime install
+cohub workspace attach <spaceId> ./project --merge --mirror metadata_only
+cohub agent hooks install pi
+cohub agent doctor
+```
+
+A non-empty folder requires exactly one initial strategy: `--merge`, `--use-cloud`, or `--use-local`. `--use-cloud` creates a verified local recovery backup before replacing managed content. Empty folders default to `--use-cloud`.
+
+Prepare a bounded writer handoff before a native turn:
+
+```bash
+cohub workspace handoff local --space <spaceId> --replica-id <replicaId> --wait
+```
+
+Intentional offline work requires a reservation. The command also writes a one-use permit into locald:
+
+```bash
+cohub workspace offline enable --space <spaceId> --replica-id <replicaId>
+cohub workspace offline disable --space <spaceId> --device-id <deviceId> --epoch <epoch>
+```
+
+Inspect and resolve retained workspace conflicts without materializing conflict files into the project:
+
+```bash
+cohub workspace conflicts --space <spaceId>
+cohub workspace resolve <conflictId> --space <spaceId> --use-local
+```
+
+`COHUB_LOCALD_BIN` overrides the runtime path for development. `COHUB_LOCALD_VERSION` and `COHUB_LOCALD_CDN_BASE_URL` select a released version and mirror. Hooks use local IPC only; network transfer and retries happen in the daemon.
+
 ## Chats and prompts
 
 Use `spaces prompt` for immediate sends, delayed sends, one-time schedules, recurring schedules, new Chats, and existing Chats.

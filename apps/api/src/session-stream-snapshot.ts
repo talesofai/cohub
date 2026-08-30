@@ -3,6 +3,7 @@ import type { StoredIntermediateMessage } from "@cohub/protocol/model";
 import { and, asc, eq, sql } from "drizzle-orm";
 import { redisCommandClient } from "./redis.js";
 import { db } from "./db/index.js";
+import { visibleSessionMessagePredicate } from "./native-transcript-visibility.js";
 import { sessionMessages } from "@cohub/db";
 import {
   mergeSessionStreamSnapshotIntermediates,
@@ -122,6 +123,7 @@ const listPersistedIntermediateMessages = async (input: { sessionId: string; tur
   const rows = await db.select().from(sessionMessages).where(and(
     eq(sessionMessages.sessionId, input.sessionId),
     eq(sessionMessages.turnId, input.turnId),
+    visibleSessionMessagePredicate(),
     sql`${sessionMessages.role} <> 'user'`,
     sql`coalesce(${sessionMessages.meta}->>'messageKind', '') not in ('assistant_final', 'assistant_error')`,
   )).orderBy(asc(sessionMessages.sequence), asc(sessionMessages.createdAt));

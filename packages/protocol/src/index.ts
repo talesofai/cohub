@@ -38,3 +38,5 @@ export * from "./app-surface.js";
 export * from "./app-runtime.js";
 export * from "./app-view-stats.js";
 export * from "./app-promotion-stats.js";
+export * from "./workspace-replication/index.js";
+export * from "./local-agent/index.js";

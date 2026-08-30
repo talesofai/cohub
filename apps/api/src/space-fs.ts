@@ -1381,6 +1381,15 @@ export function spaceFsJsonError(error: unknown) {
   if (error instanceof Error && error.name === "SandboxOfflineError") {
     return { status: 503, body: { code: "sandbox_offline", message: "local sandbox is offline" } };
   }
+  if (error instanceof Error && error.name === "WorkspaceWriterLeaseError") {
+    const leaseError = error as Error & { status?: unknown; code?: unknown };
+    const status = typeof leaseError.status === "number" ? leaseError.status : 409;
+    const code = typeof leaseError.code === "string" ? leaseError.code : "workspace_lease_lost";
+    return { status, body: { code, message: error.message.toLowerCase().replace(/\.$/, "") } };
+  }
+  if (error instanceof Error && error.message === "workspace_physical_writer_active") {
+    return { status: 409, body: { code: "workspace_lease_busy", message: "workspace is currently in use by another writer" } };
+  }
   const detail = error instanceof Error ? error.message : String(error);
   const truncated = detail.length > 200 ? `${detail.slice(0, 200)}…` : detail;
   return { status: 500, body: { code: "space_fs_error", message: `space file operation failed: ${truncated}` } };

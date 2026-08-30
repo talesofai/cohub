@@ -46,7 +46,10 @@ import {
   type SpaceUploadManifestEntry,
 } from "../../space-upload-storage.js";
 import { enqueueSandboxUploadFilesJob, SandboxUploadSizeMismatchError } from "../../sandbox-bash-queue.js";
+import { beginCloudFileMutation, completeCloudFileMutation, ensureCloudFileWriterLease, heartbeatCloudFileWriterLease, releaseCloudFileWriterLease, WorkspaceWriterLeaseError, type WorkspaceMutationLease } from "../../workspace-writer-lease.js";
+import { enqueueWorkspaceSyncJob } from "../../workspace-sync-queue.js";
 import { isAllowedPublicAssetDownloadUrl } from "../../public-asset-storage.js";
+import { buildWorkspaceMutationOperationKey } from "../../workspace-mutation-key.js";
 import type {
   SpaceFsCreateUploadInput,
   SpaceFsCompleteUploadInput,
@@ -63,6 +66,87 @@ const MAX_INLINE_WRITE_REQUEST_BYTES = Math.ceil(MAX_INLINE_WRITE_BYTES * 4 / 3)
 /** Client mutation ids are bounded before they are used in queue job ids. */
 const isValidMutationId = (value: unknown) =>
   value === undefined || (typeof value === "string" && value.length <= 128);
+
+async function withCloudFileMutation<T>(input: {
+  spaceId: string;
+  userUuid: string;
+  operationKey: string;
+  run: (lease: WorkspaceMutationLease | null) => Promise<T>;
+}): Promise<T> {
+  const lease = await ensureCloudFileWriterLease({ spaceId: input.spaceId, userUuid: input.userUuid });
+  const mutation = lease
+    ? await beginCloudFileMutation({ spaceId: input.spaceId, lease, operationKey: input.operationKey })
+    : null;
+  if (mutation?.duplicate && lease) {
+    const duplicateError = new WorkspaceWriterLeaseError("workspace mutation was already accepted", "workspace_mutation_duplicate", 409);
+    await releaseCloudFileWriterLease({ spaceId: input.spaceId, lease }).catch((error) => {
+      logger.error("[SpaceFS] failed to release duplicate mutation lease", {
+        spaceId: input.spaceId,
+        operationKey: input.operationKey,
+        error,
+      });
+    });
+    throw duplicateError;
+  }
+  let heartbeatStopped = false;
+  let heartbeatError: Error | null = null;
+  let heartbeatInFlight: Promise<void> | null = null;
+  const heartbeat = async () => {
+    await heartbeatCloudFileWriterLease({ spaceId: input.spaceId, lease: lease as WorkspaceMutationLease });
+  };
+  const runHeartbeat = () => {
+    if (heartbeatStopped || heartbeatInFlight) return;
+    const pending = heartbeat().catch((error) => {
+      heartbeatError = error instanceof Error ? error : new Error(String(error));
+      heartbeatStopped = true;
+    }).finally(() => {
+      if (heartbeatInFlight === pending) heartbeatInFlight = null;
+    });
+    heartbeatInFlight = pending;
+  };
+  const heartbeatTimer = lease ? setInterval(runHeartbeat, 10_000) : null;
+  heartbeatTimer?.unref();
+  const waitForHeartbeat = async (pending: Promise<void> | null) => {
+    if (pending) await pending;
+  };
+  let result: T | undefined;
+  let operationError: unknown = null;
+  let cleanupError: unknown = null;
+  try {
+    result = await input.run(lease);
+    if (heartbeatError) throw heartbeatError;
+  } catch (error) {
+    operationError = error;
+  } finally {
+    heartbeatStopped = true;
+    if (heartbeatTimer) clearInterval(heartbeatTimer);
+    await waitForHeartbeat(heartbeatInFlight);
+    if (!operationError && heartbeatError) operationError = heartbeatError;
+    if (lease) {
+      try {
+        const cycle = await completeCloudFileMutation({
+          spaceId: input.spaceId,
+          lease,
+          operationKey: input.operationKey,
+        });
+        await enqueueWorkspaceSyncJob({ cycleId: cycle.cycleId, spaceId: input.spaceId, replicaId: cycle.replicaId }).catch((error) => {
+          logger.warn("[SpaceFS] failed to enqueue cloud mutation reconciliation", { spaceId: input.spaceId, cycleId: cycle.cycleId, error });
+        });
+      } catch (error) {
+        cleanupError = error;
+        logger.error("[SpaceFS] failed to complete cloud mutation", {
+          spaceId: input.spaceId,
+          operationKey: input.operationKey,
+          operationError,
+          cleanupError: error,
+        });
+      }
+    }
+  }
+  if (operationError) throw operationError;
+  if (cleanupError) throw cleanupError;
+  return result as T;
+}
 
 /** Strip the internal event-ownership marker before returning a mutation result. */
 function withoutExecutedBy<T extends { executedBy?: string }>(value: T) {
@@ -253,7 +337,12 @@ router.put("/file", bodyLimit({
     return c.json({ message: "mutationId is invalid" }, 400);
   }
   try {
-    const result = await writeSpaceFile(spaceId, body);
+    const result = await withCloudFileMutation({
+      spaceId,
+      userUuid: user.uuid,
+      operationKey: buildWorkspaceMutationOperationKey("write", { path: body.path, content: body.content, encoding: body.encoding }, body.mutationId),
+      run: (workspaceLease) => writeSpaceFile(spaceId, body, { workspaceLease }),
+    });
     // The sandbox watcher owns realtime and hooks; the API only performs CDN invalidation here.
     const changes = buildFileMutationChanges(result);
     await dispatchSpaceFsChanged(spaceId, {
@@ -280,7 +369,12 @@ router.post("/dir", async (c) => {
   if (!body?.path) return c.json({ message: "path is required" }, 400);
   if (!isValidMutationId(body.mutationId)) return c.json({ message: "mutationId is invalid" }, 400);
   try {
-    const result = await createSpaceDirectory(spaceId, body.path, body.mutationId);
+    const result = await withCloudFileMutation({
+      spaceId,
+      userUuid: user.uuid,
+      operationKey: buildWorkspaceMutationOperationKey("mkdir", body.path, body.mutationId),
+      run: (workspaceLease) => createSpaceDirectory(spaceId, body.path, body.mutationId, { workspaceLease }),
+    });
     if (result.createdDirs.length > 0) {
       await dispatchSpaceFsChanged(spaceId, {
         source: "api-fs",
@@ -310,7 +404,12 @@ router.delete("/node", async (c) => {
   if (!isValidMutationId(mutationId)) return c.json({ message: "mutationId is invalid" }, 400);
   try {
     const path = assertSafeRelativePath(rawPath);
-    const result = await deleteSpaceNode(spaceId, path, recursive, mutationId);
+    const result = await withCloudFileMutation({
+      spaceId,
+      userUuid: user.uuid,
+      operationKey: buildWorkspaceMutationOperationKey("delete", { path, recursive }, mutationId),
+      run: (workspaceLease) => deleteSpaceNode(spaceId, path, recursive, mutationId, { workspaceLease }),
+    });
     await dispatchSpaceFsChanged(spaceId, {
       source: "api-fs",
       mutationId,
@@ -342,7 +441,12 @@ router.post("/move", async (c) => {
       toPath: assertSafeRelativePath(input.toPath),
       mutationId: input.mutationId as string | undefined,
     };
-    const result = await moveSpaceNode(spaceId, move);
+    const result = await withCloudFileMutation({
+      spaceId,
+      userUuid: user.uuid,
+      operationKey: buildWorkspaceMutationOperationKey("move", { fromPath: move.fromPath, toPath: move.toPath }, move.mutationId),
+      run: (workspaceLease) => moveSpaceNode(spaceId, move, { workspaceLease }),
+    });
     await dispatchSpaceFsChanged(spaceId, {
       source: "api-fs",
       mutationId: move.mutationId,
@@ -528,11 +632,16 @@ router.post("/uploads/:uploadId/complete", async (c) => {
       manifest.destination.kind === "sandbox_tmp"
         ? (manifest.destination.sessionId || `upload:${uploadId}`)
         : `upload:${uploadId}`;
-    const result = await enqueueSandboxUploadFilesJob({
+    const enqueueUpload = (workspaceLease: WorkspaceMutationLease | null) => enqueueSandboxUploadFilesJob({
       spaceId,
       sessionId,
       uploadId,
       destinationRoot,
+      workspaceLease: workspaceLease ? {
+        holderKind: workspaceLease.holderKind,
+        holderId: workspaceLease.holderId,
+        epoch: workspaceLease.epoch,
+      } : null,
       files: entries.map((entry) => {
         const rawUrl = entry.downloadUrl
           ? entry.downloadUrl
@@ -546,6 +655,14 @@ router.post("/uploads/:uploadId/complete", async (c) => {
         };
       }),
     });
+    const result = manifest.destination.kind === "workspace"
+      ? await withCloudFileMutation({
+          spaceId,
+          userUuid: user.uuid,
+          operationKey: `upload:${uploadId}`,
+          run: enqueueUpload,
+        })
+      : await enqueueUpload(null);
 
     await deleteSpaceUploadManifest(spaceId, uploadId);
     return c.json({
@@ -556,6 +673,10 @@ router.post("/uploads/:uploadId/complete", async (c) => {
     await cancelSpaceUploadComplete(spaceId, uploadId);
     if (error instanceof SandboxUploadSizeMismatchError) {
       return c.json({ code: "upload_size_mismatch", message: "uploaded file size does not match" }, 422);
+    }
+    if (error instanceof Error && error.name === "WorkspaceWriterLeaseError") {
+      const { status, body: errorBody } = spaceFsJsonError(error);
+      return c.json(errorBody, status as never);
     }
     logger.error("[space-fs] failed to complete upload", error, {
       spaceId,
@@ -582,7 +703,12 @@ router.post("/upload", async (c) => {
   if (files.length === 0) return c.json({ message: "at least one file is required" }, 400);
 
   try {
-    const result = await uploadSpaceFiles(spaceId, files, dir);
+    const result = await withCloudFileMutation({
+      spaceId,
+      userUuid: user.uuid,
+      operationKey: buildWorkspaceMutationOperationKey("upload", { dir, files: files.map((file) => ({ name: file.name, size: file.size, lastModified: file.lastModified })) }),
+      run: (workspaceLease) => uploadSpaceFiles(spaceId, files, dir, { workspaceLease }),
+    });
     if (result.uploaded.length > 0 || (result.createdDirs?.length ?? 0) > 0) {
       const changes = [
         ...buildCreatedDirectoryChanges(result.createdDirs),

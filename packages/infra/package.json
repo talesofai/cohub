@@ -12,6 +12,10 @@
       "types": "./dist/bullmq/index.d.ts",
       "default": "./dist/bullmq/index.js"
     },
+    "./lock-db-pool": {
+      "types": "./dist/lock-db-pool.d.ts",
+      "default": "./dist/lock-db-pool.js"
+    },
     "./agent-queue": {
       "types": "./src/agent-queue/index.ts",
       "default": "./dist/agent-queue/index.js"

@@ -130,6 +130,14 @@
     "./public-identifiers": {
       "types": "./dist/public-identifiers.d.ts",
       "default": "./dist/public-identifiers.js"
+    },
+    "./workspace-replication": {
+      "types": "./dist/workspace-replication/index.d.ts",
+      "default": "./dist/workspace-replication/index.js"
+    },
+    "./local-agent": {
+      "types": "./dist/local-agent/index.d.ts",
+      "default": "./dist/local-agent/index.js"
     }
   },
   "types": "./dist/index.d.ts",

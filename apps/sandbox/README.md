@@ -89,6 +89,21 @@ LOCAL_SANDBOX_WS_URL=ws://127.0.0.1:8788/sandbox \
 pnpm dev
 ```
 
+## Local Agent daemon
+
+`cmd/locald` builds the independent `cohub-locald` daemon used for workspace replicas and provider-native lifecycle spooling. It does not register a `space_sandboxes` record and never accesses Postgres, Redis, or `/sessions` directly.
+
+```bash
+cd apps/sandbox
+go build -o /tmp/cohub-locald ./cmd/locald
+/tmp/cohub-locald --version
+/tmp/cohub-locald daemon
+```
+
+Release artifacts are built by `.github/workflows/locald-binaries-build.yml` for Linux, macOS, and Windows on amd64/arm64. Create the first independent runtime tag with `locald-v1.0.0`; assets are named with the stripped version (`cohub-locald_v1.0.0_...`), include `LICENSE` and `NOTICE`, carry per-archive SHA-256 manifests, and publish under `https://public.cohub.run/locald/v1.0.0/`.
+
+Before moving the CLI pin, publish the runtime tag and verify every CDN checksum. Then update `LOCALD_VERSION` in `packages/cli/src/commands/locald-binary.ts`.
+
 ## Docker 构建
 
 在项目根目录执行：

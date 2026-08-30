@@ -1,4 +1,5 @@
 import { randomUUID } from "node:crypto";
+import { and, eq } from "drizzle-orm";
 import type { Job } from "bullmq";
 import { recordJobFailure } from "@cohub/infra/bullmq";
 import { getAgentTracer, wrapToolCall } from "@cohub/infra/tracing/agent";
@@ -20,6 +21,11 @@ import { normalizePermissionScopes } from "@cohub/core/permissions";
 import { getAbortEvent } from "./abort.js";
 import { clearActiveAbortController, setActiveAbortController, setActiveAbortEvent } from "./active-turns.js";
 import { loadSpaceEnvSnapshot } from "./runtime/env-cache.js";
+import { db } from "./db.js";
+import { sessionTurns } from "@cohub/db";
+import { acquireCloudCommandLease, completeCloudCommandLease, withAgentWorkspaceLease, type AgentWorkspaceLeaseRef } from "./workspace-lease.js";
+import { workspaceAttemptFromMeta } from "./workspace-attempt.js";
+import { acquireWorkspacePhysicalLock } from "./workspace-physical-lock.js";
 
 const tools = createSandboxCodingTools();
 const tracer = getAgentTracer();
@@ -86,6 +92,32 @@ function clampTimeout(timeout: unknown) {
   return Math.min(Math.floor(timeout), MAX_RUN_COMMAND_TIMEOUT_SECONDS);
 }
 
+async function resolveCommandLease(input: {
+  spaceId: string;
+  taskRunId: string;
+  userUuid: string | undefined;
+  sessionId: string;
+  turnId: string | null;
+}): Promise<{ lease: AgentWorkspaceLeaseRef | null; owned: boolean }> {
+  if (input.turnId && input.sessionId) {
+    const [turn] = await db.select({ meta: sessionTurns.meta }).from(sessionTurns).where(and(
+      eq(sessionTurns.id, input.turnId),
+      eq(sessionTurns.sessionId, input.sessionId),
+    )).limit(1);
+    const attempt = workspaceAttemptFromMeta(turn?.meta);
+    if (attempt) return {
+      lease: { holderKind: "cloud_agent", holderId: attempt.attemptId, epoch: attempt.leaseEpoch },
+      owned: false,
+    };
+  }
+  const lease = await acquireCloudCommandLease({
+    spaceId: input.spaceId,
+    holderId: input.taskRunId,
+    userUuid: input.userUuid ?? null,
+  });
+  return { lease, owned: lease !== null };
+}
+
 export async function processRunCommandJob(job: Job<AgentRunCommandJobData>): Promise<AgentRunCommandJobResult> {
   const data = job.data;
   if (!data.spaceId || !data.taskRunId || !data.command || !data.cwd) {
@@ -115,6 +147,23 @@ export async function processRunCommandJob(job: Job<AgentRunCommandJobData>): Pr
   let lastProgressAt = 0;
   let lastProgressSignature = "";
   const originTurnId = data.origin?.turnId?.trim() || null;
+  const workspacePhysicalLock = originTurnId ? null : await acquireWorkspacePhysicalLock(data.spaceId);
+  if (!originTurnId && !workspacePhysicalLock) throw new Error("workspace_physical_writer_active");
+  let commandLease: Awaited<ReturnType<typeof resolveCommandLease>>;
+  try {
+    commandLease = await resolveCommandLease({
+      spaceId: data.spaceId,
+      taskRunId: data.taskRunId,
+      userUuid: actorUserId,
+      sessionId: contextSessionId,
+      turnId: originTurnId,
+    });
+  } catch (error) {
+    await workspacePhysicalLock?.release().catch((releaseError) => {
+      logger.error("[WorkspaceLock] failed to release command lock after setup error", { spaceId: data.spaceId, releaseError });
+    });
+    throw error;
+  }
   const abortController = new AbortController();
   if (originTurnId) {
     setActiveAbortController(originTurnId, abortController);
@@ -184,16 +233,21 @@ export async function processRunCommandJob(job: Job<AgentRunCommandJobData>): Pr
     }, async () => {
     await pushProgress("queued");
     try {
-      const result = await bashTool.execute(
-        toolCallId,
-        { command: data.command, timeout } as never,
-        abortController.signal,
-        (partial: unknown) => {
-          const text = extractToolResultText(partial);
-          if (text) latestOutput = text;
-          void pushProgress("running");
-        },
-      );
+      const result = await withAgentWorkspaceLease({
+        spaceId: data.spaceId,
+        lease: commandLease.lease,
+        abortSignal: abortController.signal,
+        run: (leaseSignal) => bashTool.execute(
+          toolCallId,
+          { command: data.command, timeout } as never,
+          leaseSignal,
+          (partial: unknown) => {
+            const text = extractToolResultText(partial);
+            if (text) latestOutput = text;
+            void pushProgress("running");
+          },
+        ),
+      });
       const failure = getFailureDetails(result);
       if (failure) {
         throw new Error(typeof failure.message === "string" ? failure.message : "Command infrastructure failure");
@@ -263,6 +317,14 @@ export async function processRunCommandJob(job: Job<AgentRunCommandJobData>): Pr
     }
     }));
   } finally {
+    if (commandLease.owned && commandLease.lease) {
+      await completeCloudCommandLease({ spaceId: data.spaceId, lease: commandLease.lease }).catch((error) => {
+        logger.error("[RunCommand] failed to complete cloud command workspace cycle", { spaceId: data.spaceId, taskRunId: data.taskRunId, error });
+      });
+    }
+    await workspacePhysicalLock?.release().catch((error) => {
+      logger.error("[WorkspaceLock] failed to release command lock", { spaceId: data.spaceId, error });
+    });
     if (originTurnId) clearActiveAbortController(originTurnId, abortController);
   }
 }

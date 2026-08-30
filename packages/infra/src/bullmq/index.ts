@@ -9,6 +9,7 @@ const logger = createLogger({ serviceName: "cohub-infra" });
 export const COHUB_TASKS_QUEUE = "cohub-tasks";
 export const COHUB_AGENT_TURNS_QUEUE = "cohub-agent-turns";
 export const COHUB_SYSTEM_QUEUE = "cohub-system";
+export const COHUB_WORKSPACE_SYNC_QUEUE = "cohub-workspace-sync";
 
 export const DEFAULT_TASK_WORKER_CONCURRENCY = 5;
 export const DEFAULT_SYSTEM_WORKER_CONCURRENCY = 4;
@@ -30,6 +31,14 @@ export const queueDefinitions = [
     concurrencyEnv: "AGENT_WORKER_CONCURRENCY",
     defaultConcurrencyPerWorker: DEFAULT_AGENT_WORKER_CONCURRENCY,
     registeredJobs: ["agent_turns", "agent_session_fork", "sandbox_bash", "run_command", "sandbox_fs_mutation"],
+  },
+  {
+    name: COHUB_WORKSPACE_SYNC_QUEUE,
+    owner: "worker",
+    criticality: "critical",
+    concurrencyEnv: "WORKSPACE_SYNC_WORKER_CONCURRENCY",
+    defaultConcurrencyPerWorker: 4,
+    registeredJobs: ["workspace_sync"],
   },
   {
     name: COHUB_SYSTEM_QUEUE,

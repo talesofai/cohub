@@ -1,0 +1,2 @@
+ALTER TABLE "v2"."native_agent_event_receipts" ALTER COLUMN "execution_attempt_id" DROP NOT NULL;--> statement-breakpoint
+ALTER TABLE "v2"."native_agent_event_receipts" ALTER COLUMN "first_ingest_id" DROP NOT NULL;

@@ -16,6 +16,11 @@ export type SandboxBashUploadFile = {
 
 export type SandboxBashUploadJobData = {
   spaceId: string;
+  workspaceLease?: {
+    holderKind: "cloud_file_api";
+    holderId: string;
+    epoch: number;
+  } | null;
   sessionId: string;
   uploadId: string;
   destinationRoot: string;

@@ -40,6 +40,7 @@ import { fallbackPublicUserProfile, getProfilesByUuids } from "./user-profiles.j
 import { enqueueSessionMessagePostprocess } from "./session-message-postprocess-queue.js";
 import { enqueueSessionTitleGeneration } from "./session-title-queue.js";
 import { touchSpaceActivity } from "./space-activity.js";
+import { visibleSessionMessagePredicate } from "./native-transcript-visibility.js";
 import {
   decodeSessionListCursor,
   mergeUserSessionListBranches,
@@ -179,7 +180,7 @@ export const getSpaceSessionById = async (spaceSessionId: string) => {
 };
 
 export const getSessionMessageById = async (spaceSessionId: string, messageId: string) => {
-  const [message] = await db.select().from(sessionMessages).where(and(eq(sessionMessages.sessionId, spaceSessionId), eq(sessionMessages.id, messageId))).limit(1);
+  const [message] = await db.select().from(sessionMessages).where(and(eq(sessionMessages.sessionId, spaceSessionId), eq(sessionMessages.id, messageId), visibleSessionMessagePredicate())).limit(1);
   return message ?? null;
 };
 
@@ -777,15 +778,15 @@ export const listSessionMessages = async (spaceSessionId: string, options?: { cu
   const limit = Math.min(options?.limit ?? 30, 100);
   const direction = options?.direction ?? "older";
   if (options?.cursor === undefined || options?.cursor === null) {
-    const rows = await db.select().from(sessionMessages).where(eq(sessionMessages.sessionId, spaceSessionId)).orderBy(desc(sessionMessages.sequence)).limit(limit);
+    const rows = await db.select().from(sessionMessages).where(and(eq(sessionMessages.sessionId, spaceSessionId), visibleSessionMessagePredicate())).orderBy(desc(sessionMessages.sequence)).limit(limit);
     return rows.reverse();
   }
   if (direction === "older") {
-    const rows = await db.select().from(sessionMessages).where(and(eq(sessionMessages.sessionId, spaceSessionId), lt(sessionMessages.sequence, options.cursor))).orderBy(desc(sessionMessages.sequence)).limit(limit);
+    const rows = await db.select().from(sessionMessages).where(and(eq(sessionMessages.sessionId, spaceSessionId), lt(sessionMessages.sequence, options.cursor), visibleSessionMessagePredicate())).orderBy(desc(sessionMessages.sequence)).limit(limit);
     return rows.reverse();
   }
   const cursor = options.cursor ?? 0;
-  return db.select().from(sessionMessages).where(and(eq(sessionMessages.sessionId, spaceSessionId), gt(sessionMessages.sequence, cursor))).orderBy(asc(sessionMessages.sequence)).limit(limit);
+  return db.select().from(sessionMessages).where(and(eq(sessionMessages.sessionId, spaceSessionId), gt(sessionMessages.sequence, cursor), visibleSessionMessagePredicate())).orderBy(asc(sessionMessages.sequence)).limit(limit);
 };
 
 export const enqueueSessionFork = async (input: { spaceId: string; sessionId: string; parentSessionId: string; anchorTurnId: string; anchorSequence: number; anchorEntryId?: string | null }) => {

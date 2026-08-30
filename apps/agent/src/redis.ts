@@ -551,6 +551,27 @@ export async function sendOutput(data: SessionStreamEvent | SessionStreamError |
   }
 }
 
+export async function publishPersistedRealtimeEnvelope(envelope: RealtimeEnvelope) {
+  if (!envelope.id || !envelope.type || !envelope.domain || !envelope.payload) {
+    throw new Error("Persisted realtime envelope is incomplete");
+  }
+  const message = JSON.stringify({ ...envelope, trace: injectTrace() });
+  const hookPromise = envelope.spaceId && isSpaceHookableEvent(envelope.type)
+    ? enqueueSpaceHookFromEvent({
+        id: envelope.id,
+        type: envelope.type,
+        timestamp: envelope.timestamp,
+        spaceId: envelope.spaceId,
+        sessionId: envelope.sessionId ?? null,
+        payload: envelope.payload,
+      }, redis)
+    : Promise.resolve(null);
+  await Promise.all([
+    context.with(trace.deleteSpan(context.active()), () => redis.publish(REALTIME_OUTBOUND_CHANNEL, message)),
+    hookPromise,
+  ]);
+}
+
 export async function publishRealtimeEnvelope(input: {
   domain: "session" | "space" | "system" | string;
   type: string;

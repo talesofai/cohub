@@ -35,6 +35,7 @@ export type ClaimedTurnBatch = {
 export type ClaimResult =
   | { kind: "claimed"; batch: ClaimedTurnBatch }
   | { kind: "busy"; activeTurnId: string; activeUpdatedAt: Date | null; activeStatus: string }
+  | { kind: "blocked"; reason: string; retryAfterMs: number }
   | { kind: "noop" };
 
 const STALE_ACTIVE_TURN_MS = env.AGENT_STALE_ACTIVE_TURN_MS;
@@ -109,13 +110,84 @@ function createExecutionBatch(queued: TurnRow[]): ExecutionBatchMeta {
   };
 }
 
-async function claimQueuedTurns(tx: Transaction, queued: TurnRow[]): Promise<ClaimedTurnBatch | null> {
+async function claimWorkspaceAttempt(tx: Transaction, spaceId: string, owner: TurnRow) {
+  const originalMeta = asRecord(owner.meta);
+  let attemptId = typeof originalMeta.executionAttemptId === "string" && originalMeta.executionAttemptId.trim()
+    ? originalMeta.executionAttemptId.trim()
+    : null;
+  if (!attemptId) {
+    const createdRows = await tx.execute(sql`
+      insert into v2.workspace_execution_attempts
+        (space_id, idempotency_key, executor_kind, workspace_required, transcript_required, session_id, turn_id, base_canonical_snapshot_id, workspace_policy_version, status, created_at, updated_at)
+      select ws.space_id, ${`cloud-turn:${owner.id}`}, 'cloud_agent', true, true, ${owner.sessionId}, ${owner.id}, ws.canonical_snapshot_id, wp.policy_version, 'queued', now(), now()
+      from v2.workspace_state ws
+      left join v2.space_workspace_policies wp on wp.space_id = ws.space_id
+      where ws.space_id = ${spaceId}
+      on conflict (space_id, idempotency_key) do update set updated_at = now()
+      returning id
+    `);
+    const value = (createdRows[0] as Record<string, unknown> | undefined)?.id;
+    attemptId = typeof value === "string" ? value : null;
+  }
+  if (!attemptId) return originalMeta;
+
+  const attemptRows = await tx.execute(sql`
+    update v2.workspace_execution_attempts
+    set status = 'running', started_at = coalesce(started_at, now()), updated_at = now()
+    where id = ${attemptId} and space_id = ${spaceId} and turn_id = ${owner.id} and status in ('queued', 'prepared')
+    returning base_canonical_snapshot_id
+  `);
+  if (attemptRows.length === 0) throw new Error(`workspace attempt ${attemptId} is not claimable`);
+  const baseSnapshotId = (attemptRows[0] as Record<string, unknown>).base_canonical_snapshot_id;
+  const leaseRows = await tx.execute(sql`
+    insert into v2.workspace_writer_leases
+      (space_id, holder_kind, holder_id, holder_user_uuid, epoch, base_snapshot_id, expires_at, last_heartbeat_at, takeover_requires_confirmation, updated_at)
+    values (${spaceId}, 'cloud_agent', ${attemptId}, ${owner.userUuid}, 1, ${typeof baseSnapshotId === "string" ? baseSnapshotId : null}, now() + interval '30 seconds', now(), false, now())
+    on conflict (space_id) do update set
+      holder_kind = excluded.holder_kind,
+      holder_id = excluded.holder_id,
+      holder_user_uuid = excluded.holder_user_uuid,
+      epoch = v2.workspace_writer_leases.epoch + 1,
+      base_snapshot_id = excluded.base_snapshot_id,
+      expires_at = excluded.expires_at,
+      last_heartbeat_at = now(),
+      takeover_requires_confirmation = false,
+      updated_at = now()
+    where v2.workspace_writer_leases.expires_at <= now()
+    returning epoch
+  `);
+  const leaseEpoch = Number((leaseRows[0] as Record<string, unknown> | undefined)?.epoch);
+  if (!Number.isSafeInteger(leaseEpoch) || leaseEpoch < 1) throw new Error("workspace writer lease is unavailable");
+  await tx.execute(sql`
+    update v2.workspace_execution_attempts
+    set workspace_lease_epoch = ${leaseEpoch}, updated_at = now()
+    where id = ${attemptId}
+  `);
+  await tx.execute(sql`
+    update v2.workspace_state
+    set active_execution_attempt_id = ${attemptId}, updated_at = now()
+    where space_id = ${spaceId}
+  `);
+  await tx.execute(sql`
+    update v2.workspace_replicas
+    set active_execution_attempt_id = ${attemptId}, updated_at = now()
+    where space_id = ${spaceId} and kind = 'cloud'
+  `);
+  return {
+    ...originalMeta,
+    executionAttemptId: attemptId,
+    workspaceLeaseEpoch: leaseEpoch,
+  };
+}
+
+async function claimQueuedTurns(tx: Transaction, spaceId: string, queued: TurnRow[]): Promise<ClaimedTurnBatch | null> {
   const owner = queued.at(-1);
   if (!owner) throw new Error("queued turns are required");
   const merged = queued.slice(0, -1);
   const executionBatch = createExecutionBatch(queued);
 
-  const ownerMeta = { ...asRecord(owner.meta), executionBatch };
+  const claimedMeta = await claimWorkspaceAttempt(tx, spaceId, owner);
+  const ownerMeta = { ...claimedMeta, executionBatch };
   const updatedRows = await tx.execute(sql`
     update v2.session_turns
     set status = 'running',
@@ -128,6 +200,14 @@ async function claimQueuedTurns(tx: Transaction, queued: TurnRow[]): Promise<Cla
   if (updatedRows.length === 0) return null;
 
   for (const turn of merged) {
+    const mergedAttemptId = getMetaString(turn, "executionAttemptId");
+    if (mergedAttemptId) {
+      await tx.execute(sql`
+        update v2.workspace_execution_attempts
+        set status = 'aborted', completed_at = now(), error_code = 'merged_into_turn', updated_at = now()
+        where id = ${mergedAttemptId} and status in ('queued', 'prepared')
+      `);
+    }
     const mergedRows = await tx.execute(sql`
       update v2.session_turns
       set status = 'merged',
@@ -153,7 +233,68 @@ async function claimQueuedTurns(tx: Transaction, queued: TurnRow[]): Promise<Cla
 
 export async function claimNextTurnBatch(input: Pick<AgentTurnJobData, "sessionId">): Promise<ClaimResult> {
   return db.transaction(async (tx) => {
-    await tx.execute(sql`select id from v2.space_sessions where id = ${input.sessionId} for update`);
+    const sessionRows = await tx.execute(sql`select id, space_id from v2.space_sessions where id = ${input.sessionId} for update`);
+    const spaceId = (sessionRows[0] as Record<string, unknown> | undefined)?.space_id;
+    if (typeof spaceId !== "string") return { kind: "noop" as const };
+
+    const gateRows = await tx.execute(sql`
+      select
+        ws.status as workspace_status,
+        ws.canonical_snapshot_id,
+        ws.cloud_applied_snapshot_id,
+        exists (
+          select 1 from v2.workspace_writer_leases wl
+          where wl.space_id = ${spaceId}
+            and wl.expires_at > now()
+            and wl.holder_kind in ('cloud_agent', 'local_agent', 'local_offline_reservation', 'cloud_file_api', 'cloud_command', 'sync_apply')
+        ) as has_blocking_lease,
+        exists (
+          select 1 from v2.workspace_execution_attempts wa
+          where wa.space_id = ${spaceId}
+            and wa.executor_kind = 'local_native'
+            and wa.status in ('prepared', 'running', 'workspace_sealed', 'transcript_sealed', 'awaiting_recovery')
+        ) as has_local_attempt,
+        exists (
+          select 1
+          from v2.space_local_agent_policies lp
+          join v2.workspace_replicas lr
+            on lr.space_id = lp.space_id and lr.device_id = lp.device_id and lr.kind = 'local' and lr.status <> 'detached'
+          where lp.space_id = ${spaceId} and lp.workspace_mode = 'one_way_to_cloud'
+        ) as has_local_authoritative_policy,
+        exists (
+          select 1 from v2.native_agent_ingests ni
+          where ni.cohub_session_id = ${input.sessionId}
+            and ni.transcript_visibility in ('hidden', 'orphaned')
+            and ni.status not in ('applied', 'quarantined', 'failed')
+        ) as has_hidden_ingest,
+        exists (
+          select 1 from v2.native_agent_turns nt
+          where nt.cohub_session_id = ${input.sessionId}
+            and nt.status in ('pending', 'running', 'sealed', 'awaiting_recovery', 'applying', 'forking')
+        ) as has_native_turn
+      from v2.workspace_state ws
+      where ws.space_id = ${spaceId}
+      for update
+    `);
+    const gate = gateRows[0] as Record<string, unknown> | undefined;
+    if (gate) {
+      const reason = gate.workspace_status !== "ready"
+        ? `workspace_${String(gate.workspace_status ?? "unknown")}`
+        : gate.canonical_snapshot_id !== gate.cloud_applied_snapshot_id
+          ? "cloud_replica_behind"
+          : gate.has_blocking_lease === true
+            ? "workspace_writer_active"
+            : gate.has_local_attempt === true
+              ? "local_attempt_active"
+              : gate.has_local_authoritative_policy === true
+                ? "cloud_workspace_write_disabled"
+                  : gate.has_hidden_ingest === true
+                  ? "native_ingest_pending"
+                  : gate.has_native_turn === true
+                    ? "native_turn_active"
+                    : null;
+      if (reason) return { kind: "blocked" as const, reason, retryAfterMs: 1_000 };
+    }
 
     const activeRows = await tx.execute(sql`
       select id, session_id, user_uuid, sequence, status, intent, user_content, user_text, meta, updated_at
@@ -194,7 +335,7 @@ export async function claimNextTurnBatch(input: Pick<AgentTurnJobData, "sessionI
     `);
     const steer = steerRows[0] ? normalizeTurn(steerRows[0] as Record<string, unknown>) : null;
     if (steer) {
-      const batch = await claimQueuedTurns(tx, [steer]);
+      const batch = await claimQueuedTurns(tx, spaceId, [steer]);
       return batch ? { kind: "claimed" as const, batch } : { kind: "noop" as const };
     }
 
@@ -207,7 +348,7 @@ export async function claimNextTurnBatch(input: Pick<AgentTurnJobData, "sessionI
     const followups = followupRows.map((row) => normalizeTurn(row as Record<string, unknown>));
     if (followups.length === 0) return { kind: "noop" as const };
 
-    const batch = await claimQueuedTurns(tx, followups);
+    const batch = await claimQueuedTurns(tx, spaceId, followups);
     return batch ? { kind: "claimed" as const, batch } : { kind: "noop" as const };
   });
 }

@@ -22,6 +22,7 @@ import { env } from "./env.js";
 export const AGENT_TURN_QUEUE_NAME = COHUB_AGENT_TURNS_QUEUE;
 export const AGENT_TURN_JOB_NAME = "agent_turns";
 export const AGENT_SESSION_FORK_JOB_NAME = "agent_session_fork";
+export const NATIVE_AGENT_INGEST_JOB_NAME = "native_agent_ingest";
 export {
   AGENT_SANDBOX_BASH_JOB_NAME,
   AGENT_RUN_COMMAND_JOB_NAME,
@@ -44,6 +45,13 @@ export type AgentTurnJobData = {
   trace?: Record<string, unknown>;
 };
 
+export type NativeAgentIngestJobData = {
+  ingestId: string;
+  spaceId: string;
+  replicaId: string;
+  requestId?: string | null;
+};
+
 export type AgentSessionForkJobData = {
   spaceId: string;
   sessionId: string;
@@ -55,7 +63,7 @@ export type AgentSessionForkJobData = {
   trace?: Record<string, unknown>;
 };
 
-export type AgentJobData = AgentTurnJobData | AgentSessionForkJobData | AgentSandboxBashUploadJobData | AgentRunCommandJobData | AgentSandboxFsMutationJobData;
+export type AgentJobData = AgentTurnJobData | AgentSessionForkJobData | NativeAgentIngestJobData | AgentSandboxBashUploadJobData | AgentRunCommandJobData | AgentSandboxFsMutationJobData;
 
 export const agentTurnQueue = createAgentTurnsQueue<AgentJobData, unknown>(env.BULLMQ_REDIS_URL, "cohub-agent");
 export const buildSandboxBashJobId = buildAgentSandboxBashJobId;
