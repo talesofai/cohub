@@ -40,6 +40,7 @@
 		"@neta-art/cohub": "workspace:*",
 		"@shikijs/langs": "^4.3.1",
 		"@shikijs/themes": "^4.3.1",
+		"bowser": "^2.14.1",
 		"codemirror": "^6.0.2",
 		"isomorphic-dompurify": "3.18.0",
 		"lucide-svelte": "^1.0.1",

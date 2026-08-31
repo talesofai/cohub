@@ -1,3 +1,4 @@
+import { getCurrentDeviceType } from "$lib/device-detection";
 import { isComposingKeyboardEvent } from "$lib/keyboard";
 
 export type ComposerKeyAction = "none" | "newline" | "submit";
@@ -18,10 +19,7 @@ export function getComposerKeyAction(
 }
 
 export function isMobileComposerInput(): boolean {
-	if (typeof window === "undefined") return false;
-	return (
-		"ontouchstart" in window ||
-		window.matchMedia("(pointer: coarse)").matches ||
-		navigator.maxTouchPoints > 0
-	);
+	// Tablets use the mobile composer layout; touch-enabled desktops remain desktop.
+	const deviceType = getCurrentDeviceType();
+	return deviceType === "mobile" || deviceType === "tablet";
 }
