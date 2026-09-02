@@ -3,7 +3,7 @@ import { DEFAULT_SANDBOX_SPEC_ID, SANDBOX_SPECS, getSandboxSpecRank, isSandboxSp
 import { createLogger } from "@cohub/infra/logging";
 import { Hono, type Context } from "hono";
 import type { ContentBlock } from "@cohub/protocol/core";
-import { getDefaultSpaceModsForEnv } from "@cohub/protocol";
+import { canonicalizeJson, getDefaultSpaceModsForEnv } from "@cohub/protocol";
 import {
   parseSpaceSlug,
   validatePublicIdentifierAssignment,
@@ -21,6 +21,7 @@ import {
   spaceMembers,
   userProfiles,
   sessionTurns,
+  workspaceExecutionAttempts,
 } from "@cohub/db";
 import { eq, and, inArray, desc, lt, or, sql } from "drizzle-orm";
 import { useAuth, getOptionalAuth, getAppSessionPrincipal, getPreviewSessionPrincipal, getExecutionPrincipal, requireValidId, buildSpaceListItems, authzDenied, getSpacePublicProfile, normalizePublicAvatarUrl } from "../../lib/middleware.js";
@@ -71,7 +72,7 @@ import {
 } from "../../checkpoint-diff.js";
 import { checkpointFsJsonError, listCheckpointDirectory, readCheckpointFile } from "../../checkpoint-fs.js";
 import type { AuthUser } from "../../lib/middleware.js";
-import { submitSessionPrompt } from "../../session-prompts.js";
+import { buildPromptIdempotencyKey, submitSessionPrompt } from "../../session-prompts.js";
 import { ModelUnavailableError, parsePromptEnv, PromptEnvValidationError } from "@cohub/core/sessions";
 import { delegatedPromptAuthFromAppSession, promptAuthContextFromAppSession } from "../../prompt-auth-context.js";
 import { buildSessionTurnResponse } from "../../session-turn-response.js";
@@ -515,7 +516,8 @@ function promptInputError(error: unknown): string | null {
     error.message.includes("Invalid image") ||
     error.message.includes("Invalid content block") ||
     error.message.includes("shell command is empty") ||
-    error.message.includes("shell_command is not allowed")
+    error.message.includes("shell_command is not allowed") ||
+    error.message.includes("local ACP runtime")
   ) {
     return error.message;
   }
@@ -1822,6 +1824,12 @@ router.post("/:id/prompt", async (c) => {
   if (!requireValidId(spaceId)) return c.json({ message: "space not found" }, 404);
 
   const body = await c.req.json<SpacePromptInput>().catch(() => null);
+  if (body && body.sessionId != null && typeof body.sessionId !== "string") {
+    return c.json({ message: "sessionId must be a string" }, 400);
+  }
+  if (body && body.clientMessageId != null && typeof body.clientMessageId !== "string") {
+    return c.json({ message: "clientMessageId must be a string" }, 400);
+  }
   if (body?.mode === "create") {
     if (body.runtimeId) return c.json({ code: "runtime_mode_invalid", message: "local ACP runtime is only available for agent prompts" }, 400);
     const generation = body.generation;
@@ -1889,6 +1897,9 @@ router.post("/:id/prompt", async (c) => {
     promptSession = session;
   }
 
+  if (body.schedule != null && (typeof body.schedule !== "object" || Array.isArray(body.schedule))) {
+    return c.json({ message: "schedule must be an object" }, 400);
+  }
   const schedule = body.schedule ?? { mode: "immediate" as const };
   const mode = schedule.mode ?? "immediate";
   if (!["immediate", "delay", "at", "repeat"].includes(mode)) {
@@ -1905,6 +1916,12 @@ router.post("/:id/prompt", async (c) => {
   if (body.runtimeId != null && typeof body.runtimeId !== "string") {
     return c.json({ message: "runtimeId must be a string" }, 400);
   }
+  if (body.model != null && typeof body.model !== "string") {
+    return c.json({ message: "model must be a string" }, 400);
+  }
+  if (body.provider != null && typeof body.provider !== "string") {
+    return c.json({ message: "provider must be a string" }, 400);
+  }
   const runtimeId = body.runtimeId?.trim() || null;
   if (runtimeId && !requireValidId(runtimeId)) return c.json({ message: "invalid runtimeId" }, 400);
   const requestedModel = body.model?.trim() || null;
@@ -1915,7 +1932,7 @@ router.post("/:id/prompt", async (c) => {
   if (runtimeId && promptThinkingLevel !== null && promptThinkingLevel !== undefined) {
     return c.json({ code: "runtime_thinking_invalid", message: "local ACP runtime uses its provider's own thinking configuration" }, 400);
   }
-  if (runtimeId && generationPolicy) {
+  if (runtimeId && (generationPolicy || body.generation != null)) {
     return c.json({ code: "runtime_generation_invalid", message: "local ACP runtime uses its provider's own generation configuration" }, 400);
   }
   if (runtimeId && mode !== "immediate") {
@@ -1923,6 +1940,53 @@ router.post("/:id/prompt", async (c) => {
   }
   if (runtimeId && !(await hasPermission(user, "file.edit", { spaceId }))) {
     return authzDenied(c);
+  }
+  let promptEnv: Record<string, string> | null = null;
+  try {
+    promptEnv = parsePromptEnv(body.env);
+  } catch (error) {
+    if (error instanceof PromptEnvValidationError) return c.json({ message: error.message }, 400);
+    throw error;
+  }
+  if (runtimeId && promptEnv && Object.keys(promptEnv).length > 0) {
+    return c.json({ code: "runtime_env_invalid", message: "local ACP runtime does not accept Cohub environment overrides" }, 400);
+  }
+  const source = resolveSessionSourceFromRequest(c, typeof body.source === "string" ? body.source : null);
+  if (runtimeId && source === "scheduled_task") {
+    return c.json({ code: "runtime_schedule_invalid", message: "local ACP runtime prompts must run immediately" }, 400);
+  }
+
+  const clientMessageId = body.clientMessageId?.trim() || crypto.randomUUID();
+  if (clientMessageId.length > 255) return c.json({ message: "clientMessageId is too long" }, 400);
+
+  const idempotencyKey = buildPromptIdempotencyKey(clientMessageId, runtimeId);
+  const [existingAttempt] = await db.select({
+    turnId: workspaceExecutionAttempts.turnId,
+    sessionId: workspaceExecutionAttempts.sessionId,
+    runtimeId: workspaceExecutionAttempts.runtimeId,
+    executorKind: workspaceExecutionAttempts.executorKind,
+    userUuid: sessionTurns.userUuid,
+    userContent: sessionTurns.userContent,
+    turnModel: sessionTurns.model,
+    turnProvider: sessionTurns.provider,
+  }).from(workspaceExecutionAttempts)
+    .innerJoin(sessionTurns, eq(sessionTurns.id, workspaceExecutionAttempts.turnId))
+    .where(and(
+      eq(workspaceExecutionAttempts.spaceId, spaceId),
+      eq(workspaceExecutionAttempts.idempotencyKey, idempotencyKey),
+    )).limit(1);
+  if (existingAttempt) {
+    const existingRuntimeId = existingAttempt.runtimeId ?? null;
+    const expectedExecutorKind = runtimeId ? "local_acp" : "cloud_agent";
+    if (existingAttempt.userUuid !== user.uuid || existingAttempt.executorKind !== expectedExecutorKind || (sessionId && existingAttempt.sessionId !== sessionId) || existingRuntimeId !== runtimeId || (!runtimeId && (existingAttempt.turnModel !== requestedModel || existingAttempt.turnProvider !== requestedProvider)) || canonicalizeJson(existingAttempt.userContent) !== canonicalizeJson(body.content)) {
+      return c.json({ code: "prompt_idempotency_conflict", message: "clientMessageId is already bound to a different prompt" }, 409);
+    }
+    const existingSession = existingAttempt.sessionId ? await getSpaceSessionById(existingAttempt.sessionId) : null;
+    const existingResponse = existingSession && existingAttempt.turnId
+      ? await buildSpacePromptTurnResponse(existingSession, existingAttempt.turnId)
+      : null;
+    if (!existingResponse) return c.json({ code: "prompt_idempotency_unavailable", message: "the existing prompt result is unavailable; retry with a new client message ID" }, 409);
+    return c.json(existingResponse);
   }
   if (
     !runtimeId &&
@@ -1947,20 +2011,7 @@ router.post("/:id/prompt", async (c) => {
     return c.json({ message: error instanceof Error ? error.message : String(error) }, 400);
   }
 
-  let promptEnv: Record<string, string> | null = null;
-  try {
-    promptEnv = parsePromptEnv(body.env);
-  } catch (error) {
-    if (error instanceof PromptEnvValidationError) return c.json({ message: error.message }, 400);
-    throw error;
-  }
-  if (runtimeId && promptEnv && Object.keys(promptEnv).length > 0) {
-    return c.json({ code: "runtime_env_invalid", message: "local ACP runtime does not accept Cohub environment overrides" }, 400);
-  }
-
   const content = body.content;
-  const clientMessageId = body.clientMessageId?.trim() || crypto.randomUUID();
-  const source = resolveSessionSourceFromRequest(c, typeof body.source === "string" ? body.source : null);
 
   const scheduledAuth = await getScheduledPromptAuthContext(c, spaceId, user.uuid);
   const taskData = {

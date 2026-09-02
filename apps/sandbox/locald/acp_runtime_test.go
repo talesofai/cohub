@@ -1,6 +1,7 @@
 package locald
 
 import (
+	"context"
 	"io"
 	"log/slog"
 	"testing"
@@ -102,6 +103,17 @@ func TestAcpRuntimePermitIsOneUse(t *testing.T) {
 	if permit == nil || !isAcpRuntimePermit(permit.HolderID) || serverPermitHolderID(permit.HolderID) != ref.attemptID {
 		t.Fatalf("unexpected ACP permit holder identity: %#v", permit)
 	}
+	if _, _, valid, err := (&Daemon{state: state}).activePermit(ref.spaceID); err != nil || !valid {
+		t.Fatalf("active ACP permit must block local sync: valid=%v err=%v", valid, err)
+	}
+	server.finishAttempt(ref)
+	spool, err := state.PendingSpool(context.Background(), 10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(spool) != 1 || spool[0].EventID != "workspace-terminal:"+ref.attemptID {
+		t.Fatalf("expected durable ACP terminal spool record, got %#v", spool)
+	}
 }
 
 func TestRewriteAcpPathsPreservesLogicalWorkspacePaths(t *testing.T) {
@@ -112,6 +124,14 @@ func TestRewriteAcpPathsPreservesLogicalWorkspacePaths(t *testing.T) {
 	location := value["location"].(map[string]any)
 	if location["path"] != "/workspace/src/main.go" || value["cwd"] != "/workspace" {
 		t.Fatalf("unexpected rewritten ACP paths: %#v", value)
+	}
+	traversal := rewriteAcpPaths(map[string]any{"path": "/workspace/../outside.txt"}, "/home/user/project")
+	if traversal["path"] != "/workspace" {
+		t.Fatalf("logical workspace traversal was not contained: %#v", traversal)
+	}
+	relativeTraversal := rewriteAcpPaths(map[string]any{"path": "../outside.txt"}, "/home/user/project")
+	if relativeTraversal["path"] != "/workspace" {
+		t.Fatalf("relative workspace traversal was not contained: %#v", relativeTraversal)
 	}
 }
 

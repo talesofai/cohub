@@ -23,7 +23,7 @@ import {
 } from "@cohub/protocol";
 import type { ContentBlock, Usage } from "@cohub/protocol/core";
 import { db } from "./db.js";
-import { env } from "./env.js";
+import { env, isLocalAcpProviderRolloutEnabled } from "./env.js";
 import { logger } from "./logger.js";
 import { persistAssistantMessage, persistUserMessage, failSessionTurn } from "./persistence.js";
 import { registerActiveAbortHandle } from "./active-turns.js";
@@ -39,6 +39,7 @@ const RUNTIME_CWD = "/workspace";
 type PendingRequest = {
   resolve: (value: unknown) => void;
   reject: (error: Error) => void;
+  onResponse?: (result: unknown, error: Error | null) => Promise<void>;
 };
 
 class AcpRpcError extends Error {
@@ -59,6 +60,7 @@ class JsonRpcWebSocket {
   private readonly pending = new Map<string, PendingRequest>();
   private readonly closeListeners = new Set<(error?: Error) => void>();
   private notificationTail: Promise<void> = Promise.resolve();
+  private notificationError: Error | null = null;
   private nextRequestId = 1;
   private closed = false;
   private readonly opened: Promise<void>;
@@ -111,14 +113,14 @@ class JsonRpcWebSocket {
     return () => this.closeListeners.delete(listener);
   }
 
-  async request<T>(method: string, params: Record<string, unknown>): Promise<T> {
+  async request<T>(method: string, params: Record<string, unknown>, onResponse?: PendingRequest["onResponse"]): Promise<T> {
     if (this.closed) throw new Error("local ACP runtime connection is closed");
     const id = this.nextRequestId++;
     const encoded = JSON.stringify({ jsonrpc: "2.0", id, method, params });
     if (Buffer.byteLength(encoded, "utf8") > MAX_RUNTIME_MESSAGE_BYTES) throw new Error("local ACP request exceeds the message size limit");
     const key = String(id);
     const promise = new Promise<unknown>((resolve, reject) => {
-      this.pending.set(key, { resolve, reject });
+      this.pending.set(key, { resolve, reject, onResponse });
     });
     try {
       this.socket.send(encoded);
@@ -137,7 +139,12 @@ class JsonRpcWebSocket {
   }
 
   async drainNotifications() {
-    await this.notificationTail;
+    for (let pass = 0; pass < 3; pass += 1) {
+      const tail = this.notificationTail;
+      await tail;
+      if (tail === this.notificationTail) break;
+    }
+    if (this.notificationError) throw this.notificationError;
   }
 
   close() {
@@ -159,31 +166,71 @@ class JsonRpcWebSocket {
         this.handleClose(new Error("local ACP runtime sent invalid JSON"));
         return;
       }
-      if (!value || typeof value !== "object" || Array.isArray(value)) continue;
+      if (!value || typeof value !== "object" || Array.isArray(value)) {
+        this.handleClose(new Error("local ACP runtime sent a non-object JSON-RPC message"));
+        return;
+      }
+      if ((value as Record<string, unknown>).jsonrpc !== "2.0") {
+        this.handleClose(new Error("local ACP runtime sent an unsupported JSON-RPC version"));
+        return;
+      }
       this.handleMessage(value as AcpJsonRpcMessage);
     }
   }
 
   private handleMessage(message: AcpJsonRpcMessage) {
+    if ("method" in message && (typeof message.method !== "string" || !message.method.trim())) {
+      this.handleClose(new Error("local ACP runtime returned an invalid JSON-RPC method"));
+      return;
+    }
     if ("id" in message && !("method" in message)) {
       const response = message as AcpJsonRpcResponse;
+      if (!validJsonRpcId(response.id)) {
+        this.handleClose(new Error("local ACP runtime returned an invalid JSON-RPC response id"));
+        return;
+      }
       const pending = this.pending.get(String(response.id));
       if (!pending) return;
       this.pending.delete(String(response.id));
-      if (response.error) pending.reject(new AcpRpcError(`${response.error.message} (${response.error.code})`, response.error.code));
-      else pending.resolve(response.result);
+      const settle = async () => {
+        let responseError: AcpRpcError | null = null;
+        if (response.error) {
+          const code = typeof response.error.code === "number" && Number.isSafeInteger(response.error.code) ? response.error.code : -32000;
+          const message = typeof response.error.message === "string" && response.error.message.trim() ? response.error.message : "ACP provider returned an error";
+          responseError = new AcpRpcError(`${message} (${code})`, code);
+        }
+        try {
+          await pending.onResponse?.(response.result, responseError);
+        } catch (error) {
+          pending.reject(error instanceof Error ? error : new Error(String(error)));
+          return;
+        }
+        if (responseError) pending.reject(responseError);
+        else pending.resolve(response.result);
+      };
+      void this.notificationTail.then(settle).catch((error) => pending.reject(error instanceof Error ? error : new Error(String(error))));
       return;
     }
     if ("method" in message && "id" in message) {
       const request = message as AcpJsonRpcRequest;
       void this.onRequest(request.method, request.params ?? {}).then((result) => {
-        if (!this.closed) this.socket.send(JSON.stringify({ jsonrpc: "2.0", id: request.id, result }));
+        if (this.closed) return;
+        try {
+          this.socket.send(JSON.stringify({ jsonrpc: "2.0", id: request.id, result }));
+        } catch {
+          this.handleClose(new Error("local ACP runtime response could not be sent"));
+        }
       }).catch((error) => {
-        if (!this.closed) this.socket.send(JSON.stringify({
-          jsonrpc: "2.0",
-          id: request.id,
-          error: { code: -32000, message: error instanceof Error ? error.message : String(error) },
-        }));
+        if (this.closed) return;
+        try {
+          this.socket.send(JSON.stringify({
+            jsonrpc: "2.0",
+            id: request.id,
+            error: { code: -32000, message: error instanceof Error ? error.message : String(error) },
+          }));
+        } catch {
+          this.handleClose(new Error("local ACP runtime error response could not be sent"));
+        }
       });
       return;
     }
@@ -192,8 +239,12 @@ class JsonRpcWebSocket {
       this.notificationTail = this.notificationTail
         .then(() => this.onNotification(notification.method, notification.params ?? {}))
         .catch((error) => {
-          logger.warn("[LocalACP] notification projection failed", { method: notification.method, error });
+          const failure = error instanceof Error ? error : new Error(String(error));
+          this.notificationError = this.notificationError ?? failure;
+          logger.warn("[LocalACP] notification projection failed", { method: notification.method, error: failure });
+          throw failure;
         });
+      void this.notificationTail.catch(() => undefined);
     }
   }
 
@@ -243,6 +294,7 @@ type LocalAcpTurnState = {
   patchSeq: number;
   assistantMessageId: string;
   startedAt: string;
+  cancelRequested: boolean;
 };
 
 type RuntimeConnection = {
@@ -268,6 +320,10 @@ const deterministicUuid = (seed: string) => {
   return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-5${hex.slice(13, 16)}-${((Number.parseInt(hex.slice(16, 17), 16) & 0x3) | 0x8).toString(16)}${hex.slice(17, 20)}-${hex.slice(20, 32)}`;
 };
 const record = (value: unknown): Record<string, unknown> => value && typeof value === "object" && !Array.isArray(value) ? value as Record<string, unknown> : {};
+const nonNegativeInteger = (value: unknown): number | undefined => typeof value === "number" && Number.isSafeInteger(value) && value >= 0 ? value : undefined;
+const validJsonRpcId = (value: unknown): value is string | number =>
+  (typeof value === "string" && value.trim().length > 0) || (typeof value === "number" && Number.isFinite(value));
+const nonNegativeNumber = (value: unknown): number | undefined => typeof value === "number" && Number.isFinite(value) && value >= 0 ? value : undefined;
 const textFromAcpContent = (value: unknown): string => {
   if (typeof value === "string") return value;
   if (Array.isArray(value)) return value.map((item) => textFromAcpContent(item)).join("");
@@ -301,7 +357,7 @@ function mapStopReason(value: unknown): "aborted" | "error" | string | null {
 
 function requireAcpPromptResponse(value: unknown, persisted = false): Record<string, unknown> {
   const response = record(value);
-  if (typeof response.stopReason !== "string" || !response.stopReason.trim()) {
+  if (typeof response.stopReason !== "string" || !response.stopReason.trim() || response.stopReason.length > 50 || Buffer.byteLength(JSON.stringify(response), "utf8") > MAX_RUNTIME_EVENT_BYTES) {
     throw new Error(persisted
       ? "runtime_reconnect_required: persisted ACP command response is invalid"
       : "ACP provider returned an invalid session/prompt response");
@@ -353,6 +409,31 @@ function streamIndexForUpdate(state: LocalAcpTurnState, type: "text" | "thinking
 function startNewContentSegment(state: LocalAcpTurnState) {
   state.currentTextStreamIndex = null;
   state.currentThinkingStreamIndex = null;
+}
+
+function parseAcpUsage(value: unknown): Usage | null {
+  const usage = record(value);
+  const input = nonNegativeInteger(usage.inputTokens) ?? nonNegativeInteger(usage.input_tokens);
+  const output = nonNegativeInteger(usage.outputTokens) ?? nonNegativeInteger(usage.output_tokens);
+  const thought = nonNegativeInteger(usage.thoughtTokens) ?? nonNegativeInteger(usage.thought_tokens);
+  const cacheRead = nonNegativeInteger(usage.cachedReadTokens) ?? nonNegativeInteger(usage.cached_read_tokens) ?? nonNegativeInteger(usage.cacheRead);
+  const cacheWrite = nonNegativeInteger(usage.cachedWriteTokens) ?? nonNegativeInteger(usage.cached_write_tokens) ?? nonNegativeInteger(usage.cacheWrite);
+  const totalTokens = nonNegativeInteger(usage.totalTokens) ?? nonNegativeInteger(usage.total_tokens) ?? nonNegativeInteger(usage.used);
+  const derivedTotal = totalTokens ?? (() => {
+    const values = [input, output, thought, cacheRead, cacheWrite].filter((value): value is number => value !== undefined);
+    return values.length > 0 ? values.reduce((sum, value) => sum + value, 0) : undefined;
+  })();
+  const cost = record(usage.cost);
+  const costAmount = nonNegativeNumber(cost.amount);
+  if (input === undefined && output === undefined && thought === undefined && cacheRead === undefined && cacheWrite === undefined && derivedTotal === undefined && costAmount === undefined) return null;
+  return {
+    ...(input !== undefined ? { input } : {}),
+    ...(output !== undefined ? { output } : {}),
+    ...(cacheRead !== undefined ? { cacheRead } : {}),
+    ...(cacheWrite !== undefined ? { cacheWrite } : {}),
+    ...(derivedTotal !== undefined ? { totalTokens: derivedTotal } : {}),
+    ...(costAmount !== undefined ? { cost: { total: costAmount } } : {}),
+  };
 }
 
 function toolResultContent(value: unknown): string | ContentBlock[] {
@@ -425,6 +506,7 @@ async function persistRuntimeEvent(connection: RuntimeConnection, method: string
   return db.transaction(async (tx) => {
     const [session] = await tx.select().from(localAgentRuntimeSessions).where(eq(localAgentRuntimeSessions.id, connection.runtimeSessionId)).for("update").limit(1);
     if (!session || session.status === "revoked") throw new Error("local ACP runtime session is unavailable");
+    if (session.connectionEpoch !== connection.connectionEpoch) throw new Error("runtime_reconnect_required: local ACP runtime session epoch is stale");
     const [existing] = await tx.select({ id: localAgentRuntimeEvents.id, payloadHash: localAgentRuntimeEvents.payloadHash }).from(localAgentRuntimeEvents).where(and(
       eq(localAgentRuntimeEvents.runtimeSessionId, session.id),
       eq(localAgentRuntimeEvents.eventId, eventId),
@@ -589,7 +671,8 @@ async function markRuntimeReconnectRequired(connection: RuntimeConnection, messa
   }
   await db.update(localAgentRuntimeSessions).set({ status: "error", updatedAt: new Date() }).where(and(
     eq(localAgentRuntimeSessions.id, connection.runtimeSessionId),
-    ne(localAgentRuntimeSessions.status, "revoked"),
+    eq(localAgentRuntimeSessions.connectionEpoch, connection.connectionEpoch),
+    eq(localAgentRuntimeSessions.status, "active"),
   ));
   await db.update(localAgentRuntimes).set({ status: "error", lastError: error, updatedAt: new Date() }).where(and(
     eq(localAgentRuntimes.id, connection.runtimeId),
@@ -645,7 +728,8 @@ async function handleSessionUpdate(connection: RuntimeConnection, params: Record
     }
   } else if (kind === "tool_call") {
     startNewContentSegment(state);
-    const id = typeof update.toolCallId === "string" && update.toolCallId.trim() ? update.toolCallId : randomUUID();
+    const id = typeof update.toolCallId === "string" && update.toolCallId.trim() ? update.toolCallId.trim() : null;
+    if (!id) return;
     const rawInput = record(update.rawInput);
     const initialResult = update.content !== undefined
       ? toolResultContent(update.content)
@@ -677,13 +761,11 @@ async function handleSessionUpdate(connection: RuntimeConnection, params: Record
       changed = true;
     }
   } else if (kind === "usage_update") {
-    const usage = record(update);
-    state.usage = {
-      input: typeof usage.inputTokens === "number" ? usage.inputTokens : typeof usage.input_tokens === "number" ? usage.input_tokens : undefined,
-      output: typeof usage.outputTokens === "number" ? usage.outputTokens : typeof usage.output_tokens === "number" ? usage.output_tokens : undefined,
-      totalTokens: typeof usage.totalTokens === "number" ? usage.totalTokens : typeof usage.total_tokens === "number" ? usage.total_tokens : typeof usage.used === "number" ? usage.used : undefined,
-    };
-    changed = true;
+    const parsedUsage = parseAcpUsage(update.usage && typeof update.usage === "object" && !Array.isArray(update.usage) ? update.usage : update);
+    if (parsedUsage) {
+      state.usage = parsedUsage;
+      changed = true;
+    }
   }
   if (changed && publish) await publishAcpUpdate(state);
 }
@@ -692,6 +774,7 @@ async function handleRuntimeRequest(connection: RuntimeConnection, method: strin
   if (method === "session/request_permission") {
     const state = connection.activeTurn;
     const options = Array.isArray(params.options) ? params.options : [];
+    if (state?.cancelRequested) return { outcome: { outcome: "cancelled" } };
     const allow = state?.accessMode === "full_access";
     const selected = options.find((option) => {
       const kind = record(option).kind;
@@ -701,7 +784,7 @@ async function handleRuntimeRequest(connection: RuntimeConnection, method: strin
       return allow ? kind === "allow_always" : kind === "reject_always";
     });
     await publishRuntimeControlEvent(connection, "session.permission.requested", params);
-    if (!selected) return { outcome: { outcome: "cancelled" } };
+    if (state?.cancelRequested || !selected) return { outcome: { outcome: "cancelled" } };
     const optionId = record(selected).optionId;
     const result = { outcome: { outcome: "selected", optionId: typeof optionId === "string" ? optionId : "" } };
     await publishRuntimeControlEvent(connection, "session.permission.resolved", result as unknown as Record<string, unknown>);
@@ -758,6 +841,7 @@ async function ensureRuntimeSession(runtime: typeof localAgentRuntimes.$inferSel
     clientCapabilities: { fs: { readTextFile: false, writeTextFile: false }, terminal: false },
     clientInfo: { name: "cohub-local-runtime", version: "1.0.0" },
   });
+  if (initialized.protocolVersion !== ACP_PROTOCOL_VERSION) throw new Error("local ACP provider negotiated an unsupported protocol version");
   const agentCapabilities = record(initialized.agentCapabilities ?? initialized.capabilities);
   const sessionCapabilities = record(agentCapabilities.sessionCapabilities ?? initialized.sessionCapabilities);
   const [currentRuntime] = await db.select({ connectionEpoch: localAgentRuntimes.connectionEpoch, status: localAgentRuntimes.status }).from(localAgentRuntimes).where(eq(localAgentRuntimes.id, runtime.id)).limit(1);
@@ -779,7 +863,7 @@ async function ensureRuntimeSession(runtime: typeof localAgentRuntimes.$inferSel
   let restored = false;
   if (existingSession && acpSessionId && capabilities.sessionResume) {
     try {
-      await acp.request("session/resume", { sessionId: acpSessionId, cwd: RUNTIME_CWD });
+      await acp.request("session/resume", { sessionId: acpSessionId, cwd: RUNTIME_CWD, mcpServers: [] });
       restored = true;
     } catch (error) {
       logger.warn("[LocalACP] provider session resume failed", { runtimeId: runtime.id, cohubSessionId, error });
@@ -787,7 +871,7 @@ async function ensureRuntimeSession(runtime: typeof localAgentRuntimes.$inferSel
   }
   if (existingSession && acpSessionId && !restored && capabilities.sessionLoad) {
     try {
-      await acp.request("session/load", { sessionId: acpSessionId, cwd: RUNTIME_CWD });
+      await acp.request("session/load", { sessionId: acpSessionId, cwd: RUNTIME_CWD, mcpServers: [] });
       restored = true;
     } catch (error) {
       logger.warn("[LocalACP] provider session load failed", { runtimeId: runtime.id, cohubSessionId, error });
@@ -797,8 +881,8 @@ async function ensureRuntimeSession(runtime: typeof localAgentRuntimes.$inferSel
     throw new Error("runtime_reconnect_required: provider session cannot be resumed or loaded");
   }
   if (!restored) {
-    const created = await acp.request<Record<string, unknown>>("session/new", { cwd: RUNTIME_CWD });
-    if (typeof created.sessionId !== "string" || !created.sessionId) throw new Error("local ACP runtime returned no session id");
+    const created = await acp.request<Record<string, unknown>>("session/new", { cwd: RUNTIME_CWD, mcpServers: [] });
+    if (typeof created.sessionId !== "string" || !created.sessionId || created.sessionId.length > 255) throw new Error("local ACP runtime returned an invalid session id");
     acpSessionId = created.sessionId;
   }
   const runtimeSession = await db.transaction(async (tx) => {
@@ -857,7 +941,7 @@ async function ensureRuntimeSession(runtime: typeof localAgentRuntimes.$inferSel
     void db.update(localAgentRuntimeSessions).set({ status: "disconnected", updatedAt: new Date() }).where(and(
       eq(localAgentRuntimeSessions.id, runtimeSession.id),
       eq(localAgentRuntimeSessions.connectionEpoch, connectionEpoch),
-      ne(localAgentRuntimeSessions.status, "revoked"),
+      eq(localAgentRuntimeSessions.status, "active"),
     )).catch(() => undefined);
   });
   connections.set(runtime.id, establishedConnection);
@@ -899,13 +983,13 @@ async function acquireLocalAcpWorkspaceLease(input: { attemptId: string; spaceId
     if (workspace?.status !== "ready" || workspace.canonicalSnapshotId !== baseSnapshotId) {
       throw new Error("local ACP workspace changed before execution; synchronize the replica and retry");
     }
-    const [replica] = await tx.select({ id: workspaceReplicas.id, status: workspaceReplicas.status, appliedSnapshotId: workspaceReplicas.appliedSnapshotId }).from(workspaceReplicas).where(and(
+    const [replica] = await tx.select({ id: workspaceReplicas.id, deviceId: workspaceReplicas.deviceId, status: workspaceReplicas.status, appliedSnapshotId: workspaceReplicas.appliedSnapshotId }).from(workspaceReplicas).where(and(
       eq(workspaceReplicas.id, input.replicaId),
       eq(workspaceReplicas.spaceId, input.spaceId),
       eq(workspaceReplicas.kind, "local"),
     )).for("update").limit(1);
-    if (replica?.status !== "ready" || replica.appliedSnapshotId !== baseSnapshotId) {
-      throw new Error("local ACP replica is stale; synchronize it before execution");
+    if (replica?.deviceId !== input.deviceId || replica.status !== "ready" || replica.appliedSnapshotId !== baseSnapshotId) {
+      throw new Error("local ACP replica is stale or bound to a different device; synchronize it before execution");
     }
     const [existing] = await tx.select().from(workspaceWriterLeases).where(eq(workspaceWriterLeases.spaceId, input.spaceId)).for("update").limit(1);
     const now = new Date();
@@ -1008,15 +1092,16 @@ export async function processLocalAcpTurn(input: { attemptId: string }) {
   const loaded = await loadRuntimeForAttempt(input.attemptId);
   if (!loaded) throw new Error("local ACP execution attempt not found");
   const { attempt, runtime, turn, state, replica } = loaded;
-  if (attempt.executorKind !== "local_acp" || !attempt.runtimeId || !attempt.turnId) throw new Error("execution attempt is not a local ACP attempt");
+  if (attempt.executorKind !== "local_acp" || !attempt.runtimeId || !attempt.turnId || turn.executionKind !== "agent") throw new Error("execution attempt is not a local ACP attempt");
   if (attempt.sessionMirrorMode !== "full") throw new Error("runtime_transcript_consent_required: ACP transcript projection requires full session mirror consent");
   if (runtime.status === "revoked") throw new Error("local ACP runtime is revoked");
-  if (!replica?.id || runtime.replicaId !== replica.id || attempt.replicaId !== replica.id) throw new Error("local ACP execution workspace binding is invalid");
-  if (turn.userUuid && runtime.userUuid !== turn.userUuid) throw new Error("local ACP runtime ownership does not match the turn actor");
+  if (runtime.spaceId !== attempt.spaceId || !replica?.id || runtime.replicaId !== replica.id || attempt.replicaId !== replica.id) throw new Error("local ACP execution workspace binding is invalid");
+  if (!turn.userUuid || runtime.userUuid !== turn.userUuid) throw new Error("local ACP runtime ownership does not match the turn actor");
   const meta = record(turn.meta);
   const userMessageId = typeof meta.userMessageId === "string" ? meta.userMessageId : randomUUID();
   let lease: typeof workspaceWriterLeases.$inferSelect;
   try {
+    if (!isLocalAcpProviderRolloutEnabled(runtime.provider)) throw new Error(`${runtime.provider} local ACP runtime is disabled`);
     lease = await acquireLocalAcpWorkspaceLease({
       attemptId: attempt.id,
       spaceId: attempt.spaceId,
@@ -1061,7 +1146,8 @@ export async function processLocalAcpTurn(input: { attemptId: string }) {
     await db.update(localAgentRuntimeSessions).set({ status: "error", updatedAt: new Date() }).where(and(
       eq(localAgentRuntimeSessions.runtimeId, runtime.id),
       eq(localAgentRuntimeSessions.cohubSessionId, turn.sessionId),
-      ne(localAgentRuntimeSessions.status, "revoked"),
+      eq(localAgentRuntimeSessions.connectionEpoch, runtime.connectionEpoch),
+      eq(localAgentRuntimeSessions.status, "active"),
     )).catch(() => undefined);
     await setLocalAcpRuntimeStatus({ runtimeId: runtime.id, connectionEpoch: runtime.connectionEpoch, status: "error", error: message }).catch(() => undefined);
     establishedConnection?.acp.close();
@@ -1098,6 +1184,7 @@ export async function processLocalAcpTurn(input: { attemptId: string }) {
     patchSeq: 0,
     assistantMessageId: deterministicUuid(`cohub-local-acp-assistant-v1:${connection.runtimeSessionId}:${turn.id}`),
     startedAt: turn.startedAt?.toISOString() ?? new Date().toISOString(),
+    cancelRequested: false,
   };
   connection.activeTurn = stateForTurn;
   try {
@@ -1108,15 +1195,21 @@ export async function processLocalAcpTurn(input: { attemptId: string }) {
     connection.acp.close();
     throw error;
   }
+  let cancelTimer: ReturnType<typeof setTimeout> | null = null;
   const unregisterAbortHandle = registerActiveAbortHandle(turn.id, {
     id: `local-acp:${runtime.id}:${turn.id}`,
     kind: "turn",
     abort: () => {
+      if (connection.activeTurn?.turnId === turn.id) connection.activeTurn.cancelRequested = true;
       try {
         connection.acp.notify("session/cancel", { sessionId: connection.acpSessionId });
       } catch {
         // The prompt request observes the closed connection if cancellation races shutdown.
       }
+      cancelTimer = setTimeout(() => {
+        if (connection.activeTurn?.turnId === turn.id) connection.acp.close();
+      }, 5_000);
+      cancelTimer.unref?.();
     },
   });
   let leaseLost: Error | null = null;
@@ -1142,11 +1235,15 @@ export async function processLocalAcpTurn(input: { attemptId: string }) {
     const pending = heartbeatLease().catch((error) => {
       leaseLost = error instanceof Error ? error : new Error(String(error));
       heartbeatStopped = true;
+      if (connection.activeTurn?.turnId === turn.id) connection.activeTurn.cancelRequested = true;
       try {
         connection.acp.notify("session/cancel", { sessionId: connection.acpSessionId });
       } catch {
         // The prompt request will observe the closed connection.
       }
+      // Once the workspace lease is lost, the provider must not keep mutating
+      // the replica while the turn is being fenced.
+      connection.acp.close();
     }).finally(() => {
       if (heartbeatInFlight === pending) heartbeatInFlight = null;
     });
@@ -1156,6 +1253,7 @@ export async function processLocalAcpTurn(input: { attemptId: string }) {
   heartbeatTimer.unref();
   let command: RuntimePromptCommand | null = null;
   let response: Record<string, unknown>;
+  let responseCompletedAt: string | null = null;
   let completionAt = new Date().toISOString();
   const promptParams = {
     sessionId: connection.acpSessionId,
@@ -1178,6 +1276,7 @@ export async function processLocalAcpTurn(input: { attemptId: string }) {
       if (!command.row.response) throw new Error("runtime_reconnect_required: completed ACP command has no response");
       await replayRuntimePromptEvents(connection, stateForTurn);
       response = requireAcpPromptResponse(command.row.response, true);
+      stateForTurn.usage = parseAcpUsage(response.usage) ?? stateForTurn.usage;
       completionAt = command.row.updatedAt.toISOString();
     } else if (command.row.status === "sent" || command.row.status === "unknown") {
       const message = "runtime_reconnect_required: ACP prompt outcome is unknown; reconnect the local runtime before retrying";
@@ -1191,11 +1290,28 @@ export async function processLocalAcpTurn(input: { attemptId: string }) {
         if (!sent.response) throw new Error("runtime_reconnect_required: completed ACP command has no response");
         await replayRuntimePromptEvents(connection, stateForTurn);
         response = requireAcpPromptResponse(sent.response, true);
+        stateForTurn.usage = parseAcpUsage(response.usage) ?? stateForTurn.usage;
         completionAt = sent.updatedAt.toISOString();
       } else {
         try {
-          const rawResponse = await connection.acp.request<unknown>("session/prompt", promptParams);
+          const rawResponse = await connection.acp.request<unknown>("session/prompt", promptParams, async (result, responseError) => {
+            if (responseError) {
+              if (isAcpRpcError(responseError)) {
+                await failRuntimePromptCommand({ commandId: stateForTurn.commandId, runtimeSessionId: connection.runtimeSessionId, error: responseError });
+              }
+              throw responseError;
+            }
+            let completedResponse = requireAcpPromptResponse(result);
+            stateForTurn.usage = parseAcpUsage(completedResponse.usage) ?? stateForTurn.usage;
+            if (stateForTurn.cancelRequested) completedResponse = { ...completedResponse, stopReason: "cancelled" };
+            const completed = await completeRuntimePromptCommand({ commandId: stateForTurn.commandId, runtimeSessionId: connection.runtimeSessionId, response: completedResponse });
+            const durableResponse = completed.response ? requireAcpPromptResponse(completed.response, true) : completedResponse;
+            responseCompletedAt = completed.updatedAt.toISOString();
+            response = durableResponse;
+          });
           response = requireAcpPromptResponse(rawResponse);
+          stateForTurn.usage = parseAcpUsage(response.usage) ?? stateForTurn.usage;
+          if (stateForTurn.cancelRequested) response = { ...response, stopReason: "cancelled" };
         } catch (error) {
           if (isAcpRpcError(error)) {
             await failRuntimePromptCommand({ commandId: stateForTurn.commandId, runtimeSessionId: connection.runtimeSessionId, error }).catch((ledgerError) => {
@@ -1204,13 +1320,20 @@ export async function processLocalAcpTurn(input: { attemptId: string }) {
           }
           throw error;
         }
-        const completed = await completeRuntimePromptCommand({ commandId: stateForTurn.commandId, runtimeSessionId: connection.runtimeSessionId, response });
-        completionAt = completed.updatedAt.toISOString();
         await connection.acp.drainNotifications();
+        if (responseCompletedAt) {
+          completionAt = responseCompletedAt;
+        } else {
+          const completed = await completeRuntimePromptCommand({ commandId: stateForTurn.commandId, runtimeSessionId: connection.runtimeSessionId, response });
+          completionAt = completed.updatedAt.toISOString();
+        }
       }
     }
+    if (stateForTurn.cancelRequested && !leaseLost) response = { ...response, stopReason: "cancelled" };
     if (leaseLost) throw leaseLost;
     syncToolBlocks(stateForTurn);
+    const responseIsAborted = mapStopReason(response.stopReason) === "aborted";
+    const responseIsError = response.stopReason === "error" || (!responseIsAborted && stateForTurn.content.length === 0);
     await persistAssistantMessage({
       spaceId: attempt.spaceId,
       spaceSessionId: turn.sessionId,
@@ -1229,9 +1352,14 @@ export async function processLocalAcpTurn(input: { attemptId: string }) {
           provider: runtime.provider,
           model: stateForTurn.model,
           stopReason: mapStopReason(response.stopReason),
+          errorMessage: responseIsError
+            ? typeof response.message === "string" && response.message.trim()
+              ? response.message
+              : "The local ACP provider returned no assistant content."
+            : null,
           usage: stateForTurn.usage,
           meta: {
-            messageKind: "assistant_final",
+            messageKind: responseIsError ? "assistant_error" : "assistant_final",
             runtimeId: runtime.id,
             acpSessionId: connection.acpSessionId,
             executionAttemptId: attempt.id,
@@ -1275,6 +1403,7 @@ export async function processLocalAcpTurn(input: { attemptId: string }) {
   } finally {
     heartbeatStopped = true;
     clearInterval(heartbeatTimer);
+    if (cancelTimer) clearTimeout(cancelTimer);
     await Promise.resolve(heartbeatInFlight).catch(() => undefined);
     unregisterAbortHandle();
   }

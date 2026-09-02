@@ -125,6 +125,7 @@ npm install -g pi-acp
 cohub agent runtime register <spaceId> <replicaId> pi
 cohub agent runtime start <spaceId> <replicaId> pi --root ./project
 cohub agent runtime list <spaceId>
+cohub agent runtime get <spaceId> <runtimeId>
 cohub agent runtime revoke <spaceId> <runtimeId>
 ```
 

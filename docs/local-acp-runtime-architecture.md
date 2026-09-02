@@ -1,6 +1,6 @@
 # Local ACP Runtime Architecture
 
-Status: implementation in progress behind rollout flags
+Status: implemented behind rollout flags; real deployment acceptance pending
 Date: 2026-09-02
 
 This document is the normative design for local provider execution. The older
@@ -31,8 +31,8 @@ Cohub's transcript projection.
 Cohub does not register or broker MCP servers. It does not implement an MCP
 server, MCP bridge, MCP-over-ACP path, or custom MCP workspace tools. An MCP
 server configured by a provider is outside Cohub's protocol and permission
-model. The local bridge strips an accidental `mcpServers` field from lifecycle
-requests before forwarding them.
+model. The local bridge forwards an empty `mcpServers` list required by ACP;
+it never registers or brokers a server and strips any supplied entries.
 
 ACP transcript projection requires explicit `full` session-mirror consent for
 the device and Space. `metadata_only` and `disabled` remain valid choices for
@@ -196,8 +196,9 @@ newer canonical tree.
 The workspace lease is not released until the candidate has been durably
 prepared/committed or a recoverable finalization spool record has been written.
 ACP permits are marked separately in local state so the ordinary daemon never
-extends an ACP lease after the runtime process has crashed; the Agent owns the
-live lease heartbeat. A runtime process runs the same retry loop as locald,
+extends an ACP lease after the runtime process has crashed; the runtime process
+renews its local permit while alive and the Agent owns the server lease heartbeat.
+A runtime process runs the same retry loop as locald,
 while SQLite spool records make finalization retryable after a crash or network
 outage.
 
@@ -235,10 +236,12 @@ complete.
 
 ## Rollout Gates
 
-Development rollout requires a real Postgres migration, Redis/BullMQ queue,
-S3-compatible object storage, Gateway relay, locald binary, and at least one
-official provider adapter. Unit typechecking is not a substitute for these
-checks.
+Development rollout requires `LOCAL_ACP_RUNTIME_ENABLED` plus the provider
+flag (`LOCAL_ACP_PI_ENABLED`, `LOCAL_ACP_CLAUDE_ENABLED`, or
+`LOCAL_ACP_CODEX_ENABLED`). It also requires a real Postgres migration,
+Redis/BullMQ queue, S3-compatible object storage, Gateway relay, locald binary,
+and at least one official provider adapter. Unit typechecking is not a
+substitute for these checks.
 
 The minimum acceptance matrix is:
 

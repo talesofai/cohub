@@ -137,7 +137,10 @@ func RunAcpRuntime(ctx context.Context, options AcpRuntimeOptions) error {
 		_ = state.Close()
 		return errors.New("ACP runtime device identity is unavailable")
 	}
-	if replica == nil || replica.ReplicaID != options.ReplicaID || replica.DeviceID != strings.TrimSpace(deviceID) || filepath.Clean(replica.Root) != filepath.Clean(workspaceDir) {
+	deviceID = strings.TrimSpace(deviceID)
+	options.DeviceID = deviceID
+	finalizer.cfg.DeviceID = deviceID
+	if replica == nil || replica.ReplicaID != options.ReplicaID || replica.DeviceID != deviceID || filepath.Clean(replica.Root) != filepath.Clean(workspaceDir) {
 		_ = state.Close()
 		return errors.New("ACP runtime workspace does not match the attached local replica")
 	}
@@ -161,10 +164,14 @@ func RunAcpRuntime(ctx context.Context, options AcpRuntimeOptions) error {
 	// locald daemon. Keep the shared spool, permit heartbeat, and workspace sync
 	// loop alive here as well so a finalize failure remains recoverable.
 	var maintenance sync.WaitGroup
-	maintenance.Add(1)
+	maintenance.Add(2)
 	go func() {
 		defer maintenance.Done()
 		finalizer.replayLoop(ctx)
+	}()
+	go func() {
+		defer maintenance.Done()
+		finalizer.heartbeatAcpPermits(ctx)
 	}()
 	client := relay.NewClient(relay.Options{
 		RelayURL: options.RelayURL,
@@ -251,6 +258,7 @@ func (s *acpRuntimeServer) ServeDialedConn(parent context.Context, conn *websock
 	s.options.Logger.Info("ACP provider started", slog.String("remote", remote), slog.String("command", command), slog.Int("pid", cmd.Process.Pid))
 
 	var once sync.Once
+	processWaitDone := make(chan struct{})
 	closeProvider := func() {
 		once.Do(func() {
 			_ = stdin.Close()
@@ -258,6 +266,15 @@ func (s *acpRuntimeServer) ServeDialedConn(parent context.Context, conn *websock
 				return
 			}
 			_ = terminateAcpProviderProcess(cmd)
+			go func() {
+				timer := time.NewTimer(2 * time.Second)
+				defer timer.Stop()
+				select {
+				case <-processWaitDone:
+				case <-timer.C:
+					_ = cmd.Process.Kill()
+				}
+			}()
 		})
 	}
 
@@ -293,6 +310,7 @@ func (s *acpRuntimeServer) ServeDialedConn(parent context.Context, conn *websock
 	if err := cmd.Wait(); err != nil && ctx.Err() == nil {
 		s.options.Logger.Debug("ACP provider exited with error", slog.String("remote", remote), slog.String("error", err.Error()))
 	}
+	close(processWaitDone)
 	// A provider crash or a relay disconnect can leave a prompt without its
 	// normal JSON-RPC response. Preserve durable finalization evidence so the
 	// replay loop can reconcile the local workspace after connectivity returns.
@@ -380,25 +398,20 @@ func (s *acpRuntimeServer) finishAttempt(ref runtimeAttemptRef) {
 	if s.finalizer == nil || ref.attemptID == "" || ref.spaceID == "" || ref.replicaID == "" {
 		return
 	}
-	go func() {
-		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Minute)
-		defer cancel()
-		if err := s.finalizer.finalizeExecutionWorkspace(ctx, ref.spaceID, ref.replicaID, ref.attemptID); err != nil {
-			s.options.Logger.Warn("finalize ACP runtime workspace failed", slog.String("attemptId", ref.attemptID), slog.String("error", err.Error()))
-			eventID := "workspace-terminal:" + ref.attemptID
-			payload := mustJSON(spoolEnvelope{
-				Kind:               "workspace_terminal",
-				Version:            protocolVersion,
-				EventID:            eventID,
-				SpaceID:            ref.spaceID,
-				ReplicaID:          ref.replicaID,
-				ExecutionAttemptID: ref.attemptID,
-			})
-			if _, spoolErr := s.finalizer.state.AppendSpool(eventID, payload); spoolErr != nil {
-				s.options.Logger.Error("queue ACP workspace finalization failed", slog.String("attemptId", ref.attemptID), slog.String("error", spoolErr.Error()))
-			}
-		}
-	}()
+	// Persist terminal evidence before any network call. The regular daemon or
+	// this runtime's replay loop will perform the idempotent finalization.
+	eventID := "workspace-terminal:" + ref.attemptID
+	payload := mustJSON(spoolEnvelope{
+		Kind:               "workspace_terminal",
+		Version:            protocolVersion,
+		EventID:            eventID,
+		SpaceID:            ref.spaceID,
+		ReplicaID:          ref.replicaID,
+		ExecutionAttemptID: ref.attemptID,
+	})
+	if _, err := s.finalizer.state.AppendSpool(eventID, payload); err != nil {
+		s.options.Logger.Error("queue ACP workspace finalization failed", slog.String("attemptId", ref.attemptID), slog.String("error", err.Error()))
+	}
 }
 
 func acpRequestIDKey(value any) string {
@@ -438,28 +451,34 @@ func forwardAcpStdout(ctx context.Context, conn *websocket.Conn, output io.Reade
 		if value == nil {
 			return errors.New("ACP provider message must be a JSON object")
 		}
+		if value["jsonrpc"] != "2.0" {
+			return errors.New("ACP provider message has an unsupported JSON-RPC version")
+		}
 		value = rewriteAcpPaths(value, workspaceDir)
 		encoded, err := json.Marshal(value)
 		if err != nil {
 			return fmt.Errorf("encode ACP provider message: %w", err)
 		}
+		var completed *runtimeAttemptRef
+		if _, ok := value["method"]; !ok {
+			if id, ok := value["id"]; ok {
+				key := acpRequestIDKey(id)
+				promptMu.Lock()
+				ref, found := pending[key]
+				if found {
+					delete(pending, key)
+				}
+				promptMu.Unlock()
+				if found {
+					completed = &ref
+				}
+			}
+		}
+		if completed != nil {
+			finish(*completed)
+		}
 		if err := conn.Write(ctx, websocket.MessageText, append(append([]byte(nil), encoded...), '\n')); err != nil {
 			return err
-		}
-		if _, ok := value["method"]; ok {
-			continue
-		}
-		if id, ok := value["id"]; ok {
-			key := acpRequestIDKey(id)
-			promptMu.Lock()
-			ref, found := pending[key]
-			if found {
-				delete(pending, key)
-			}
-			promptMu.Unlock()
-			if found {
-				finish(ref)
-			}
 		}
 	}
 	return scanner.Err()
@@ -485,16 +504,31 @@ func forwardAcpStdin(ctx context.Context, conn *websocket.Conn, input io.Writer,
 		if value == nil {
 			return errors.New("ACP client message must be a JSON object")
 		}
-		method, _ := value["method"].(string)
+		if value["jsonrpc"] != "2.0" {
+			return errors.New("ACP client message has an unsupported JSON-RPC version")
+		}
+		rawMethod, methodPresent := value["method"]
+		method, methodIsString := rawMethod.(string)
+		_, hasID := value["id"]
+		if !methodPresent && !hasID {
+			return errors.New("ACP client message has neither method nor id")
+		}
+		if methodPresent && (!methodIsString || strings.TrimSpace(method) == "") {
+			return errors.New("ACP client message method is invalid")
+		}
 		params, _ := value["params"].(map[string]any)
 		if params == nil {
 			params = map[string]any{}
 		}
+		delete(value, "_meta")
 		if method == "session/new" || method == "session/load" || method == "session/resume" {
 			params["cwd"] = workspaceDir
-			// Cohub does not provide or broker MCP servers. Drop the optional
-			// protocol field even when a caller accidentally includes it.
-			delete(params, "mcpServers")
+			// Cohub does not provide or broker MCP servers. ACP requires this
+			// field on lifecycle requests, so normalize it to an empty list.
+			params["mcpServers"] = []any{}
+			// Do not widen the provider's filesystem scope beyond the bound
+			// materialized replica.
+			delete(params, "additionalDirectories")
 			// Cohub binding metadata is transport-only and never belongs in the
 			// provider's native session journal.
 			delete(params, "_meta")
@@ -547,6 +581,16 @@ func forwardAcpStdin(ctx context.Context, conn *websocket.Conn, input io.Writer,
 			promptMu.Lock()
 			pending[acpRequestIDKey(id)] = ref
 			promptMu.Unlock()
+		}
+		if method != "session/prompt" {
+			if _, hasParams := value["params"]; hasParams {
+				delete(params, "_meta")
+				if method != "session/new" && method != "session/load" && method != "session/resume" {
+					delete(params, "mcpServers")
+				}
+				delete(params, "additionalDirectories")
+				value["params"] = params
+			}
 		}
 		encoded, err := json.Marshal(value)
 		if err != nil {
@@ -630,14 +674,27 @@ func rewriteAcpPaths(value map[string]any, workspaceDir string) map[string]any {
 			}
 			path := strings.TrimPrefix(typed, "file://")
 			path = filepath.ToSlash(path)
+			if len(path) >= 3 && path[0] == '/' && path[2] == ':' {
+				path = path[1:]
+			}
+			if strings.HasPrefix(path, "/") || (len(path) > 2 && path[1] == ':') {
+				path = filepath.ToSlash(filepath.Clean(path))
+			}
+			if path == ".." || strings.HasPrefix(path, "../") || strings.Contains(path, "/../") {
+				return "/workspace"
+			}
+			caseInsensitive := filepath.VolumeName(root) != ""
+			equalRoot := path == root || (caseInsensitive && strings.EqualFold(path, root))
+			withinRoot := strings.HasPrefix(path, root+"/") || (caseInsensitive && strings.HasPrefix(strings.ToLower(path), strings.ToLower(root)+"/"))
 			if path == "/workspace" || strings.HasPrefix(path, "/workspace/") {
 				return typed
 			}
-			if path == root {
+			if equalRoot {
 				return "/workspace"
 			}
-			if strings.HasPrefix(path, root+"/") {
-				return "/workspace/" + strings.TrimPrefix(path, root+"/")
+			if withinRoot {
+				relative := path[len(root)+1:]
+				return "/workspace/" + relative
 			}
 			if strings.HasPrefix(path, "/") || (len(path) > 2 && path[1] == ':') {
 				return "/workspace"

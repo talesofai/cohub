@@ -356,9 +356,16 @@ export const submitSessionPrompt = async (
   if (!userId) throw new Error("userId is required");
   const clientMessageId = input.clientMessageId.trim();
   if (!clientMessageId) throw new Error("clientMessageId is required");
+  if (clientMessageId.length > 255) throw new Error("clientMessageId is too long");
   if (!Array.isArray(input.content) || input.content.length === 0) throw new Error("content is required");
   if (input.runtimeId != null && typeof input.runtimeId !== "string") {
     throw new Error("runtimeId must be a string");
+  }
+  if (input.model != null && typeof input.model !== "string") {
+    throw new Error("model must be a string");
+  }
+  if (input.provider != null && typeof input.provider !== "string") {
+    throw new Error("provider must be a string");
   }
   const runtimeId = input.runtimeId?.trim() || null;
   if (runtimeId && (input.model?.trim() || input.provider?.trim())) {
@@ -395,7 +402,7 @@ export const submitSessionPrompt = async (
     throw new ModelUnavailableError(modelProvider.provider, modelProvider.model);
   }
 
-  if (deps.sandboxRecovery) {
+  if (deps.sandboxRecovery && !runtimeId) {
     void Promise.resolve(deps.sandboxRecovery.maybeRecoverForPrompt({
       spaceId: input.spaceId,
       sessionId: input.sessionId,
@@ -421,6 +428,9 @@ export const submitSessionPrompt = async (
     : null;
 
   const isDirectShellCommand = content.length === 1 && content[0]?.type === "shell_command";
+  if (runtimeId && isDirectShellCommand) {
+    throw new Error("local ACP runtime does not accept Cohub shell commands");
+  }
   if (accessMode === "read_only" && isDirectShellCommand) {
     throw new Error("shell_command is not allowed in read_only accessMode");
   }

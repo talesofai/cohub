@@ -2,7 +2,7 @@ import { Hono, type Context } from "hono";
 import { bodyLimit } from "hono/body-limit";
 import { ZodError } from "zod";
 import { LocalAgentPolicySchema } from "@cohub/protocol";
-import { eq } from "drizzle-orm";
+import { and, eq } from "drizzle-orm";
 import { localAgentDevices, spaceLocalAgentPolicies } from "@cohub/db";
 import { useAccountPrincipal, getLocalAgentPrincipal, authzDenied, requireValidId, useAuth } from "../lib/middleware.js";
 import { hasPermission } from "../permissions.js";
@@ -610,8 +610,12 @@ router.patch("/spaces/:spaceId/devices/:deviceId/policy", async (c) => {
       integrationPolicyVersion: row.integrationPolicyVersion + 1,
       updatedBy: user.uuid,
       updatedAt,
-    }).where(eq(spaceLocalAgentPolicies.id, row.id)).returning();
-    return c.json({ policy: updated ?? row });
+    }).where(and(
+      eq(spaceLocalAgentPolicies.id, row.id),
+      eq(spaceLocalAgentPolicies.integrationPolicyVersion, row.integrationPolicyVersion),
+    )).returning();
+    if (!updated) return c.json({ code: "policy_changed", message: "local agent policy changed; reload and retry" }, 409);
+    return c.json({ policy: updated });
   } catch (error) {
     return errorResponse(c, error);
   }

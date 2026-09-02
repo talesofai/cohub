@@ -50,6 +50,10 @@ type remoteReplicaState struct {
 		WorkspaceMode            string `json:"workspaceMode"`
 		OfflineEnabled           bool   `json:"offlineEnabled"`
 	} `json:"integrationPolicy"`
+	Lease *struct {
+		HolderKind string `json:"holderKind"`
+		ExpiresAt  string `json:"expiresAt"`
+	} `json:"lease"`
 }
 
 type remoteSnapshot struct {
@@ -198,6 +202,36 @@ func (d *Daemon) syncReplicas(ctx context.Context) {
 	}
 }
 
+// heartbeatAcpPermits is run only by the ACP runtime process. The ordinary
+// daemon deliberately does not renew ACP permits because it cannot prove that
+// the provider connection is still mutating the replica.
+func (d *Daemon) heartbeatAcpPermits(ctx context.Context) {
+	refresh := func() {
+		permits, err := d.state.ActivePermits(ctx)
+		if err != nil {
+			return
+		}
+		now := time.Now().UTC()
+		for _, permit := range permits {
+			if !isAcpRuntimePermit(permit.HolderID) || permit.ExpiresAt.IsZero() || !permit.ExpiresAt.After(now) {
+				continue
+			}
+			_ = d.state.UpdatePermitExpiry(permit.ExecutionAttemptID, now.Add(30*time.Second))
+		}
+	}
+	refresh()
+	ticker := time.NewTicker(10 * time.Second)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			refresh()
+		}
+	}
+}
+
 func (d *Daemon) heartbeatActivePermits(ctx context.Context) {
 	permits, err := d.state.ActivePermits(ctx)
 	if err != nil {
@@ -272,6 +306,15 @@ func (d *Daemon) syncReplica(ctx context.Context, replica *ReplicaState) error {
 	}
 	if err := d.state.UpdateReplicaPolicy(replica.SpaceID, state.WorkspacePolicy.PolicyVersion, state.IntegrationPolicy.IntegrationPolicyVersion, state.IntegrationPolicy.SessionMirrorMode); err != nil {
 		return err
+	}
+	if state.Lease != nil {
+		expiresAt, parseErr := time.Parse(time.RFC3339Nano, state.Lease.ExpiresAt)
+		if parseErr != nil {
+			return fmt.Errorf("workspace writer lease expiry is invalid: %w", parseErr)
+		}
+		if expiresAt.After(time.Now().UTC()) {
+			return fmt.Errorf("workspace has an active server writer lease: %s", state.Lease.HolderKind)
+		}
 	}
 	replica.PolicyVersion = state.WorkspacePolicy.PolicyVersion
 	replica.IntegrationPolicyVersion = state.IntegrationPolicy.IntegrationPolicyVersion
@@ -454,7 +497,7 @@ func (d *Daemon) finalizeExecutionWorkspace(ctx context.Context, spaceID, replic
 	if permit.Status == "completed" {
 		return nil
 	}
-	if permit.Status != "prepared" && permit.Status != "active" {
+	if permit.Status != "prepared" && permit.Status != "active" && !(permit.Status == "expired" && isAcpRuntimePermit(permit.HolderID)) {
 		return errors.New("local execution permit is unavailable for workspace finalization")
 	}
 	replica, err := d.state.ReplicaForSpace(spaceID)
@@ -495,20 +538,47 @@ func (d *Daemon) finalizeExecutionWorkspace(ctx context.Context, spaceID, replic
 }
 
 func (d *Daemon) activePermit(spaceID string) (string, string, bool, error) {
-	row, err := d.state.db.Query(`SELECT space_id, replica_id, expires_at FROM permits WHERE space_id = ? AND status IN ('prepared', 'active')`, spaceID)
+	row, err := d.state.db.Query(`SELECT space_id, replica_id, expires_at, holder_id, status FROM permits WHERE space_id = ? AND status IN ('prepared', 'active')`, spaceID)
 	if err != nil {
 		return "", "", false, err
 	}
 	defer row.Close()
-	if !row.Next() {
-		return "", "", false, row.Err()
+	var storedSpace, replicaID string
+	valid := false
+	var expiredAcpAttemptIDs []string
+	for row.Next() {
+		var currentSpace, currentReplica, expires, holderID, status string
+		if err := row.Scan(&currentSpace, &currentReplica, &expires, &holderID, &status); err != nil {
+			return "", "", false, err
+		}
+		if storedSpace == "" {
+			storedSpace, replicaID = currentSpace, currentReplica
+		}
+		parsed, parseErr := time.Parse(time.RFC3339Nano, expires)
+		if parseErr != nil {
+			return currentSpace, currentReplica, false, parseErr
+		}
+		if parsed.After(time.Now().UTC()) {
+			valid = true
+			if status == "active" && isAcpRuntimePermit(holderID) {
+				return currentSpace, currentReplica, true, nil
+			}
+		} else if status == "active" && isAcpRuntimePermit(holderID) {
+			expiredAcpAttemptIDs = append(expiredAcpAttemptIDs, serverPermitHolderID(holderID))
+		}
 	}
-	var storedSpace, replicaID, expires string
-	if err := row.Scan(&storedSpace, &replicaID, &expires); err != nil {
-		return "", "", false, err
+	if err := row.Err(); err != nil {
+		return storedSpace, replicaID, false, err
 	}
-	parsed, err := time.Parse(time.RFC3339Nano, expires)
-	return storedSpace, replicaID, err == nil && parsed.After(time.Now().UTC()), err
+	if err := row.Close(); err != nil {
+		return storedSpace, replicaID, false, err
+	}
+	for _, attemptID := range expiredAcpAttemptIDs {
+		if _, err := d.state.db.Exec(`UPDATE permits SET status = 'expired' WHERE execution_attempt_id = ? AND status = 'active'`, attemptID); err != nil {
+			return storedSpace, replicaID, false, err
+		}
+	}
+	return storedSpace, replicaID, valid, nil
 }
 
 func candidateProvenance(replica *ReplicaState, state remoteReplicaState) (baseCanonical, source string) {

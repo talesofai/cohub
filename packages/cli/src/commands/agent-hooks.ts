@@ -542,6 +542,27 @@ export function registerAgentHooks(program: Command): void {
     });
 
   runtime
+    .command("get <spaceId> <runtimeId>")
+    .description("Show a registered local ACP runtime")
+    .option("--json", "Output as JSON")
+    .action(async (spaceId: string, runtimeId: string, opts: { json?: boolean }) => {
+      try {
+        const result = await createClient().localAgent.getRuntime(spaceId, runtimeId);
+        if (jsonRequested(opts)) return outJson(result);
+        table([result], [
+          { key: "id", label: "Runtime" },
+          { key: "provider", label: "Provider" },
+          { key: "replicaId", label: "Replica" },
+          { key: "status", label: "Status" },
+          { key: "connectionEpoch", label: "Epoch" },
+          { key: "lastError", label: "Error" },
+        ]);
+      } catch (cause) {
+        handleHttp(cause);
+      }
+    });
+
+  runtime
     .command("list <spaceId>")
     .description("List registered local ACP runtimes")
     .option("--json", "Output as JSON")

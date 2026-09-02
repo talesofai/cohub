@@ -743,7 +743,7 @@ func (s *StateStore) UpdatePermitExpiry(executionAttemptID string, expiresAt tim
 }
 
 func (s *StateStore) CompletePermit(executionAttemptID string) error {
-	_, err := s.db.Exec(`UPDATE permits SET status = 'completed' WHERE execution_attempt_id = ? AND status IN ('prepared', 'active')`, executionAttemptID)
+	_, err := s.db.Exec(`UPDATE permits SET status = 'completed' WHERE execution_attempt_id = ? AND status IN ('prepared', 'active', 'expired')`, executionAttemptID)
 	return err
 }
 

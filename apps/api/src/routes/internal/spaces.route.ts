@@ -385,6 +385,7 @@ router.post("/:spaceId/sessions/:sessionId/prompt", async (c) => {
       userId?: string | null;
       authToken?: string | null;
       clientMessageId?: string | null;
+      runtimeId?: string | null;
       source?: string | null;
       model?: string | null;
       provider?: string | null;
@@ -417,6 +418,12 @@ router.post("/:spaceId/sessions/:sessionId/prompt", async (c) => {
   }
   const clientMessageId = body.clientMessageId?.trim();
   if (!clientMessageId) return c.json({ message: "clientMessageId is required" }, 400);
+  if (body.runtimeId != null && typeof body.runtimeId !== "string") return c.json({ message: "runtimeId must be a string" }, 400);
+  const runtimeId = body.runtimeId?.trim() || null;
+  if (runtimeId && !requireValidId(runtimeId)) return c.json({ message: "runtimeId must be a valid UUID" }, 400);
+  if (runtimeId && !(await hasPermission(permissionSubject, "file.edit", { spaceId }))) {
+    return c.json({ message: "forbidden" }, 403);
+  }
 
   let promptEnv: Record<string, string> | null = null;
   try {
@@ -436,6 +443,7 @@ router.post("/:spaceId/sessions/:sessionId/prompt", async (c) => {
       source: body.source?.trim() || "scheduled_task",
       model: body.model ?? null,
       provider: body.provider ?? null,
+      runtimeId,
       thinkingLevel: promptThinkingLevel ?? null,
       accessMode,
       env: promptEnv,

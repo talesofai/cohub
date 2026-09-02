@@ -796,28 +796,25 @@ func (d *Daemon) uploadHook(ctx context.Context, envelope spoolEnvelope) error {
 }
 
 func (d *Daemon) releaseExecutionPermit(ctx context.Context, spaceID, executionAttemptID string) error {
-	permits, err := d.state.ActivePermits(ctx)
+	permit, err := d.state.PermitContext(executionAttemptID)
 	if err != nil {
 		return err
 	}
-	for _, permit := range permits {
-		if permit.ExecutionAttemptID != executionAttemptID || permit.SpaceID != spaceID {
-			continue
-		}
-		payload := mustJSON(map[string]any{
-			"holderKind": permit.HolderKind,
-			"holderId":   serverPermitHolderID(permit.HolderID),
-			"epoch":      permit.LeaseEpoch,
-		})
-		if _, err := d.request(ctx, http.MethodPost, fmt.Sprintf("%s/api/local-agent/spaces/%s/leases/release", d.apiBaseURL(), spaceID), payload, 2*1024*1024); err != nil {
-			return err
-		}
-		if err := d.state.CompleteProviderAttemptsByExecution(executionAttemptID); err != nil {
-			return err
-		}
-		return d.state.CompletePermit(executionAttemptID)
+	if permit == nil || permit.SpaceID != spaceID || permit.Status == "completed" || (permit.Status == "expired" && !isAcpRuntimePermit(permit.HolderID)) || (permit.Status != "prepared" && permit.Status != "active" && permit.Status != "expired") {
+		return nil
 	}
-	return nil
+	payload := mustJSON(map[string]any{
+		"holderKind": permit.HolderKind,
+		"holderId":   serverPermitHolderID(permit.HolderID),
+		"epoch":      permit.LeaseEpoch,
+	})
+	if _, err := d.request(ctx, http.MethodPost, fmt.Sprintf("%s/api/local-agent/spaces/%s/leases/release", d.apiBaseURL(), spaceID), payload, 2*1024*1024); err != nil {
+		return err
+	}
+	if err := d.state.CompleteProviderAttemptsByExecution(executionAttemptID); err != nil {
+		return err
+	}
+	return d.state.CompletePermit(executionAttemptID)
 }
 
 const nativeInlineBundleMaxBytes = 128 * 1024

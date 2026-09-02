@@ -355,6 +355,15 @@ export async function claimNextTurnBatch(input: Pick<AgentTurnJobData, "sessionI
             and nt.status in ('pending', 'running', 'sealed', 'awaiting_recovery', 'applying', 'forking')
         ) as has_native_turn,
         exists (
+          select 1
+          from v2.workspace_execution_attempts local_attempt
+          join v2.local_agent_runtimes local_runtime on local_runtime.id = local_attempt.runtime_id
+          where local_attempt.session_id = ${input.sessionId}
+            and local_attempt.executor_kind = 'local_acp'
+            and local_attempt.status = 'queued'
+            and local_runtime.status in ('offline', 'connecting', 'error', 'revoked')
+        ) as has_local_runtime_wait,
+        exists (
           select 1 from v2.session_turns local_turn
           where local_turn.session_id = ${input.sessionId}
             and local_turn.execution_kind = 'agent'
@@ -375,8 +384,10 @@ export async function claimNextTurnBatch(input: Pick<AgentTurnJobData, "sessionI
             ? "workspace_writer_active"
             : gate.has_local_attempt === true
               ? "local_attempt_active"
-              : gate.has_local_authoritative_policy === true && gate.has_local_executor !== true
-                ? "cloud_workspace_write_disabled"
+              : gate.has_local_runtime_wait === true
+                ? "local_runtime_unavailable"
+                : gate.has_local_authoritative_policy === true && gate.has_local_executor !== true
+                  ? "cloud_workspace_write_disabled"
                   : gate.has_hidden_ingest === true
                   ? "native_ingest_pending"
                   : gate.has_native_turn === true

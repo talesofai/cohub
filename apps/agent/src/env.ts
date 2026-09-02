@@ -72,6 +72,10 @@ export const EnvSchema = z.object({
   ENV: z.enum(["dev", "prod"]).default("dev"),
   AGENT_VERSION: z.string().optional(),
   NATIVE_AGENT_MIRROR_ENABLED: booleanEnv("NATIVE_AGENT_MIRROR_ENABLED", process.env.ENV !== "prod"),
+  LOCAL_ACP_RUNTIME_ENABLED: booleanEnv("LOCAL_ACP_RUNTIME_ENABLED", process.env.ENV !== "prod"),
+  LOCAL_ACP_PI_ENABLED: booleanEnv("LOCAL_ACP_PI_ENABLED", process.env.ENV !== "prod"),
+  LOCAL_ACP_CLAUDE_ENABLED: booleanEnv("LOCAL_ACP_CLAUDE_ENABLED", false),
+  LOCAL_ACP_CODEX_ENABLED: booleanEnv("LOCAL_ACP_CODEX_ENABLED", false),
   WORKER_SECRET: z.string().optional(),
   LOCAL_ACP_RUNTIME_RELAY_URL: z.string().url().refine((value) => {
     const url = new URL(value);
@@ -113,6 +117,20 @@ export const EnvSchema = z.object({
 
 export type Env = z.infer<typeof EnvSchema>;
 export const env = EnvSchema.parse(process.env);
+
+export const isLocalAcpProviderRolloutEnabled = (provider: string) => {
+  if (!env.LOCAL_ACP_RUNTIME_ENABLED) return false;
+  switch (provider) {
+    case "pi":
+      return env.LOCAL_ACP_PI_ENABLED;
+    case "claude_code":
+      return env.LOCAL_ACP_CLAUDE_ENABLED;
+    case "codex":
+      return env.LOCAL_ACP_CODEX_ENABLED;
+    default:
+      return false;
+  }
+};
 
 export const AGENT_INSTANCE_HEARTBEAT_MS = 5000;
 export const SPACE_OWNER_LEASE_MS = 15000;

@@ -38,6 +38,11 @@ const providerEnabled = (provider: LocalAcpProvider) => {
       : config.localAcpClaudeEnabled;
 };
 
+export const isLocalAcpProviderEnabled = (value: string) => {
+  const parsed = LocalAcpProviderSchema.safeParse(value);
+  return parsed.success && providerEnabled(parsed.data);
+};
+
 const serialize = (row: typeof localAgentRuntimes.$inferSelect) => ({
   id: row.id,
   spaceId: row.spaceId,
@@ -402,6 +407,7 @@ export async function authorizeLocalAcpRuntime(input: {
   assertUuid(input.runtimeId, "runtimeId");
   assertUuid(input.spaceId, "spaceId");
   if (!input.actor.deviceId) throw new LocalAgentServiceError("runtime device credential is required", "device_required", 401);
+  await assertActorCanUseSpace(input.actor, input.spaceId);
   const result = await db.transaction(async (tx) => {
     const [device] = await tx.select({ id: localAgentDevices.id }).from(localAgentDevices).where(and(
       eq(localAgentDevices.id, input.actor.deviceId as string),
@@ -418,6 +424,7 @@ export async function authorizeLocalAcpRuntime(input: {
       ne(localAgentRuntimes.status, "revoked"),
     )).for("update").limit(1);
     if (!row) throw new LocalAgentServiceError("local ACP runtime is not registered for this Space", "runtime_not_found", 404);
+    if (!providerEnabled(row.provider)) throw new LocalAgentServiceError(`${row.provider} local ACP runtime is disabled`, "provider_not_enabled", 403);
     const [integrationPolicy] = await tx.select({ sessionMirrorMode: spaceLocalAgentPolicies.sessionMirrorMode, workspaceMode: spaceLocalAgentPolicies.workspaceMode }).from(spaceLocalAgentPolicies).where(and(
       eq(spaceLocalAgentPolicies.spaceId, input.spaceId),
       eq(spaceLocalAgentPolicies.deviceId, input.actor.deviceId as string),
@@ -462,6 +469,9 @@ export async function touchLocalAcpRuntime(input: { runtimeId: string; connectio
   assertUuid(input.runtimeId, "runtimeId");
   if (!Number.isSafeInteger(input.connectionEpoch) || input.connectionEpoch < 1) throw new LocalAgentServiceError("connectionEpoch is invalid", "invalid_epoch", 400);
   if (!input.actor.deviceId) throw new LocalAgentServiceError("runtime device credential is required", "device_required", 401);
+  const [runtime] = await db.select({ spaceId: localAgentRuntimes.spaceId, userUuid: localAgentRuntimes.userUuid, deviceId: localAgentRuntimes.deviceId, provider: localAgentRuntimes.provider }).from(localAgentRuntimes).where(eq(localAgentRuntimes.id, input.runtimeId)).limit(1);
+  if (!runtime || runtime.userUuid !== input.actor.userUuid || runtime.deviceId !== input.actor.deviceId || !isLocalAcpProviderEnabled(runtime.provider)) return false;
+  if (!(await hasPermission({ uuid: input.actor.userUuid }, "file.edit", { spaceId: runtime.spaceId }))) return false;
   const [device] = await db.select({ id: localAgentDevices.id }).from(localAgentDevices).where(and(
     eq(localAgentDevices.id, input.actor.deviceId),
     eq(localAgentDevices.userUuid, input.actor.userUuid),

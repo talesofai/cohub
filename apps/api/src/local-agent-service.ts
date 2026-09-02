@@ -1300,7 +1300,24 @@ export async function releaseWorkspaceWriterLease(input: { actor: LocalAgentActo
   assertUuid(input.spaceId, "spaceId");
   const holderKind = normalizeLeaseHolderKind(input.holderKind);
   if (!Number.isSafeInteger(input.epoch) || input.epoch < 1) throw new LocalAgentServiceError("epoch is invalid", "invalid_epoch", 400);
-  await assertLeaseActor({ actor: input.actor, spaceId: input.spaceId, holderKind, holderId: input.holderId, epoch: input.epoch });
+  try {
+    await assertLeaseActor({ actor: input.actor, spaceId: input.spaceId, holderKind, holderId: input.holderId, epoch: input.epoch });
+  } catch (error) {
+    if (!(error instanceof LocalAgentServiceError) || error.code !== "workspace_lease_not_found" || holderKind !== "local_agent" || !input.actor.deviceId) throw error;
+    const [attempt] = await db.select({ id: workspaceExecutionAttempts.id, status: workspaceExecutionAttempts.status }).from(workspaceExecutionAttempts)
+      .innerJoin(workspaceReplicas, eq(workspaceReplicas.id, workspaceExecutionAttempts.replicaId))
+      .where(and(
+        eq(workspaceExecutionAttempts.id, input.holderId),
+        eq(workspaceExecutionAttempts.spaceId, input.spaceId),
+        eq(workspaceReplicas.deviceId, input.actor.deviceId),
+        eq(workspaceReplicas.kind, "local"),
+      )).limit(1);
+    if (!attempt || !["completed", "failed", "aborted", "blocked"].includes(attempt.status)) throw error;
+    await db.update(workspaceState).set({ activeExecutionAttemptId: null, updatedAt: new Date() }).where(and(eq(workspaceState.spaceId, input.spaceId), eq(workspaceState.activeExecutionAttemptId, input.holderId)));
+    await db.update(workspaceReplicas).set({ activeExecutionAttemptId: null, updatedAt: new Date() }).where(and(eq(workspaceReplicas.spaceId, input.spaceId), eq(workspaceReplicas.activeExecutionAttemptId, input.holderId)));
+    void notifyWorkspaceState({ spaceId: input.spaceId, reason: "lease_release_recovered" }).catch(() => undefined);
+    return { released: true, epoch: input.epoch };
+  }
   const [lease] = await db.update(workspaceWriterLeases).set({
     expiresAt: new Date(),
     lastHeartbeatAt: new Date(),

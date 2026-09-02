@@ -43,11 +43,20 @@ const hasConflict = $derived(
 		replicationState.workspace?.status === "conflicted" ||
 		localReplicas.some((replica) => replica.status === "conflicted"),
 );
+const hasRuntimeError = $derived(
+	replicationState.runtimes.some((runtime) => runtime.status === "error"),
+);
 const aggregateStatus = $derived.by(() => {
 	if (hasConflict)
 		return { key: "blocked", label: "Action needed", tone: "danger" } as const;
 	if (replicationState.error)
 		return { key: "error", label: "Unavailable", tone: "muted" } as const;
+	if (hasRuntimeError)
+		return {
+			key: "runtime_error",
+			label: "Runtime issue",
+			tone: "danger",
+		} as const;
 	if (replicationState.loading && !replicationState.workspace)
 		return { key: "loading", label: "Checking", tone: "muted" } as const;
 	if (activeLease)
@@ -181,6 +190,8 @@ $effect(() => {
 					<span class:spin={aggregateStatus.key === "loading"}><RefreshCw class="h-3.5 w-3.5" /></span>
 				{:else if aggregateStatus.key === "ready"}
 					<Check class="h-3.5 w-3.5" />
+				{:else if aggregateStatus.key === "runtime_error"}
+					<AlertTriangle class="h-3.5 w-3.5" />
 				{:else}
 					<Cloud class="h-3.5 w-3.5" />
 				{/if}
@@ -217,7 +228,7 @@ $effect(() => {
 
 				<div class="summary-row tone-{aggregateStatus.tone}">
 					<span class="summary-icon" aria-hidden="true">
-						{#if hasConflict}<AlertTriangle class="h-4 w-4" />{:else}<Cloud class="h-4 w-4" />{/if}
+						{#if hasConflict || hasRuntimeError}<AlertTriangle class="h-4 w-4" />{:else}<Cloud class="h-4 w-4" />{/if}
 					</span>
 					<div class="summary-copy">
 						<strong>{replicationState.workspace?.status === "conflicted" ? "Resolve workspace conflicts" : aggregateStatus.label}</strong>

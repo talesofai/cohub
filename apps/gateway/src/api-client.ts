@@ -234,6 +234,7 @@ export const submitInternalSessionPrompt = async (input: {
   clientMessageId: string;
   content: ContentBlock[];
   source: string;
+  runtimeId?: string | null;
   model?: string | null;
   provider?: string | null;
   thinkingLevel?: string | null;
@@ -253,6 +254,7 @@ export const submitInternalSessionPrompt = async (input: {
       authToken: input.authToken ?? null,
       clientMessageId: input.clientMessageId,
       source: input.source,
+      runtimeId: input.runtimeId ?? null,
       model: input.model ?? null,
       provider: input.provider ?? null,
       thinkingLevel: input.thinkingLevel ?? null,

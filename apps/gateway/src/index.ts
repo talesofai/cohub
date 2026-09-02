@@ -9,6 +9,7 @@ import { Hono } from "hono";
 import { cors } from "hono/cors";
 import { httpInstrumentationMiddleware } from "@hono/otel";
 import { WebSocketServer, type RawData, type WebSocket } from "ws";
+import { isUuid } from "@cohub/protocol";
 import type { ContentBlock } from "@cohub/protocol/core";
 import type {
   RealtimeCompactFrame,
@@ -769,9 +770,18 @@ const submitWebsocketSessionMessage = async (ctx: WsConnectionContext, requestId
   const provider = typeof payload.provider === "string" && payload.provider.trim()
     ? payload.provider.trim()
     : null;
+  if (payload.runtimeId != null && typeof payload.runtimeId !== "string") {
+    throw new WsClientInputError("runtimeId must be a string");
+  }
+  const runtimeId = typeof payload.runtimeId === "string" && payload.runtimeId.trim()
+    ? payload.runtimeId.trim()
+    : null;
+  if (runtimeId && !isUuid(runtimeId)) throw new WsClientInputError("runtimeId must be a valid UUID");
   const thinkingLevel = typeof payload.thinkingLevel === "string" && payload.thinkingLevel.trim()
     ? payload.thinkingLevel.trim()
     : null;
+  if (runtimeId && (model || provider)) throw new WsClientInputError("local ACP runtime uses its own provider configuration");
+  if (runtimeId && thinkingLevel) throw new WsClientInputError("local ACP runtime uses its provider's own thinking configuration");
   // WS schema already validates enum; reject if non-empty but invalid
   if (thinkingLevel && !new Set(["off", "minimal", "low", "medium", "high", "xhigh", "max"]).has(thinkingLevel)) {
     throw new WsClientInputError("thinkingLevel must be one of: off, minimal, low, medium, high, xhigh, max");
@@ -792,6 +802,7 @@ const submitWebsocketSessionMessage = async (ctx: WsConnectionContext, requestId
     source: "websocket",
     model,
     provider,
+    runtimeId,
     thinkingLevel,
     context: {
       kind: "websocket",

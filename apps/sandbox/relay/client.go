@@ -348,7 +348,7 @@ func (c *Client) currentToken(ctx context.Context) (string, error) {
 }
 
 func controlURL(base string) string {
-	return base
+	return strings.TrimRight(strings.TrimSpace(base), "/")
 }
 
 func dataURL(base, channel string) string {
@@ -356,7 +356,7 @@ func dataURL(base, channel string) string {
 	if err != nil {
 		return fmt.Sprintf("%s/data?channel=%s", base, url.QueryEscape(channel))
 	}
-	u.Path += "/data"
+	u.Path = strings.TrimRight(u.Path, "/") + "/data"
 	q := u.Query()
 	q.Set("channel", channel)
 	u.RawQuery = q.Encode()

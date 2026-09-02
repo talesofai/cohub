@@ -15,10 +15,11 @@ import type {
   WebsocketPromptContext,
 } from "@cohub/core/sessions";
 import type { ContentBlock } from "@cohub/protocol/core";
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { and, eq, or, sql } from "drizzle-orm";
 import { localAgentRuntimes, sessionTurns, spaceLocalAgentPolicies, spaceWorkspacePolicies, workspaceExecutionAttempts, workspaceReplicas, workspaceState } from "@cohub/db";
 import { db } from "./db/index.js";
+import { isLocalAcpProviderEnabled } from "./local-acp-runtime-service.js";
 import { LocalAgentServiceError } from "./local-agent-service.js";
 import { getSessionDomainServices } from "./session-services.js";
 
@@ -45,6 +46,15 @@ export const expandPromptContent = async (input: {
   spaceId: string;
   sessionId?: string | null;
 }) => getSessionDomainServices().expandPromptContent(input);
+
+export const buildPromptIdempotencyKey = (clientMessageId: string, runtimeId?: string | null) => {
+  const normalizedClientMessageId = clientMessageId.trim();
+  const prefix = runtimeId?.trim() ? "local-acp-turn:" : "cloud-turn:";
+  const suffix = normalizedClientMessageId.length <= 220
+    ? normalizedClientMessageId
+    : createHash("sha256").update(normalizedClientMessageId, "utf8").digest("hex");
+  return `${prefix}${suffix}`;
+};
 
 async function allocateCloudWorkspaceAttempt(input: {
   spaceId: string;
@@ -85,6 +95,7 @@ async function allocateCloudWorkspaceAttempt(input: {
         or(eq(localAgentRuntimes.status, "ready"), eq(localAgentRuntimes.status, "busy")),
       )).for("update").limit(1);
       if (!runtimeRow) throw new LocalAgentServiceError("local ACP runtime is offline or unavailable", "runtime_unavailable", 409);
+      if (!isLocalAcpProviderEnabled(runtimeRow.provider)) throw new LocalAgentServiceError(`${runtimeRow.provider} local ACP runtime is disabled`, "provider_not_enabled", 403);
       const [integrationPolicy] = await tx.select({ sessionMirrorMode: spaceLocalAgentPolicies.sessionMirrorMode, workspaceMode: spaceLocalAgentPolicies.workspaceMode, integrationPolicyVersion: spaceLocalAgentPolicies.integrationPolicyVersion }).from(spaceLocalAgentPolicies).where(and(
         eq(spaceLocalAgentPolicies.spaceId, input.spaceId),
         eq(spaceLocalAgentPolicies.deviceId, runtimeRow.deviceId),
@@ -100,6 +111,7 @@ async function allocateCloudWorkspaceAttempt(input: {
       const [replicaRow] = await tx.select().from(workspaceReplicas).where(and(
         eq(workspaceReplicas.id, runtimeRow.replicaId as string),
         eq(workspaceReplicas.spaceId, input.spaceId),
+        eq(workspaceReplicas.deviceId, runtimeRow.deviceId),
         eq(workspaceReplicas.kind, "local"),
         eq(workspaceReplicas.status, "ready"),
         eq(workspaceReplicas.appliedSnapshotId, state.canonicalSnapshotId as string),
@@ -109,12 +121,13 @@ async function allocateCloudWorkspaceAttempt(input: {
     }
     if (runtimeId && !policy) throw new LocalAgentServiceError("workspace policy is unavailable for local ACP execution", "workspace_policy_unavailable", 409);
     const attemptId = randomUUID();
-    await tx.insert(workspaceExecutionAttempts).values({
+    const idempotencyKey = buildPromptIdempotencyKey(input.clientMessageId, runtimeId);
+    const [createdAttempt] = await tx.insert(workspaceExecutionAttempts).values({
       id: attemptId,
       spaceId: input.spaceId,
       runtimeId: runtime?.id ?? null,
       replicaId: localReplica?.id ?? null,
-      idempotencyKey: `${runtimeId ? "local-acp" : "cloud"}-turn:${input.clientMessageId}`,
+      idempotencyKey,
       executorKind: runtimeId ? "local_acp" : "cloud_agent",
       provider: runtime?.provider ?? null,
       sessionMirrorMode: runtimeId ? "full" : null,
@@ -126,7 +139,17 @@ async function allocateCloudWorkspaceAttempt(input: {
       baseCanonicalSnapshotId: state.canonicalSnapshotId,
       workspacePolicyVersion: policy?.policyVersion ?? null,
       status: "queued",
-    });
+    }).onConflictDoNothing({ target: [workspaceExecutionAttempts.spaceId, workspaceExecutionAttempts.idempotencyKey] }).returning({ id: workspaceExecutionAttempts.id, turnId: workspaceExecutionAttempts.turnId, runtimeId: workspaceExecutionAttempts.runtimeId });
+    if (!createdAttempt) {
+      const [existing] = await tx.select({ id: workspaceExecutionAttempts.id, turnId: workspaceExecutionAttempts.turnId, runtimeId: workspaceExecutionAttempts.runtimeId }).from(workspaceExecutionAttempts).where(and(
+        eq(workspaceExecutionAttempts.spaceId, input.spaceId),
+        eq(workspaceExecutionAttempts.idempotencyKey, idempotencyKey),
+      )).for("update").limit(1);
+      if (!existing || existing.turnId !== input.turnId || (existing.runtimeId ?? null) !== runtimeId) {
+        throw new LocalAgentServiceError("client message id is already bound to another execution attempt; retry the original request", "prompt_idempotency_conflict", 409);
+      }
+      return existing.id;
+    }
     await tx.update(sessionTurns).set({
       meta: sql`coalesce(${sessionTurns.meta}, '{}'::jsonb) || ${JSON.stringify({
         executionAttemptId: attemptId,
@@ -156,7 +179,7 @@ export const submitSessionPrompt = async (
       spaceId: input.spaceId,
       sessionId: input.sessionId,
       turnId: hookInput.turnId,
-      clientMessageId: input.clientMessageId,
+      clientMessageId: input.clientMessageId.trim(),
       userId: input.userId,
       runtimeId: input.runtimeId,
     });

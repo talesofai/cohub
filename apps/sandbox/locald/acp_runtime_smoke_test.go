@@ -31,8 +31,8 @@ while IFS= read -r line; do
       printf '%s\n' '{"jsonrpc":"2.0","id":1,"result":{"protocolVersion":1,"agentCapabilities":{"loadSession":true,"sessionCapabilities":{"resume":true}}}}'
       ;;
     *'"method":"session/new"'*)
-      if printf '%s' "$line" | grep -q 'mcpServers'; then
-        printf '%s\n' '{"jsonrpc":"2.0","id":2,"error":{"code":-32000,"message":"mcpServers must not be forwarded"}}'
+      if printf '%s' "$line" | grep -q 'cohubRuntimeId'; then
+        printf '%s\n' '{"jsonrpc":"2.0","id":2,"error":{"code":-32000,"message":"Cohub lifecycle metadata must not be forwarded"}}'
       else
         printf '%s\n' '{"jsonrpc":"2.0","id":2,"result":{"sessionId":"acp-session-1"}}'
       fi
@@ -122,7 +122,7 @@ done
 	if response := readResponse(1); response["error"] != nil {
 		t.Fatalf("initialize failed: %#v", response)
 	}
-	write(map[string]any{"jsonrpc": "2.0", "id": 2, "method": "session/new", "params": map[string]any{"cwd": "/workspace", "mcpServers": []any{}}})
+	write(map[string]any{"jsonrpc": "2.0", "id": 2, "method": "session/new", "params": map[string]any{"cwd": "/workspace", "mcpServers": []any{}, "_meta": map[string]any{"cohubRuntimeId": serverRuntimeID}}})
 	if response := readResponse(2); response["error"] != nil {
 		t.Fatalf("session/new failed: %#v", response)
 	}

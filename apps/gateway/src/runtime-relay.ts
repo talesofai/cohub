@@ -47,6 +47,8 @@ type PendingRuntimePeer = {
 
 const runtimesById = new Map<string, RegisteredRuntime>();
 const pendingPeers = new Map<string, PendingRuntimePeer>();
+type RuntimeDataPair = { peer: WebSocket; runtime: WebSocket };
+const dataPairsByRuntime = new Map<string, Set<RuntimeDataPair>>();
 
 const hashToken = (token: string) => createHash("sha256").update(token).digest();
 const sameHash = (left: Buffer, right: Buffer) => left.length === right.length && timingSafeEqual(left, right);
@@ -72,12 +74,31 @@ const closeSocket = (socket: WebSocket, code: number, reason: string) => {
   }
 };
 
+const sendSocket = (socket: WebSocket, payload: unknown) => {
+  if (socket.readyState !== socket.OPEN) return false;
+  try {
+    socket.send(JSON.stringify(payload));
+    return true;
+  } catch {
+    return false;
+  }
+};
+
 function closePendingPeersForRuntime(runtimeId: string, reason: string) {
   for (const [channelId, pending] of pendingPeers) {
     if (pending.runtimeId !== runtimeId) continue;
     clearTimeout(pending.timer);
     pendingPeers.delete(channelId);
     closeSocket(pending.peerSocket, 4409, reason);
+  }
+}
+
+function closeDataPairsForRuntime(runtimeId: string, reason: string) {
+  const pairs = dataPairsByRuntime.get(runtimeId);
+  if (!pairs) return;
+  for (const pair of [...pairs]) {
+    closeSocket(pair.peer, 4409, reason);
+    closeSocket(pair.runtime, 4409, reason);
   }
 }
 
@@ -101,7 +122,10 @@ export async function handleRuntimeControlConnection(socket: WebSocket, request:
     let frame: RuntimeControlFrame;
     try {
       const parsed: unknown = JSON.parse(text);
-      if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return;
+      if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
+        closeSocket(socket, 4400, "control message must be an object");
+        return;
+      }
       frame = parsed as RuntimeControlFrame;
     } catch {
       closeSocket(socket, 4400, "invalid control message");
@@ -122,7 +146,7 @@ export async function handleRuntimeControlConnection(socket: WebSocket, request:
       const spaceId = typeof frame.spaceId === "string" ? frame.spaceId.trim() : "";
       const provider = typeof frame.provider === "string" ? frame.provider.trim() : "";
       if (!runtimeId || !spaceId || !provider) {
-        socket.send(JSON.stringify({ type: "error", status: 400, message: "runtimeId, spaceId, and provider are required" }));
+        sendSocket(socket, { type: "error", status: 400, message: "runtimeId, spaceId, and provider are required" });
         closeSocket(socket, 4400, "runtime identity is incomplete");
         return;
       }
@@ -137,32 +161,40 @@ export async function handleRuntimeControlConnection(socket: WebSocket, request:
         return { ok: false as const, status: 500, message: "runtime authorization failed" };
       });
       if (!auth.ok) {
-        socket.send(JSON.stringify({ type: "error", status: auth.status, message: auth.message }));
+        sendSocket(socket, { type: "error", status: auth.status, message: auth.message });
         closeSocket(socket, auth.status >= 500 ? 1011 : 4403, auth.status >= 500 ? "authorization unavailable" : "forbidden");
         return;
       }
-      if (provider !== auth.provider) {
-        socket.send(JSON.stringify({ type: "error", status: 409, message: "runtime provider does not match its registration" }));
-        closeSocket(socket, 4409, "runtime provider mismatch");
+      const fenceAuthorizedRuntime = (error: string) => reportLocalAcpRuntimeStatus({
+        runtimeId: auth.runtimeId,
+        connectionEpoch: auth.connectionEpoch,
+        status: "offline",
+        error,
+      }).catch((fenceError) => logger.warn("[RuntimeRelay] failed to fence an authorized runtime", {
+        runtimeId,
+        error: fenceError,
+      }));
+      if (socket.readyState !== socket.OPEN) {
+        await fenceAuthorizedRuntime("runtime disconnected during authorization");
         return;
       }
-      if (socket.readyState !== socket.OPEN) {
-        await reportLocalAcpRuntimeStatus({
-          runtimeId: auth.runtimeId,
-          connectionEpoch: auth.connectionEpoch,
-          status: "offline",
-          error: "runtime disconnected during authorization",
-        }).catch((error) => logger.warn("[RuntimeRelay] failed to fence an authorized disconnected runtime", {
-          runtimeId,
-          error,
-        }));
+      if (provider !== auth.provider) {
+        sendSocket(socket, { type: "error", status: 409, message: "runtime provider does not match its registration" });
+        await fenceAuthorizedRuntime("runtime provider mismatch");
+        closeSocket(socket, 4409, "runtime provider mismatch");
         return;
       }
 
       const previous = runtimesById.get(runtimeId);
+      if (previous && previous.socket !== socket && previous.connectionEpoch > auth.connectionEpoch) {
+        await fenceAuthorizedRuntime("runtime authorization was superseded by a newer connection");
+        closeSocket(socket, 4409, "replaced by a newer runtime connection");
+        return;
+      }
       if (previous && previous.socket !== socket) {
         closeSocket(previous.socket, 4409, "replaced by a newer runtime connection");
         closePendingPeersForRuntime(runtimeId, "runtime connection replaced");
+        closeDataPairsForRuntime(runtimeId, "runtime connection replaced");
       }
       runtime = {
         runtimeId,
@@ -174,14 +206,18 @@ export async function handleRuntimeControlConnection(socket: WebSocket, request:
         connectedAt: Date.now(),
       };
       runtimesById.set(runtimeId, runtime);
-      socket.send(JSON.stringify({
+      if (!sendSocket(socket, {
         type: "registered",
         runtimeId,
         spaceId: auth.spaceId,
         provider: auth.provider,
         connectionEpoch: auth.connectionEpoch,
         capabilities: auth.capabilities,
-      }));
+      })) {
+        await fenceAuthorizedRuntime("runtime registration response could not be sent");
+        closeSocket(socket, 4503, "runtime registration failed");
+        return;
+      }
       logger.info("[RuntimeRelay] local ACP runtime registered", {
         runtimeId,
         spaceId: auth.spaceId,
@@ -192,7 +228,10 @@ export async function handleRuntimeControlConnection(socket: WebSocket, request:
     }
 
     if (frame.type === "ping") {
-      socket.send(JSON.stringify({ type: "pong" }));
+      if (!sendSocket(socket, { type: "pong" })) {
+        closeSocket(socket, 4503, "runtime heartbeat response could not be sent");
+        return;
+      }
       if (runtime) {
         void touchLocalAcpRuntime({ runtimeId: runtime.runtimeId, connectionEpoch: runtime.connectionEpoch, authToken: token }).catch((error) => {
           logger.warn("[RuntimeRelay] runtime heartbeat rejected; closing connection", { runtimeId: runtime?.runtimeId, error });
@@ -208,6 +247,7 @@ export async function handleRuntimeControlConnection(socket: WebSocket, request:
     if (!runtime || runtimesById.get(runtime.runtimeId)?.socket !== socket) return;
     runtimesById.delete(runtime.runtimeId);
     closePendingPeersForRuntime(runtime.runtimeId, "runtime disconnected");
+    closeDataPairsForRuntime(runtime.runtimeId, "runtime disconnected");
     await reportLocalAcpRuntimeStatus({
       runtimeId: runtime.runtimeId,
       connectionEpoch: runtime.connectionEpoch,
@@ -254,17 +294,15 @@ export function handleRuntimePeerConnection(socket: WebSocket, request: Incoming
     pendingPeers.delete(channelId);
   });
 
-  try {
-    runtime.socket.send(JSON.stringify({ type: "open", channel: channelId, protocol: "acp" }));
-  } catch (error) {
+  if (!sendSocket(runtime.socket, { type: "open", channel: channelId, protocol: "acp" })) {
     clearTimeout(timer);
     pendingPeers.delete(channelId);
-    logger.warn("[RuntimeRelay] failed to request runtime data channel", { runtimeId, channelId, error });
+    logger.warn("[RuntimeRelay] failed to request runtime data channel", { runtimeId, channelId });
     closeSocket(socket, 4503, "runtime unavailable");
   }
 }
 
-export function handleRuntimeDataConnection(runtimeSocket: WebSocket, request: IncomingMessage) {
+export async function handleRuntimeDataConnection(runtimeSocket: WebSocket, request: IncomingMessage) {
   const channelId = queryValue(request, "channel");
   if (!channelId) {
     closeSocket(runtimeSocket, 4400, "channel is required");
@@ -281,6 +319,20 @@ export function handleRuntimeDataConnection(runtimeSocket: WebSocket, request: I
     closeSocket(runtimeSocket, 4401, "unauthorized runtime data channel");
     return;
   }
+  const touched = await touchLocalAcpRuntime({
+    runtimeId: runtime.runtimeId,
+    connectionEpoch: runtime.connectionEpoch,
+    authToken: token,
+  }).catch(() => false);
+  const currentRuntime = runtimesById.get(pending.runtimeId);
+  if (!touched || currentRuntime !== runtime || pendingPeers.get(channelId) !== pending) {
+    clearTimeout(pending.timer);
+    pendingPeers.delete(channelId);
+    closeSocket(runtimeSocket, 4401, "runtime authorization is no longer valid");
+    closeSocket(pending.peerSocket, 4401, "runtime authorization is no longer valid");
+    closeSocket(runtime.socket, 4401, "runtime authorization is no longer valid");
+    return;
+  }
   clearTimeout(pending.timer);
   pendingPeers.delete(channelId);
   pipeRuntimeSockets(pending.runtimeId, channelId, pending.peerSocket, runtimeSocket);
@@ -288,18 +340,31 @@ export function handleRuntimeDataConnection(runtimeSocket: WebSocket, request: I
 
 function pipeRuntimeSockets(runtimeId: string, channelId: string, peer: WebSocket, runtime: WebSocket) {
   logger.info("[RuntimeRelay] ACP data channel paired", { runtimeId, channelId });
+  const pair: RuntimeDataPair = { peer, runtime };
+  const pairs = dataPairsByRuntime.get(runtimeId) ?? new Set<RuntimeDataPair>();
+  pairs.add(pair);
+  dataPairsByRuntime.set(runtimeId, pairs);
+  let tornDown = false;
+  const teardown = (reason: string) => {
+    if (tornDown) return;
+    tornDown = true;
+    pairs.delete(pair);
+    if (pairs.size === 0) dataPairsByRuntime.delete(runtimeId);
+    closeSocket(peer, 1000, reason);
+    closeSocket(runtime, 1000, reason);
+  };
   const forward = (from: WebSocket, to: WebSocket) => {
     from.on("message", (data, isBinary) => {
       if (to.readyState !== to.OPEN) return;
-      to.send(data, { binary: isBinary });
+      try {
+        to.send(data, { binary: isBinary });
+      } catch {
+        teardown("data channel send failed");
+      }
     });
   };
   forward(peer, runtime);
   forward(runtime, peer);
-  const teardown = (reason: string) => {
-    closeSocket(peer, 1000, reason);
-    closeSocket(runtime, 1000, reason);
-  };
   peer.on("close", () => teardown("peer closed"));
   runtime.on("close", () => teardown("runtime closed"));
   peer.on("error", () => teardown("peer error"));
