@@ -529,6 +529,7 @@ export function registerAgentHooks(program: Command): void {
             sessionResume: true,
             sessionCancel: true,
             permissionRequests: true,
+            promptImage: true,
             nativeTools: true,
           },
         });
@@ -613,7 +614,7 @@ export function registerAgentHooks(program: Command): void {
             provider,
             displayName: `${providerDisplayName(provider)} local runtime`,
             adapterVersion: "cohub-locald-acp-v1",
-            capabilities: { sessionLoad: true, sessionResume: true, sessionCancel: true, permissionRequests: true, nativeTools: true },
+            capabilities: { sessionLoad: true, sessionResume: true, sessionCancel: true, permissionRequests: true, promptImage: true, nativeTools: true }
           });
         }
         if (runtime.status === "revoked") return error("Runtime revoked", "Register a new local ACP runtime before starting it.");

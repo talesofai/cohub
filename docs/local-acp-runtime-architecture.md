@@ -197,8 +197,9 @@ The workspace lease is not released until the candidate has been durably
 prepared/committed or a recoverable finalization spool record has been written.
 ACP permits are marked separately in local state so the ordinary daemon never
 extends an ACP lease after the runtime process has crashed; the runtime process
-renews its local permit while alive and the Agent owns the server lease heartbeat.
-A runtime process runs the same retry loop as locald,
+renews its local permit while alive; the Agent owns the live server lease
+heartbeat and locald renews that exact server lease only while finalizing an ACP
+terminal spool. A runtime process runs the same retry loop as locald,
 while SQLite spool records make finalization retryable after a crash or network
 outage.
 

@@ -21,6 +21,7 @@ export const LocalAcpRuntimeCapabilitiesSchema = z.object({
   sessionResume: z.boolean().default(false),
   sessionCancel: z.boolean().default(true),
   permissionRequests: z.boolean().default(true),
+  promptImage: z.boolean().default(false),
   nativeTools: z.boolean().default(true),
 }).strict();
 export type LocalAcpRuntimeCapabilities = z.infer<typeof LocalAcpRuntimeCapabilitiesSchema>;

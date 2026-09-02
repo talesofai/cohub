@@ -761,6 +761,7 @@ const submitWebsocketSessionMessage = async (ctx: WsConnectionContext, requestId
   const clientMessageId = typeof payload.clientMessageId === "string" && payload.clientMessageId.trim()
     ? payload.clientMessageId.trim()
     : randomUUID();
+  if (clientMessageId.length > 255) throw new WsClientInputError("clientMessageId is too long");
   const content = Array.isArray(payload.content)
     ? payload.content as ContentBlock[]
     : [];

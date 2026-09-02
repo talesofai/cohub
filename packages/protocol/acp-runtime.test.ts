@@ -15,6 +15,7 @@ test("ACP runtime capabilities default to native-provider execution", () => {
     sessionResume: false,
     sessionCancel: true,
     permissionRequests: true,
+    promptImage: false,
     nativeTools: true,
   });
 });

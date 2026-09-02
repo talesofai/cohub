@@ -428,8 +428,11 @@ export const submitSessionPrompt = async (
     : null;
 
   const isDirectShellCommand = content.length === 1 && content[0]?.type === "shell_command";
-  if (runtimeId && isDirectShellCommand) {
+  if (runtimeId && content.some((block) => block.type === "shell_command")) {
     throw new Error("local ACP runtime does not accept Cohub shell commands");
+  }
+  if (runtimeId && content.some((block) => block.type !== "text" && block.type !== "image" && block.type !== "thinking")) {
+    throw new Error("local ACP runtime accepts only text and image prompt content");
   }
   if (accessMode === "read_only" && isDirectShellCommand) {
     throw new Error("shell_command is not allowed in read_only accessMode");

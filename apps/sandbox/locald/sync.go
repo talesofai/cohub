@@ -14,6 +14,7 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/google/uuid"
@@ -483,6 +484,92 @@ func (d *Daemon) syncReplica(ctx context.Context, replica *ReplicaState) error {
 	return nil
 }
 
+type acpServerLeaseHeartbeat struct {
+	stop  func()
+	check func() error
+}
+
+func (d *Daemon) startAcpServerLeaseHeartbeat(ctx context.Context, spaceID string, permit *PermitContext) (*acpServerLeaseHeartbeat, error) {
+	if permit == nil || !isAcpRuntimePermit(permit.HolderID) {
+		return &acpServerLeaseHeartbeat{stop: func() {}, check: func() error { return nil }}, nil
+	}
+	heartbeat := func(heartbeatCtx context.Context) error {
+		body, err := d.request(heartbeatCtx, http.MethodPost, fmt.Sprintf("%s/api/local-agent/spaces/%s/leases/heartbeat", d.apiBaseURL(), spaceID), mustJSON(map[string]any{
+			"holderKind":      permit.HolderKind,
+			"holderId":        serverPermitHolderID(permit.HolderID),
+			"epoch":           permit.LeaseEpoch,
+			"durationSeconds": 30,
+		}), 2*1024*1024)
+		if err != nil {
+			return err
+		}
+		var response struct {
+			ExpiresAt string `json:"expiresAt"`
+		}
+		if err := json.Unmarshal(body, &response); err != nil {
+			return err
+		}
+		expiresAt, err := time.Parse(time.RFC3339Nano, response.ExpiresAt)
+		if err != nil || !expiresAt.After(time.Now().UTC()) {
+			return errors.New("ACP workspace lease heartbeat response is invalid")
+		}
+		return d.state.UpdatePermitExpiry(permit.ExecutionAttemptID, expiresAt)
+	}
+	errCh := make(chan error, 1)
+	if err := heartbeat(ctx); err != nil {
+		errCh <- err
+	}
+
+	heartbeatCtx, cancel := context.WithCancel(ctx)
+	done := make(chan struct{})
+	recordHeartbeatError := func(err error) {
+		select {
+		case errCh <- err:
+		default:
+		}
+	}
+	go func() {
+		defer close(done)
+		ticker := time.NewTicker(10 * time.Second)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-heartbeatCtx.Done():
+				return
+			case <-ticker.C:
+				if err := heartbeat(heartbeatCtx); err != nil {
+					if heartbeatCtx.Err() == nil {
+						recordHeartbeatError(err)
+					}
+					return
+				}
+			}
+		}
+	}()
+	var heartbeatErr error
+	var heartbeatErrMu sync.Mutex
+	check := func() error {
+		heartbeatErrMu.Lock()
+		defer heartbeatErrMu.Unlock()
+		if heartbeatErr != nil {
+			return heartbeatErr
+		}
+		select {
+		case heartbeatErr = <-errCh:
+		default:
+		}
+		return heartbeatErr
+	}
+	var stopOnce sync.Once
+	stop := func() {
+		stopOnce.Do(func() {
+			cancel()
+			<-done
+		})
+	}
+	return &acpServerLeaseHeartbeat{stop: stop, check: check}, nil
+}
+
 func (d *Daemon) finalizeExecutionWorkspace(ctx context.Context, spaceID, replicaID, executionAttemptID string) error {
 	if executionAttemptID == "" {
 		return nil
@@ -499,6 +586,17 @@ func (d *Daemon) finalizeExecutionWorkspace(ctx context.Context, spaceID, replic
 	}
 	if permit.Status != "prepared" && permit.Status != "active" && !(permit.Status == "expired" && isAcpRuntimePermit(permit.HolderID)) {
 		return errors.New("local execution permit is unavailable for workspace finalization")
+	}
+	leaseHeartbeat, err := d.startAcpServerLeaseHeartbeat(ctx, spaceID, permit)
+	if err != nil {
+		return err
+	}
+	defer leaseHeartbeat.stop()
+	checkLeaseHeartbeat := func() error {
+		if heartbeatErr := leaseHeartbeat.check(); heartbeatErr != nil {
+			return fmt.Errorf("ACP workspace lease heartbeat failed: %w", heartbeatErr)
+		}
+		return nil
 	}
 	replica, err := d.state.ReplicaForSpace(spaceID)
 	if err != nil {
@@ -528,12 +626,27 @@ func (d *Daemon) finalizeExecutionWorkspace(ctx context.Context, spaceID, replic
 		"integrationPolicyVersion": replica.IntegrationPolicyVersion,
 		"sessionMirrorMode":        replica.MirrorMode,
 	})
-	if _, err := d.request(ctx, http.MethodPost, fmt.Sprintf("%s/api/local-agent/spaces/%s/replicas/%s/attempts/%s/register", d.apiBaseURL(), spaceID, replicaID, executionAttemptID), registerPayload, 2*1024*1024); err != nil {
+	registerBody, err := d.request(ctx, http.MethodPost, fmt.Sprintf("%s/api/local-agent/spaces/%s/replicas/%s/attempts/%s/register", d.apiBaseURL(), spaceID, replicaID, executionAttemptID), registerPayload, 2*1024*1024)
+	if err != nil {
+		return err
+	}
+	var registered struct {
+		Status string `json:"status"`
+	}
+	if err := json.Unmarshal(registerBody, &registered); err != nil || registered.Status == "" {
+		return errors.New("execution attempt registration response is invalid")
+	}
+	terminalAttempt := registered.Status == "completed" || registered.Status == "failed" || registered.Status == "aborted" || registered.Status == "transcript_sealed" || registered.Status == "workspace_sealed" || registered.Status == "awaiting_recovery"
+	if err := checkLeaseHeartbeat(); err != nil && !terminalAttempt {
 		return err
 	}
 	if err := d.uploadLocalCandidate(ctx, replica, state, executionAttemptID); err != nil {
 		return err
 	}
+	if err := checkLeaseHeartbeat(); err != nil && !terminalAttempt {
+		return err
+	}
+	leaseHeartbeat.stop()
 	return d.releaseExecutionPermit(ctx, spaceID, executionAttemptID)
 }
 

@@ -472,6 +472,9 @@ func forwardAcpStdout(ctx context.Context, conn *websocket.Conn, output io.Reade
 		if value["jsonrpc"] != "2.0" {
 			return errors.New("ACP provider message has an unsupported JSON-RPC version")
 		}
+		if id, hasID := value["id"]; hasID && !validAcpRequestID(id) {
+			return errors.New("ACP provider message has an invalid JSON-RPC id")
+		}
 		value = rewriteAcpPaths(value, workspaceDir)
 		encoded, err := json.Marshal(value)
 		if err != nil {

@@ -3,7 +3,7 @@ import { DEFAULT_SANDBOX_SPEC_ID, SANDBOX_SPECS, getSandboxSpecRank, isSandboxSp
 import { createLogger } from "@cohub/infra/logging";
 import { Hono, type Context } from "hono";
 import type { ContentBlock } from "@cohub/protocol/core";
-import { canonicalizeJson, getDefaultSpaceModsForEnv } from "@cohub/protocol";
+import { getDefaultSpaceModsForEnv } from "@cohub/protocol";
 import {
   parseSpaceSlug,
   validatePublicIdentifierAssignment,
@@ -1969,7 +1969,6 @@ router.post("/:id/prompt", async (c) => {
     runtimeId: workspaceExecutionAttempts.runtimeId,
     executorKind: workspaceExecutionAttempts.executorKind,
     userUuid: sessionTurns.userUuid,
-    userContent: sessionTurns.userContent,
     turnModel: sessionTurns.model,
     turnProvider: sessionTurns.provider,
   }).from(workspaceExecutionAttempts)
@@ -1981,8 +1980,8 @@ router.post("/:id/prompt", async (c) => {
   if (existingAttempt) {
     const existingRuntimeId = existingAttempt.runtimeId ?? null;
     const expectedExecutorKind = runtimeId ? "local_acp" : "cloud_agent";
-    if (existingAttempt.userUuid !== user.uuid || existingAttempt.executorKind !== expectedExecutorKind || (sessionId && existingAttempt.sessionId !== sessionId) || existingRuntimeId !== runtimeId || (!runtimeId && (existingAttempt.turnModel !== requestedModel || existingAttempt.turnProvider !== requestedProvider)) || canonicalizeJson(existingAttempt.userContent) !== canonicalizeJson(body.content)) {
-      return c.json({ code: "prompt_idempotency_conflict", message: "clientMessageId is already bound to a different prompt" }, 409);
+    if (existingAttempt.userUuid !== user.uuid || existingAttempt.executorKind !== expectedExecutorKind || (sessionId && existingAttempt.sessionId !== sessionId) || existingRuntimeId !== runtimeId || (!runtimeId && (existingAttempt.turnModel !== requestedModel || existingAttempt.turnProvider !== requestedProvider))) {
+      return c.json({ code: "prompt_idempotency_conflict", message: "clientMessageId is already bound to a different execution context" }, 409);
     }
     const existingSession = existingAttempt.sessionId ? await getSpaceSessionById(existingAttempt.sessionId) : null;
     const existingResponse = existingSession && existingAttempt.turnId

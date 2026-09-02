@@ -101,6 +101,7 @@ export async function registerLocalAcpRuntime(input: {
     eq(localAgentDevices.id, deviceId),
     eq(localAgentDevices.userUuid, input.actor.userUuid),
     eq(localAgentDevices.status, "active"),
+    input.actor.credentialVersion != null ? eq(localAgentDevices.credentialVersion, input.actor.credentialVersion) : undefined,
   )).limit(1);
   if (!device) throw new LocalAgentServiceError("device is not enrolled or has been revoked", "device_not_found", 404);
   const [replica] = await db.select({ id: workspaceReplicas.id, deviceId: workspaceReplicas.deviceId, status: workspaceReplicas.status }).from(workspaceReplicas).where(and(

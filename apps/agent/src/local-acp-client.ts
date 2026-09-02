@@ -501,7 +501,7 @@ async function persistRuntimeEvent(connection: RuntimeConnection, method: string
     : sourceSequence !== undefined
       ? `${connection.acpSessionId}:${commandScope}:${method}:${sourceMessageId ?? ""}:${sourceSequence}`
       : `${connection.connectionEpoch}:${connection.nextInboundEventSequence}`;
-  const eventId = rawEventId.length <= 255 ? rawEventId : `${method}:${sha256(rawEventId)}`;
+  const eventId = rawEventId.length <= 255 ? rawEventId : `${method.slice(0, 64)}:${sha256(rawEventId)}`;
   connection.nextInboundEventSequence += 1;
   return db.transaction(async (tx) => {
     const [session] = await tx.select().from(localAgentRuntimeSessions).where(eq(localAgentRuntimeSessions.id, connection.runtimeSessionId)).for("update").limit(1);
@@ -843,6 +843,7 @@ async function ensureRuntimeSession(runtime: typeof localAgentRuntimes.$inferSel
   });
   if (initialized.protocolVersion !== ACP_PROTOCOL_VERSION) throw new Error("local ACP provider negotiated an unsupported protocol version");
   const agentCapabilities = record(initialized.agentCapabilities ?? initialized.capabilities);
+  const promptCapabilities = record(agentCapabilities.promptCapabilities ?? initialized.promptCapabilities);
   const sessionCapabilities = record(agentCapabilities.sessionCapabilities ?? initialized.sessionCapabilities);
   const [currentRuntime] = await db.select({ connectionEpoch: localAgentRuntimes.connectionEpoch, status: localAgentRuntimes.status }).from(localAgentRuntimes).where(eq(localAgentRuntimes.id, runtime.id)).limit(1);
   if (!currentRuntime || !["ready", "busy"].includes(currentRuntime.status) || currentRuntime.connectionEpoch !== connectionEpoch) {
@@ -853,6 +854,7 @@ async function ensureRuntimeSession(runtime: typeof localAgentRuntimes.$inferSel
     sessionResume: agentCapabilities.resumeSession === true || agentCapabilities.sessionResume === true || sessionCapabilities.resume === true,
     sessionCancel: agentCapabilities.cancelSession !== false,
     permissionRequests: agentCapabilities.permissionRequests !== false,
+    promptImage: promptCapabilities.image === true,
     nativeTools: agentCapabilities.nativeTools !== false,
   };
   const [existingSession] = await db.select().from(localAgentRuntimeSessions).where(and(
@@ -1297,6 +1299,9 @@ export async function processLocalAcpTurn(input: { attemptId: string }) {
     } else if (command.row.status === "failed") {
       throw new AcpRpcError(command.row.errorMessage ?? "local ACP prompt failed", command.row.errorCode ?? -32000);
     } else {
+      if (turn.userContent.some((block) => block.type === "image") && !connection.capabilities.promptImage) {
+        throw new Error("runtime_prompt_capability_missing: ACP provider does not support image prompt content");
+      }
       const sent = await markRuntimePromptSent(stateForTurn.commandId, connection.runtimeSessionId);
       if (sent.status === "completed") {
         if (!sent.response) throw new Error("runtime_reconnect_required: completed ACP command has no response");
