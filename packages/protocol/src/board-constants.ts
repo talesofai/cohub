@@ -43,7 +43,6 @@ export const DEFAULT_BOARD_RENDER_LIMITS: BoardRenderCost = {
 export const BOARD_BUILTIN_CLIP_KINDS = [
   "motion.path",
   "draw.reveal",
-  "draw.handwrite",
   "text.reveal",
   "effects.particles",
   "effects.trail",
@@ -73,6 +72,9 @@ export const BOARD_TEXT_MAX_FONT_SIZE = 512;
 export const BOARD_DRAW_STROKE_SIZE = 4;
 export const BOARD_ARROW_STROKE_SIZE = 2.5;
 export const BOARD_CONNECTION_STROKE_SIZE = 2.5;
+
+/** Maximum encoded animation patch size for one realtime Board event. */
+export const BOARD_ANIMATION_PATCH_MAX_BYTES = 16 * 1024;
 
 /**
  * Stroke width bounds, shared by every stroked board entity.

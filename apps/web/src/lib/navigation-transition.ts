@@ -25,7 +25,13 @@ export function isUserNewSessionPath(pathname: string): boolean {
 	return pathname === "/sessions/new" || pathname === "/sessions/new/";
 }
 
-/** Space-scoped chat detail (not the "new" landing). */
+/** Space root, which renders the new-session draft. */
+export function isSpaceSessionLandingPath(pathname: string): boolean {
+	const match = pathname.match(/^\/spaces\/([^/]+)\/?$/);
+	return Boolean(match && match[1] !== "new");
+}
+
+/** Space-scoped chat detail (not the new landing). */
 export function isSpaceSessionDetailPath(pathname: string): boolean {
 	const match = pathname.match(/^\/spaces\/[^/]+\/sessions\/([^/]+)\/?$/);
 	if (!match) return false;
@@ -52,12 +58,16 @@ export function matchMobileSessionNavTransition(
 ): MobileSessionNavTransition | null {
 	if (
 		isSessionsListPath(fromPath) &&
-		(isSpaceSessionDetailPath(toPath) || isUserNewSessionPath(toPath))
+		(isSpaceSessionLandingPath(toPath) ||
+			isSpaceSessionDetailPath(toPath) ||
+			isUserNewSessionPath(toPath))
 	) {
 		return "session-forward";
 	}
 	if (
-		(isSpaceSessionDetailPath(fromPath) || isUserNewSessionPath(fromPath)) &&
+		(isSpaceSessionLandingPath(fromPath) ||
+			isSpaceSessionDetailPath(fromPath) ||
+			isUserNewSessionPath(fromPath)) &&
 		isSessionsListPath(toPath)
 	) {
 		return "session-back";

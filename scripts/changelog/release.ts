@@ -8,7 +8,7 @@
 import { execFileSync } from "node:child_process";
 import { unlinkSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import { generateEntry, upsertEntry } from "./generate.ts";
+import { generateEntry, tagToVersion, upsertEntry } from "./generate.ts";
 import { ENTRIES_PATH } from "./shared.ts";
 
 function git(args: string[]): string {
@@ -42,7 +42,7 @@ async function main() {
 	// 1. Generate entry via agent (fails here if cohub CLI is missing)
 	const entry = await generateEntry(prevTag, "HEAD");
 	entry.tags = [tag];
-	entry.version = tag.replace(/^v/, "").replace(/\.\d+$/, "");
+	entry.version = tagToVersion(tag);
 	upsertEntry(entry);
 
 	// 2. Render CHANGELOG.md

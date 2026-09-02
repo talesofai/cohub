@@ -94,6 +94,10 @@ const pageMeta = $derived(
 					owner: ready.owner,
 					publicUrl: ready.publicUrl,
 					contentUrl: ready.content?.url ?? null,
+					contentKind:
+						ready.content?.kind === "web" || ready.content?.kind === "port"
+							? ready.content.kind
+							: null,
 				},
 				{ origin: ready.origin, path: ready.pathname },
 			)
@@ -132,7 +136,7 @@ $effect(() => {
 	clientLoading = true;
 	clientError = "";
 	clientDetail = null;
-	void sdk.works
+	void sdk.apps
 		.getBySlug(username, spaceSlug, appSlug)
 		.then((detail) => {
 			if (!cancelled) {

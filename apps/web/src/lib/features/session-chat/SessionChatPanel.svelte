@@ -3,6 +3,7 @@
  * Full-capability session chat panel.
  * Reads a SessionChatHost view-model — no 80-field prop bag.
  */
+import type { AppNavigationOpenMessage } from "@cohub/protocol/app-navigation";
 import type { AppComposerChip } from "@cohub/protocol/app-surface";
 import { ArrowDown, FileCode2, ListTree, Plus, Upload } from "lucide-svelte";
 import type { Snippet } from "svelte";
@@ -38,6 +39,8 @@ let {
 	newChatBackground = null,
 	newChatBackgroundSpaceId = null,
 	onNewChatBackgroundComposerChip,
+	onNavigationOpen,
+	onOpenUrl,
 	shouldShowNewChatProfile = false,
 	newChatProfileExpanded = false,
 	newChatProfileViewportEl = $bindable(),
@@ -51,6 +54,15 @@ let {
 		appId: string,
 		chip: AppComposerChip | null,
 	) => void;
+	onNavigationOpen?: (
+		message: AppNavigationOpenMessage,
+	) => Promise<
+		Omit<
+			import("@cohub/protocol/app-navigation").AppNavigationOpenResponse,
+			"protocol" | "version" | "type" | "requestId"
+		>
+	>;
+	onOpenUrl?: (href: string, event: MouseEvent) => void | Promise<void>;
 	shouldShowNewChatProfile?: boolean;
 	newChatProfileExpanded?: boolean;
 	newChatProfileViewportEl?: HTMLDivElement | null;
@@ -298,7 +310,8 @@ async function handleDraftDrop(event: DragEvent) {
 			<NewChatBackground
 				background={newChatBackground}
 				spaceId={newChatBackgroundSpaceId}
-				onAppComposerChip={onNewChatBackgroundComposerChip}
+					onAppComposerChip={onNewChatBackgroundComposerChip}
+			onNavigationOpen={onNavigationOpen}
 			/>
 			<div class="relative z-10 flex-1 min-h-0 pointer-events-none"></div>
 		{:else if shouldShowNewChatProfile}
@@ -330,6 +343,7 @@ async function handleDraftDrop(event: DragEvent) {
 					onOpenFile={(target) => {
 						void host.openPath(target);
 					}}
+					onOpenUrl={onOpenUrl}
 					modelsCatalog={host.modelsCatalog ?? undefined}
 				/>
 			{/key}

@@ -1,4 +1,5 @@
 import { isUuid } from "@cohub/protocol/identifiers";
+import { buildSpaceRootRoute } from "$lib/space-routes";
 
 export type WindowKind = "file" | "board" | "port" | "app";
 
@@ -144,7 +145,7 @@ export function buildFileIngressMainRoute(
 		})
 		.filter(Boolean)
 		.join("/");
-	return withWindowParam(`/spaces/${spaceId}/sessions/new`, null, {
+	return withWindowParam(buildSpaceRootRoute(spaceId), null, {
 		kind: "file",
 		key: cleaned,
 	});

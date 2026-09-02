@@ -107,6 +107,7 @@ const {
 	onGenerationTabOpen,
 }: Props = $props();
 
+const STATUS_PROVIDER = "cohub";
 const locale = $derived(getLocale());
 
 let searchQuery = $state("");
@@ -798,7 +799,7 @@ function fmtRate(rate: number | null | undefined): string {
 }
 
 /**
- * Rate-based bar color, matching router-status.neta.art's 6-tier scheme.
+ * Rate-based bar color, matching the router-status observed-traffic scale.
  * Used for hover-card history bars; the selector dot itself stays 3-level.
  */
 function rateToBarColor(rate: number | null | undefined): string {
@@ -980,7 +981,7 @@ const hoverCardPos = $derived.by(() => {
 									{#if hasVision(item)}
 										<Image class="h-3.5 w-3.5 shrink-0 text-text-tertiary" />
 									{/if}
-									{#if modelStatus}
+									{#if modelStatus && item.provider === STATUS_PROVIDER}
 										<span
 											class="avail-dot-target"
 											onmouseenter={(e) => onDotMouseEnter(item.id, e)}
@@ -1275,14 +1276,20 @@ const hoverCardPos = $derived.by(() => {
 			<dl class="grid grid-cols-[auto_1fr] gap-x-2.5 gap-y-0.5">
 				<dt class="text-[11px] text-text-tertiary">{m.model_avail_latency({}, { locale })}</dt>
 				<dd class="text-right text-[11px] tabular-nums text-text-secondary">
-					{hoveredEntry.latencyAvgMs != null ? `m.model_avail_latency_value({ avg: fmtMs(hoveredEntry.latencyAvgMs), p90: fmtMs(hoveredEntry.latencyP90Ms) }, { locale })` : "—"}
+					{hoveredEntry.latencyAvgMs != null
+							? m.model_avail_latency_value(
+									{
+										avg: fmtMs(hoveredEntry.latencyAvgMs),
+										p90: fmtMs(hoveredEntry.latencyP90Ms),
+									},
+									{ locale },
+							  )
+							: "—"}
 				</dd>
 				<dt class="text-[11px] text-text-tertiary">{m.model_avail_checked({}, { locale })}</dt>
 				<dd class="text-right text-[11px] text-text-secondary">
 					{hoveredEntry.checkedAt ? `${fmtAgo(hoveredEntry.checkedAt)}${hoveredEntry.probeIntervalSeconds ? `${m.model_avail_every_seconds({ s: hoveredEntry.probeIntervalSeconds }, { locale })}` : ''}` : '—'}
 				</dd>
-				<dt class="text-[11px] text-text-tertiary">{m.model_avail_samples({}, { locale })}</dt>
-				<dd class="text-right text-[11px] tabular-nums text-text-secondary">{hoveredEntry.samples1h ?? '—'}</dd>
 			</dl>
 		{:else}
 			<div class="py-1 text-[11px] text-text-tertiary">{m.model_avail_no_status({}, { locale })}</div>

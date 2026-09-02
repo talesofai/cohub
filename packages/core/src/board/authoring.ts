@@ -4,6 +4,7 @@ export {
 	applyBoardItemPatch,
 	boardAuthoringItemToNode,
 	boardNodeToAuthoringItem,
+	BoardItemValidationError,
 } from "@cohub/protocol/board-codec";
 
 /** Preserve storage fields outside the semantic Item contract during a partial edit. */

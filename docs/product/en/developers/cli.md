@@ -3,7 +3,7 @@ title: CLI
 description: Install Cohub CLI, sign in, and run the main Space workflows from your terminal.
 ---
 
-The Cohub CLI exposes the same product surface from a terminal: Spaces, Chats, files, Saves, Works, generation, and more.
+The Cohub CLI exposes the same product surface from a terminal: Spaces, Chats, files, Saves, Apps, generation, and more.
 
 Package: `@neta-art/cohub-cli`
 
@@ -21,7 +21,7 @@ cohub auth login
 cohub auth whoami
 ```
 
-The CLI stores a session and refreshes it automatically.
+The CLI stores a session and refreshes it automatically. CLI self-updates run in the background so commands are not blocked; a successful update takes effect on the next invocation. Set `COHUB_CLI_AUTO_UPDATE=0` to disable them.
 
 In Sandbox or CI, `COHUB_EXECUTION_TOKEN` can override stored auth for ephemeral runs.
 
@@ -99,35 +99,42 @@ cohub -s <spaceId> spaces files upload ./src
 cohub -s <spaceId> spaces files diff
 ```
 
-### Works
+`upload` places each file under `--dir`; a directory argument contributes its
+contents directly, so `upload dist --dir apps/demo` lands at `apps/demo/index.html`,
+not `apps/demo/dist/index.html`.
+
+### Apps
+
+`--file` and `--dir` take paths relative to the Space workspace — the same paths
+`spaces files ls` shows, not your local filesystem.
 
 ```bash
-cohub -s <spaceId> works publish demo --file dist/index.html
-cohub -s <spaceId> works publish site --dir dist
-cohub -s <spaceId> works ls --json
+cohub -s <spaceId> apps publish demo --file dist/index.html
+cohub -s <spaceId> apps publish site --dir dist
+cohub -s <spaceId> apps ls --json
 cohub apps stats <workId|url|username/space/work>
 ```
 
-Realtime rooms use a published Work's runtime identity. Use
-`client.app.realtime` inside the Work; the CLI intentionally has no room
+Realtime rooms use a published App's runtime identity. Use
+`client.app.realtime` inside the App; the CLI intentionally has no room
 commands.
 
 ### Drive the Cohub UI
 
-An Agent running in a Space can show a file or Work preview in the Cohub tab the chat
-started from, and call methods the Work exposes.
+An Agent running in a Space can show a file or App preview in the Cohub tab the chat
+started from, and call methods the App exposes.
 
 ```bash
-cohub desktop open <workId|url|cohub://works/...|username/space/work|file://path>
+cohub desktop open <appId|url|app://...|username/space/app|file://path>
 cohub desktop open file://src/main.ts
-cohub desktop open work://alice/studio/launch
-cohub desktop open <work-or-file> --call selection.get
-cohub desktop open <work> --call board.focus --data '{"nodeId":"n1"}'
+cohub desktop open app://alice/studio/launch
+cohub desktop open <app-or-file> --call selection.get
+cohub desktop open <app> --call board.focus --data '{"nodeId":"n1"}'
 ```
 
 Showing a preview is idempotent: repeating it re-activates the same tab. `--call`
-waits for the Work to announce readiness, then invokes the method. Which methods
-exist is up to the Work author, registered with
+waits for the App to announce readiness, then invokes the method. Which methods
+exist is up to the App author, registered with
 `client.app.surface.handle(name, handler)`.
 
 Commands only ever reach the frontend instance that originated the current work,
@@ -142,6 +149,33 @@ Expose a local folder as the Space Sandbox:
 cohub sandbox up ./my-project
 cohub sandbox status
 ```
+
+### Boards
+
+Board commands accept a Board ID or a `.board` path. Reads are resource-scoped, so inspecting one item does not load the whole Board.
+
+```bash
+cohub -s <spaceId> boards inspect boards/plan.board --json
+cohub -s <spaceId> boards items list <boardId>
+cohub -s <spaceId> boards items get <boardId> <itemId> --json
+cohub -s <spaceId> boards connections list <boardId>
+cohub -s <spaceId> boards effects get <boardId> <effectId> --json
+cohub -s <spaceId> boards compositions get <boardId> <compositionId> --json
+```
+
+Use `boards examples` for starter JSON and `boards capabilities --json` for supported schemas. Apply a group of changes atomically with a semantic command batch:
+
+```bash
+cohub boards examples item text > item.json
+cohub -s <spaceId> boards items create <boardId> --input item.json
+cohub boards examples batch basic > changes.json
+cohub -s <spaceId> boards batch <boardId> --input changes.json --dry-run
+cohub -s <spaceId> boards batch <boardId> --input changes.json
+```
+
+A batch file has a `commands` array. It can combine item, connection, effect, composition, and Board patch commands without containing a full Board snapshot. Use `--base-version` and `--mutation-id` for controlled retries.
+
+Playback commands are grouped under `boards playback`; image rendering remains available through `boards export`.
 
 ### Search and models
 
@@ -166,5 +200,6 @@ Human-readable output is fine for interactive use. JSON is better for automation
 ## Next steps
 
 - Product loop from the UI: [Quick start](/docs/learn/quick-start)
+- App capabilities and permissions: [App development](/docs/developers/apps)
 - Programmatic access: [SDK](/docs/developers/sdk)
-- Publishing details: [Works](/docs/create/works)
+- Publishing details: [Apps](/docs/create/apps)

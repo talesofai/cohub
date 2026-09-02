@@ -1,0 +1,45 @@
+@import "@fontsource/geist/latin-400.css";
+@import "@fontsource/geist/latin-500.css";
+@import "@fontsource/geist/latin-600.css";
+
+:root { font-family: Geist, system-ui, sans-serif; color: #e8e8e8; background: #17181c; font-synthesis: none; }
+* { box-sizing: border-box; }
+body { margin: 0; min-width: 320px; }
+button, input { font: inherit; }
+button { cursor: pointer; }
+.shell { min-height: 100vh; padding: 28px clamp(20px, 5vw, 72px) 56px; background: #17181c; }
+.toolbar { display: flex; align-items: flex-end; justify-content: space-between; gap: 24px; max-width: 1040px; margin: 0 auto 28px; }
+.eyebrow { color: #ff5a2d; font: 500 11px Geist Mono, monospace; letter-spacing: .08em; text-transform: uppercase; }
+h1 { margin: 4px 0 3px; font-size: 24px; font-weight: 600; letter-spacing: 0; }
+.toolbar p { margin: 0; color: #8e919b; font-size: 12px; }
+.space-pill { max-width: 220px; overflow: hidden; color: #aeb1b9; font: 400 11px Geist Mono, monospace; text-overflow: ellipsis; white-space: nowrap; }
+.search { display: flex; align-items: center; gap: 9px; max-width: 1040px; height: 40px; margin: 0 auto 20px; padding: 0 12px; border: 1px solid #30323a; border-radius: 6px; background: #202126; color: #777b86; }
+.search svg { width: 15px; height: 15px; }
+.search input { width: 100%; border: 0; outline: 0; background: transparent; color: #e8e8e8; font-size: 13px; }
+.search input::placeholder { color: #777b86; }
+main { max-width: 1040px; margin: 0 auto; }
+.grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 300px), 1fr)); gap: 8px; }
+.app-card { display: flex; min-width: 0; align-items: flex-start; gap: 12px; padding: 14px; border: 1px solid #2b2d34; border-radius: 7px; background: #1d1e23; }
+.app-card img, .icon { width: 40px; height: 40px; flex: 0 0 auto; border-radius: 7px; object-fit: cover; }
+.icon { display: grid; place-items: center; background: #292b32; color: #999da8; }
+.icon svg { width: 18px; height: 18px; }
+.details { min-width: 0; flex: 1; }
+h2 { overflow: hidden; margin: 1px 0 3px; color: #e8e8e8; font-size: 13px; font-weight: 500; text-overflow: ellipsis; white-space: nowrap; }
+.publisher, code { overflow: hidden; color: #858995; font: 400 10px Geist Mono, monospace; text-overflow: ellipsis; white-space: nowrap; }
+.app-card p { display: -webkit-box; overflow: hidden; margin: 8px 0; color: #aeb1b9; font-size: 11px; line-height: 1.5; -webkit-box-orient: vertical; -webkit-line-clamp: 3; }
+.install { min-height: 30px; flex: 0 0 auto; align-self: center; padding: 0 11px; border: 0; border-radius: 5px; background: #ff4b1f; color: #fff2ed; font-size: 11px; font-weight: 500; }
+.install:hover { background: #ff633d; }
+.install:disabled { cursor: default; opacity: .55; }
+.install svg, .installed svg { width: 13px; height: 13px; vertical-align: -2px; }
+.installed { align-self: center; color: #8ec8a6; font-size: 10px; white-space: nowrap; }
+.state { display: flex; min-height: 220px; flex-direction: column; align-items: center; justify-content: center; gap: 10px; color: #8e919b; font-size: 12px; text-align: center; }
+.state svg { width: 20px; height: 20px; color: #777b86; }
+.state strong { max-width: 360px; color: #bfc1c8; font-weight: 400; line-height: 1.5; }
+.state button { min-height: 32px; padding: 0 12px; border: 1px solid #3b3d45; border-radius: 5px; background: transparent; color: #c5c7ce; font-size: 11px; }
+.state button:hover { background: #25272d; }
+.error svg { color: #e88772; }
+.spin { animation: spin 900ms linear infinite; }
+.sr-only { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0, 0, 0, 0); white-space: nowrap; }
+@keyframes spin { to { transform: rotate(360deg); } }
+@media (max-width: 560px) { .shell { padding: 20px 14px 36px; } .toolbar { align-items: flex-start; margin-bottom: 20px; } .space-pill { max-width: 130px; } .grid { grid-template-columns: 1fr; } }
+@media (prefers-reduced-motion: reduce) { .spin { animation: none; } }

@@ -36,7 +36,7 @@ All notable changes to Cohub are documented in this file.
 
 <!-- Generated from apps/web/src/lib/changelog/entries.json. Do not edit. -->
 `;
-	return header + "\n" + entries.map(renderEntry).join("\n\n") + "\n";
+	return `${header}\n${entries.map(renderEntry).join("\n\n")}\n`;
 }
 
 function renderTagMessage(tag: string): string {

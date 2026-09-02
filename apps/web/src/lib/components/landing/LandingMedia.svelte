@@ -25,8 +25,6 @@ type Props = {
 	ratio?: string;
 	/** Shown in the placeholder frame while the asset is missing. */
 	label?: string;
-	/** Render without the framing chrome (used by tight mosaic cells). */
-	bare?: boolean;
 	priority?: boolean;
 };
 
@@ -36,7 +34,6 @@ const {
 	alt,
 	ratio = "16 / 10",
 	label,
-	bare = false,
 	priority = false,
 }: Props = $props();
 
@@ -71,7 +68,7 @@ function autoplayWhenVisible(node: HTMLVideoElement) {
 }
 </script>
 
-<div class="media {bare ? '' : 'media-framed'}" style="aspect-ratio: {ratio};">
+<div class="media media-framed" style="aspect-ratio: {ratio};">
 	{#if src && kind === "video"}
 		<!-- svelte-ignore a11y_media_has_caption -- silent product loop, decorative -->
 		<video

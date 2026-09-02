@@ -1,10 +1,11 @@
-import { HttpError, type CohubHttpClient, type Permission, type AppCreateInput, type AppMeta, type AppStatus, type AppTargetType, type AppUpdateInput, type AppViewStatsResponse, type AppVisibility } from "@neta-art/cohub";
+import { HttpError, type CohubHttpClient, type Permission, type AppCreateInput, type AppMeta, type AppStatus, type AppUpdateInput, type AppViewStatsResponse, type AppVisibility } from "@neta-art/cohub";
 import type { Command } from "commander";
 import { createClient } from "../client.js";
 import { error, handleHttp, json as outJson, jsonRequested, ok, table } from "../output.js";
 import { resolveSpace } from "../space.js";
 import { downloadApp } from "../app-download.js";
 import { getAppByRef, parseAppRef } from "../app-ref.js";
+import { checkAppTarget } from "../app-target.js";
 import { registerAppCommerce } from "./app-commerce.js";
 
 const APP_STATUSES = ["published", "disabled"] as const;
@@ -49,12 +50,14 @@ function withCohubBarMeta(input: {
   return Object.keys(meta).length > 0 ? meta : null;
 }
 
-function resolveTarget(opts: { file?: string; dir?: string; port?: string }): { targetType: AppTargetType; targetRef: string } | null {
-  const targets = [
+type ResolvedTarget = { targetType: "file" | "directory" | "port"; targetRef: string };
+
+function resolveTarget(opts: { file?: string; dir?: string; port?: string }): ResolvedTarget | null {
+  const targets: Array<ResolvedTarget | null> = [
     opts.file ? { targetType: "file" as const, targetRef: opts.file } : null,
     opts.dir ? { targetType: "directory" as const, targetRef: opts.dir } : null,
     opts.port ? { targetType: "port" as const, targetRef: opts.port } : null,
-  ].filter((target): target is { targetType: AppTargetType; targetRef: string } => Boolean(target));
+  ].filter((target): target is ResolvedTarget => Boolean(target));
   if (targets.length === 0) return null;
   if (targets.length > 1) return error("Conflicting target", "Use only one of --file, --dir, or --port");
   return targets[0] ?? null;
@@ -64,6 +67,38 @@ function resolveStatus(opts: { disabled?: boolean; status?: string }): AppStatus
   const values = [opts.status, opts.disabled ? "disabled" : undefined].filter(Boolean);
   if (values.length > 1) return error("Conflicting status", "Use only one of --status or --disabled");
   return values[0] ? parseChoice(values[0], "status", APP_STATUSES) : "published";
+}
+
+/**
+ * Fail early when a Space-relative `--file` / `--dir` target cannot be a valid
+ * publish source. The publish worker resolves targets inside the target
+ * Space's workspace, not on the local filesystem.
+ */
+async function guardAppTarget(
+  client: CohubHttpClient,
+  spaceId: string,
+  target: { targetType: "file" | "directory"; targetRef: string },
+): Promise<void> {
+  const failure = await checkAppTarget(client, spaceId, target);
+  if (failure) {
+    error(
+      failure.status === 404 ? "Publish target not found" : "Publish target is invalid",
+      `${failure.message} (--${target.targetType === "directory" ? "dir" : "file"} takes a Space workspace path, not a local path).`,
+    );
+  }
+}
+
+/**
+ * Translate the publish worker's bare fs errors (e.g. a target removed between
+ * preflight and snapshot) into the same explicit wording as the preflight.
+ */
+function translateTargetWorkerError(e: unknown): void {
+  if (!(e instanceof HttpError)) return;
+  if (e.code !== "path_not_found" && e.code !== "not_a_directory" && e.code !== "not_a_file" && e.code !== "symlink_not_supported") return;
+  error(
+    e.code === "path_not_found" ? "Publish target not found" : "Publish target is invalid",
+    "The publish target is a Space workspace path; the Space workspace no longer contains a valid target at that path.",
+  );
 }
 
 function resolveVisibility(value: string | undefined): AppVisibility | undefined {
@@ -143,6 +178,7 @@ async function publishAppVersion(id: string, opts: { json?: boolean }): Promise<
     ok(`App version updated: v${result.version.version}`);
     printApp(result.app);
   } catch (e: unknown) {
+    translateTargetWorkerError(e);
     handleHttp(e);
   }
 }
@@ -283,8 +319,8 @@ export function registerApps(program: Command): void {
   appsCmd
     .command("publish <slug>")
     .description("Create or publish an app in the target space")
-    .option("--file <path>", "Publish a file (HTML page, board, or any other file)")
-    .option("--dir <path>", "Publish a directory site")
+    .option("--file <path>", "Publish a file (HTML page, board, or any other file) from the Space workspace")
+    .option("--dir <path>", "Publish a directory site from the Space workspace")
     .option("--port <port>", "Publish a public sandbox port")
     .option("--disabled", "Create as disabled")
     .option("--status <status>", "App status: published, disabled")
@@ -301,6 +337,8 @@ export function registerApps(program: Command): void {
       if (!target) return error("Missing target", "Use one of --file, --dir, or --port.");
       const spaceId = resolveSpace(appsCmd);
       const client = createClient();
+      const { targetType, targetRef } = target;
+      if (targetType !== "port") await guardAppTarget(client, spaceId, { targetType, targetRef });
       const status = resolveStatus(opts);
       const meta = withCohubBarMeta({
         meta: parseJsonObject(opts.meta, "meta"),
@@ -324,6 +362,7 @@ export function registerApps(program: Command): void {
         ok(`App published: ${result.app.id}`);
         printApp(result.app);
       } catch (e: unknown) {
+        translateTargetWorkerError(e);
         if (!(e instanceof HttpError) || e.status !== 409) handleHttp(e);
         try {
           const { apps } = await client.apps.listBySpace(spaceId);
@@ -346,6 +385,7 @@ export function registerApps(program: Command): void {
           ok(status === "published" && publishedVersion ? `App version updated: v${publishedVersion.version.version}` : `App updated: ${app.id}`);
           printApp(result.app);
         } catch (fallbackError: unknown) {
+          translateTargetWorkerError(fallbackError);
           handleHttp(fallbackError);
         }
       }
@@ -355,8 +395,8 @@ export function registerApps(program: Command): void {
     .command("update <id>")
     .description("Update app settings")
     .option("--slug <slug>", "New app slug")
-    .option("--file <path>", "Use a file target (HTML page, board, or any other file)")
-    .option("--dir <path>", "Use a directory site target")
+    .option("--file <path>", "Use a file target (HTML page, board, or any other file) from the Space workspace")
+    .option("--dir <path>", "Use a directory site target from the Space workspace")
     .option("--port <port>", "Use a public sandbox port target")
     .option("--disabled", "Set status to disabled")
     .option("--status <status>", "App status: published, disabled")
@@ -376,6 +416,17 @@ export function registerApps(program: Command): void {
       if (opts.clearViewerScopes && opts.viewerScope?.length) return error("Conflicting viewer scopes", "Use either --viewer-scope or --clear-viewer-scopes.");
       const hasMetaUpdate = opts.meta !== undefined || opts.hideCohubBar || opts.showCohubBar;
       const client = createClient();
+      if (target) {
+        // Resolve the app's home Space so the preflight checks the same
+        // workspace the publish worker will read from.
+        try {
+          const current = await client.apps.get(id);
+          const { targetType, targetRef } = target;
+          if (targetType !== "port") await guardAppTarget(client, current.app.spaceId, { targetType, targetRef });
+        } catch {
+          // The update request below surfaces errors for unknown apps.
+        }
+      }
       let meta: AppMeta | null | undefined;
       if (hasMetaUpdate) {
         let baseMeta = opts.meta !== undefined ? parseJsonObject(opts.meta, "meta") ?? null : undefined;
@@ -415,6 +466,7 @@ export function registerApps(program: Command): void {
         ok(publishedVersion ? `App published: v${publishedVersion.version.version}` : "App updated");
         printApp(result.app);
       } catch (e: unknown) {
+        translateTargetWorkerError(e);
         handleHttp(e);
       }
     });

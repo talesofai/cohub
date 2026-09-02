@@ -3,6 +3,7 @@ import { test } from "node:test";
 import type { GlobalSearchResult } from "@neta-art/cohub";
 import { withLocalCommands } from "../lib/command-palette/commands";
 import { mergeCommandResults } from "../lib/command-palette/merge-results";
+import { getViewerTurnActivityBySpace } from "../lib/command-palette/personal-activity";
 import { sortCommandItems } from "../lib/command-palette/score";
 import type {
 	CommandPaletteItem,
@@ -196,6 +197,55 @@ test("merged personal session beats unrelated session with higher score", () => 
 	});
 	assert.equal(merged[0]?.id, "mine");
 	assert.equal(merged[1]?.id, "foreign");
+});
+
+test("local Recent activity ignores turns authored by other participants", () => {
+	const activity = getViewerTurnActivityBySpace(
+		[
+			{
+				spaceId: "space-a",
+				turns: [
+					{
+						userUuid: "other",
+						createdAt: "2026-08-27T12:00:00.000Z",
+						updatedAt: "2026-08-27T12:05:00.000Z",
+					},
+				],
+			},
+			{
+				spaceId: "space-b",
+				turns: [
+					{
+						userUuid: "viewer",
+						createdAt: "2026-08-27T11:00:00.000Z",
+						updatedAt: "2026-08-27T11:01:00.000Z",
+					},
+				],
+			},
+		],
+		"viewer",
+	);
+	assert.equal(activity.has("space-a"), false);
+	assert.equal(activity.get("space-b"), "2026-08-27T11:01:00.000Z");
+});
+
+test("local Recent activity ignores invalid viewer timestamps", () => {
+	const activity = getViewerTurnActivityBySpace(
+		[
+			{
+				spaceId: "space-a",
+				turns: [
+					{
+						userUuid: "viewer",
+						createdAt: "invalid",
+						updatedAt: "invalid",
+					},
+				],
+			},
+		],
+		"viewer",
+	);
+	assert.equal(activity.has("space-a"), false);
 });
 
 test("withLocalCommands preserves tier ordering for search results", () => {

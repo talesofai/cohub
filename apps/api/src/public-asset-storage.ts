@@ -1,10 +1,5 @@
 import { randomUUID } from "node:crypto";
 import { config } from "./config.js";
-import {
-  buildPublicObjectUrl,
-  createPresignedPostObject,
-  type PresignStorageConfig,
-} from "./object-presign.js";
 import { redisCommandClient } from "./redis.js";
 import {
   buildChatAttachmentPublicUrl,
@@ -14,11 +9,11 @@ import {
 const IMMUTABLE_PUBLIC_CACHE_CONTROL = "public, max-age=31536000, immutable";
 
 export type PublicAssetPurpose = "user_avatar" | "space_avatar" | "chat_attachment";
-export type PublicAssetUploadProtocol = "s3_post_v1" | "presigned_put_v1";
+export type PublicAssetUploadProtocol = "presigned_put_v1";
 
 export type CreatePublicAssetUploadInput = {
   purpose: PublicAssetPurpose;
-  uploadProtocol?: PublicAssetUploadProtocol;
+  uploadProtocol: PublicAssetUploadProtocol;
   spaceId?: string;
   sessionId?: string;
   file: {
@@ -34,14 +29,13 @@ type PublicAssetUploadBase = {
   objectKey: string;
   publicUrl: string;
   uploadUrl: string;
+  uploadMethod: "PUT";
+  uploadHeaders?: Record<string, string>;
 };
 
 export type CreatePublicAssetUploadResponse = {
   expiresAt: string;
-  asset: PublicAssetUploadBase & (
-    | { uploadMethod: "POST"; uploadFields: Record<string, string> }
-    | { uploadMethod: "PUT"; uploadHeaders?: Record<string, string> }
-  );
+  asset: PublicAssetUploadBase;
 };
 
 export type CreateInternalPublicAssetUploadResponse = {
@@ -106,25 +100,6 @@ export class PublicAssetConfigError extends Error {
 export class PublicAssetValidationError extends Error {
   override name = "PublicAssetValidationError";
 }
-
-const getStorageConfig = (): PresignStorageConfig => ({
-  endpoint: config.publicAssetOssEndpoint,
-  publicEndpoint: config.publicAssetOssPublicEndpoint,
-  region: config.publicAssetOssRegion,
-  bucket: config.publicAssetOssBucket,
-  accessKeyId: config.publicAssetOssAccessKeyId,
-  secretAccessKey: config.publicAssetOssSecretAccessKey,
-});
-
-const requirePublicAssetConfig = () => {
-  const storage = getStorageConfig();
-  if (!storage.bucket) throw new PublicAssetConfigError("PUBLIC_ASSET_OSS_BUCKET is required for public asset uploads");
-  if (!storage.endpoint) throw new PublicAssetConfigError("PUBLIC_ASSET_OSS_ENDPOINT is required for public asset uploads");
-  if (!storage.accessKeyId || !storage.secretAccessKey) {
-    throw new PublicAssetConfigError("PUBLIC_ASSET_OSS_ACCESS_KEY_ID and PUBLIC_ASSET_OSS_SECRET_ACCESS_KEY are required for public asset uploads");
-  }
-  return storage;
-};
 
 const envPrefix = () => (config.env === "prod" ? "" : `${config.env}/`);
 
@@ -204,12 +179,6 @@ export const buildPublicAssetObjectKey = (input: {
     filename: input.filename,
   });
   return `${envPrefix()}chat-attachments/${input.userUuid}/${randomUUID()}.${extension}`;
-};
-
-const buildLegacyPublicAssetUrl = (objectKey: string) => {
-  return config.publicAssetCdnBaseUrl
-    ? `${config.publicAssetCdnBaseUrl}/${objectKey.split("/").map(encodeURIComponent).join("/")}`
-    : buildPublicObjectUrl(requirePublicAssetConfig(), objectKey);
 };
 
 const tryParseOrigin = (value: string | undefined) => {
@@ -331,7 +300,7 @@ const createChatAttachmentPutPlan = (input: {
 
 export const createPublicAssetUploadPlan = (input: {
   purpose: PublicAssetPurpose;
-  uploadProtocol?: PublicAssetUploadProtocol;
+  uploadProtocol: PublicAssetUploadProtocol;
   userUuid: string;
   spaceId?: string;
   sessionId?: string;
@@ -350,54 +319,30 @@ export const createPublicAssetUploadPlan = (input: {
     filename: input.file.filename,
   });
 
-  if (input.purpose !== "chat_attachment" || input.uploadProtocol === "presigned_put_v1") {
-    const { signed, publicUrl } = input.purpose === "chat_attachment"
-      ? createChatAttachmentPutPlan({
+  const { signed, publicUrl } = input.purpose === "chat_attachment"
+    ? createChatAttachmentPutPlan({
+      objectKey,
+      mimeType,
+      filename: input.file.filename,
+    })
+    : {
+      signed: createUserUploadPutUrl({
+        kind: "chat_attachment",
         objectKey,
-        mimeType,
-        filename: input.file.filename,
-      })
-      : {
-        signed: createUserUploadPutUrl({
-          kind: "chat_attachment",
-          objectKey,
-          contentType: mimeType,
-          cacheControl: IMMUTABLE_PUBLIC_CACHE_CONTROL,
-        }),
-        publicUrl: buildChatAttachmentPublicUrl(objectKey),
-      };
-    return {
-      expiresAt: signed.expiresAt,
-      asset: {
-        purpose: input.purpose,
-        objectKey,
-        publicUrl,
-        uploadMethod: "PUT",
-        uploadUrl: signed.uploadUrl,
-        uploadHeaders: signed.headers,
-      },
+        contentType: mimeType,
+        cacheControl: IMMUTABLE_PUBLIC_CACHE_CONTROL,
+      }),
+      publicUrl: buildChatAttachmentPublicUrl(objectKey),
     };
-  }
-
-  const signed = createPresignedPostObject({
-    storage: requirePublicAssetConfig(),
-    objectKey,
-    contentType: mimeType,
-    maxBytes: input.purpose === "chat_attachment" ? MAX_CHAT_ATTACHMENT_BYTES : MAX_AVATAR_BYTES,
-    cacheControl: input.purpose === "chat_attachment" ? IMMUTABLE_PUBLIC_CACHE_CONTROL : undefined,
-    contentDisposition: input.purpose === "chat_attachment"
-      ? chatAttachmentContentDisposition(input.file.filename)
-      : undefined,
-  });
   return {
     expiresAt: signed.expiresAt,
     asset: {
       purpose: input.purpose,
       objectKey,
-      publicUrl: buildLegacyPublicAssetUrl(objectKey),
-      uploadMethod: "POST",
+      publicUrl,
+      uploadMethod: "PUT",
       uploadUrl: signed.uploadUrl,
-      uploadFields: signed.fields,
+      uploadHeaders: signed.headers,
     },
   };
 };

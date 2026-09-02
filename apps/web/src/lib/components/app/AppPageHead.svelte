@@ -17,6 +17,9 @@ const {
 	<meta name="description" content={meta.description} />
 	<meta name="robots" content={meta.robots} />
 	<link rel="canonical" href={meta.canonical} />
+	{#if meta.framePreconnectOrigin}
+		<link rel="preconnect" href={meta.framePreconnectOrigin} crossorigin="anonymous" />
+	{/if}
 	<!-- Always emit icons on app routes so app.html/public defaults never win. -->
 	<link
 		rel="icon"

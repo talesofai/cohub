@@ -1,3 +1,1 @@
-<script lang="ts">
-// Root /spaces/:id redirects in +page.ts to new session.
-</script>
+<!-- UI lives in +layout.svelte so the workspace survives session navigation. -->

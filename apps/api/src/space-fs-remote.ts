@@ -147,6 +147,7 @@ function buildFileResponse(relativePath: string, params: {
   mimeType?: string;
   size?: number;
   mtimeMs?: number;
+  ctimeMs?: number;
 }): SpaceFsFileResponse {
   // Prefer filename text types over generic sandbox sniffs (e.g. .npmrc → octet-stream).
   const mimeType = resolveReadMimeType(getMimeType(relativePath), params.mimeType);
@@ -160,6 +161,7 @@ function buildFileResponse(relativePath: string, params: {
     size: params.size ?? Buffer.byteLength(content),
     mimeType,
     mtimeMs: params.mtimeMs ?? Date.now(),
+    ctimeMs: params.ctimeMs,
     kind,
     encoding: kind === "text" ? "utf-8" : "base64",
     content,

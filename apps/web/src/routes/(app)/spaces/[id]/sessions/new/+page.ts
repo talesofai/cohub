@@ -1,15 +1,7 @@
-import { readWindowFromSearch } from "$lib/features/space/modules/window-route";
+import { redirect } from "@sveltejs/kit";
+import { buildSpaceLandingRoute } from "$lib/space-routes";
 import type { PageLoad } from "./$types";
 
-export const load: PageLoad = async ({ params, url }) => {
-	const preview = readWindowFromSearch(url.searchParams);
-	return {
-		spaceId: params.id,
-		view: "session" as const,
-		sessionId: "new",
-		filePath: null,
-		windowKind: preview?.kind ?? null,
-		windowKey: preview?.key ?? null,
-		turnSequence: null,
-	};
+export const load: PageLoad = ({ params, url }) => {
+	throw redirect(307, `${buildSpaceLandingRoute(params.id)}${url.search}`);
 };

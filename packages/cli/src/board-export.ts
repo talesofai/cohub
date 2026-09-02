@@ -1,8 +1,9 @@
 /**
  * Board image export for the CLI.
  *
- * Rendering runs through the same PixiJS card renderers the web editor uses (see
- * `@neta-art/cohub/board`), on a Canvas2D backend. Everything platform-specific
+ * The CLI and web editor share canonical Board geometry and card semantics. Each
+ * host selects the renderer primitive suited to its backend; this path uses
+ * Canvas2D. Everything platform-specific
  * lives here: fetching the document over HTTP, pulling image bytes out of the
  * space, and locating fonts on disk.
  */

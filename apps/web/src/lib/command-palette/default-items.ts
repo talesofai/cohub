@@ -19,11 +19,14 @@ import { buildSpaceLandingRoute } from "$lib/space-routes";
 import { getRecentSpaces } from "$lib/stores/recent-space";
 import { getCachedSpaceList } from "$lib/stores/space-list-cache";
 import { commandItemKey } from "./merge-results";
+import { buildLocalPaletteOverview } from "./palette-overview-local";
+import { getViewerTurnActivityBySpace } from "./personal-activity";
 import { allowsResourceType, type CommandPaletteSearchPlan } from "./scope";
 import { recencyScore } from "./score";
 import type { CommandPaletteItem } from "./types";
 
 const DEFAULT_LIMIT = 30;
+const SPACE_DEFAULT_LIMIT = 50;
 const DEFAULT_SESSION_LIST_SCAN_LIMIT = 120;
 const DEFAULT_TURN_RECORD_SCAN_LIMIT = 80;
 
@@ -42,6 +45,12 @@ function timeValue(value: string | null | undefined) {
 
 function timestampValue(value: number | null | undefined) {
 	return typeof value === "number" && Number.isFinite(value) ? value : 0;
+}
+
+function isoTimestampValue(value: string | null | undefined) {
+	if (!value) return 0;
+	const time = new Date(value).getTime();
+	return Number.isFinite(time) ? time : 0;
 }
 
 function isoFromTimestamp(value: number) {
@@ -80,6 +89,102 @@ function getSessionActivityBySpace(records: SessionListCacheRecord[]) {
 	return activityBySpace;
 }
 
+async function getRecentTurnRecords(
+	userKey: string,
+	options?: { signal?: AbortSignal },
+) {
+	const records = await idbGetSomeByIndex<SessionTurnsCacheRecord>(
+		"session_turns",
+		"by_last_accessed",
+		IDBKeyRange.lowerBound(0),
+		{
+			limit: DEFAULT_TURN_RECORD_SCAN_LIMIT,
+			direction: "prev",
+			filter: (record) => record.userKey === userKey,
+		},
+	);
+	shouldAbort(options?.signal);
+	return records.filter((record) => record.userKey === userKey);
+}
+
+async function getUserSessionLists(
+	userKey: string,
+	options?: { signal?: AbortSignal },
+) {
+	const records = await idbGetSomeByIndex<SessionListCacheRecord>(
+		"session_lists",
+		"by_updated_at",
+		IDBKeyRange.lowerBound(0),
+		{
+			limit: DEFAULT_SESSION_LIST_SCAN_LIMIT,
+			direction: "prev",
+			filter: (record) => record.userKey === userKey,
+		},
+	);
+	shouldAbort(options?.signal);
+	return records;
+}
+
+async function getLocalSpaces(
+	userKey: string,
+	options?: { signal?: AbortSignal },
+) {
+	const records = await idbGetAllByIndex<SpaceRecordCacheRecord>(
+		"space_records",
+		"by_updated_at",
+		IDBKeyRange.lowerBound(0),
+	);
+	shouldAbort(options?.signal);
+	const spacesById = new Map<string, SpaceRecord>();
+	for (const record of records) {
+		if (record.userKey === userKey)
+			spacesById.set(record.spaceId, record.space);
+	}
+	// Prefer the list cache when present: it is refreshed in the background when
+	// the palette opens, while per-space IndexedDB records may lag behind briefly.
+	for (const space of getCachedSpaceList() ?? [])
+		spacesById.set(space.id, space);
+	return [...spacesById.values()];
+}
+
+/**
+ * Overview-shaped synthesis from local caches (IndexedDB + localStorage).
+ *
+ * Backs the palette's first frame when the cached overview snapshot is stale:
+ * same ordering semantics as the server payload (viewer activity),
+ * so the list no longer re-sorts from an "all"-ordered fallback once the
+ * refetched overview lands.
+ */
+export async function getLocalPaletteOverview(options?: {
+	signal?: AbortSignal;
+	viewerUserUuid?: string | null;
+}): Promise<PaletteOverviewResponse> {
+	const userKey = getCacheUserKey();
+	const [spaces, sessionLists, turnRecords] = await Promise.all([
+		getLocalSpaces(userKey, options),
+		getUserSessionLists(userKey, options),
+		getRecentTurnRecords(userKey, options),
+	]);
+	shouldAbort(options?.signal);
+	return buildLocalPaletteOverview({
+		spaces,
+		sessionLists: sessionLists.map((record) => ({
+			spaceId: record.spaceId,
+			sessions: record.sessions,
+		})),
+		turnRecords,
+		viewerUserUuid: options?.viewerUserUuid ?? null,
+	});
+}
+
+function defaultItemsLimit(
+	plan: Pick<CommandPaletteSearchPlan, "resourceTypes">,
+) {
+	return plan.resourceTypes?.length === 1 && plan.resourceTypes[0] === "space"
+		? SPACE_DEFAULT_LIMIT
+		: DEFAULT_LIMIT;
+}
+
 function defaultScore(rank: number, updatedAt: string | null | undefined) {
 	const fresh = recencyScore(updatedAt);
 	return {
@@ -89,13 +194,18 @@ function defaultScore(rank: number, updatedAt: string | null | undefined) {
 	};
 }
 
-/** Server-ranked overview space: rank mirrors the pinned → participation order. */
+/** Overview space: rank mirrors the personal-activity order. */
 function overviewSpaceToItem(
 	space: PaletteOverviewSpace,
 	rank: number,
+	personalActivityAt?: string | null,
 ): CommandPaletteItem {
-	const updatedAt = space.updatedAt;
-	const score = defaultScore(rank, space.lastParticipatedAt ?? updatedAt);
+	// The displayed timestamp is the same folded personal activity time used
+	// for ordering (visits + viewer-owned sessions + server participation),
+	// falling back to the server timestamps for spaces with no viewer activity.
+	const displayUpdatedAt =
+		personalActivityAt ?? space.lastParticipatedAt ?? space.updatedAt;
+	const score = defaultScore(rank, displayUpdatedAt);
 	return {
 		type: "space",
 		id: space.id,
@@ -111,7 +221,7 @@ function overviewSpaceToItem(
 		sessionTitle: null,
 		matchedField: "name",
 		href: buildSpaceLandingRoute(space.id),
-		updatedAt,
+		updatedAt: displayUpdatedAt,
 		source: "default",
 		localScore: score.score,
 		isPinned: space.isPinned,
@@ -258,6 +368,7 @@ async function buildOverviewDefaultItems(
 	plan: CommandPaletteSearchPlan & {
 		currentSpaceId?: string | null;
 		signal?: AbortSignal;
+		viewerUserUuid?: string | null;
 	},
 	overview: PaletteOverviewResponse,
 ): Promise<CommandPaletteItem[]> {
@@ -267,11 +378,50 @@ async function buildOverviewDefaultItems(
 		overview.spaces.map((space) => [space.id, space.name ?? null]),
 	);
 	const items: CommandPaletteItem[] = [];
+	let recentTurnRecords: SessionTurnsCacheRecord[] | null = null;
+	const getRecentTurns = async () => {
+		if (recentTurnRecords) return recentTurnRecords;
+		recentTurnRecords = await getRecentTurnRecords(userKey, {
+			signal: plan.signal,
+		});
+		return recentTurnRecords;
+	};
 
 	if (allowsResourceType(plan, "space")) {
-		overview.spaces.forEach((space, rank) => {
-			items.push(overviewSpaceToItem(space, rank));
-		});
+		// Fold device-local personal signals into the server ranking:
+		//  1. recent-space visits (opening a space floats it to the top), and
+		//  2. activity of turns authored by the viewer from the local turn cache
+		//     (other participants never count).
+		const recentActivityBySpace = new Map(
+			getRecentSpaces(userKey).map((entry) => [entry.spaceId, entry.timestamp]),
+		);
+		const viewerSessionActivityBySpace = plan.viewerUserUuid
+			? getViewerTurnActivityBySpace(
+					await getRecentTurns(),
+					plan.viewerUserUuid,
+				)
+			: new Map<string, string>();
+		const personalActivityMs = (space: PaletteOverviewSpace) =>
+			Math.max(
+				isoTimestampValue(space.lastParticipatedAt),
+				timestampValue(recentActivityBySpace.get(space.id)),
+				isoTimestampValue(viewerSessionActivityBySpace.get(space.id)),
+			);
+		// Strictly personal-activity ordering. No pinned tier, no score, no
+		// relation tie-breaks — a just-opened space must sit above anything I
+		// last touched earlier.
+		[...overview.spaces]
+			.sort((a, b) => personalActivityMs(b) - personalActivityMs(a))
+			.forEach((space, index) => {
+				const personalMs = personalActivityMs(space);
+				items.push(
+					overviewSpaceToItem(
+						space,
+						index,
+						personalMs > 0 ? new Date(personalMs).toISOString() : null,
+					),
+				);
+			});
 	}
 
 	if (allowsResourceType(plan, "session")) {
@@ -283,21 +433,11 @@ async function buildOverviewDefaultItems(
 	if (allowsResourceType(plan, "turn")) {
 		await yieldToUi();
 		shouldAbort(plan.signal);
-		const turnRecords = await idbGetSomeByIndex<SessionTurnsCacheRecord>(
-			"session_turns",
-			"by_last_accessed",
-			IDBKeyRange.lowerBound(0),
-			{
-				limit: DEFAULT_TURN_RECORD_SCAN_LIMIT,
-				direction: "prev",
-				filter: (record) => record.userKey === userKey,
-			},
-		);
-		shouldAbort(plan.signal);
+		const turnRecords = await getRecentTurns();
 		let rank = 0;
-		for (const record of turnRecords
-			.filter((record) => record.userKey === userKey)
-			.sort((a, b) => b.lastAccessedAt - a.lastAccessedAt)) {
+		for (const record of [...turnRecords].sort(
+			(a, b) => b.lastAccessedAt - a.lastAccessedAt,
+		)) {
 			const session = record.session ?? null;
 			const turns = [...record.turns].sort(
 				(a, b) =>
@@ -320,20 +460,22 @@ async function buildOverviewDefaultItems(
 		}
 	}
 
+	// Preserve insertion order: spaces (personal activity desc),
+	// then recent sessions, then turns. No re-scoring — the ordering above is
+	// already the product intent for this list.
 	const byKey = new Map<string, CommandPaletteItem>();
 	for (const item of items) {
 		const key = commandItemKey(item);
 		if (!byKey.has(key)) byKey.set(key, item);
 	}
-	return [...byKey.values()]
-		.sort((a, b) => b.score - a.score)
-		.slice(0, DEFAULT_LIMIT);
+	return [...byKey.values()].slice(0, defaultItemsLimit(plan));
 }
 
 export async function getCommandPaletteDefaultItems(
 	plan: CommandPaletteSearchPlan & {
 		currentSpaceId?: string | null;
 		signal?: AbortSignal;
+		viewerUserUuid?: string | null;
 		/** Server-side palette overview — preferred over local-only derivation. */
 		paletteOverview?: PaletteOverviewResponse | null;
 	},
@@ -343,42 +485,15 @@ export async function getCommandPaletteDefaultItems(
 		return buildOverviewDefaultItems(plan, plan.paletteOverview);
 	}
 	const userKey = getCacheUserKey();
-	const spacesById = new Map<string, SpaceRecord>();
-
-	const spaceRecords = await idbGetAllByIndex<SpaceRecordCacheRecord>(
-		"space_records",
-		"by_updated_at",
-		IDBKeyRange.lowerBound(0),
-	);
+	const [localSpaces, sessionListRecords, turnRecords] = await Promise.all([
+		getLocalSpaces(userKey, { signal: plan.signal }),
+		getUserSessionLists(userKey, { signal: plan.signal }),
+		getRecentTurnRecords(userKey, { signal: plan.signal }),
+	]);
 	shouldAbort(plan.signal);
-	for (const record of spaceRecords) {
-		if (record.userKey === userKey)
-			spacesById.set(record.spaceId, record.space);
-	}
-
-	// Prefer the list cache when present: it is refreshed in the background when
-	// the palette opens, while per-space IndexedDB records may lag behind briefly.
-	for (const space of getCachedSpaceList() ?? [])
-		spacesById.set(space.id, space);
+	const spacesById = new Map(localSpaces.map((space) => [space.id, space]));
 
 	const items: CommandPaletteItem[] = [];
-	let userSessionLists: SessionListCacheRecord[] | null = null;
-	const getUserSessionLists = async () => {
-		if (userSessionLists) return userSessionLists;
-		const records = await idbGetSomeByIndex<SessionListCacheRecord>(
-			"session_lists",
-			"by_updated_at",
-			IDBKeyRange.lowerBound(0),
-			{
-				limit: DEFAULT_SESSION_LIST_SCAN_LIMIT,
-				direction: "prev",
-				filter: (record) => record.userKey === userKey,
-			},
-		);
-		shouldAbort(plan.signal);
-		userSessionLists = records;
-		return userSessionLists;
-	};
 
 	if (allowsResourceType(plan, "space")) {
 		shouldAbort(plan.signal);
@@ -389,9 +504,7 @@ export async function getCommandPaletteDefaultItems(
 		const recentActivityBySpace = new Map(
 			recentSpaces.map((entry) => [entry.spaceId, entry.timestamp]),
 		);
-		const activityBySpace = getSessionActivityBySpace(
-			await getUserSessionLists(),
-		);
+		const activityBySpace = getSessionActivityBySpace(sessionListRecords);
 		const effectiveActivityTime = (space: SpaceRecord) =>
 			Math.max(
 				timeValue(activityBySpace.get(space.id) ?? null),
@@ -429,7 +542,7 @@ export async function getCommandPaletteDefaultItems(
 	if (allowsResourceType(plan, "session") || allowsResourceType(plan, "turn")) {
 		await yieldToUi();
 		shouldAbort(plan.signal);
-		const sessionLists = await getUserSessionLists();
+		const sessionLists = sessionListRecords;
 		const sessionsById = new Map<string, SessionRecord>();
 		for (const record of sessionLists) {
 			for (const session of record.sessions)
@@ -457,21 +570,10 @@ export async function getCommandPaletteDefaultItems(
 		if (allowsResourceType(plan, "turn")) {
 			await yieldToUi();
 			shouldAbort(plan.signal);
-			const turnRecords = await idbGetSomeByIndex<SessionTurnsCacheRecord>(
-				"session_turns",
-				"by_last_accessed",
-				IDBKeyRange.lowerBound(0),
-				{
-					limit: DEFAULT_TURN_RECORD_SCAN_LIMIT,
-					direction: "prev",
-					filter: (record) => record.userKey === userKey,
-				},
-			);
-			shouldAbort(plan.signal);
 			let rank = 0;
-			for (const record of turnRecords
-				.filter((record) => record.userKey === userKey)
-				.sort((a, b) => b.lastAccessedAt - a.lastAccessedAt)) {
+			for (const record of [...turnRecords].sort(
+				(a, b) => b.lastAccessedAt - a.lastAccessedAt,
+			)) {
 				const session =
 					record.session ?? sessionsById.get(record.sessionId) ?? null;
 				const turns = [...record.turns].sort(
@@ -505,5 +607,5 @@ export async function getCommandPaletteDefaultItems(
 	}
 	return [...byKey.values()]
 		.sort((a, b) => b.score - a.score)
-		.slice(0, DEFAULT_LIMIT);
+		.slice(0, defaultItemsLimit(plan));
 }

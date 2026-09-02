@@ -1,4 +1,5 @@
 <script lang="ts">
+import type { AppNavigationOpenMessage } from "@cohub/protocol/app-navigation";
 import type { AppComposerChip } from "@cohub/protocol/app-surface";
 import { ExternalLink, Loader2, RefreshCw } from "lucide-svelte";
 import AppSurface from "$lib/components/app/AppSurface.svelte";
@@ -24,6 +25,13 @@ type Props = {
 	onRetry: (appId: string) => void;
 	onRegisterSurface: (appId: string, host: AppSurfaceHost | null) => void;
 	onComposerChip: (appId: string, chip: AppComposerChip | null) => void;
+	onNavigationOpen?: (message: AppNavigationOpenMessage) => Promise<{
+		handled: boolean;
+		reason?: "unsupported" | "invalid_target" | "inaccessible" | "timeout";
+		call?:
+			| { ok: true; result?: unknown }
+			| { ok: false; code: string; message: string };
+	}>;
 };
 
 const {
@@ -39,6 +47,7 @@ const {
 	onRetry,
 	onRegisterSurface,
 	onComposerChip,
+	onNavigationOpen = undefined,
 }: Props = $props();
 
 const locale = $derived(getLocale());
@@ -58,15 +67,15 @@ const publicUrl = $derived(detail?.publicUrl ?? null);
  * may mount the replacement before the outgoing surface reports, and the id is
  * the same app either way.
  */
-let surfaceWorkId: string | null = null;
+let surfaceAppId: string | null = null;
 
 function handleSurfaceHost(host: AppSurfaceHost | null) {
-	if (host) surfaceWorkId = preview.appId;
-	if (surfaceWorkId) onRegisterSurface(surfaceWorkId, host);
+	if (host) surfaceAppId = preview.appId;
+	if (surfaceAppId) onRegisterSurface(surfaceAppId, host);
 }
 
 function handleComposerChip(chip: AppComposerChip | null) {
-	if (surfaceWorkId) onComposerChip(surfaceWorkId, chip);
+	if (surfaceAppId) onComposerChip(surfaceAppId, chip);
 }
 const launchState = $derived({
 	search: preview.launch?.search ?? "",
@@ -151,9 +160,10 @@ const isDisabled = $derived(detail?.app.status === "disabled");
 					owner={detail.owner}
 					content={detail.content}
 					{launchState}
-					invocation={preview.invocation ?? undefined}
+					invocation={preview.invocation}
 					onSurfaceHost={handleSurfaceHost}
 					onComposerChip={handleComposerChip}
+					onNavigationOpen={onNavigationOpen}
 				/>
 			{/key}
 		{/if}

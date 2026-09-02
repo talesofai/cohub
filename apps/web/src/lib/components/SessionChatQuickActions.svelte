@@ -18,10 +18,7 @@ let {
 } = $props();
 </script>
 
-<div
-	class="mx-auto w-full max-w-4xl px-4 pt-2 sm:px-6"
-	data-testid="session-quick-actions"
->
+<div class="mx-auto w-full max-w-4xl pt-2" data-testid="session-quick-actions">
 	<div
 		class="flex items-center gap-1.5 overflow-x-auto pb-1 [scrollbar-width:none] [&::-webkit-scrollbar]:hidden"
 	>

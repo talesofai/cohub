@@ -33,13 +33,20 @@ export class SearchApi {
 
   /** Default (empty-query) command palette data: viewer-relative space signals. */
   overview(
-    input?: { spaceLimit?: number; sessionLimit?: number },
+    input?: {
+      spaceLimit?: number;
+      sessionLimit?: number;
+      /** Local recent spaces to include in the server candidate set. */
+      recentSpaceIds?: string[];
+    },
     customFetch?: Fetch,
   ) {
     const params = new URLSearchParams();
     if (input?.spaceLimit !== undefined) params.set("spaceLimit", String(input.spaceLimit));
     if (input?.sessionLimit !== undefined)
       params.set("sessionLimit", String(input.sessionLimit));
+    for (const spaceId of input?.recentSpaceIds ?? [])
+      params.append("recentSpaceId", spaceId);
     const query = params.toString();
     return this.transport.request<PaletteOverviewResponse>(
       `/api/palette/overview${query ? `?${query}` : ""}`,

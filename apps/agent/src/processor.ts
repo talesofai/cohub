@@ -468,6 +468,7 @@ async function runDirectShellCommandTurn(input: {
     let timedOut = false;
     let termination: Record<string, unknown> | null = null;
     let truncated = false;
+    let outputTruncated = false;
     let executionFailed = false;
     let errorMessage: string | null = null;
     try {
@@ -503,7 +504,8 @@ async function runDirectShellCommandTurn(input: {
         : null;
       timedOut = termination?.reason === "timed_out";
       cancelled = termination?.reason === "aborted" || abortController.signal.aborted;
-      truncated = Boolean(details?.truncation);
+      outputTruncated = details?.outputTruncated === true || termination?.outputTruncated === true;
+      truncated = Boolean(details?.truncation) || outputTruncated;
     } catch (error) {
       executionFailed = true;
       cancelled = abortController.signal.aborted;
@@ -515,7 +517,7 @@ async function runDirectShellCommandTurn(input: {
       }
     }
 
-    const isError = executionFailed || cancelled || timedOut || (exitCode != null && exitCode !== 0);
+    const isError = executionFailed || cancelled || timedOut || outputTruncated || (exitCode != null && exitCode !== 0);
     const toolCompletedAt = new Date().toISOString();
     const toolDurationMs = Math.max(0, new Date(toolCompletedAt).getTime() - new Date(toolStartedAt).getTime());
     const toolTiming = { startedAt: toolStartedAt, completedAt: toolCompletedAt, durationMs: toolDurationMs };
@@ -538,6 +540,7 @@ async function runDirectShellCommandTurn(input: {
         timedOut,
         cancelled,
         truncated,
+        outputTruncated,
         executionFailed,
         timing: toolTiming,
         ...(errorMessage ? { errorMessage } : {}),
@@ -566,6 +569,7 @@ async function runDirectShellCommandTurn(input: {
         timedOut,
         cancelled,
         truncated,
+        outputTruncated,
         executionFailed,
         ...(errorMessage ? { errorMessage } : {}),
         llmContextText: formatShellCommandResultForLlm({

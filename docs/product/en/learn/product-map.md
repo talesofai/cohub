@@ -9,7 +9,7 @@ This page maps the product surface so the rest of the docs have a shared layout 
 
 After sign-in, Cohub is a workspace shell:
 
-- **Left sidebar** — Space switcher, Chats, Saves, Works, tasks, labels, and account entry points
+- **Left sidebar** — Space switcher, Chats, Saves, Apps, tasks, labels, and account entry points
 - **Main panel** — usually a Chat, sometimes a settings or management page
 - **Preview / files surface** — open files, directories, and ports beside the conversation
 - **Command palette** — `⌘K` / `Ctrl K` for global search and navigation
@@ -28,7 +28,7 @@ Typical groups:
 | Space header | Current Space, switcher, settings entry |
 | Chats | Conversation list, often organized by labels |
 | Saves | Checkpoint history |
-| Works | Published surfaces for the Space |
+| Apps | Published surfaces for the Space |
 | Tasks / schedules | Async runs and scheduled prompts |
 | Labels | Custom and system organization |
 
@@ -87,7 +87,7 @@ Outside a single Space you also have:
 | --- | --- |
 | Sessions inbox | Cross-space recent Chats |
 | Trending | Discovery of public activity |
-| Public Work page | `/:username/:spaceSlug/w/:workSlug` |
+| Public App page | `/:username/:spaceSlug/w/:appSlug` |
 | Account settings | Profile, appearance, billing, referrals, channel defaults |
 
 ## Mental model
@@ -98,7 +98,7 @@ Account
         ├── Chats + Composer
         ├── Files + Sandbox + Preview
         ├── Saves
-        ├── Works
+        ├── Apps
         ├── Tasks / Scheduled prompts
         ├── Labels
         └── Settings (members, access, channels, mods, env)

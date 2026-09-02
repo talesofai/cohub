@@ -68,6 +68,9 @@
       ],
       "@cohub/protocol/board-constants": [
         "../protocol/src/board-constants.ts"
+      ],
+      "@cohub/protocol/board-connection": [
+        "../protocol/src/board-connection.ts"
       ]
     }
   },

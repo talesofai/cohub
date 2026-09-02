@@ -150,6 +150,7 @@ const drawDefinition: ShapeDefinition = {
 		aspectLocked: true,
 		canEdit: false,
 		canConnect: false,
+		canRotate: false,
 	},
 	getBounds: (item) =>
 		item.type === "draw"

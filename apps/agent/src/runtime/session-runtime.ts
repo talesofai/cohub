@@ -694,7 +694,7 @@ function toolSnippets(toolName: string): string | undefined {
   switch (toolName) {
     case "read": return "Read file contents";
     case "bash": return "Execute bash commands";
-    case "edit": return "Make precise file edits with exact text replacement";
+    case "edit": return "Read the target first, copy oldText verbatim, and use unique surrounding context for precise edits";
     case "write": return "Create or overwrite files";
     case "grep": return "Search file contents";
     case "find": return "Search files by glob pattern";
@@ -769,7 +769,7 @@ export async function createCohubAgentSession(options: CreateCohubAgentSessionOp
       if (isToolFailureDetails(result.details)) return { isError: true };
       const details = result.details as Record<string, unknown> | undefined;
       const termination = details?.termination as Record<string, unknown> | undefined;
-      if (termination?.reason === "timed_out" || termination?.reason === "aborted") return { isError: true };
+      if (termination?.reason === "timed_out" || termination?.reason === "aborted" || details?.outputTruncated === true || termination?.outputTruncated === true) return { isError: true };
       return undefined;
     },
   });

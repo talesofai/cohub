@@ -18,7 +18,7 @@ import type {
 import type { SessionListPageInfo } from "$lib/cache/types";
 
 export const DB_NAME = "cohub-web-cache";
-export const DB_VERSION = 15;
+export const DB_VERSION = 16;
 
 export type SessionListForkRecord = Partial<SessionForkRecord> & {
 	childSessionId: string;
@@ -274,6 +274,7 @@ export type StoreName =
 	| "space_fs_dirs"
 	| "space_fs_epochs"
 	| "space_records"
+	| "space_activity"
 	| "label_trees"
 	| "label_items"
 	| "resource_labels"
@@ -618,6 +619,11 @@ export async function openCacheDb(): Promise<IDBDatabase | null> {
 				db.deleteObjectStore("board_pending_txs");
 			}
 			createStore(db, "space_records", [
+				{ name: "by_user_space", keyPath: ["userKey", "spaceId"] },
+				{ name: "by_last_accessed", keyPath: "lastAccessedAt" },
+				{ name: "by_updated_at", keyPath: "updatedAt" },
+			]);
+			createStore(db, "space_activity", [
 				{ name: "by_user_space", keyPath: ["userKey", "spaceId"] },
 				{ name: "by_last_accessed", keyPath: "lastAccessedAt" },
 				{ name: "by_updated_at", keyPath: "updatedAt" },

@@ -28,6 +28,8 @@ const {
 	footer,
 	mobile = true,
 	maxWidth = "480px",
+	maxHeight = "70vh",
+	scrollable = true,
 }: {
 	open: boolean;
 	onClose: () => void;
@@ -36,6 +38,9 @@ const {
 	footer?: import("svelte").Snippet;
 	mobile?: boolean;
 	maxWidth?: string;
+	maxHeight?: string;
+	/** Keep the dialog body fixed when the content provides its own layout. */
+	scrollable?: boolean;
 } = $props();
 
 const locale = $derived(getLocale());
@@ -95,14 +100,14 @@ const SCALE_TRANSITION_OUT = { ...TRANSITION_OUT, start: 0.95 };
 {/if}
 
 {#snippet modalContent()}
-  <div class="flex flex-col h-full" style="max-height: 70vh">
+  <div class="flex flex-col h-full" style="max-height: {maxHeight}">
     {#if title}
       <div class="h-9 flex items-center justify-between px-3 border-b border-border-subtle text-[10px] font-medium uppercase tracking-wider text-text-tertiary select-none shrink-0">
         <span>{title}</span>
         {@render closeButton()}
       </div>
     {/if}
-    <div class="flex-1 overflow-y-auto min-h-0">
+    <div class:flex-1={true} class:min-h-0={true} class:overflow-y-auto={scrollable} class:overflow-hidden={!scrollable}>
       {@render children()}
     </div>
     {#if footer}
@@ -124,14 +129,14 @@ const SCALE_TRANSITION_OUT = { ...TRANSITION_OUT, start: 0.95 };
 {/snippet}
 
 {#snippet mobileSheetContent()}
-  <div class="flex flex-col max-h-[70vh]">
+  <div class="flex flex-col" style="max-height: {maxHeight}">
     {#if title}
       <div class="h-9 flex items-center justify-between px-3 border-b border-border-subtle text-[10px] font-medium uppercase tracking-wider text-text-tertiary select-none shrink-0">
         <span>{title}</span>
         {@render closeButton()}
       </div>
     {/if}
-    <div class="flex-1 overflow-y-auto min-h-0 pb-safe">
+    <div class:flex-1={true} class:min-h-0={true} class:pb-safe={true} class:overflow-y-auto={scrollable} class:overflow-hidden={!scrollable}>
       {@render children()}
     </div>
     {#if footer}

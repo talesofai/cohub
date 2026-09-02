@@ -525,6 +525,7 @@ router.get("/:id/public", async (c) => {
     .limit(1);
   if (!row) return c.json({ message: "app not found" }, 404);
   if (!row.owner.username || !row.space.slug) return c.json({ message: "app public identity is incomplete" }, 409);
+  recordResolvedAppView(c, app, "web");
   const space = { id: row.space.id, slug: row.space.slug, name: row.space.name, userUuid: row.space.userUuid, publicProfile: getSpacePublicProfile(row.space) };
   // Content matches what the by-slug page already serves for the same access
   // model, so an in-workspace preview can render a Work reached by public url.

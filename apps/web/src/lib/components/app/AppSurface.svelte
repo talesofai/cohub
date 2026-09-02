@@ -1,4 +1,9 @@
 <script lang="ts">
+import {
+	type AppNavigationOpenMessage,
+	buildAppNavigationOpenResponse,
+	parseAppNavigationOpenMessage,
+} from "@cohub/protocol/app-navigation";
 import { parseAppRuntimeReady } from "@cohub/protocol/app-runtime";
 import type { AppComposerChip } from "@cohub/protocol/app-surface";
 import type {
@@ -9,7 +14,7 @@ import type {
 import { onMount, untrack } from "svelte";
 import { page } from "$app/state";
 import { appDisplayTitle } from "$lib/app-page-meta";
-import { type AppLaunchState, buildAppIframeUrl } from "$lib/app-url";
+import { type AppLaunchState, resolveAppFrame } from "$lib/app-url";
 import WorkBoardSurface from "$lib/components/app/AppBoardSurface.svelte";
 import WorkFileSurface from "$lib/components/app/AppFileSurface.svelte";
 import { readAppCheckoutState } from "$lib/components/app/app-checkout-state";
@@ -67,6 +72,14 @@ type Props = {
 	onSurfaceHost?: (host: AppSurfaceHost | null) => void;
 	onComposerChip?: (chip: AppComposerChip | null) => void;
 	onReady?: () => void;
+	onNavigationOpen?: (
+		message: AppNavigationOpenMessage,
+	) => Promise<
+		Omit<
+			import("@cohub/protocol/app-navigation").AppNavigationOpenResponse,
+			"protocol" | "version" | "type" | "requestId"
+		>
+	>;
 };
 
 const {
@@ -80,6 +93,7 @@ const {
 	onSurfaceHost = undefined,
 	onComposerChip = undefined,
 	onReady = undefined,
+	onNavigationOpen = undefined,
 }: Props = $props();
 
 let frame: HTMLIFrameElement | null = $state(null);
@@ -97,10 +111,10 @@ function reportReady() {
 const isBackground = $derived(mode === "background");
 const isAppWindow = $derived(mode === "app");
 const spaceName = $derived(space?.name || space?.slug || "Space");
-const appTitle = $derived(appDisplayTitle(app.meta, app.slug));
+const appTitle = $derived(appDisplayTitle(app?.meta, app?.slug ?? "App"));
 const publisherName = $derived(owner?.displayName ?? "Cohub");
 const publisherAvatarUrl = $derived(owner?.avatarUrl?.trim() || null);
-const hideCohubBar = $derived(app.meta?.presentation?.hideCohubBar === true);
+const hideCohubBar = $derived(app?.meta?.presentation?.hideCohubBar === true);
 // Board and file Works render natively; only web and port Works are embedded.
 const boardContent = $derived(content?.kind === "board" ? content : null);
 const fileContent = $derived(content?.kind === "file" ? content : null);
@@ -110,45 +124,25 @@ const embeddedContent = $derived(
 		: null,
 );
 const nativeContent = $derived(boardContent ?? fileContent);
-const iframeSrc = $derived.by(() => {
-	const contentUrl =
-		embeddedContent?.url ??
-		(!content && app.targetType === "port" ? app.targetRef : "");
-	return buildAppIframeUrl(contentUrl, launchState);
-});
-function isAllowedFrameOrigin(origin: string, targetType: string) {
-	try {
-		const { protocol, hostname } = new URL(origin);
-		if (protocol !== "https:") return false;
-		if (targetType === "port")
-			return ["cohub.live", "cohub.run"].some(
-				(domain) => hostname === domain || hostname.endsWith(`.${domain}`),
-			);
-		return true;
-	} catch {
-		return false;
-	}
-}
+const frameDescriptor = $derived.by(() => {
+	if (!app) return null;
 
-const frameOrigin = $derived.by(() => {
-	if (!iframeSrc) return null;
-	try {
-		const origin = new URL(iframeSrc, page.url).origin;
-		if (origin === page.url.origin) return origin;
-		return isAllowedFrameOrigin(origin, app.targetType) ? origin : null;
-	} catch {
-		return null;
-	}
+	return resolveAppFrame({
+		contentUrl:
+			embeddedContent?.url ??
+			(!content && app.targetType === "port" ? app.targetRef : ""),
+		launchState,
+		baseHref: page.url.href,
+		targetType: app.targetType,
+	});
 });
-const hasFrameSource = $derived(Boolean(iframeSrc && frameOrigin));
+const iframeSrc = $derived(frameDescriptor?.url ?? "");
+const frameOrigin = $derived(frameDescriptor?.origin ?? null);
+const hasFrameSource = $derived(Boolean(frameDescriptor));
 const shouldRenderFrame = $derived(
 	Boolean(bridgeReady && hasFrameSource && !nativeContent),
 );
 const frameReplyTarget = $derived(frameOrigin ?? page.url.origin);
-const framePreconnectOrigin = $derived.by(() => {
-	if (!frameOrigin || frameOrigin === page.url.origin) return null;
-	return frameOrigin;
-});
 // A new document invalidates any announced methods.
 $effect(() => {
 	void iframeSrc;
@@ -227,6 +221,33 @@ function pushSurfaceContext() {
 async function onFrameMessage(event: MessageEvent) {
 	if (event.source !== frame?.contentWindow) return;
 	if (!frameOrigin || event.origin !== frameOrigin) return;
+	const navigation = parseAppNavigationOpenMessage(event.data);
+	if (navigation) {
+		let result:
+			| Omit<
+					import("@cohub/protocol/app-navigation").AppNavigationOpenResponse,
+					"protocol" | "version" | "type" | "requestId"
+			  >
+			| undefined;
+		try {
+			result = onNavigationOpen
+				? await onNavigationOpen(navigation)
+				: { handled: false as const, reason: "unsupported" as const };
+		} catch {
+			result = { handled: false as const, reason: "inaccessible" as const };
+		}
+		frame?.contentWindow?.postMessage(
+			buildAppNavigationOpenResponse({
+				requestId: navigation.requestId,
+				...(result ?? {
+					handled: false as const,
+					reason: "inaccessible" as const,
+				}),
+			}),
+			frameReplyTarget,
+		);
+		return;
+	}
 	if (isBackground) {
 		const action = parseNewChatBackgroundAction(event.data);
 		if (action) {
@@ -262,12 +283,6 @@ onMount(() => {
 });
 </script>
 
-<svelte:head>
-	{#if framePreconnectOrigin}
-		<link rel="preconnect" href={framePreconnectOrigin} crossorigin="anonymous" />
-	{/if}
-</svelte:head>
-
 <div class={isBackground ? "app-surface background" : isAppWindow ? "app-surface app" : "app-surface page"}>
 	{#if boardContent}
 		<div class="app-native">
@@ -277,6 +292,8 @@ onMount(() => {
 		<div class="app-native">
 			<WorkFileSurface content={fileContent} />
 		</div>
+	{:else if !app}
+		<div class="empty-state">Loading App…</div>
 	{:else if shouldRenderFrame}
 		<iframe
 			bind:this={frame}

@@ -31,6 +31,12 @@ Choose one target:
 - `--dir <path>` for a directory site with `index.html`
 - `--port 3000` or `--port 5173` for a running preview
 
+`--file` and `--dir` paths are relative to the target Space's workspace (the
+same paths `spaces files ls` shows) — not the local filesystem. Inside a
+sandbox, `/workspace` maps to the Space workspace, so project-relative paths
+work as-is. Outside a sandbox, upload local build output first
+(`spaces files upload <dir>`), then publish the Space-side path.
+
 ## App Slug
 
 Use a short, stable slug like `demo`, `report`, or `dashboard`. Keep an existing slug when updating an App. Ask before changing a user-provided slug.

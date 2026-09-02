@@ -49,6 +49,7 @@ type Props = {
 		message: StoredIntermediateMessage;
 	}) => Promise<MessageToolCallsFile | null>;
 	onOpenFile?: (target: OpenWorkspaceFileTarget) => void;
+	onOpenUrl?: (href: string, event: MouseEvent) => void | Promise<void>;
 };
 
 const {
@@ -61,6 +62,7 @@ const {
 	onRequestIntermediateSync,
 	onLoadToolCalls,
 	onOpenFile,
+	onOpenUrl,
 }: Props = $props();
 
 const locale = $derived(getLocale());
@@ -391,7 +393,7 @@ const summaryLabel = $derived(
 				</button>
 			{/if}
 			{#each expandedMessages as msg (msg.id)}
-				<IntermediateMessageBubble message={msg} streaming={streaming} {modelsCatalog} onLoadToolCalls={onLoadToolCalls ? () => onLoadToolCalls({ turn, message: msg }) : undefined} {onOpenFile} />
+				<IntermediateMessageBubble message={msg} streaming={streaming} {modelsCatalog} onLoadToolCalls={onLoadToolCalls ? () => onLoadToolCalls({ turn, message: msg }) : undefined} {onOpenFile} {onOpenUrl} />
 			{/each}
 		</div>
 		<button type="button" class="flex items-center gap-1.5 px-2 py-1.5 text-left transition-colors hover:bg-bg-hover/50 cursor-pointer text-text-placeholder hover:text-text-tertiary rounded-md self-start" onclick={() => void toggle()}>

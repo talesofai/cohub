@@ -1,4 +1,8 @@
 <script lang="ts">
+import type {
+	AppNavigationOpenMessage,
+	AppNavigationOpenResponse,
+} from "@cohub/protocol/app-navigation";
 import type { AppComposerChip } from "@cohub/protocol/app-surface";
 import { page } from "$app/state";
 import { type CohubAppUrl, parseCohubAppUrl } from "$lib/app-url";
@@ -16,9 +20,22 @@ type Props = {
 	/** Current Space, used to serve space-local file backgrounds. */
 	spaceId?: string | null;
 	onAppComposerChip?: (appId: string, chip: AppComposerChip | null) => void;
+	onNavigationOpen?: (
+		message: AppNavigationOpenMessage,
+	) => Promise<
+		Omit<
+			AppNavigationOpenResponse,
+			"protocol" | "version" | "type" | "requestId"
+		>
+	>;
 };
 
-const { background, spaceId = null, onAppComposerChip }: Props = $props();
+const {
+	background,
+	spaceId = null,
+	onAppComposerChip,
+	onNavigationOpen,
+}: Props = $props();
 
 const locale = $derived(getLocale());
 
@@ -126,7 +143,12 @@ $effect(() => {
     <NewChatSpaceBackground spaceId={spaceId} path={spacePath} />
   {:else if appUrl}
     <svelte:boundary onerror={handleWorkBackgroundError}>
-      <NewChatAppBackground appUrl={appUrl} onComposerChip={onAppComposerChip} />
+      <NewChatAppBackground
+        appUrl={appUrl}
+        currentSpaceId={spaceId}
+        onComposerChip={onAppComposerChip}
+        onNavigationOpen={onNavigationOpen}
+      />
       {#snippet failed()}
         <div class="new-chat-background-state">{m.newchat_bg_app_unavailable({}, { locale })}</div>
       {/snippet}

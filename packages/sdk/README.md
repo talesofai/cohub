@@ -233,9 +233,11 @@ provides short-lived access tokens — no API keys required.
 
 These runtime-only APIs are available **exclusively inside a published App**:
 
-- `client.context()` — returns App identity, Space identity, the current
-  viewer, permissions, and optional invocation identifiers. Returns `null`
-  outside an App runtime. `client.app.onContextChanged()` pushes fresh state.
+- `client.context()` — returns App identity, App home Space identity, the current
+  viewer, permissions, and optional invocation identifiers. The hosting Space
+  for a new chat background is available as `context.invocation.spaceId`.
+  Returns `null` outside an App runtime. `client.app.onContextChanged()` pushes
+  fresh state.
 - `client.auth.request({ scopes, reason, spaceId?, alwaysAsk? })` — ensures
   the app holds these scopes; silent when a grant covers them, consent dialog
   otherwise.
@@ -259,7 +261,10 @@ const ctx = await client.context();
 if (!ctx?.space?.id) throw new Error("Not inside a published app.");
 
 const sourceSessionId = ctx.invocation?.sessionId ?? null;
-const space = client.space(ctx.space.id);
+// `app.homeSpace` is the App's owning Space. For a new chat background,
+// `invocation.spaceId` is the Space currently hosting the App.
+const spaceId = ctx.invocation?.spaceId ?? ctx.app.homeSpace?.id ?? ctx.space.id;
+const space = client.space(spaceId);
 
 // Request viewer grants from a user gesture (button click)
 await client.auth.request({
@@ -334,4 +339,4 @@ viewer a single seat instead.
 
 For the complete API-to-scope mapping, initialization recipe, capability
 recipes, a full working example, and a pitfalls checklist, see the
-**[App Runtime Guide](./docs/work-runtime-guide.md)**.
+**[App Runtime Guide](./docs/app-runtime-guide.md)**.

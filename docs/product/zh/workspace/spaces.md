@@ -3,7 +3,7 @@ title: Spaces
 description: 在 Cohub 中创建、打开、配置 Space，并把它当作主要工作单元。
 ---
 
-Space 是 Cohub 的工作单元。Chats、文件、Saves、Works 和设置都属于某个 Space。
+Space 是 Cohub 的工作单元。Chats、文件、Saves、Apps 和设置都属于某个 Space。
 
 ## 创建 Space
 
@@ -31,7 +31,7 @@ Space 是 Cohub 的工作单元。Chats、文件、Saves、Works 和设置都属
 - Chat 列表
 - 文件与 Sandbox 状态
 - Saves
-- Works
+- Apps
 - 成员与访问策略
 
 最近 Space 记忆能帮你回到上次位置，但若上下文不对，先看 Space 头部确认。
@@ -45,7 +45,7 @@ Space 是 Cohub 的工作单元。Chats、文件、Saves、Works 和设置都属
 - 再开一个 Chat
 - 打开文件 / 预览
 - 查看 Saves
-- 管理 Works
+- 管理 Apps
 - 打开 Space settings
 
 ## 身份与公开 URL 片段
@@ -56,10 +56,10 @@ Space 是 Cohub 的工作单元。Chats、文件、Saves、Works 和设置都属
 - **Name** — 显示名称
 - **Slug** — 可公开寻址时的路径片段
 
-公开 Works 依赖 username + space slug + work slug：
+公开 Apps 依赖 username + space slug + app slug：
 
 ```text
-/:username/:spaceSlug/w/:workSlug
+/:username/:spaceSlug/w/:appSlug
 ```
 
 发布重要内容前，先设好可读的 space slug。
@@ -74,7 +74,7 @@ Space 是 Cohub 的工作单元。Chats、文件、Saves、Works 和设置都属
 | Mods | 只读挂载的能力 |
 | Sandbox | 规格、休眠、恢复 |
 | Env | 运行时环境变量 |
-| Commerce | 启用时给 Works 用的产品 |
+| Commerce | 启用时给 Apps 用的产品 |
 
 日常创作很少需要一次配齐。等协作或发布真正需要时再配置。
 
@@ -93,7 +93,7 @@ Spaces 可以把其他 Spaces 挂为 Mods。
 - 尽量一个重要事项对应一个 Space
 - 同一事项内用多个 Chats 并行推进
 - 大改前先 Save
-- 从稳定文件 / 端口目标发布 Works
+- 从稳定文件 / 端口目标发布 Apps
 - 优先用 labels，而不是无休止重命名 Chat
 
 ## 相关
@@ -101,4 +101,4 @@ Spaces 可以把其他 Spaces 挂为 Mods。
 - [Chats](/zh/docs/workspace/chats)
 - [Files 与 Sandbox](/zh/docs/workspace/files-and-sandbox)
 - [Saves](/zh/docs/workspace/saves)
-- [Works](/zh/docs/create/works)
+- [Apps](/zh/docs/create/apps)

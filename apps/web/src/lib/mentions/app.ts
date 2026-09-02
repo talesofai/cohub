@@ -1,4 +1,5 @@
 import { parseSpaceSlug, parseUsername } from "@cohub/protocol";
+import { COHUB_WEB_ORIGIN_SOURCE } from "./platform-origin";
 
 export type AppMention = {
 	type: "app";
@@ -21,7 +22,7 @@ export type ParsedCohubAppLink = {
 const APP_URI_PREFIX = "cohub://apps/";
 const RESOURCE_PATH_END_PATTERN = "(?![a-z0-9_%/-]|\\.[a-z0-9])";
 const COHUB_APP_LINK_PATTERN = new RegExp(
-	`(?:https?:\\/\\/(?:dev\\.)?cohub\\.run|https?:\\/\\/localhost(?::\\d+)?)\\/([a-z0-9](?:[a-z0-9-]{0,37}[a-z0-9])?)\\/([a-z0-9](?:[a-z0-9_-]{0,78}[a-z0-9])?)\\/w\\/([a-z0-9](?:[a-z0-9_-]{0,78}[a-z0-9])?)((?:[?#][^\\s)\\]]*)?)${RESOURCE_PATH_END_PATTERN}|(^|[\\s([{<:,;!?，。！？、；：])\\/([a-z0-9](?:[a-z0-9-]{0,37}[a-z0-9])?)\\/([a-z0-9](?:[a-z0-9_-]{0,78}[a-z0-9])?)\\/w\\/([a-z0-9](?:[a-z0-9_-]{0,78}[a-z0-9])?)((?:[?#][^\\s)\\]]*)?)${RESOURCE_PATH_END_PATTERN}`,
+	`${COHUB_WEB_ORIGIN_SOURCE}\\/([a-z0-9](?:[a-z0-9-]{0,37}[a-z0-9])?)\\/([a-z0-9](?:[a-z0-9_-]{0,78}[a-z0-9])?)\\/w\\/([a-z0-9](?:[a-z0-9_-]{0,78}[a-z0-9])?)((?:[?#][^\\s)\\]]*)?)${RESOURCE_PATH_END_PATTERN}|(^|[\\s([{<:,;!?，。！？、；：])\\/([a-z0-9](?:[a-z0-9-]{0,37}[a-z0-9])?)\\/([a-z0-9](?:[a-z0-9_-]{0,78}[a-z0-9])?)\\/w\\/([a-z0-9](?:[a-z0-9_-]{0,78}[a-z0-9])?)((?:[?#][^\\s)\\]]*)?)${RESOURCE_PATH_END_PATTERN}`,
 	"gi",
 );
 
@@ -130,7 +131,7 @@ export function parseCohubAppUrls(value: string, maxMatches = 20) {
 	return matches;
 }
 
-export function replaceCohubWorkUrls(
+export function replaceCohubAppUrls(
 	value: string,
 	resolveLabel: (link: ParsedCohubAppLink) => string | null | undefined,
 ) {
@@ -140,18 +141,18 @@ export function replaceCohubWorkUrls(
 			match,
 			absoluteUsername: string,
 			absoluteSpaceSlug: string,
-			absoluteWorkSlug: string,
+			absoluteAppSlug: string,
 			absoluteSuffix: string,
 			relativePrefix: string,
 			relativeUsername: string,
 			relativeSpaceSlug: string,
-			relativeWorkSlug: string,
+			relativeAppSlug: string,
 			relativeSuffix: string,
 		) => {
 			const identity = parseAppIdentity(
 				absoluteUsername || relativeUsername,
 				absoluteSpaceSlug || relativeSpaceSlug,
-				absoluteWorkSlug || relativeWorkSlug,
+				absoluteAppSlug || relativeAppSlug,
 			);
 			const launchSuffix = absoluteSuffix || relativeSuffix || "";
 			if (!identity) return match;

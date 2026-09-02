@@ -141,10 +141,11 @@ type RPCFailed struct {
 }
 
 type ProcessTermination struct {
-	Reason      string `json:"reason"`
-	ExitCode    *int   `json:"exitCode"`
-	TimeoutSecs int    `json:"timeoutSecs,omitempty"`
-	Message     string `json:"message,omitempty"`
+	Reason          string `json:"reason"`
+	ExitCode        *int   `json:"exitCode"`
+	TimeoutSecs     int    `json:"timeoutSecs,omitempty"`
+	Message         string `json:"message,omitempty"`
+	OutputTruncated bool   `json:"outputTruncated,omitempty"`
 }
 
 type RPCEventPayload struct {

@@ -3,7 +3,7 @@ import {
 	buildAppMentionUri,
 	type ParsedCohubAppLink,
 	parseAppMentionUri,
-	replaceCohubWorkUrls,
+	replaceCohubAppUrls,
 } from "./app";
 import {
 	buildSpaceMentionHref,
@@ -60,8 +60,8 @@ export function tokenizeResourceMentionText(
 		const label = match[1]?.trim() ?? "";
 		const uri = match[2] ?? "";
 		const space = parseSpaceMentionUri(uri);
-		const work = parseAppMentionUri(uri);
-		if (!raw || !label || (!space && !work)) {
+		const app = parseAppMentionUri(uri);
+		if (!raw || !label || (!space && !app)) {
 			tokens.push({ type: "text", text: raw });
 		} else if (space) {
 			tokens.push({
@@ -73,14 +73,14 @@ export function tokenizeResourceMentionText(
 				uri: buildSpaceMentionUri(space.spaceId, space.sessionId),
 				href: buildSpaceMentionHref(space.spaceId, space.sessionId),
 			});
-		} else if (work) {
+		} else if (app) {
 			tokens.push({
 				type: "appMention",
 				label,
-				...work,
+				...app,
 				raw,
-				uri: buildAppMentionUri(work),
-				href: buildAppMentionHref(work),
+				uri: buildAppMentionUri(app),
+				href: buildAppMentionHref(app),
 			});
 		}
 		cursor = index + raw.length;
@@ -100,11 +100,11 @@ export function replaceCohubResourceUrls(
 	text: string,
 	resolve: {
 		space: (link: ParsedCohubSpaceLink) => string | null | undefined;
-		work: (link: ParsedCohubAppLink) => string | null | undefined;
+		app: (link: ParsedCohubAppLink) => string | null | undefined;
 	},
 ) {
-	return replaceCohubWorkUrls(
+	return replaceCohubAppUrls(
 		replaceCohubSpaceUrls(text, resolve.space),
-		resolve.work,
+		resolve.app,
 	);
 }

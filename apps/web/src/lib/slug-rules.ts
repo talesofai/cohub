@@ -90,7 +90,7 @@ export function validateSpaceSlugInput(
 	return result;
 }
 
-export function validateWorkSlugInput(
+export function validateAppSlugInput(
 	value: string,
 	options?: { required?: boolean; label?: string },
 ) {

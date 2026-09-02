@@ -1,6 +1,6 @@
 {
   "name": "@neta-art/cohub-cli",
-  "version": "6.1.1",
+  "version": "6.4.0",
   "description": "CLI for Cohub — spaces, sessions, and agent collaboration.",
   "type": "module",
   "license": "Apache-2.0",
@@ -21,19 +21,19 @@
   },
   "dependencies": {
     "@neta-art/cohub": "workspace:*",
-    "@neta-art/generation": "^0.1.21",
+    "@neta-art/generation": "^0.1.23",
     "commander": "^15.0.0",
-    "pixi.js": "^8.19.0",
-    "sharp": "^0.35.3"
+    "pixi.js": "^8.20.1",
+    "sharp": "^0.35.4"
   },
   "publishConfig": {
     "access": "public"
   },
   "devDependencies": {
-    "@types/node": "^26.1.1",
+    "@types/node": "^26.4.0",
     "typescript": "^7.0.2"
   },
   "optionalDependencies": {
-    "@napi-rs/canvas": "^1.0.2"
+    "@napi-rs/canvas": "^1.0.8"
   }
 }

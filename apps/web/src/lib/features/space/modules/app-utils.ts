@@ -1,4 +1,4 @@
-import type { Permission, WorkRecord } from "@neta-art/cohub";
+import type { AppRecord, Permission } from "@neta-art/cohub";
 
 export const APP_SCOPE_OPTIONS: {
 	scope: Permission;
@@ -75,7 +75,7 @@ export function selectedScopeList(
 	return options.map((option) => option.scope).filter((scope) => state[scope]);
 }
 
-export function appStatusTone(status: WorkRecord["status"]) {
+export function appStatusTone(status: AppRecord["status"]) {
 	if (status === "published") return "text-status-running";
 	if (status === "disabled") return "text-error-soft";
 	return "text-text-tertiary";

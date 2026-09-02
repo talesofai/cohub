@@ -126,7 +126,7 @@ export class GatewayManager {
       const staleNodeIds = await redisCommandClient.zrangebyscore("gateway:nodes", 0, staleBefore);
       await redisCommandClient
         .multi()
-        .zadd("gateway:nodes", now, this.nodeId)
+        .zadd("gateway:nodes", String(now), this.nodeId)
         .zremrangebyscore("gateway:nodes", 0, staleBefore)
         .exec();
 

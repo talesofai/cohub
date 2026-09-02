@@ -4,6 +4,106 @@ All notable changes to Cohub are documented in this file.
 
 <!-- Generated from apps/web/src/lib/changelog/entries.json. Do not edit. -->
 
+## v2.38 — 2026-09-03
+
+- **App Center**: Spaces gain an Apps panel alongside Files (desktop sidebar and mobile drawer) listing installed Apps with enable/disable and uninstall, plus a new first-party Marketplace App for discovery and installation; installed Apps live in a validated `.cohub/apps.json` space file with LRU caching and realtime cross-client refresh, and the protocol adds versioned marketplace/installed-app schemas with canonical `username/space/app` references
+- **Atomic Board batches in the CLI**: `cohub boards batch` applies a JSON batch of semantic commands in one atomic round-trip with `--dry-run`, strict `--base-version` optimistic concurrency, and idempotent `--mutation-id` retries; the board surface is streamlined end to end — targets resolve by Board ID or `.board` path, `boards connections` list/get typed relations, items/effects/compositions gain get-by-ID reads, playback consolidates under `boards playback`, and examples scaffold workflow, media, and animation boards
+- **Structured Board validation diagnostics**: authoring failures now surface diagnostics whose paths map internal node storage back to the authoring JSON (`items.0.props.text`), thrown as `BoardItemValidationError` from the codec, and the Board API unifies on a stable error contract with machine-readable codes, diagnostics arrays, and `requestId` on server failures
+- **Public SDK Board mutation schema**: `BoardSemanticCommandSchema` is exported from the SDK (8.6.0) so board mutations can be validated and compiled outside the API, with `BoardItemValidationError` re-exported from the core board module
+- **Board geometry normalization**: The semantic authoring format replaces the opaque `frame` with `position`/`size`/`rotation`; draw and arrow geometry is authored in world space, and item frames are now derived automatically from stroke and curve bounds with validation against canonical geometry
+- **Shared Board geometry core**: Draw bounds, stroke radii, and arrow curve math moved into `@cohub/protocol` as renderer-independent contracts, now consumed by the SDK, CLI, and web editor so exports and live rendering can never drift
+- **Backend-aware Board rendering**: Render context now declares its backend (`gpu` vs `canvas`) — live editing keeps the cached-tessellation fast path for draw strokes while headless export uses a Canvas2D fallback, with draw geometry computed once per item instead of per frame
+- **CLI board authoring feedback**: `boards create` now reports the created board file path (including in JSON output), and `boards items list/get` show derived x/y/width/height columns for draw and arrow items
+- **Live app sidebar sync**: The web workspace refreshes its installed-apps sidebar when the apps document changes through filesystem events, so installs from other clients or the CLI appear without a reload
+
+### Bug Fixes
+
+- Cron schedulers no longer drift from their database records: scheduler keys are always derived from the cron job id, scheduler cleanup retries transient queue failures, and failed creations persist an explicit disabled state instead of leaving orphaned schedulers behind
+- Board CLI example templates were corrected to produce schema-valid v2 boards (defaulted effect fields removed, scale keyframes accept zero), and the unused `draw.handwrite` clip kind was dropped from the built-in animation registry
+- **Marketplace space selection**: Opening Marketplace outside a Space now prompts you to choose one instead of failing
+- **Marketplace authorization flow**: Browsing and installing request scopes that match the action, and permission denials recover via a clear re-authorize prompt instead of wedging the catalog
+
+## v2.37 — 2026-09-01
+
+- **Board freehand stroke tessellation**: reworked stroke rendering in the SDK to tessellate freehand paths as segment quads with round joins (with per-vertex progress for reveal animations) instead of filling a single outline polygon — strokes that fold back over themselves no longer produce large accidental fills
+- **Board animation realtime sync**: pure animation mutations (effects/compositions, ≤16 KB patch) now ship a server-authored `animationPatch` in `BoardChangedEvent`, letting clients apply animation updates directly from the realtime event instead of refetching board state
+- **Works → App rename**: completed the vocabulary migration across product docs (en/zh), SDK/CLI READMEs and examples, and added a new scenario-driven App development guide covering runtime modes, capability recipes, and the permission model
+- **SDK debugger response capture**: response bodies over `maxResponseCaptureBytes` (default 256 KB) are skipped during streaming instead of buffered and truncated after the fact, with an explicit `bodyCaptureSkipped` flag on network entries
+
+### Bug Fixes
+
+- Pasted cohub.live links (and legacy cohub.run/localhost) are now converted to composer mention chips; previously links copied from the primary domain stayed plain text
+- Dropped duplicate board-constants value re-exports in `@cohub/protocol` that made import-in-the-middle (OpenTelemetry ESM hook) drop ambiguous exports and break the iitm runtime
+
+## v2.36 — 2026-08-31
+
+- **Recoverable agent edits**: file edits now tolerate safe line-ending, BOM, and trailing-whitespace differences, validate all replacements against one snapshot, and return match locations plus nearby text when a stale or ambiguous edit fails.
+- **Reliable cross-platform command output**: sandbox processes now drain stdout and stderr concurrently without losing buffered output, report truncation explicitly, and bound inherited descriptors so commands cannot hang after a child exits.
+- **Non-blocking CLI updates**: CLI self-updates run in a detached background worker after the foreground command exits and apply on the next invocation; set `COHUB_CLI_AUTO_UPDATE=0` to disable them.
+- **Robust public App and device handling**: public App pages preserve the legacy Work-era response shape while using the current App data model, and composer layout detection distinguishes phones and tablets from touch-enabled desktop browsers.
+
+### Bug Fixes
+
+- Sandbox RPC business errors are no longer misclassified as connection failures when their file content happens to contain connection-like text.
+- Public App pages no longer initialize the surface against an incompatible or incomplete server response, preventing published Apps from failing during SSR.
+
+## v2.35 — 2026-08-28
+
+- **App home Space context**: `client.context()` now exposes the owning Space as `app.homeSpace` (id and name), and new chat background invocations pass the hosting Space as `invocation.spaceId`, letting apps and chat backgrounds theme against the Space they actually run in; the top-level `context.space` field is deprecated in favor of `app.homeSpace`, and the legacy `work` projection stays stable as App context gains fields.
+- **Space FS `ctimeMs`**: file read, stat, and ls results now expose metadata change time as `ctimeMs` (epoch ms, when available) end-to-end — from the Go sandbox RPC dispatcher (via `stat.Ctim`) through the API (including the FS CDN cache path) to the SDK and protocol types — and `stat` additionally reports `isFile` for regular files.
+
+## v2.34 — 2026-08-28
+
+- **Space activity overview**: New end-to-end analytics view shipped across the stack — a `/spaces/:id/activity` API aggregating hourly token and generation usage, contributor rankings, and app view rankings from hourly stats tables, a web dashboard with usage heatmap, contributor list, and stat strip backed by an IndexedDB cache repository, plus `cohub spaces activity` in the CLI and `space.activity` in the SDK. Cost figures are stripped for viewers without space-management access.
+- **Unified space picker**: App authorization and the command palette now share one space-picker model (`space-picker-model.ts`) with search plus Recent/All/Mine/Pinned filters and recent-Space-aware ordering. The authorize dialog gains a two-step choose-then-review flow instead of a flat radio list.
+- **SDK activity types**: `SpaceActivityResponse` and related contributor/ranking types are exported from the SDK with typed `SpaceActivityApi`, giving clients a stable contract for activity data.
+
+### Bug Fixes
+
+- Command palette no longer flashes between unrelated datasets when toggling Recent/All tabs — both tab lists stay alive across switches instead of falling back to localStorage recents while IndexedDB rebuilds.
+- CLI `apps publish`/`update` preflights Space-path `--file`/`--dir` targets against the Space workspace and reports explicit, self-explanatory errors instead of a bare 404, with worker fs errors translated to the same wording.
+- Space activity API serializes timestamp parameters in raw SQL queries (postgres.js requires serialized values), fixing incorrect time-bound filtering in contributor usage queries.
+
+## v2.33 — 2026-08-27
+
+- **Stable command-palette Recent list**: the first frame is now the cached server payload folded with local caches (device visits, viewer-authored turns, newly cached spaces/sessions) instead of a pure local synthesis, so the list matches what the refetched overview returns and no longer visibly re-sorts or jumps when fresh data lands.
+- **Space root is the new chat landing**: `/spaces/:id` renders the new-session draft directly instead of 307-redirecting to `/sessions/new`, with the session workspace hoisted into a shared Space layout so it stays mounted across root and session routes — one fewer navigation hop to start chatting, previews preserved during navigations.
+- **Landing editorial pass**: dropped stale multiplayer, generation, and live-apps captures; Same room, Live Works, and Any medium sections restyled as centred statements with tightened copy so the whitespace reads as rhythm rather than missing media.
+- **Route-layer consolidation**: legacy `/sessions/new` redirect inverted into the canonical Space-root route, unified `buildSpaceNewSessionRoute`/`buildSpaceLandingRoute` builders, and mobile session forward/back transitions extended to cover the new landing path — all under fresh unit tests (`space-routes`, `navigation-transition`, `palette-overview-local`).
+
+### Bug Fixes
+
+- Agent bash tool no longer exposes `run_in_background` in its parameter schema and description (the hidden parameter remains accepted for compatibility), keeping the tool surface clean for models.
+- Space preview window query params are parsed at the Space root load, so window kind/key state survives the removal of the redirect-based landing.
+
+## v2.32 — 2026-08-27
+
+- **Command palette instant defaults**: Default lists (no query) and the All / Mine / Pinned tabs are back to local derivation, rendering immediately from IndexedDB / space-list caches with no overview snapshot refetch or snapshot-driven re-sort; the space picker Recent tab synthesizes an overview locally from caches when its snapshot is stale, removing first-frame flicker.
+- **Activity-first Recent ordering**: Recent spaces are now ordered strictly by personal activity time (visits + viewer-authored turns + server participation), applied consistently across client palette building, local overview synthesis, and the overview API — stale pinned spaces no longer float above recently used ones.
+- **Model status pipeline refactor**: Model availability now derives from observed traffic with probe fallback, so online-only models appear alongside probed ones; aggregation logic was extracted into a dedicated tested transform module while the Redis-cached `/models-status` route got a slimmer v2 payload.
+- **Faster embedded app loads**: Server-rendered heads emit a `preconnect` hint for cross-origin app frame origins, and iframe URL resolution was unified into a single origin-validated resolver in `app-url`.
+
+### Bug Fixes
+
+- Command palette: the overview refetch is no longer tied to the search abort controller, which previously cancelled it mid-flight and delayed the correct list by another request cycle.
+- Model selector: latency hover-card values render via proper i18n calls instead of literal message keys, availability dots and hover cards are scoped to cohub-provider models, and the redundant samples row was dropped from the card.
+
+## v2.31 — 2026-08-27
+
+- **Personal-relevance command palette**: New GET /api/palette/overview endpoint plus tiered search ranking (personal > space member > public-only) that groups turns per session, backed by a memory + localStorage stale-while-revalidate client cache so the default list opens instantly
+- **Recent tab in space picker & palette**: New default tab ordered pinned-first, then by folded personal activity time combining server participation, device-local visits, and viewer-owned session activity; the legacy list remains under "All" with manual tab preference remembered
+- **Prompt quick actions**: Prompt templates can opt into rendering as one-click buttons above the chat composer via quick-action/button-label/order frontmatter; template parsing is deduplicated into @cohub/infra and the prompts Redis cache moves to key version v2
+- **Unified public asset uploads**: Dropped the legacy S3 POST form-upload path entirely — uploads now use presigned PUT exclusively, simplifying SDK transfer logic and removing Safari FormData filename workarounds
+
+### Bug Fixes
+
+- Palette overview failed with PostgreSQL 42601 for users without pinned spaces; SQL fragment fixed and all-empty degraded payloads are no longer cached or rendered
+- Overview rows returned snake_case columns so owner profiles, avatars, timestamps, and pin/relation state silently dropped — output aliased to camelCase
+- Workspace agent catalogs (prompts, skills) now refresh reliably after file changes via a coordinated invalidation flow
+- Sessions starting with direct shell commands now derive proper titles instead of failing title projection
+- App updates no longer lose previously granted authorization scopes
+- Recent tab ordering: re-sort no longer washed out by the global score sort, and row timestamps match the actual ordering signal
+
 ## v2.30 — 2026-08-26
 
 - **Task Browser stale task cache**: Query results now render instantly from a per-identity local cache, refresh silently in the background, and gracefully fall back to cached data when a refresh fails.

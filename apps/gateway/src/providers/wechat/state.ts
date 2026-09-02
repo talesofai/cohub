@@ -40,14 +40,14 @@ export async function setWeChatContextToken(channelId: string, externalChatId: s
   await redisCommandClient
     .multi()
     .hset(tokenKey, peer, token)
-    .zadd(indexKey, now, peer)
+    .zadd(indexKey, String(now), peer)
     .expire(tokenKey, CONTEXT_TOKEN_TTL_SECONDS)
     .expire(indexKey, CONTEXT_TOKEN_TTL_SECONDS)
     .exec();
 
   const overflow = await redisCommandClient.zcard(indexKey) - CONTEXT_TOKEN_MAX_PEERS;
   if (overflow > 0) {
-    const stalePeers = await redisCommandClient.zrange(indexKey, 0, overflow - 1);
+    const stalePeers = await redisCommandClient.zrange(indexKey, 0, String(overflow - 1));
     if (stalePeers.length > 0) {
       await redisCommandClient.multi().hdel(tokenKey, ...stalePeers).zrem(indexKey, ...stalePeers).exec();
     }

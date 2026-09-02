@@ -111,6 +111,7 @@ test("context message replies with app, viewer, and invocation metadata", async 
 	const app = context.app as Record<string, unknown>;
 	assert.equal(app.id, "work_123");
 	assert.equal(app.slug, "my-work");
+	assert.deepEqual(app.homeSpace, { id: "space_1", name: null });
 	assert.deepEqual(context.space, { id: "space_1" });
 	assert.deepEqual(context.viewer, { userUuid: "viewer-uuid" });
 	assert.deepEqual(context.invocation, {

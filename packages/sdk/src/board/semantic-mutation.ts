@@ -51,7 +51,13 @@ function itemPatch(before: BoardItem, after: BoardItem): BoardItemPatch | null {
   const beforeAuthoring = semanticItem(before);
   const afterAuthoring = semanticItem(after);
   const patch: Record<string, unknown> = {};
-  if (!sameJson(before.frame, after.frame)) patch.frame = after.frame;
+  const beforePosition = "position" in beforeAuthoring ? beforeAuthoring.position : undefined;
+  const afterPosition = "position" in afterAuthoring ? afterAuthoring.position : undefined;
+  if (!sameJson(beforePosition, afterPosition) && afterPosition) patch.position = afterPosition;
+  const beforeSize = "size" in beforeAuthoring ? beforeAuthoring.size : undefined;
+  const afterSize = "size" in afterAuthoring ? afterAuthoring.size : undefined;
+  if (!sameJson(beforeSize, afterSize)) patch.size = afterSize ?? null;
+  if (beforeAuthoring.rotation !== afterAuthoring.rotation) patch.rotation = afterAuthoring.rotation;
   const beforeParent = before.parentId ?? null;
   const afterParent = after.parentId ?? null;
   if (beforeParent !== afterParent) patch.parentId = afterParent;

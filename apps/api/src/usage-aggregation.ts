@@ -120,40 +120,68 @@ export function aggregateUsageRows(rows: readonly UsageRow[]): UsageAggregationR
       costTotal: Number(rest.costTotal.toFixed(4)),
     }));
 
-  const summary = hourly.reduce(
-    (acc, stat) => ({
-      totalTokens: acc.totalTokens + stat.totalTokens,
-      inputTokens: acc.inputTokens + stat.inputTokens,
-      outputTokens: acc.outputTokens + stat.outputTokens,
-      cacheReadTokens: acc.cacheReadTokens + stat.cacheReadTokens,
-      cacheWriteTokens: acc.cacheWriteTokens + stat.cacheWriteTokens,
-      costInput: Number((acc.costInput + stat.costInput).toFixed(4)),
-      costOutput: Number((acc.costOutput + stat.costOutput).toFixed(4)),
-      costCacheRead: Number((acc.costCacheRead + stat.costCacheRead).toFixed(4)),
-      costCacheWrite: Number((acc.costCacheWrite + stat.costCacheWrite).toFixed(4)),
-      costTotal: Number((acc.costTotal + stat.costTotal).toFixed(4)),
-      requestCount: acc.requestCount + stat.requestCount,
-      successCount: acc.successCount + stat.successCount,
-      errorCount: acc.errorCount + stat.errorCount,
-    }),
-    {
-      totalTokens: 0,
-      inputTokens: 0,
-      outputTokens: 0,
-      cacheReadTokens: 0,
-      cacheWriteTokens: 0,
-      costInput: 0,
-      costOutput: 0,
-      costCacheRead: 0,
-      costCacheWrite: 0,
-      costTotal: 0,
-      requestCount: 0,
-      successCount: 0,
-      errorCount: 0,
-    },
-  );
+  const summary = summarizeUsageHourly(hourly);
 
   return { hourly, summary };
+}
+
+/** Reusable zero summary — shared by reduce targets and tests. */
+export const EMPTY_USAGE_SUMMARY = {
+	totalTokens: 0,
+	inputTokens: 0,
+	outputTokens: 0,
+	cacheReadTokens: 0,
+	cacheWriteTokens: 0,
+	costInput: 0,
+	costOutput: 0,
+	costCacheRead: 0,
+	costCacheWrite: 0,
+	costTotal: 0,
+	requestCount: 0,
+	successCount: 0,
+	errorCount: 0,
+} as const;
+
+export type UsageSummary = {
+	totalTokens: number;
+	inputTokens: number;
+	outputTokens: number;
+	cacheReadTokens: number;
+	cacheWriteTokens: number;
+	costInput: number;
+	costOutput: number;
+	costCacheRead: number;
+	costCacheWrite: number;
+	costTotal: number;
+	requestCount: number;
+	successCount: number;
+	errorCount: number;
+};
+
+/**
+ * Reduce hourly buckets into a summary. Exported so callers that already hold
+ * hourly rows from another source (e.g. a GROUP BY query) can reuse the exact
+ * same summary semantics without re-reading raw detail rows.
+ */
+export function summarizeUsageHourly(hourly: readonly UsageSummary[]): UsageSummary {
+	return hourly.reduce(
+		(acc, stat) => ({
+			totalTokens: acc.totalTokens + stat.totalTokens,
+			inputTokens: acc.inputTokens + stat.inputTokens,
+			outputTokens: acc.outputTokens + stat.outputTokens,
+			cacheReadTokens: acc.cacheReadTokens + stat.cacheReadTokens,
+			cacheWriteTokens: acc.cacheWriteTokens + stat.cacheWriteTokens,
+			costInput: Number((acc.costInput + stat.costInput).toFixed(4)),
+			costOutput: Number((acc.costOutput + stat.costOutput).toFixed(4)),
+			costCacheRead: Number((acc.costCacheRead + stat.costCacheRead).toFixed(4)),
+			costCacheWrite: Number((acc.costCacheWrite + stat.costCacheWrite).toFixed(4)),
+			costTotal: Number((acc.costTotal + stat.costTotal).toFixed(4)),
+			requestCount: acc.requestCount + stat.requestCount,
+			successCount: acc.successCount + stat.successCount,
+			errorCount: acc.errorCount + stat.errorCount,
+		}),
+		{ ...EMPTY_USAGE_SUMMARY },
+	);
 }
 
 /** Column selection shared by all usage queries. */

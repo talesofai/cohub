@@ -11,8 +11,8 @@ import type {
 } from "@neta-art/cohub/board";
 import {
 	BoardCameraFocusParamsSchema,
+	buildStrokeRibbonGeometry,
 	cameraForFocus,
-	sampleRadius,
 } from "@neta-art/cohub/board";
 import {
 	Container,
@@ -336,54 +336,18 @@ function createRevealShader() {
 }
 
 function drawRevealGeometry(item: Extract<BoardItem, { type: "draw" }>) {
-	const count = item.points.length;
-	if (count < 2) return null;
-	const positions = new Float32Array(count * 4);
-	const uvs = new Float32Array(count * 4);
-	const progress = new Float32Array(count * 2);
-	const lengths = new Float32Array(count);
-	for (let index = 1; index < count; index += 1) {
-		lengths[index] =
-			lengths[index - 1] +
-			Math.hypot(
-				item.points[index].x - item.points[index - 1].x,
-				item.points[index].y - item.points[index - 1].y,
-			);
-	}
-	const total = Math.max(1e-6, lengths[count - 1]);
-	for (let index = 0; index < count; index += 1) {
-		const previous = item.points[Math.max(0, index - 1)];
-		const next = item.points[Math.min(count - 1, index + 1)];
-		const dx = next.x - previous.x;
-		const dy = next.y - previous.y;
-		const length = Math.hypot(dx, dy) || 1;
-		const normalX = -dy / length;
-		const normalY = dx / length;
-		const radius = sampleRadius(item.size, item.points[index].p);
-		const offset = index * 4;
-		positions[offset] = item.points[index].x + normalX * radius;
-		positions[offset + 1] = item.points[index].y + normalY * radius;
-		positions[offset + 2] = item.points[index].x - normalX * radius;
-		positions[offset + 3] = item.points[index].y - normalY * radius;
-		uvs[offset] = lengths[index] / total;
-		uvs[offset + 1] = 0;
-		uvs[offset + 2] = lengths[index] / total;
-		uvs[offset + 3] = 1;
-		progress[index * 2] = lengths[index] / total;
-		progress[index * 2 + 1] = lengths[index] / total;
-	}
-	const indices = new Uint32Array((count - 1) * 6);
-	for (let index = 0; index < count - 1; index += 1) {
-		const vertex = index * 2;
-		const offset = index * 6;
-		indices.set(
-			[vertex, vertex + 1, vertex + 2, vertex + 1, vertex + 3, vertex + 2],
-			offset,
-		);
-	}
-	const geometry = new MeshGeometry({ positions, uvs, indices });
+	const ribbon = buildStrokeRibbonGeometry(item.points, item.size);
+	if (ribbon.indices.length === 0) return null;
+	const geometry = new MeshGeometry({
+		positions: ribbon.positions,
+		uvs: ribbon.uvs,
+		indices: ribbon.indices,
+	});
 	geometry.batchMode = "no-batch";
-	geometry.addAttribute("aProgress", { buffer: progress, format: "float32" });
+	geometry.addAttribute("aProgress", {
+		buffer: ribbon.progress,
+		format: "float32",
+	});
 	return geometry;
 }
 
@@ -873,9 +837,7 @@ export function createBoardAnimationRuntime(options: RuntimeOptions) {
 			return true;
 		}
 		if (
-			(clip.kind === "draw.reveal" ||
-				clip.kind === "draw.handwrite" ||
-				clip.kind === "text.reveal") &&
+			(clip.kind === "draw.reveal" || clip.kind === "text.reveal") &&
 			clip.target.type === "item"
 		) {
 			if (clip.kind !== "text.reveal" && updateDrawReveal(clip, progress))

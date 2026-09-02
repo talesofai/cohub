@@ -1,5 +1,102 @@
 # @neta-art/cohub-cli
 
+## 6.4.0
+
+### Minor Changes
+
+- f9b6156: Board CLI improvements:
+
+  - `boards create` now reports the created Board file path (including in JSON output).
+  - `boards items list/get` show derived layout columns (x/y/width/height) for draw and arrow items.
+  - Board example templates are updated to the normalized geometry authoring format.
+
+### Patch Changes
+
+- Updated dependencies [f9b6156]
+  - @neta-art/cohub@8.7.0
+
+## 6.3.0
+
+### Minor Changes
+
+- 6685de4: Streamline Board CLI commands:
+
+  - Add `boards batch` to apply an atomic batch of semantic Board changes in one round-trip.
+  - Add `boards connections` (list/get) for managing typed connections between Board items.
+  - Split effect, composition, animation, and item commands into `list`/`get` subcommands with consistent JSON and table output.
+  - Remove the low-level `boards nodes` command in favor of the semantic item commands.
+  - Import board helpers from the public SDK.
+
+### Patch Changes
+
+- Updated dependencies [6685de4]
+  - @neta-art/cohub@8.6.0
+
+## 6.2.2
+
+### Patch Changes
+
+- Updated dependencies [a279343]
+  - @neta-art/cohub@8.5.1
+
+## 6.2.1
+
+### Patch Changes
+
+- 3dd452b: Run CLI self-updates in a detached background worker so foreground commands are not blocked. Successful updates take effect on the next invocation.
+
+## 6.2.0
+
+### Minor Changes
+
+- 6a83978: fix(cli): upload directory contents directly under --dir
+
+  `spaces files upload <dir> --dir <target>` used to nest the source
+  directory name under the target (`target/<dir>/...`). It now contributes
+  the directory's contents directly (`target/...`), matching common cloud
+  CLIs (`aws s3 cp dir`, `rclone copy`).
+  File arguments are unchanged. Inputs whose contents collide on the same
+  relative path now fail fast instead of silently overwriting.
+
+## 6.1.6
+
+### Patch Changes
+
+- Updated dependencies [9884704]
+  - @neta-art/cohub@8.5.0
+
+## 6.1.5
+
+### Patch Changes
+
+- Updated dependencies [7baf58e]
+- Updated dependencies [7baf58e]
+  - @neta-art/cohub@8.4.0
+
+## 6.1.4
+
+### Patch Changes
+
+- 38b9451: Apps publish: explain Space-path targets instead of failing with a bare 404.
+
+  - `apps publish` / `apps update` now preflight `--file` / `--dir` targets against the target Space's workspace and fail before publishing with an explicit message, e.g. `"dist" does not exist in the Space workspace (--dir takes a Space workspace path, not a local path).`
+  - When the publish worker still rejects a target (e.g. removed between check and snapshot), the bare worker error is translated to the same explicit wording.
+  - Help text and docs now state that `--file` / `--dir` take Space workspace paths, not local paths.
+
+## 6.1.3
+
+### Patch Changes
+
+- Updated dependencies [0511cbe]
+  - @neta-art/cohub@8.3.1
+
+## 6.1.2
+
+### Patch Changes
+
+- Updated dependencies
+  - @neta-art/cohub@8.3.0
+
 ## 6.1.1
 
 ### Patch Changes

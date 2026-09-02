@@ -7,7 +7,7 @@
  */
 
 import { execFileSync } from "node:child_process";
-import { existsSync, mkdirSync, writeFileSync } from "node:fs";
+import { mkdirSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import {
 	AgentResponseSchema,
@@ -22,7 +22,6 @@ const POLL_INTERVAL_MS = 3_000;
 const POLL_TIMEOUT_MS = 10 * 60_000;
 
 function buildPrompt(fromTag: string, toTag: string): string {
-	const version = toTag.replace(/^v/, "").replace(/\.\d+$/, "");
 	return `Run git diff --stat and git diff between ${fromTag} and ${toTag} to see actual code changes. Write a changelog entry for Cohub (a technical product with engineering brand).
 
 Include:
@@ -36,14 +35,14 @@ Exclude: dependency bumps, typos, CI tweaks.
 
 Reply with ONLY this JSON:
 \`\`\`json
-{"version":"${version}","highlights":["...","..."],"fixes":["..."]}
+{"highlights":["...","..."],"fixes":["..."]}
 \`\`\``;
 }
 
 const RETRY_PROMPT = (error: string) =>
 	`Your previous reply failed validation: ${error}
 Reply again with ONLY a JSON code block matching:
-{ "version": "X.Y", "highlights": ["1-6 non-empty strings"], "fixes": ["optional strings"] }`;
+{ "highlights": ["1-6 non-empty strings"], "fixes": ["optional strings"] }`;
 
 function cohub(args: string[]): string {
 	return execFileSync("cohub", args, { encoding: "utf-8" });
@@ -51,6 +50,11 @@ function cohub(args: string[]): string {
 
 function git(args: string[]): string {
 	return execFileSync("git", args, { encoding: "utf-8" }).trim();
+}
+
+/** Entry version from a tag: "v2.31.0" -> "2.31"; a bare "X.Y" passes through. */
+export function tagToVersion(tag: string): string {
+	return tag.replace(/^v/, "").replace(/^(\d+\.\d+)\.\d+$/, "$1");
 }
 
 function requireCohubCli(): void {
@@ -145,7 +149,7 @@ export async function generateEntry(
 		if (parsed.success) {
 			const date = git(["log", "-1", "--format=%as", toTag]);
 			return {
-				version: parsed.data.version,
+				version: tagToVersion(toTag),
 				date,
 				tags: [toTag],
 				highlights: parsed.data.highlights,
@@ -197,6 +201,12 @@ async function main() {
 	if (!fromTag || !toTag) {
 		console.error(
 			"Usage: tsx scripts/changelog/generate.ts --from <tag> --to <tag>",
+		);
+		process.exit(1);
+	}
+	if (toTag === "HEAD") {
+		console.error(
+			"--to HEAD is only supported via changelog:release, which knows the target tag.",
 		);
 		process.exit(1);
 	}

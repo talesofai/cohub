@@ -1,6 +1,6 @@
 ---
 title: Core concepts
-description: The objects that make up Cohub — Space, Chat, Save, Sandbox, Work, and more.
+description: The objects that make up Cohub — Space, Chat, Save, Sandbox, App, and more.
 ---
 
 Learn these objects once. The rest of the product is combinations of them.
@@ -9,7 +9,7 @@ Learn these objects once. The rest of the product is combinations of them.
 
 A Space is the main creative surface.
 
-It holds Chats, files, Saves, tasks, Works, and settings in one isolated environment. People and Agents share the same Space context.
+It holds Chats, files, Saves, tasks, Apps, and settings in one isolated environment. People and Agents share the same Space context.
 
 Create a Space when you want a durable place to work, not just a one-off conversation.
 
@@ -47,14 +47,14 @@ A Sandbox is the execution environment behind a Space.
 
 It runs processes, exposes ports for preview, and keeps runtime work away from the product surface. Most of the time you feel it as “files work” and “ports preview”.
 
-## Work
+## App
 
-A Work is a published, shareable surface.
+An App is a published, shareable surface.
 
-Publish a single HTML file, a directory site, or a public Sandbox port. Works have versions, permissions, and public URLs shaped like:
+Publish a single HTML file, a directory site, or a public Sandbox port. Apps have versions, permissions, and public URLs shaped like:
 
 ```text
-/:username/:spaceSlug/w/:workSlug
+/:username/:spaceSlug/w/:appSlug
 ```
 
 ## Channel
@@ -95,6 +95,6 @@ Use one-shot schedules for reminders and recurring schedules for periodic agent 
 
 ## Permission
 
-Permissions decide what members, anonymous viewers, and Works can do.
+Permissions decide what members, anonymous viewers, and Apps can do.
 
-Space roles are **host**, **builder**, and **guest**. Works also declare their own scopes and viewer-consent scopes when they need runtime access.
+Space roles are **host**, **builder**, and **guest**. Apps also declare their own scopes, and request viewer consent when they need runtime access.

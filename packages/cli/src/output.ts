@@ -102,6 +102,23 @@ function errorMessageFromBody(body: unknown): string | null {
   return null;
 }
 
+function diagnosticDetailFromBody(body: unknown): string | null {
+  if (!body || typeof body !== "object") return null;
+  const diagnostics = (body as { diagnostics?: unknown }).diagnostics;
+  if (!Array.isArray(diagnostics) || diagnostics.length === 0) return null;
+  const lines = diagnostics.slice(0, 8).flatMap((item) => {
+    if (!item || typeof item !== "object") return [];
+    const diagnostic = item as { path?: unknown; message?: unknown };
+    if (typeof diagnostic.message !== "string" || !diagnostic.message.trim()) return [];
+    const path = typeof diagnostic.path === "string" ? diagnostic.path : "";
+    const message = diagnostic.message.replace(path ? `${path}: ` : "", "");
+    return [`${path ? `${path}: ` : ""}${message}`];
+  });
+  if (lines.length === 0) return null;
+  const suffix = diagnostics.length > lines.length ? ` (+${diagnostics.length - lines.length} more)` : "";
+  return `${lines.join("; ")}${suffix}`;
+}
+
 function debugErrorMetaFromBody(body: unknown): string[] {
   if (!body || typeof body !== "object") return [];
   const errorBody = body as {
@@ -177,8 +194,10 @@ export function handleHttp(e: unknown): never {
   const presentation = errorPresentationFromHttpError(e);
   const message = presentation?.message ?? errorMessageFromBody(body) ?? (e instanceof Error ? e.message : String(e));
   const fetchDetail = fetchFailureDetail(e);
+  const diagnosticDetail = diagnosticDetailFromBody(body);
 
   const detailParts: string[] = [];
+  if (diagnosticDetail) detailParts.push(diagnosticDetail);
   if (presentation?.detail) detailParts.push(presentation.detail);
   if (process.env.COHUB_DEBUG_ERRORS) {
     if (status) detailParts.push(`HTTP ${status}`);

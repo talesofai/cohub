@@ -3,7 +3,7 @@ title: Spaces
 description: Create, open, configure, and think with Spaces as the main unit of work in Cohub.
 ---
 
-A Space is the unit of work in Cohub. Chats, files, Saves, Works, and settings all belong to a Space.
+A Space is the unit of work in Cohub. Chats, files, Saves, Apps, and settings all belong to a Space.
 
 ## Create a Space
 
@@ -31,7 +31,7 @@ Each Space keeps its own:
 - Chat list
 - Files and Sandbox state
 - Saves
-- Works
+- Apps
 - Members and access policy
 
 Recent Space memory helps return to where you left off, but always check the Space header if context looks wrong.
@@ -45,7 +45,7 @@ From there you can:
 - Start another Chat
 - Open files / preview
 - Review Saves
-- Manage Works
+- Manage Apps
 - Open Space settings
 
 ## Identity and public URL pieces
@@ -56,10 +56,10 @@ A Space can have:
 - **Name** — display title
 - **Slug** — public path segment when the Space is addressable publicly
 
-Public Works depend on username + space slug + work slug:
+Public Apps depend on username + space slug + app slug:
 
 ```text
-/:username/:spaceSlug/w/:workSlug
+/:username/:spaceSlug/w/:appSlug
 ```
 
 Set a readable space slug before publishing something important.
@@ -74,7 +74,7 @@ Set a readable space slug before publishing something important.
 | Mods | Read-only mounted capabilities |
 | Sandbox | Spec, hibernation, recovery |
 | Env | Runtime environment variables |
-| Commerce | Products for Works, when enabled |
+| Commerce | Products for Apps, when enabled |
 
 Day-to-day creation rarely needs all of these. Configure when collaboration or publishing requires it.
 
@@ -93,7 +93,7 @@ Start simple: keep the default base Mod unless you know you need more.
 - One Space per meaningful initiative when possible
 - Use Chats for parallel threads inside the same initiative
 - Save before risky rewrites
-- Publish Works from stable file/port targets
+- Publish Apps from stable file/port targets
 - Prefer labels over endless Chat renaming
 
 ## Related
@@ -101,4 +101,4 @@ Start simple: keep the default base Mod unless you know you need more.
 - [Chats](/docs/workspace/chats)
 - [Files & Sandbox](/docs/workspace/files-and-sandbox)
 - [Saves](/docs/workspace/saves)
-- [Works](/docs/create/works)
+- [Apps](/docs/create/apps)

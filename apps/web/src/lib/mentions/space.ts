@@ -1,4 +1,5 @@
 import type { SpacePublicProfile, UserProfile } from "@neta-art/cohub";
+import { COHUB_WEB_ORIGIN_SOURCE } from "./platform-origin";
 
 export type SpaceMention = {
 	type: "space";
@@ -55,7 +56,7 @@ const ID_PATTERN =
 	"[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}";
 const RESOURCE_PATH_END_PATTERN = "(?![a-zA-Z0-9_%/-]|\\.[a-zA-Z0-9])";
 const COHUB_SPACE_LINK_PATTERN = new RegExp(
-	`(?:https?:\\/\\/(?:dev\\.)?cohub\\.run|https?:\\/\\/localhost(?::\\d+)?)\\/spaces\\/(${ID_PATTERN})(?:\\/sessions\\/(${ID_PATTERN}))?(?:[?#][^\\s)\\]]*)?${RESOURCE_PATH_END_PATTERN}|(^|[\\s([{<:,;!?，。！？、；：])\\/spaces\\/(${ID_PATTERN})(?:\\/sessions\\/(${ID_PATTERN}))?(?:[?#][^\\s)\\]]*)?${RESOURCE_PATH_END_PATTERN}`,
+	`${COHUB_WEB_ORIGIN_SOURCE}\\/spaces\\/(${ID_PATTERN})(?:\\/sessions\\/(${ID_PATTERN}))?(?:[?#][^\\s)\\]]*)?${RESOURCE_PATH_END_PATTERN}|(^|[\\s([{<:,;!?，。！？、；：])\\/spaces\\/(${ID_PATTERN})(?:\\/sessions\\/(${ID_PATTERN}))?(?:[?#][^\\s)\\]]*)?${RESOURCE_PATH_END_PATTERN}`,
 	"g",
 );
 

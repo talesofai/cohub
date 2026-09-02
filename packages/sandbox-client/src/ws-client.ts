@@ -263,14 +263,15 @@ export class SandboxConnection {
       const { requestId, pending } = this.getPendingForOperationMessage(message);
       if (!pending) return;
       this.clearPending(requestId, pending, message.opId);
-      const errorMessage = truncateLogValue(message.error.message);
+      const errorMessage = message.error.code === "IO_ERROR" ? truncateLogValue(message.error.message) : undefined;
       const diagnosticText = formatDiagnostics(pending.diagnostics);
-      logger.warn(`[SandboxWS] rpc:failed spaceId=${this.spaceId} identity=${this.identity} method=${pending.method} requestId=${requestId.slice(0, 8)} opId=${message.opId.slice(0, 8)} rpcErrorCode=${message.error.code} retryable=${message.error.retryable ?? false} errorMessage=${JSON.stringify(errorMessage)}${diagnosticText ? ` ${diagnosticText}` : ""}`);
+      const errorText = errorMessage ? ` errorMessage=${JSON.stringify(errorMessage)}` : "";
+      logger.warn(`[SandboxWS] rpc:failed spaceId=${this.spaceId} identity=${this.identity} method=${pending.method} requestId=${requestId.slice(0, 8)} opId=${message.opId.slice(0, 8)} rpcErrorCode=${message.error.code} retryable=${message.error.retryable ?? false}${errorText}${diagnosticText ? ` ${diagnosticText}` : ""}`);
       pending.reject(new SandboxRpcError(message.error.message, {
         method: pending.method,
         rpcErrorCode: message.error.code,
         retryable: message.error.retryable ?? false,
-        transportReason: message.error.message,
+        ...(message.error.code === "IO_ERROR" ? { transportReason: message.error.message } : {}),
         diagnostics: pending.diagnostics,
       }));
     }

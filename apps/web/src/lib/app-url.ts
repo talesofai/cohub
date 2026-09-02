@@ -41,6 +41,58 @@ export function buildAppIframeUrl(
 	return url.href;
 }
 
+const PORT_FRAME_DOMAINS = ["cohub.live", "cohub.run"] as const;
+
+function isAllowedPortFrameOrigin(origin: URL) {
+	return PORT_FRAME_DOMAINS.some(
+		(domain) =>
+			origin.hostname === domain || origin.hostname.endsWith(`.${domain}`),
+	);
+}
+
+/** Resolve one canonical iframe URL and its validated origin for host setup. */
+export function resolveAppFrame(input: {
+	contentUrl: string;
+	launchState?: AppLaunchState | null;
+	baseHref: string;
+	targetType: string;
+}) {
+	const urlValue = buildAppIframeUrl(input.contentUrl, input.launchState);
+	if (!urlValue) return null;
+
+	try {
+		const base = new URL(input.baseHref);
+		const url = new URL(urlValue, base);
+		if (url.origin !== base.origin && url.protocol !== "https:") return null;
+		if (input.targetType === "port" && !isAllowedPortFrameOrigin(url)) {
+			return null;
+		}
+		return { url: url.href, origin: url.origin };
+	} catch {
+		return null;
+	}
+}
+
+export function getAppFramePreconnectOrigin(input: {
+	contentUrl: string | null | undefined;
+	baseHref: string;
+	targetType: string;
+}) {
+	if (!input.contentUrl) return null;
+	try {
+		const base = new URL(input.baseHref);
+		const frame = resolveAppFrame({
+			contentUrl: input.contentUrl,
+			baseHref: base.href,
+			targetType: input.targetType,
+		});
+		if (!frame || frame.origin === base.origin) return null;
+		return frame.origin;
+	} catch {
+		return null;
+	}
+}
+
 function isSameCohubOrigin(url: URL, base: URL) {
 	return url.origin === base.origin;
 }

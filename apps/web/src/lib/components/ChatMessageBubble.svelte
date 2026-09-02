@@ -38,6 +38,7 @@ type Props = {
 	onMarkdownRendered?: (message: ChatMessage) => void;
 	showToolCalls?: boolean;
 	onOpenFile?: (target: OpenWorkspaceFileTarget) => void;
+	onOpenUrl?: (href: string, event: MouseEvent) => void | Promise<void>;
 	onForkTurn?: () => void;
 	forkDisabled?: boolean;
 	forking?: boolean;
@@ -50,6 +51,7 @@ const {
 	onMarkdownRendered,
 	showToolCalls = true,
 	onOpenFile,
+	onOpenUrl,
 	onForkTurn,
 	forkDisabled = false,
 	forking = false,
@@ -483,6 +485,7 @@ function handleCopy() {
     showToolCalls={false}
     onToggleThinking={toggleThinking}
     {onOpenFile}
+    {onOpenUrl}
   />
 {:else}
   <div class={`w-full ${messageContainerClass}`}>
@@ -500,6 +503,7 @@ function handleCopy() {
         onMarkdownSegmentStart={handleMarkdownSegmentStart}
         onLoadToolCalls={message.toolCallsLoader ?? undefined}
         {onOpenFile}
+        {onOpenUrl}
       />
 
       {#if assistantErrorMessage}

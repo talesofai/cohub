@@ -1,20 +1,13 @@
 import type { HttpTransport } from "../transport.js";
 
 export type PublicAssetPurpose = "user_avatar" | "space_avatar" | "chat_attachment";
-export type PublicAssetUploadProtocol = "s3_post_v1" | "presigned_put_v1";
+export type PublicAssetUploadProtocol = "presigned_put_v1";
 /** Preprocessed chat images. General chat files and avatars may use any mime string. */
 export type PublicAssetMimeType = "image/webp" | "image/jpeg";
 
-/** Strip characters Safari rejects in FormData file names. */
-function sanitizeFormDataFilename(filename: string | undefined): string | undefined {
-  if (typeof filename !== "string") return undefined;
-  const base = filename.split(/[/\\]/).pop()?.replace(/[\r\n\0]/g, "").trim() ?? "";
-  return base.length > 0 ? base : undefined;
-}
-
 export type CreatePublicAssetUploadInput = {
   purpose: PublicAssetPurpose;
-  uploadProtocol?: PublicAssetUploadProtocol;
+  uploadProtocol: PublicAssetUploadProtocol;
   spaceId?: string;
   sessionId?: string;
   file: {
@@ -29,14 +22,13 @@ type PublicAssetUploadBase = {
   objectKey: string;
   publicUrl: string;
   uploadUrl: string;
+  uploadMethod: "PUT";
+  uploadHeaders?: Record<string, string>;
 };
 
 export type CreatePublicAssetUploadResponse = {
   expiresAt: string;
-  asset: PublicAssetUploadBase & (
-    | { uploadMethod: "POST"; uploadFields: Record<string, string> }
-    | { uploadMethod: "PUT"; uploadHeaders?: Record<string, string> }
-  );
+  asset: PublicAssetUploadBase;
 };
 
 export type UploadPublicAssetInput = {
@@ -81,10 +73,10 @@ function createAbortError() {
 }
 
 function uploadWithProgress(input: {
-  method: "POST" | "PUT";
+  method: "PUT";
   url: string;
   headers?: Record<string, string>;
-  body: Blob | FormData;
+  body: Blob;
   fileBytes: number;
   onProgress: (progress: PublicAssetUploadProgress) => void;
   signal?: AbortSignal;
@@ -176,65 +168,24 @@ export class PublicAssetsApi {
     }, { signal: input.signal });
     if (input.signal?.aborted) throw createAbortError();
     let response: Response;
-    if (plan.asset.uploadMethod === "PUT") {
-      if (input.onProgress && typeof XMLHttpRequest === "function") {
-        await uploadWithProgress({
-          method: "PUT",
-          url: plan.asset.uploadUrl,
-          headers: plan.asset.uploadHeaders,
-          body: input.file,
-          fileBytes: input.file.size,
-          onProgress: input.onProgress,
-          signal: input.signal,
-        });
-        return plan.asset;
-      }
-      response = await fetch(plan.asset.uploadUrl, {
+    if (input.onProgress && typeof XMLHttpRequest === "function") {
+      await uploadWithProgress({
         method: "PUT",
+        url: plan.asset.uploadUrl,
         headers: plan.asset.uploadHeaders,
         body: input.file,
+        fileBytes: input.file.size,
+        onProgress: input.onProgress,
         signal: input.signal,
       });
-    } else {
-      const formData = new FormData();
-      for (const [key, value] of Object.entries(plan.asset.uploadFields)) {
-        formData.append(key, value);
-      }
-      // Safari rejects FormData filenames with CR/LF/control chars.
-      const safeFilename = sanitizeFormDataFilename(input.filename);
-      if (safeFilename) formData.append("file", input.file, safeFilename);
-      else formData.append("file", input.file);
-      try {
-        if (input.onProgress && typeof XMLHttpRequest === "function") {
-          await uploadWithProgress({
-            method: "POST",
-            url: plan.asset.uploadUrl,
-            body: formData,
-            fileBytes: input.file.size,
-            onProgress: input.onProgress,
-            signal: input.signal,
-          });
-          return plan.asset;
-        }
-        response = await fetch(plan.asset.uploadUrl, {
-          method: "POST",
-          body: formData,
-          signal: input.signal,
-        });
-      } catch (error) {
-        if (
-          error instanceof TypeError &&
-          (error.message === "The string did not match the expected pattern." ||
-            /Failed to construct|invalid/i.test(error.message))
-        ) {
-          throw new Error(
-            `Public asset upload failed: invalid upload request${safeFilename ? ` (${safeFilename})` : ""}`,
-            { cause: error },
-          );
-        }
-        throw error;
-      }
+      return plan.asset;
     }
+    response = await fetch(plan.asset.uploadUrl, {
+      method: "PUT",
+      headers: plan.asset.uploadHeaders,
+      body: input.file,
+      signal: input.signal,
+    });
     if (!response.ok) {
       const detail = await response.text().catch(() => "");
       throw new Error(`Public asset upload failed: HTTP ${response.status}${detail ? ` — ${detail}` : ""}`);

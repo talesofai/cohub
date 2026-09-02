@@ -5,6 +5,7 @@ import { onMount } from "svelte";
 import { page } from "$app/state";
 import { ensureAuth } from "$lib/auth";
 import { handleUnauthorizedError } from "$lib/auth-redirect";
+import ActivityHeatmap from "$lib/components/activity/ActivityHeatmap.svelte";
 import { getLocale } from "$lib/i18n/locale.svelte";
 import { m } from "$lib/paraglide/messages.js";
 import { sdk } from "$lib/sdk";
@@ -65,59 +66,6 @@ const rangeLabel = $derived(
 		: m.activity_last_days({ days: selectedDays }, { locale }),
 );
 const stats = $derived(getActivityStats(displayedDays));
-const heatmapTotal = $derived(
-	displayedDays.reduce(
-		(total, day) =>
-			total + (heatmapMode === "llm" ? day.tokens : day.generationRequests),
-		0,
-	),
-);
-const maxHeatValue = $derived(
-	Math.max(
-		0,
-		...displayedDays.map((day) =>
-			heatmapMode === "llm" ? day.tokens : day.generationRequests,
-		),
-	),
-);
-const heatmapDays = $derived.by((): Array<ActivityDay | null> => {
-	if (!displayedDays.length) return [];
-	const leading = new Date(`${displayedDays[0].date}T12:00:00`).getDay();
-	const values: Array<ActivityDay | null> = [
-		...Array.from({ length: leading }, () => null),
-		...displayedDays,
-	];
-	while (values.length % 7) values.push(null);
-	return values;
-});
-
-function heatValue(day: ActivityDay) {
-	return heatmapMode === "llm" ? day.tokens : day.generationRequests;
-}
-
-function heatLevel(day: ActivityDay) {
-	const value = heatValue(day);
-	if (!value || !maxHeatValue) return 0;
-	const ratio = value / maxHeatValue;
-	if (ratio < 0.08) return 1;
-	if (ratio < 0.25) return 2;
-	if (ratio < 0.55) return 3;
-	return 4;
-}
-
-function dayTitle(day: ActivityDay) {
-	const value = formatCompact(heatValue(day), locale);
-	return heatmapMode === "llm"
-		? m.activity_day_title_llm(
-				{ date: formatDay(day.date, locale), value },
-				{ locale },
-			)
-		: m.activity_day_title_generation(
-				{ date: formatDay(day.date, locale), value },
-				{ locale },
-			);
-}
-
 function getSelectedRange(days: number) {
 	const to = new Date();
 	const from = new Date(to);
@@ -239,14 +187,7 @@ onMount(async () => {
 						<div class="flex items-center gap-1.5 text-[10px] text-text-placeholder"><span>{m.activity_less({}, { locale })}</span>{#each [0, 1, 2, 3, 4] as level}<span class="heat-cell" data-mode={heatmapMode} data-level={level}></span>{/each}<span>{m.activity_more({}, { locale })}</span></div>
 					</div>
 				</div>
-				<div class="heatmap-scroll overflow-x-auto pb-1">
-					<div class="heatmap" style:--weeks={heatmapDays.length / 7} role="img" aria-label={heatmapMode === 'llm' ? m.activity_heatmap_llm_aria({ days: selectedDays }, { locale }) : m.activity_heatmap_generation_aria({ days: selectedDays }, { locale })}>
-						{#each heatmapDays as day, index (day?.date ?? `blank-${index}`)}
-							{#if day}<div class="heat-cell" data-mode={heatmapMode} data-level={heatLevel(day)} title={dayTitle(day)}></div>{:else}<div></div>{/if}
-						{/each}
-					</div>
-				</div>
-				{#if heatmapTotal === 0}<p class="mt-4 text-[12px] text-text-placeholder">{heatmapMode === "llm" ? m.activity_llm_empty_hint({}, { locale }) : m.activity_generation_empty_hint({}, { locale })}</p>{/if}
+				<ActivityHeatmap days={displayedDays} mode={heatmapMode} />
 			</section>
 
 			<div class="grid gap-8 py-7 md:grid-cols-2 md:gap-x-10 lg:grid-cols-3">
@@ -302,18 +243,6 @@ onMount(async () => {
 </div>
 
 <style>
-	.heatmap-scroll {
-		direction: rtl;
-	}
-	.heatmap {
-		direction: ltr;
-		display: grid;
-		grid-auto-flow: column;
-		grid-template-rows: repeat(7, 11px);
-		grid-template-columns: repeat(var(--weeks), 11px);
-		gap: 3px;
-		min-width: max-content;
-	}
 	.heat-cell {
 		display: inline-block;
 		width: 11px;
@@ -329,8 +258,4 @@ onMount(async () => {
 	.heat-cell[data-mode="generation"][data-level="2"] { background: color-mix(in srgb, var(--status-running) 42%, var(--bg-primary)); }
 	.heat-cell[data-mode="generation"][data-level="3"] { background: color-mix(in srgb, var(--status-running) 66%, var(--bg-primary)); }
 	.heat-cell[data-mode="generation"][data-level="4"] { background: var(--status-running); }
-	@media (min-width: 640px) {
-		.heatmap { grid-template-rows: repeat(7, 13px); grid-template-columns: repeat(var(--weeks), 13px); gap: 4px; }
-		.heat-cell { width: 13px; height: 13px; }
-	}
 </style>

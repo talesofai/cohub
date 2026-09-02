@@ -150,66 +150,6 @@ export const createPresignedGetObjectUrl = (
   return { downloadUrl: signed.url, expiresAt: signed.expiresAt };
 };
 
-export type PresignedPostObject = {
-  uploadUrl: string;
-  expiresAt: string;
-  fields: Record<string, string>;
-};
-
-export const createPresignedPostObject = (input: {
-  storage: PresignStorageConfig;
-  objectKey: string;
-  contentType: string;
-  maxBytes: number;
-  cacheControl?: string | null;
-  contentDisposition?: string | null;
-}): PresignedPostObject => {
-  const { storage, objectKey, contentType, maxBytes, cacheControl, contentDisposition } = input;
-  if (!storage.bucket) throw new Error("bucket is required");
-  if (!storage.endpoint) throw new Error("endpoint is required");
-  if (!storage.accessKeyId || !storage.secretAccessKey) {
-    throw new Error("access key id and secret access key are required");
-  }
-
-  const now = new Date();
-  const expiresAt = new Date(now.getTime() + PRESIGN_TTL_SECONDS * 1000).toISOString();
-  const amzDate = toAmzDate(now);
-  const dateStamp = toDateStamp(now);
-  const credential = `${storage.accessKeyId}/${dateStamp}/${storage.region}/s3/aws4_request`;
-  const policy = {
-    expiration: expiresAt,
-    conditions: [
-      { bucket: storage.bucket },
-      { key: objectKey },
-      { "Content-Type": contentType },
-      ...(cacheControl ? [{ "Cache-Control": cacheControl }] : []),
-      ...(contentDisposition ? [{ "Content-Disposition": contentDisposition }] : []),
-      { "x-amz-algorithm": "AWS4-HMAC-SHA256" },
-      { "x-amz-credential": credential },
-      { "x-amz-date": amzDate },
-      ["content-length-range", 1, maxBytes],
-    ],
-  };
-  const encodedPolicy = Buffer.from(JSON.stringify(policy)).toString("base64");
-  const signature = hexHmac(signingKey(storage.secretAccessKey, dateStamp, storage.region), encodedPolicy);
-
-  return {
-    uploadUrl: getBucketPublicEndpoint(storage),
-    expiresAt,
-    fields: {
-      key: objectKey,
-      "Content-Type": contentType,
-      ...(cacheControl ? { "Cache-Control": cacheControl } : {}),
-      ...(contentDisposition ? { "Content-Disposition": contentDisposition } : {}),
-      "x-amz-algorithm": "AWS4-HMAC-SHA256",
-      "x-amz-credential": credential,
-      "x-amz-date": amzDate,
-      policy: encodedPolicy,
-      "x-amz-signature": signature,
-    },
-  };
-};
-
 export const buildPublicObjectUrl = (storage: PresignStorageConfig, objectKey: string) =>
   `${getBucketPublicEndpoint(storage)}/${encodePath(objectKey)}`;
 

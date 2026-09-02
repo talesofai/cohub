@@ -46,6 +46,7 @@ type Props = {
 	onStart?: () => void;
 	onRendered?: () => void;
 	onOpenFile?: (target: WorkspaceFileLinkTarget) => void | Promise<void>;
+	onOpenUrl?: (href: string, event: MouseEvent) => void | Promise<void>;
 	resolveWorkspaceAsset?: ResolveWorkspaceAsset;
 };
 
@@ -58,6 +59,7 @@ const {
 	onStart,
 	onRendered,
 	onOpenFile,
+	onOpenUrl,
 	resolveWorkspaceAsset,
 }: Props = $props();
 
@@ -165,6 +167,7 @@ onDestroy(() => {
 		streamingLive={isStreaming}
 		{baseFilePath}
 		{onOpenFile}
+		{onOpenUrl}
 		{resolveWorkspaceAsset}
 	/>
 </div>

@@ -28,7 +28,6 @@ export type LandingMediaExt = "webp" | "webm" | "mp4";
 const VERSIONS: Record<string, string> = {
 	hero: "4bcbcab1",
 	context: "11313556",
-	generation: "a53a308a",
 };
 
 /** Resolve an asset basename, e.g. ("hero", "webp") → `<base>/hero.webp`. */

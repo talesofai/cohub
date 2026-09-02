@@ -187,15 +187,6 @@ type fsEditParams struct {
 	Edits []fsEditItem `json:"edits"`
 }
 
-// editMatchError reports an oldText that matches 0 or multiple regions.
-type editMatchError struct {
-	matches int
-}
-
-func (e *editMatchError) Error() string {
-	return fmt.Sprintf("oldText matched %d regions", e.matches)
-}
-
 type fsMkdirParams struct {
 	Path string `json:"path"`
 	CWD  string `json:"cwd"`
@@ -248,6 +239,7 @@ const (
 	processStartMaxArgvItems      = 256
 	processStartMaxArgvItemBytes  = 8 * 1024
 	processStartMaxArgvTotalBytes = 64 * 1024
+	processOutputQueueSize        = 64
 )
 
 type processStartParams struct {
@@ -304,6 +296,9 @@ func (d *Dispatcher) handleFSRead(request protocol.RPCRequest) interface{} {
 		if info, statErr := os.Stat(resolved.path); statErr == nil {
 			result["size"] = info.Size()
 			result["mtimeMs"] = info.ModTime().UnixMilli()
+			if ctimeMs, ok := fileCtimeMs(info); ok {
+				result["ctimeMs"] = ctimeMs
+			}
 		}
 		return result
 	}
@@ -340,6 +335,9 @@ func (d *Dispatcher) handleFSRead(request protocol.RPCRequest) interface{} {
 	if info, statErr := os.Stat(resolved.path); statErr == nil {
 		result["size"] = info.Size()
 		result["mtimeMs"] = info.ModTime().UnixMilli()
+		if ctimeMs, ok := fileCtimeMs(info); ok {
+			result["ctimeMs"] = ctimeMs
+		}
 	}
 	return result
 }
@@ -460,29 +458,27 @@ func (d *Dispatcher) handleFSEdit(request protocol.RPCRequest) interface{} {
 		return d.failed(request, "", "NOT_DIRECTORY", fmt.Sprintf("cannot edit a directory: %s", resolved.path))
 	}
 
-	// Read, edit application, and write run atomically under the per-path
-	// lock: edits are always applied to the latest content, so concurrent
-	// edits to disjoint regions compose instead of losing updates. Each
-	// oldText is matched incrementally against the result of the previous
-	// edit, mirroring the tool-layer semantics it replaces. The response
-	// version (bytesWritten/mtimeMs) is captured under the lock so it cannot
-	// belong to a subsequent writer.
+	// Read, edit validation, and write run atomically under the per-path lock:
+	// all edits are matched against the same latest snapshot, then applied only
+	// after every range is valid and non-overlapping. The response version
+	// (bytesWritten/mtimeMs) is captured under the lock so it cannot belong to a
+	// subsequent writer.
 	var applied int
 	var bytesWritten int64
 	var mtimeMs int64
+	var currentContent string
 	lockErr := withPathLock(resolved.path, func() error {
 		content, err := os.ReadFile(resolved.path)
 		if err != nil {
 			return err
 		}
 		text := string(content)
-		for _, edit := range params.Edits {
-			matches := strings.Count(text, edit.OldText)
-			if matches != 1 {
-				return &editMatchError{matches: matches}
-			}
-			text = strings.Replace(text, edit.OldText, edit.NewText, 1)
+		currentContent = text
+		updated, err := applyFSEdits(text, params.Edits)
+		if err != nil {
+			return err
 		}
+		text = updated
 		applied = len(params.Edits)
 		if err := os.WriteFile(resolved.path, []byte(text), 0o644); err != nil {
 			return err
@@ -494,10 +490,19 @@ func (d *Dispatcher) handleFSEdit(request protocol.RPCRequest) interface{} {
 	if lockErr != nil {
 		var matchErr *editMatchError
 		if errors.As(lockErr, &matchErr) {
+			message := formatFSEditMatchError(resolved.path, currentContent, matchErr, params.Edits[matchErr.index].OldText, len(params.Edits))
 			if matchErr.matches == 0 {
-				return d.failed(request, "", "EDIT_NOT_FOUND", fmt.Sprintf("oldText must match exactly one region in %s, found 0", resolved.path))
+				return d.failed(request, "", "EDIT_NOT_FOUND", message)
 			}
-			return d.failed(request, "", "EDIT_NOT_UNIQUE", fmt.Sprintf("oldText must match exactly one region in %s, found %d", resolved.path, matchErr.matches))
+			return d.failed(request, "", "EDIT_NOT_UNIQUE", message)
+		}
+		var inputErr *editInputError
+		if errors.As(lockErr, &inputErr) {
+			return d.failed(request, "", "BAD_REQUEST", inputErr.Error())
+		}
+		var overlapErr *editOverlapError
+		if errors.As(lockErr, &overlapErr) {
+			return d.failed(request, "", "BAD_REQUEST", overlapErr.Error()+"; merge nearby changes into one edit")
 		}
 		if errors.Is(lockErr, os.ErrNotExist) {
 			return d.failed(request, "", "NOT_FOUND", fmt.Sprintf("file not found: %s", resolved.path))
@@ -575,13 +580,18 @@ func (d *Dispatcher) handleFSStat(request protocol.RPCRequest) interface{} {
 		return d.failed(request, "", "IO_ERROR", err.Error())
 	}
 
-	return map[string]interface{}{
+	result := map[string]interface{}{
 		"path":        resolved.path,
 		"exists":      true,
 		"isDirectory": info.IsDir(),
+		"isFile":      info.Mode().IsRegular(),
 		"size":        info.Size(),
 		"mtimeMs":     info.ModTime().UnixMilli(),
 	}
+	if ctimeMs, ok := fileCtimeMs(info); ok {
+		result["ctimeMs"] = ctimeMs
+	}
+	return result
 }
 
 func (d *Dispatcher) handleFSLs(request protocol.RPCRequest) interface{} {
@@ -1020,6 +1030,11 @@ func processArgvSummary(argv []string, limit int) string {
 	return b.String()
 }
 
+type processOutput struct {
+	typeName string
+	chunk    string
+}
+
 func (d *Dispatcher) handleProcessStart(request protocol.RPCRequest, opID string, ownerIdentity string) interface{} {
 	var params processStartParams
 	if err := json.Unmarshal(request.Params, &params); err != nil {
@@ -1074,32 +1089,77 @@ func (d *Dispatcher) handleProcessStart(request protocol.RPCRequest, opID string
 	}
 	d.logger.Info("process:start", slog.String("processId", processID), slog.String("ownerIdentity", ownerIdentity), slog.String("cmd", cmdSummary), slog.String("cwd", resolved.path))
 
-	_ = d.sendEventToIdentity(ownerIdentity, d.event(request, opID, protocol.RPCEventPayload{Type: "started", ProcessID: processID}))
+	var outputSendFailed atomic.Bool
+	if err := d.sendEventToIdentity(ownerIdentity, d.event(request, opID, protocol.RPCEventPayload{Type: "started", ProcessID: processID})); err != nil {
+		outputSendFailed.Store(true)
+		d.logger.Warn("process:started event delivery failed", slog.String("processId", processID), slog.String("ownerIdentity", ownerIdentity), slog.String("error", err.Error()))
+	}
 
+	outputQueue := make(chan processOutput, processOutputQueueSize)
+	outputSendDone := make(chan struct{})
 	go func() {
-		_ = process.StreamChunks(stdout, func(chunk string) {
-			_ = d.sendEventToIdentity(ownerIdentity, d.event(request, opID, protocol.RPCEventPayload{Type: "stdout", Chunk: chunk}))
-		})
+		defer close(outputSendDone)
+		for output := range outputQueue {
+			if outputSendFailed.Load() {
+				continue
+			}
+			if err := d.sendEventToIdentity(ownerIdentity, d.event(request, opID, protocol.RPCEventPayload{Type: output.typeName, Chunk: output.chunk})); err != nil && outputSendFailed.CompareAndSwap(false, true) {
+				d.logger.Warn("process output delivery failed; dropping remaining output", slog.String("processId", processID), slog.String("ownerIdentity", ownerIdentity), slog.String("error", err.Error()))
+			}
+		}
 	}()
-	go func() {
-		_ = process.StreamChunks(stderr, func(chunk string) {
-			_ = d.sendEventToIdentity(ownerIdentity, d.event(request, opID, protocol.RPCEventPayload{Type: "stderr", Chunk: chunk}))
-		})
-	}()
+
+	stdoutStream, stderrStream := process.StreamBoth(stdout, stderr, func(chunk string, stream process.Stream) {
+		if outputSendFailed.Load() {
+			return
+		}
+		typeName := "stdout"
+		if stream == process.StreamStderr {
+			typeName = "stderr"
+		}
+		select {
+		case outputQueue <- processOutput{typeName: typeName, chunk: chunk}:
+		default:
+			if outputSendFailed.CompareAndSwap(false, true) {
+				d.logger.Warn("process output queue full; dropping remaining output", slog.String("processId", processID), slog.String("ownerIdentity", ownerIdentity))
+			}
+		}
+	})
+
+	// The exit event and completed message are sent after the stream goroutines
+	// have drained or been released by WaitDelay. When output delivery fails,
+	// remaining output is intentionally dropped rather than blocking the
+	// process forever, but terminal events are still attempted.
 	go func() {
 		exitInfo := <-exitCh
+		streamErr := process.WaitStreams(stdoutStream, stderrStream)
+		if streamErr != nil {
+			outputSendFailed.Store(true)
+			d.logger.Warn("process output read failed; output may be truncated", slog.String("processId", processID), slog.String("ownerIdentity", ownerIdentity), slog.String("error", streamErr.Error()))
+		}
+		close(outputQueue)
+		<-outputSendDone
 		termination := processTermination(exitInfo)
+		termination.OutputTruncated = outputSendFailed.Load() || exitInfo.OutputTruncated
+		if termination.OutputTruncated && termination.Message == "" {
+			termination.Message = "Process output was truncated before completion."
+		}
 		codeStr := "unknown"
 		if exitInfo.ExitCode != nil {
 			codeStr = fmt.Sprintf("%d", *exitInfo.ExitCode)
 		}
 		d.logger.Info("process:exit", slog.String("processId", processID), slog.String("ownerIdentity", ownerIdentity), slog.String("exitCode", codeStr), slog.String("reason", termination.Reason), slog.String("cmd", cmdSummary))
-		_ = d.sendEventToIdentity(ownerIdentity, d.event(request, opID, protocol.RPCEventPayload{Type: "exit", ExitCode: exitInfo.ExitCode, Termination: termination}))
-		_ = d.sendEventToIdentity(ownerIdentity, d.complete(request, opID, map[string]interface{}{
+		if err := d.sendEventToIdentity(ownerIdentity, d.event(request, opID, protocol.RPCEventPayload{Type: "exit", ExitCode: exitInfo.ExitCode, Termination: termination})); err != nil {
+			d.logger.Warn("process exit event delivery failed", slog.String("processId", processID), slog.String("ownerIdentity", ownerIdentity), slog.String("error", err.Error()))
+		}
+		result := map[string]interface{}{
 			"processId":   processID,
 			"exitCode":    exitInfo.ExitCode,
 			"termination": termination,
-		}))
+		}
+		if err := d.sendEventToIdentity(ownerIdentity, d.complete(request, opID, result)); err != nil {
+			d.logger.Warn("process completed message delivery failed", slog.String("processId", processID), slog.String("ownerIdentity", ownerIdentity), slog.String("error", err.Error()))
+		}
 	}()
 
 	return nil
@@ -1123,9 +1183,13 @@ func processTermination(exitInfo process.ExitInfo) *protocol.ProcessTermination 
 	}
 
 	termination := &protocol.ProcessTermination{
-		Reason:   reason,
-		ExitCode: exitInfo.ExitCode,
-		Message:  message,
+		Reason:          reason,
+		ExitCode:        exitInfo.ExitCode,
+		Message:         message,
+		OutputTruncated: exitInfo.OutputTruncated,
+	}
+	if exitInfo.OutputTruncated && termination.Message == "" {
+		termination.Message = "Process output was truncated before completion."
 	}
 	if reason == "timed_out" && exitInfo.TimeoutSecs > 0 {
 		termination.TimeoutSecs = exitInfo.TimeoutSecs

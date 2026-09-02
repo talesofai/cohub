@@ -737,7 +737,13 @@ DOMPurify.addHook("afterSanitizeAttributes", (node) => {
 	if (!element.hasAttribute("title")) element.setAttribute("title", href);
 	if (!isExternalHttpLink(href)) return;
 
-	element.setAttribute("target", "_blank");
+	// Keep renderer-added new-tab behavior distinguishable from an author-supplied
+	// target. Cohub App links can use the host workspace when no explicit target
+	// was authored in the Markdown source.
+	if (!element.hasAttribute("target")) {
+		(element as HTMLElement).dataset.cohubAutoTarget = "blank";
+		element.setAttribute("target", "_blank");
+	}
 	element.setAttribute("rel", "noopener noreferrer");
 });
 

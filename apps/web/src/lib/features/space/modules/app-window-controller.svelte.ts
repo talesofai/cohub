@@ -3,13 +3,15 @@ import {
 	APP_SURFACE_REQUEST_TIMEOUT_MS,
 	type AppComposerChip,
 } from "@cohub/protocol/app-surface";
-import type {
-	AppRuntimeInvocationContext,
-	WorkDetailResponse,
-} from "@neta-art/cohub";
+import type { AppDetailResponse } from "@neta-art/cohub";
 import { appDisplayTitle } from "$lib/app-page-meta";
 import { isNewerAppSnapshot } from "$lib/features/app/app-realtime";
 import { createRequestDedupe } from "./request-dedupe";
+import {
+	createWorkspaceAppInvocation,
+	type WorkspaceAppInvocation,
+	type WorkspaceAppOpenContext,
+} from "./workspace-app-context";
 
 export type AppLaunchState = { search?: string; hash?: string };
 
@@ -17,12 +19,12 @@ export type InlineAppPreview = {
 	appId: string;
 	mountKey: number;
 	label: string;
-	detail: WorkDetailResponse | null;
+	detail: AppDetailResponse | null;
 	loading: boolean;
 	error: string | null;
 	refreshError: string | null;
 	launch: AppLaunchState | null;
-	invocation: AppRuntimeInvocationContext | null;
+	invocation: WorkspaceAppInvocation;
 	composerChip: AppComposerChip | null;
 };
 
@@ -30,7 +32,7 @@ export type AppSurfaceInvoker = (input: {
 	method: string;
 	input?: unknown;
 	commandId: string;
-	invocation?: AppRuntimeInvocationContext | null;
+	invocation: WorkspaceAppInvocation;
 	readyTimeoutMs?: number;
 	requestTimeoutMs?: number;
 }) => Promise<
@@ -43,13 +45,13 @@ type AppPreviewControllerOptions = {
 	onClosePanel?: () => void;
 	/** A tab actually went away, so a coordinator can re-derive the active ref. */
 	onAppClosed?: (appId: string) => void;
-	loadWork?: (appId: string) => Promise<WorkDetailResponse>;
-	loadPublicWork?: (appId: string) => Promise<WorkDetailResponse>;
+	loadApp?: (appId: string) => Promise<AppDetailResponse>;
+	loadPublicApp?: (appId: string) => Promise<AppDetailResponse>;
 };
 
 function invocationContextsEqual(
-	left: AppRuntimeInvocationContext | null,
-	right: AppRuntimeInvocationContext | null,
+	left: WorkspaceAppInvocation,
+	right: WorkspaceAppInvocation,
 ) {
 	return (
 		left?.surface === right?.surface &&
@@ -72,11 +74,11 @@ export function createAppPreviewController(
 	const detailSettled = new Map<string, Promise<void>>();
 	const loadTokens = new Map<string, number>();
 
-	const loadWork =
-		options.loadWork ??
+	const loadApp =
+		options.loadApp ??
 		(async (appId: string) => (await import("$lib/sdk")).sdk.apps.get(appId));
-	const loadPublicWork =
-		options.loadPublicWork ??
+	const loadPublicApp =
+		options.loadPublicApp ??
 		(async (appId: string) =>
 			(await import("$lib/sdk")).sdk.apps.getPublicById(appId));
 
@@ -85,15 +87,15 @@ export function createAppPreviewController(
 	 * desktop commands accept public references, so a denied member read falls
 	 * back to the public one rather than showing a permission error.
 	 */
-	async function loadDetailFor(appId: string): Promise<WorkDetailResponse> {
+	async function loadDetailFor(appId: string): Promise<AppDetailResponse> {
 		try {
-			return await loadWork(appId);
+			return await loadApp(appId);
 		} catch (cause) {
 			// Read structurally: importing the SDK error class here would pull the
 			// client into this module, which the lazy import above avoids.
 			const status = (cause as { status?: unknown } | null)?.status;
 			if (status !== 401 && status !== 403) throw cause;
-			return await loadPublicWork(appId);
+			return await loadPublicApp(appId);
 		}
 	}
 
@@ -114,7 +116,7 @@ export function createAppPreviewController(
 		const settle = (async () => {
 			try {
 				const detail = await requests.run(
-					`work:${appId}`,
+					`app:${appId}`,
 					() => loadDetailFor(appId),
 					{ force: loadOptions.force },
 				);
@@ -175,23 +177,27 @@ export function createAppPreviewController(
 		appId: string;
 		label?: string;
 		launch?: AppLaunchState | null;
-		invocation?: AppRuntimeInvocationContext | null;
+		openContext: WorkspaceAppOpenContext;
 	}) {
+		const invocation = createWorkspaceAppInvocation(
+			options.getSpaceId(),
+			input.openContext,
+		);
 		const existing = previews.find((item) => item.appId === input.appId);
 		if (existing) {
 			const launch = input.launch ?? null;
 			const launchChanged =
-				(existing.launch?.search ?? "") !== (launch?.search ?? "") ||
-				(existing.launch?.hash ?? "") !== (launch?.hash ?? "");
-			const invocationChanged =
-				input.invocation !== undefined &&
-				!invocationContextsEqual(existing.invocation, input.invocation);
+				input.launch !== undefined &&
+				((existing.launch?.search ?? "") !== (launch?.search ?? "") ||
+					(existing.launch?.hash ?? "") !== (launch?.hash ?? ""));
+			const invocationChanged = !invocationContextsEqual(
+				existing.invocation,
+				invocation,
+			);
 			if (launchChanged || invocationChanged) {
 				patch(input.appId, {
 					...(launchChanged ? { launch } : {}),
-					...(input.invocation !== undefined
-						? { invocation: input.invocation }
-						: {}),
+					invocation,
 				});
 			}
 			activeAppId = input.appId;
@@ -209,7 +215,7 @@ export function createAppPreviewController(
 				loading: true,
 				error: null,
 				launch: input.launch ?? null,
-				invocation: input.invocation ?? null,
+				invocation,
 				composerChip: null,
 				refreshError: null,
 			},
@@ -289,7 +295,6 @@ export function createAppPreviewController(
 		method: string;
 		input?: unknown;
 		commandId: string;
-		invocation?: AppRuntimeInvocationContext | null;
 	}) {
 		if (!previews.some((item) => item.appId === input.appId)) {
 			return {
@@ -343,7 +348,7 @@ export function createAppPreviewController(
 			method: input.method,
 			input: input.input,
 			commandId: input.commandId,
-			invocation: input.invocation,
+			invocation: preview.invocation,
 			readyTimeoutMs: APP_SURFACE_READY_TIMEOUT_MS,
 			requestTimeoutMs: APP_SURFACE_REQUEST_TIMEOUT_MS,
 		});

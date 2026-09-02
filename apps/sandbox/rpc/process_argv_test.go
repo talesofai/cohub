@@ -22,6 +22,8 @@ type collectRouter struct {
 	stderr    string
 	exitCode  *int
 	completed bool
+	events    []string
+	stdout    string
 	done      chan struct{}
 }
 
@@ -34,6 +36,10 @@ func (r *collectRouter) SendToIdentity(_ string, v interface{}) error {
 	defer r.mu.Unlock()
 	switch msg := v.(type) {
 	case protocol.RPCEvent:
+		r.events = append(r.events, msg.Event.Type)
+		if msg.Event.Type == "stdout" {
+			r.stdout += msg.Event.Chunk
+		}
 		if msg.Event.Type == "stderr" {
 			r.stderr += msg.Event.Chunk
 		}
@@ -41,6 +47,7 @@ func (r *collectRouter) SendToIdentity(_ string, v interface{}) error {
 			r.exitCode = msg.Event.ExitCode
 		}
 	case protocol.RPCCompleted:
+		r.events = append(r.events, "completed")
 		r.completed = true
 		close(r.done)
 	}
@@ -96,6 +103,42 @@ func runArgv(t *testing.T, d *Dispatcher, router *collectRouter, argv []string) 
 		t.Fatalf("unexpected synchronous failure: %s %s", failed.Error.Code, failed.Error.Message)
 	}
 	return router.waitExitCode(t)
+}
+
+func TestProcessArgvEventOrder(t *testing.T) {
+	root := setupProcRoot(t)
+	d, router := newProcessDispatcher(t, root)
+
+	if code := runArgv(t, d, router, []string{"sh", "-c", "printf out; printf err >&2"}); code != 0 {
+		t.Fatalf("command exit code = %d, want 0", code)
+	}
+
+	router.mu.Lock()
+	events := append([]string(nil), router.events...)
+	stdout, stderr := router.stdout, router.stderr
+	router.mu.Unlock()
+	if stdout != "out" || stderr != "err" {
+		t.Fatalf("captured output = stdout %q, stderr %q; want stdout %q, stderr %q", stdout, stderr, "out", "err")
+	}
+	if len(events) < 4 || events[0] != "started" || events[len(events)-1] != "completed" {
+		t.Fatalf("event order = %v, want started, output..., exit, completed", events)
+	}
+	exitIndex := len(events) - 2
+	if events[exitIndex] != "exit" {
+		t.Fatalf("event order = %v, want exit immediately before completed", events)
+	}
+	seenStdout, seenStderr := false, false
+	for _, event := range events[1:exitIndex] {
+		switch event {
+		case "stdout":
+			seenStdout = true
+		case "stderr":
+			seenStderr = true
+		}
+	}
+	if !seenStdout || !seenStderr {
+		t.Fatalf("event order = %v, want stdout and stderr before exit", events)
+	}
 }
 
 func TestProcessArgvMkdir(t *testing.T) {

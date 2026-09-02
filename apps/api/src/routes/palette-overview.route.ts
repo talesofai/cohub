@@ -4,7 +4,7 @@ import { db } from "../db/index.js";
 import { fallbackPublicUserProfile, getProfilesByUuids } from "../user-profiles.js";
 import { normalizePublicAvatarUrl, useAuth } from "../lib/middleware.js";
 import { createLogger } from "@cohub/infra/logging";
-import { getPinnedSpaceIds } from "@cohub/core/labels";
+import { isUuid } from "@cohub/protocol/identifiers";
 import { asAccountIdentity, hasPermission } from "../permissions.js";
 
 const logger = createLogger({ serviceName: "cohub-api" });
@@ -14,6 +14,7 @@ const DEFAULT_SPACE_LIMIT = 50;
 const MAX_SPACE_LIMIT = 100;
 const DEFAULT_SESSION_LIMIT = 20;
 const MAX_SESSION_LIMIT = 50;
+const MAX_RECENT_SPACE_IDS = 10;
 
 type PaletteSpaceRelation = "owner" | "member" | "public";
 
@@ -66,21 +67,24 @@ router.get("/", async (c) => {
   }
   const identity = asAccountIdentity(user);
   if (!identity) return c.json({ message: "forbidden" }, 403);
+  c.header("Cache-Control", "private, no-store");
+  c.header("Vary", "Authorization, Cookie");
 
   const spaceLimit = clampLimit(c.req.query("spaceLimit"), DEFAULT_SPACE_LIMIT, MAX_SPACE_LIMIT);
   const sessionLimit = clampLimit(c.req.query("sessionLimit"), DEFAULT_SESSION_LIMIT, MAX_SESSION_LIMIT);
+  const recentSpaceIds = [
+    ...new Set(
+      (c.req.queries("recentSpaceId") ?? [])
+        .map((value) => value.trim())
+        .filter((value) => isUuid(value)),
+    ),
+  ].slice(0, MAX_RECENT_SPACE_IDS);
+  const recentSpaceCondition =
+    recentSpaceIds.length > 0
+      ? sql`s.id IN (${sql.join(recentSpaceIds.map((id) => sql`${id}::uuid`), sql`, `)})`
+      : sql`1 = 0`;
 
   try {
-    const pinnedSpaceIds = await getPinnedSpaceIds(db, identity.uuid);
-    const pinnedIds = [...pinnedSpaceIds];
-    // NOTE: use the expression `1 = 0` instead of the bare constant `false` —
-    // PostgreSQL rejects non-integer constants in ORDER BY (SQLSTATE 42601),
-    // and this fragment is interpolated into both SELECT and ORDER BY.
-    const pinnedCondition =
-      pinnedIds.length > 0
-        ? sql`vs.id IN (${sql.join(pinnedIds.map((id) => sql`${id}::uuid`), sql`, `)})`
-        : sql`1 = 0`;
-
     const { spaceRows, sessionRows } = await db.transaction(async (tx) => {
       const spaces = await tx.execute<PaletteOverviewSpaceRow>(sql`
         WITH visible_spaces AS MATERIALIZED (
@@ -93,6 +97,8 @@ router.get("/", async (c) => {
             s.last_activity_at,
             s.updated_at,
             s.created_at,
+            pinned_assignment.id IS NOT NULL AS is_pinned,
+            (${recentSpaceCondition}) AS is_local_recent,
             CASE
               WHEN s.user_uuid = ${identity.uuid} THEN 'owner'
               WHEN sm.user_id IS NOT NULL THEN 'member'
@@ -101,6 +107,16 @@ router.get("/", async (c) => {
           FROM v2.spaces s
           LEFT JOIN v2.space_members sm
             ON sm.space_id = s.id AND sm.user_id = ${identity.uuid}
+          LEFT JOIN v2.labels pinned_label
+            ON pinned_label.scope_type = 'user'
+            AND pinned_label.scope_id = ${identity.uuid}
+            AND pinned_label.system_key = 'user:pinned'
+          LEFT JOIN v2.label_assignments pinned_assignment
+            ON pinned_assignment.label_id = pinned_label.id
+            AND pinned_assignment.scope_type = 'user'
+            AND pinned_assignment.scope_id = ${identity.uuid}
+            AND pinned_assignment.resource_type = 'space'
+            AND pinned_assignment.resource_ref = s.id::text
           WHERE
             s.user_uuid = ${identity.uuid}
             OR sm.user_id IS NOT NULL
@@ -118,6 +134,7 @@ router.get("/", async (c) => {
             MAX(t.created_at) AS last_participated_at
           FROM v2.session_turns t
           JOIN v2.space_sessions sess ON sess.id = t.session_id
+          JOIN visible_spaces visible ON visible.id = sess.space_id
           WHERE t.user_uuid = ${identity.uuid}
           GROUP BY sess.space_id
         )
@@ -131,13 +148,13 @@ router.get("/", async (c) => {
           vs.owner_user_uuid AS "ownerUserUuid",
           nullif(trim(coalesce(vs.meta #>> '{publicProfile,avatarUrl}', '')), '') AS "avatarUrl",
           vs.space_relation AS "spaceRelation",
-          (${pinnedCondition}) AS "isPinned",
+          vs.is_pinned AS "isPinned",
           uta.last_participated_at AS "lastParticipatedAt",
           coalesce(vs.last_activity_at, vs.updated_at, vs.created_at) AS "updatedAt"
         FROM visible_spaces vs
         LEFT JOIN user_turn_activity uta ON uta.space_id = vs.id
         ORDER BY
-          (${pinnedCondition}) DESC,
+          vs.is_local_recent DESC,
           uta.last_participated_at DESC NULLS LAST,
           CASE
             WHEN vs.space_relation = 'owner' THEN 0
@@ -150,23 +167,22 @@ router.get("/", async (c) => {
       `);
 
       const sessions = await tx.execute<PaletteOverviewSessionRow>(sql`
-        WITH visible_spaces AS MATERIALIZED (
-          SELECT
-            s.id,
-            s.name,
-            s.user_uuid,
-            s.last_activity_at,
-            s.updated_at,
-            s.created_at,
-            CASE
-              WHEN s.user_uuid = ${identity.uuid} THEN 'owner'
-              WHEN sm.user_id IS NOT NULL THEN 'member'
-              ELSE 'public'
-            END AS space_relation
-          FROM v2.spaces s
-          LEFT JOIN v2.space_members sm
-            ON sm.space_id = s.id AND sm.user_id = ${identity.uuid}
-          WHERE
+        SELECT
+          sess.id,
+          sess.space_id AS "spaceId",
+          s.name AS "spaceName",
+          coalesce(nullif(sess.title, ''), 'Untitled session') AS title,
+          CASE WHEN sess.user_uuid = ${identity.uuid} THEN 'creator' ELSE 'participant' END AS "viewerRelation",
+          sess.last_message_at AS "lastMessageAt",
+          coalesce(sess.last_message_at, sess.updated_at, sess.created_at) AS "updatedAt"
+        FROM v2.space_sessions sess
+        JOIN v2.spaces s ON s.id = sess.space_id
+        LEFT JOIN v2.space_members sm
+          ON sm.space_id = s.id AND sm.user_id = ${identity.uuid}
+        WHERE
+          (sess.user_uuid = ${identity.uuid}
+            OR (sess.meta -> 'participants' -> 'userUuids') ? ${identity.uuid})
+          AND (
             s.user_uuid = ${identity.uuid}
             OR sm.user_id IS NOT NULL
             OR EXISTS (
@@ -176,21 +192,10 @@ router.get("/", async (c) => {
                 AND ap.resource_id = s.id
                 AND (ap.signed_in_user_role IS NOT NULL OR ap.anonymous_user_role IS NOT NULL)
             )
-        )
-        SELECT
-          sess.id,
-          sess.space_id AS "spaceId",
-          vs.name AS "spaceName",
-          coalesce(nullif(sess.title, ''), 'Untitled session') AS title,
-          CASE WHEN sess.user_uuid = ${identity.uuid} THEN 'creator' ELSE 'participant' END AS "viewerRelation",
-          sess.last_message_at AS "lastMessageAt",
-          coalesce(sess.last_message_at, sess.updated_at, sess.created_at) AS "updatedAt"
-        FROM v2.space_sessions sess
-        JOIN visible_spaces vs ON vs.id = sess.space_id
-        WHERE
-          sess.user_uuid = ${identity.uuid}
-          OR (sess.meta -> 'participants' -> 'userUuids') ? ${identity.uuid}
-        ORDER BY coalesce(sess.last_message_at, sess.updated_at, sess.created_at) DESC
+          )
+        ORDER BY
+          coalesce(sess.last_message_at, sess.updated_at, sess.created_at) DESC,
+          sess.id ASC
         LIMIT ${sessionLimit}
       `);
 
@@ -212,6 +217,7 @@ router.get("/", async (c) => {
 
     return c.json({
       generatedAt: new Date().toISOString(),
+      degraded: false,
       spaces: spaceRows.map((row) => ({
         id: row.id,
         name: row.name,
@@ -237,8 +243,17 @@ router.get("/", async (c) => {
     });
   } catch (error) {
     logger.warn("[palette-overview] failed", { userUuid: identity.uuid, error });
-    // Degrade to an empty payload: the palette falls back to local caches.
-    return c.json({ generatedAt: new Date().toISOString(), spaces: [], recentSessions: [] });
+    // Keep failures distinguishable from a legitimate empty account. The
+    // client can retain its last-known-good snapshot and use local caches.
+    return c.json(
+      {
+        generatedAt: new Date().toISOString(),
+        spaces: [],
+        recentSessions: [],
+        degraded: true,
+      },
+      503,
+    );
   }
 });
 

@@ -24,6 +24,7 @@ export type FsCdnFileMeta = {
   size: number;
   mimeType: string | null;
   mtimeMs: number;
+  ctimeMs?: number;
 };
 
 export function shouldUseFsCdnForMeta(meta: Pick<FsCdnFileMeta, "path" | "mimeType" | "size">) {
@@ -123,6 +124,7 @@ export function buildUrlFileResponse(meta: FsCdnFileMeta, manifest: FsCdnManifes
     size: meta.size,
     mimeType: meta.mimeType,
     mtimeMs: meta.mtimeMs,
+    ctimeMs: meta.ctimeMs,
     kind,
     encoding: kind === "text" ? "utf-8" : "base64",
     content: "",

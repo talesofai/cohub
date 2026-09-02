@@ -4,7 +4,7 @@ import { getCohubAppLinkKey, type ParsedCohubAppLink } from "./app";
 
 const LINK_RESOLVE_LIMIT = 20;
 
-export async function resolveCohubWorkLinkMentionLabels(
+export async function resolveCohubAppLinkMentionLabels(
 	links: ParsedCohubAppLink[],
 	options?: { signal?: AbortSignal; limit?: number },
 ) {
@@ -16,7 +16,7 @@ export async function resolveCohubWorkLinkMentionLabels(
 	await Promise.all(
 		unique.map(async (link) => {
 			try {
-				const { app } = await sdk.works.getBySlug(
+				const { app } = await sdk.apps.getBySlug(
 					link.username,
 					link.spaceSlug,
 					link.appSlug,

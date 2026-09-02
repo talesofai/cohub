@@ -7,7 +7,6 @@ export type WorkspacePageView =
 	| "checkpoint-new"
 	| "cronjob"
 	| "cronjob-new"
-	| "work"
 	| "task";
 
 type PreviewFields = {

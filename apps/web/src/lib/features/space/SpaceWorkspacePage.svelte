@@ -1,4 +1,9 @@
 <script lang="ts">
+import { SPACE_INSTALLED_APPS_PATH } from "@cohub/protocol";
+import type {
+	AppNavigationOpenMessage,
+	AppNavigationTarget,
+} from "@cohub/protocol/app-navigation";
 import type { AppComposerChip } from "@cohub/protocol/app-surface";
 import type { SpaceFsChangedPayload } from "@cohub/protocol/fs";
 import type {
@@ -14,6 +19,7 @@ import type {
 	TaskRunRecord,
 	UserProfile,
 } from "@neta-art/cohub";
+import { parseAppRef } from "@neta-art/cohub";
 import type { BoardDocument } from "@neta-art/cohub/board";
 import {
 	Check,
@@ -35,6 +41,7 @@ import {
 	replaceState,
 } from "$app/navigation";
 import { page } from "$app/state";
+import { PUBLIC_MARKETPLACE_APP_ID } from "$env/static/public";
 import {
 	type AccessState,
 	isBlockingAccessState,
@@ -58,10 +65,12 @@ import CenteredLoading from "$lib/components/CenteredLoading.svelte";
 import ResourceLabelPicker from "$lib/components/ResourceLabelPicker.svelte";
 import UserIdentity from "$lib/components/UserIdentity.svelte";
 import { createDeferredMount } from "$lib/deferred-mount.svelte";
+import { invalidateInstalledApps } from "$lib/features/app/app-center";
 import {
 	APPS_CHANGED_EVENT,
 	createAppMutationBuffer,
 	dispatchAppsChanged,
+	dispatchInstalledAppsChanged,
 	parseAppVersionPublished,
 	upsertAppSnapshot,
 } from "$lib/features/app/app-realtime";
@@ -96,6 +105,8 @@ import {
 } from "$lib/space-config";
 import type { SpaceFsNode } from "$lib/space-fs";
 import {
+	buildSpaceCheckpointRoute,
+	buildSpaceCronjobRoute,
 	buildSpaceNewSessionRoute,
 	buildSpaceSessionRoute,
 	buildSpaceTaskRoute,
@@ -177,6 +188,7 @@ import {
 	activeWindowFilePath,
 	workspaceFilePreviewKind,
 } from "./modules/windows";
+import type { WorkspaceAppOpenContext } from "./modules/workspace-app-context";
 import { createWorkspaceLayoutController } from "./modules/workspace-layout-controller.svelte";
 import { createWorkspaceReplicationController } from "./modules/workspace-replication-controller.svelte";
 import { displayUserName, fallbackUserName } from "./space-utils";
@@ -394,6 +406,144 @@ const portPreview = createPortPreviewController({
 	onPortClosed: (port) => windowManager.tabClosed("port", port),
 	onBeforeOpenPort: () => {},
 });
+async function openMessageUrl(href: string, event: MouseEvent) {
+	try {
+		const url = new URL(href, page.url.href);
+		if (url.origin !== page.url.origin || !url.pathname.includes("/w/")) return;
+		event.preventDefault();
+		const result = await handleAppNavigationOpen({
+			protocol: "cohub.app.navigation",
+			version: 1,
+			type: "open",
+			requestId: crypto.randomUUID(),
+			target: { kind: "app", ref: url.href },
+		});
+		if (!result.handled) window.location.assign(href);
+	} catch {
+		// Preserve ordinary browser navigation for malformed or unsupported URLs.
+		window.location.assign(href);
+	}
+}
+
+async function handleAppNavigationOpen(message: AppNavigationOpenMessage) {
+	if (message.target.kind !== "app") {
+		return openWorkspaceNavigation(message.target);
+	}
+	try {
+		const parsedRef = parseAppRef(message.target.ref);
+		if ("id" in parsedRef) {
+			// IDs are stable and avoid an unnecessary slug lookup.
+			const parsed = await sdk.apps
+				.get(parsedRef.id)
+				.catch(() => sdk.apps.getPublicById(parsedRef.id));
+			return openResolvedAppNavigation(
+				message,
+				parsed.app.id,
+				appDisplayTitle(parsed.app.meta, parsed.app.slug),
+				{ source: "user" },
+				message.target.launch,
+			);
+		}
+		const parsed = await sdk.apps.getBySlug(
+			parsedRef.username,
+			parsedRef.spaceSlug,
+			parsedRef.appSlug,
+		);
+		const launch =
+			message.target.launch ??
+			(parsedRef.search || parsedRef.hash
+				? {
+						...(parsedRef.search ? { search: parsedRef.search } : {}),
+						...(parsedRef.hash ? { hash: parsedRef.hash } : {}),
+					}
+				: undefined);
+		return openResolvedAppNavigation(
+			message,
+			parsed.app.id,
+			appDisplayTitle(parsed.app.meta, parsed.app.slug),
+			{ source: "user" },
+			launch,
+		);
+	} catch {
+		return { handled: false as const, reason: "inaccessible" as const };
+	}
+}
+
+async function openWorkspaceNavigation(target: AppNavigationTarget) {
+	if (target.kind === "file") {
+		if (target.spaceId !== spaceId)
+			return { handled: false as const, reason: "unsupported" as const };
+		if (workspaceFilePreviewKind(target.path, activeFsReadonly) === "board") {
+			await openInlineBoard(target.path);
+			return { handled: true as const };
+		}
+		await windowManager.openFile(target.path, {
+			preserveHistory: true,
+			position: target.view ?? null,
+		});
+		return { handled: true as const };
+	}
+	if (
+		target.kind === "session" ||
+		target.kind === "task" ||
+		target.kind === "checkpoint" ||
+		target.kind === "cronjob"
+	) {
+		if (target.spaceId !== spaceId)
+			return { handled: false as const, reason: "unsupported" as const };
+		const route =
+			target.kind === "session"
+				? buildSpaceSessionRoute(spaceId, target.sessionId)
+				: target.kind === "task"
+					? buildSpaceTaskRoute(spaceId, target.taskRunId)
+					: target.kind === "checkpoint"
+						? buildSpaceCheckpointRoute(spaceId, target.checkpointId)
+						: buildSpaceCronjobRoute(spaceId, target.cronjobId);
+		await goto(route, { keepFocus: true, noScroll: true });
+		return { handled: true as const };
+	}
+	return { handled: false as const, reason: "unsupported" as const };
+}
+
+async function openResolvedAppNavigation(
+	message: AppNavigationOpenMessage,
+	appId: string,
+	label: string,
+	openContext: WorkspaceAppOpenContext,
+	launch?: { search?: string; hash?: string },
+) {
+	windowManager.openApp({
+		appId,
+		label,
+		launch: launch ?? null,
+		openContext,
+	});
+	if (!message.call) return { handled: true as const };
+	// Applying launch state changes the iframe source reactively. Flush that
+	// update before calling so AppSurface resets the old runtime first; the
+	// surface host then waits for the new document's ready handshake.
+	await tick();
+	const result = await appPreview.callSurface({
+		appId,
+		method: message.call.method,
+		input: message.call.input,
+		commandId: message.requestId,
+	});
+	return result.ok
+		? {
+				handled: true as const,
+				call: { ok: true as const, result: result.result },
+			}
+		: {
+				handled: true as const,
+				call: {
+					ok: false as const,
+					code: result.code,
+					message: result.message,
+				},
+			};
+}
+
 const appPreview = createAppPreviewController({
 	getSpaceId: () => spaceId,
 	onOpenPanel: () => {
@@ -564,7 +714,7 @@ const windowManager = createWindowManager({
 	},
 });
 const inlineFileCopied = $derived(fileWorkspace.inlineFileCopied);
-const openWorkPublish = (
+const openAppPublish = (
 	targetType: "file" | "directory" | "port",
 	targetRef: string,
 ) => {
@@ -625,7 +775,7 @@ $effect(() => {
 				previewAppsLoadedFor = currentSpaceId;
 				return;
 			}
-			const { apps } = await sdk.works.listBySpace(currentSpaceId);
+			const { apps } = await sdk.apps.listBySpace(currentSpaceId);
 			if (token !== previewAppsToken) return;
 			// Replay what realtime delivered mid-request instead of dropping the
 			// response, which would hide every other app until the next reload.
@@ -650,7 +800,7 @@ const selectedFilePath = $derived(
 		activeInlineBoardPath,
 	),
 );
-let newChatBackgroundWorkContext = $state<{
+let newChatBackgroundAppContext = $state<{
 	appId: string;
 	chip: AppComposerChip;
 } | null>(null);
@@ -695,11 +845,11 @@ $effect(() => {
 		sessionChat.reportActiveSource(null);
 		return;
 	}
-	if (newChatBackgroundWorkContext) {
+	if (newChatBackgroundAppContext) {
 		sessionChat.reportActiveSource({
 			kind: "app",
-			appId: newChatBackgroundWorkContext.appId,
-			...newChatBackgroundWorkContext.chip,
+			appId: newChatBackgroundAppContext.appId,
+			...newChatBackgroundAppContext.chip,
 		});
 		return;
 	}
@@ -1054,7 +1204,7 @@ const shouldShowNewChatProfile = $derived(
 	),
 );
 $effect(() => {
-	if (!shouldShowNewChatBackground) newChatBackgroundWorkContext = null;
+	if (!shouldShowNewChatBackground) newChatBackgroundAppContext = null;
 });
 $effect(() => {
 	if (!shouldShowNewChatProfile || !space) return;
@@ -1383,8 +1533,21 @@ function normalizeSandboxFsPayload(
 }
 
 function enqueueSpaceFsChanged(payload: ChannelEnvelope) {
-	const generation = spaceFsEventGeneration;
+	const eventPayload = payload.payload as SpaceFsChangedPayload;
 	const eventSpaceId = payload.spaceId ?? spaceId;
+	const installedAppsChanged =
+		eventPayload.resync ||
+		eventPayload.changes?.some(
+			(change) =>
+				change.path === SPACE_INSTALLED_APPS_PATH ||
+				change.oldPath === SPACE_INSTALLED_APPS_PATH,
+		);
+	if (installedAppsChanged) {
+		invalidateInstalledApps(eventSpaceId);
+		dispatchInstalledAppsChanged(eventSpaceId);
+	}
+
+	const generation = spaceFsEventGeneration;
 	const sourceKey = activeFsSourceKey;
 	const prepared = spaceFsEventTail
 		.catch(() => undefined)
@@ -2004,13 +2167,13 @@ function closeInlineBoardTab(path?: string) {
 function closeInlinePortTab(port?: string) {
 	windowManager.close("port", port ?? activeInlinePort);
 }
-function activateInlineWorkTab(appId: string) {
+function activateInlineAppTab(appId: string) {
 	windowManager.activate("app", appId);
 }
-function closeInlineWorkTab(appId?: string) {
+function closeInlineAppTab(appId?: string) {
 	windowManager.close("app", appId ?? activeInlineAppId);
 }
-function retryInlineWork(appId: string) {
+function retryInlineApp(appId: string) {
 	appPreview.retry(appId);
 }
 /**
@@ -2018,7 +2181,7 @@ function retryInlineWork(appId: string) {
  * it on unmount. Keep the disposers here so a remount never leaves a stale
  * invoker pointing at a detached frame.
  */
-const workSurfaceDisposers = new Map<string, () => void>();
+const appSurfaceDisposers = new Map<string, () => void>();
 function handleAppComposerChip(appId: string, chip: AppComposerChip | null) {
 	appPreview.setComposerChip(appId, chip);
 }
@@ -2027,18 +2190,18 @@ function handleNewChatBackgroundComposerChip(
 	chip: AppComposerChip | null,
 ) {
 	if (chip) {
-		newChatBackgroundWorkContext = { appId, chip };
+		newChatBackgroundAppContext = { appId, chip };
 		return;
 	}
-	if (newChatBackgroundWorkContext?.appId === appId) {
-		newChatBackgroundWorkContext = null;
+	if (newChatBackgroundAppContext?.appId === appId) {
+		newChatBackgroundAppContext = null;
 	}
 }
 function registerAppSurface(appId: string, host: AppSurfaceHost | null) {
-	workSurfaceDisposers.get(appId)?.();
-	workSurfaceDisposers.delete(appId);
+	appSurfaceDisposers.get(appId)?.();
+	appSurfaceDisposers.delete(appId);
 	if (!host) return;
-	workSurfaceDisposers.set(
+	appSurfaceDisposers.set(
 		appId,
 		appPreview.registerSurface(appId, (input) => host.call(input)),
 	);
@@ -2269,34 +2432,6 @@ onMount(() => {
 			sessionChat.applySessionsSnapshot(sessions);
 		},
 	);
-	const offBoardTxApplied = sdk.space(spaceId).on("board.changed", (event) => {
-		const payload =
-			event.payload as import("@neta-art/cohub").BoardChangedEvent["payload"];
-		if (!boardPreview.hasBoardId(payload.boardId)) return;
-		if (boardPreview.isOwnTransaction(payload.mutationId)) return;
-		if (payload.changed.items.length && payload.actorId) {
-			boardPreview.noteRemoteTransaction({
-				boardId: payload.boardId,
-				actorId: payload.actorId,
-				txId: payload.mutationId,
-				itemIds: payload.changed.items,
-				source: payload.source ?? null,
-			});
-		}
-		boardPreview.requestRemoteChange(payload.boardId, {
-			version: payload.version,
-			mutationId: payload.mutationId,
-			changed: payload.changed,
-		});
-	});
-	const offBoardPlaybackChanged = sdk
-		.space(spaceId)
-		.on("board.playback.changed", (event) => {
-			const snapshot =
-				event.payload as import("@neta-art/cohub").BoardPlaybackSnapshot;
-			if (!boardPreview.hasBoardId(snapshot.boardId)) return;
-			boardPreview.applyPlayback(snapshot);
-		});
 	const offSpaceConfigUpdated = subscribeSpaceConfig((config) => {
 		spaceConfig = config;
 	});
@@ -2387,16 +2522,16 @@ onMount(() => {
 			}
 
 			if (command.target.kind === "file") {
-				// Route through the file domain so .board files keep their native Board
-				// window instead of being opened as generic text.
-				await fileWorkspace.openSpaceFile(command.target.path);
+				await openWorkspaceNavigation({
+					kind: "file",
+					spaceId,
+					path: command.target.path,
+				});
 				return { status: "applied" };
 			}
 
-			const invocation: AppRuntimeInvocationContext = {
-				surface: "app",
+			const openContext: WorkspaceAppOpenContext = {
 				source: "desktop_command",
-				...(context.source?.spaceId ? { spaceId: context.source.spaceId } : {}),
 				...(context.source?.sessionId
 					? { sessionId: context.source.sessionId }
 					: {}),
@@ -2405,20 +2540,31 @@ onMount(() => {
 					? { toolCallId: context.source.toolCallId }
 					: {}),
 			};
-			windowManager.openApp({
-				appId: command.target.appId,
-				label: command.target.label,
-				launch: command.target.launch ?? null,
-				invocation,
-			});
+			const opened = await openResolvedAppNavigation(
+				{
+					protocol: "cohub.app.navigation",
+					version: 1,
+					type: "open",
+					requestId: context.commandId,
+					target: { kind: "app", ref: command.target.appId },
+					...(command.call ? { call: command.call } : {}),
+				},
+				command.target.appId,
+				command.target.label ?? "App",
+				openContext,
+				command.target.launch,
+			);
 			if (!command.call) return { status: "applied" };
-			const called = await appPreview.callSurface({
-				appId: command.target.appId,
-				method: command.call.method,
-				input: command.call.input,
-				commandId: context.commandId,
-				invocation,
-			});
+			const called = opened.call;
+			if (!called) {
+				return {
+					status: "rejected",
+					error: {
+						code: "surface_unavailable",
+						message: "The App surface did not return a call result.",
+					},
+				};
+			}
 			if (called.ok) return { status: "pending" };
 			return {
 				status:
@@ -2437,18 +2583,17 @@ onMount(() => {
 		window.removeEventListener("keydown", handleSessionVimKeydown);
 		window.removeEventListener(APPS_CHANGED_EVENT, handleAppsChanged);
 		offSessionListCacheUpdated();
-		offBoardTxApplied();
-		offBoardPlaybackChanged();
 		offSpaceConfigUpdated();
 		offSpaceConfigBackgroundAction();
 		offDanmakuPrefs();
 		danmakuController.dispose();
 		spaceStatus.dispose();
 		workspaceReplication.dispose();
+		boardPreview.dispose();
 		fileWorkspace.dispose();
 		portPreview.dispose();
-		for (const dispose of workSurfaceDisposers.values()) dispose();
-		workSurfaceDisposers.clear();
+		for (const dispose of appSurfaceDisposers.values()) dispose();
+		appSurfaceDisposers.clear();
 		appPreview.dispose();
 		sessionChat.scroll.stopVimScroll();
 		sessionChat.scroll.clearPendingVimG();
@@ -2806,11 +2951,12 @@ const spaceFileDomainProps = $derived.by<
 	onCloseInlineBoardTab: closeInlineBoardTab,
 	onActivateInlinePort: activateInlinePortTab,
 	onCloseInlinePortTab: closeInlinePortTab,
-	onActivateInlineApp: activateInlineWorkTab,
-	onCloseInlineAppTab: closeInlineWorkTab,
-	onRetryInlineApp: retryInlineWork,
+	onActivateInlineApp: activateInlineAppTab,
+	onCloseInlineAppTab: closeInlineAppTab,
+	onRetryInlineApp: retryInlineApp,
 	onRegisterAppSurface: registerAppSurface,
 	onAppComposerChip: handleAppComposerChip,
+	onNavigationOpen: handleAppNavigationOpen,
 	onActivateInlineFile: activateInlineFileTab,
 	onCloseInlineFileTab: closeInlineFileTab,
 	onBackInlineFile: goBackInlineFile,
@@ -2838,7 +2984,26 @@ const spaceFileDomainProps = $derived.by<
 	onInsertFilePathReference: insertFilePathReference,
 	onGetFileActionNode: getFileActionNode,
 	onUploadComplete: fileWorkspace.handleUploadComplete,
-	onOpenAppPublish: openWorkPublish,
+	onOpenAppPublish: openAppPublish,
+	onOpenMarketplace: () => {
+		if (!PUBLIC_MARKETPLACE_APP_ID) return;
+		windowManager.openApp({
+			appId: PUBLIC_MARKETPLACE_APP_ID,
+			label: "Marketplace",
+			openContext: { source: "user" },
+		});
+	},
+	onOpenInstalledApp: (app) => {
+		if (app.source.type !== "marketplace") {
+			window.open(app.url, "_blank", "noopener,noreferrer");
+			return;
+		}
+		windowManager.openApp({
+			appId: app.source.appId,
+			label: app.snapshot.name,
+			openContext: { source: "user" },
+		});
+	},
 	onCloseAppPublish: () => {
 		appPublishTarget = null;
 	},
@@ -3100,6 +3265,7 @@ const headerActions = {
           windowManager.openApp({
             appId: app.id,
             label: appDisplayTitle(app.meta, app.slug),
+            openContext: { source: "user" },
           });
         }}
       />
@@ -3110,6 +3276,8 @@ const headerActions = {
         {newChatBackground}
         newChatBackgroundSpaceId={spaceId}
         onNewChatBackgroundComposerChip={handleNewChatBackgroundComposerChip}
+        onNavigationOpen={handleAppNavigationOpen}
+        onOpenUrl={openMessageUrl}
         {shouldShowNewChatProfile}
         {newChatProfileExpanded}
         bind:newChatProfileViewportEl

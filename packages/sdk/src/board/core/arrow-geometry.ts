@@ -13,6 +13,12 @@ import {
 	type WorldPoint,
 	worldPoint,
 } from "../geometry.js";
+import {
+	boardArrowBounds,
+	boardArrowFrame,
+	boardResolveArrow,
+	boardSampleResolvedArrow,
+} from "@cohub/protocol";
 import type { BoardArrowItem, BoardFrame, BoardPoint } from "@cohub/protocol/board-document";
 
 export type ResolvedArrow = {
@@ -24,63 +30,29 @@ export type ResolvedArrow = {
 
 /** Resolve an arrow's endpoints and its bent control point. */
 export function resolveArrow(item: BoardArrowItem): ResolvedArrow {
-	const start = worldPoint(item.start.x, item.start.y);
-	const end = worldPoint(item.end.x, item.end.y);
-	const mid = worldPoint((start.x + end.x) / 2, (start.y + end.y) / 2);
-	if (!item.bend) return { start, end, control: mid };
-	const dx = end.x - start.x;
-	const dy = end.y - start.y;
-	const length = Math.hypot(dx, dy) || 1;
-	const offset = item.bend * length;
+	const resolved = boardResolveArrow(item);
 	return {
-		start,
-		end,
-		control: worldPoint(mid.x + (-dy / length) * offset, mid.y + (dx / length) * offset),
+		start: worldPoint(resolved.start.x, resolved.start.y),
+		end: worldPoint(resolved.end.x, resolved.end.y),
+		control: worldPoint(resolved.control.x, resolved.control.y),
 	};
 }
 
 /** Sample an arrow's quadratic curve into world points. */
 export function sampleArrow(resolved: ResolvedArrow, segments: number): WorldPoint[] {
-	const { start, control, end } = resolved;
-	const out: WorldPoint[] = [];
-	for (let index = 0; index <= segments; index += 1) {
-		const t = index / segments;
-		const mt = 1 - t;
-		out.push(
-			worldPoint(
-				mt * mt * start.x + 2 * mt * t * control.x + t * t * end.x,
-				mt * mt * start.y + 2 * mt * t * control.y + t * t * end.y,
-			),
-		);
-	}
-	return out;
+	return boardSampleResolvedArrow(resolved, segments).map((point) =>
+		worldPoint(point.x, point.y),
+	);
 }
 
 /** World bounds of an arrow, padded for its stroke. */
 export function arrowBounds(item: BoardArrowItem): Rect {
-	const samples = sampleArrow(resolveArrow(item), 12);
-	let minX = Number.POSITIVE_INFINITY;
-	let minY = Number.POSITIVE_INFINITY;
-	let maxX = Number.NEGATIVE_INFINITY;
-	let maxY = Number.NEGATIVE_INFINITY;
-	for (const point of samples) {
-		minX = Math.min(minX, point.x);
-		minY = Math.min(minY, point.y);
-		maxX = Math.max(maxX, point.x);
-		maxY = Math.max(maxY, point.y);
-	}
-	const pad = Math.max(8, item.size * 2);
-	return {
-		x: minX - pad,
-		y: minY - pad,
-		width: Math.max(1, maxX - minX + pad * 2),
-		height: Math.max(1, maxY - minY + pad * 2),
-	};
+	return boardArrowBounds(item);
 }
 
 /** The frame an arrow should carry, derived from its endpoints. */
 export function arrowFrame(item: BoardArrowItem): BoardFrame {
-	return { ...arrowBounds(item), rotation: 0 };
+	return boardArrowFrame(item);
 }
 
 /** Distance from a world point to an arrow's curve (hit testing). */

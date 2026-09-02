@@ -12,6 +12,7 @@ import type {
 	BoardVideoItem,
 } from "@neta-art/cohub/board";
 import {
+	arrowFrame,
 	computeDrawBounds,
 	DEFAULT_BOARD_TOOL_STYLES,
 	featuredTaskArtifact,
@@ -352,9 +353,9 @@ export function createArrowBoardItem(
 	id = createBoardItemId(),
 	size: number = DEFAULT_BOARD_TOOL_STYLES.arrow.size,
 ): BoardItem {
-	return {
+	const item = {
 		id,
-		type: "arrow",
+		type: "arrow" as const,
 		start: { x: start.x, y: start.y },
 		end: { x: end.x, y: end.y },
 		bend: 0,
@@ -363,8 +364,9 @@ export function createArrowBoardItem(
 		arrowStart: false,
 		arrowEnd: true,
 		label: "",
-		frame: arrowFrameFromPoints(start, end),
+		frame: { x: 0, y: 0, width: 1, height: 1, rotation: 0 },
 	};
+	return { ...item, frame: arrowFrame(item) };
 }
 
 const DEFAULT_FRAME_SIZE = { width: 480, height: 320 };
@@ -386,22 +388,6 @@ export function createFrameBoardItem(
 			y - DEFAULT_FRAME_SIZE.height / 2,
 			DEFAULT_FRAME_SIZE,
 		),
-	};
-}
-
-function arrowFrameFromPoints(
-	start: { x: number; y: number },
-	end: { x: number; y: number },
-): BoardFrame {
-	const pad = 16;
-	const x = Math.min(start.x, end.x) - pad;
-	const y = Math.min(start.y, end.y) - pad;
-	return {
-		x,
-		y,
-		width: Math.max(1, Math.abs(end.x - start.x) + pad * 2),
-		height: Math.max(1, Math.abs(end.y - start.y) + pad * 2),
-		rotation: 0,
 	};
 }
 

@@ -1,1 +1,1 @@
-<!-- UI lives in sessions/+layout.svelte so previews survive child-route navigations. -->
+<!-- UI lives in the Space layout so previews survive session navigation. -->

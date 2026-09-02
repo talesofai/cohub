@@ -1,5 +1,6 @@
 <script lang="ts">
 import type { SpacePublicEndpoints } from "@cohub/protocol/ports";
+import { Files, PanelsTopLeft } from "lucide-svelte";
 import FileUploadPane from "$lib/components/FileUploadPane.svelte";
 import MobileRightDrawer from "$lib/components/MobileRightDrawer.svelte";
 import SpaceFileSidebar from "$lib/components/SpaceFileSidebar.svelte";
@@ -11,6 +12,7 @@ import { m } from "$lib/paraglide/messages.js";
 import type { SpaceFsNode } from "$lib/space-fs";
 import { uiState } from "$lib/stores/ui.svelte";
 import type { LocalUploadEntry } from "$lib/upload-entries";
+import AppsSidebarPanel from "./AppsSidebarPanel.svelte";
 
 type Props = {
 	spaceId: string;
@@ -51,6 +53,8 @@ type Props = {
 	onUploadPaneClose: () => void;
 	onUploadComplete: () => void | Promise<void>;
 	onResizeStart: (event: PointerEvent) => void;
+	onOpenMarketplace: () => void;
+	onOpenInstalledApp: (app: import("@cohub/protocol").InstalledApp) => void;
 };
 
 let {
@@ -92,9 +96,36 @@ let {
 	onUploadPaneClose,
 	onUploadComplete,
 	onResizeStart,
+	onOpenMarketplace,
+	onOpenInstalledApp,
 }: Props = $props();
 
 const locale = $derived(getLocale());
+const RIGHT_SIDEBAR_PANEL_KEY = "cohub:right-sidebar-panel:v1";
+
+function readPanelPreference(): "files" | "apps" {
+	if (typeof localStorage === "undefined") return "files";
+	try {
+		const value = localStorage.getItem(RIGHT_SIDEBAR_PANEL_KEY);
+		return value === "apps" ? "apps" : "files";
+	} catch {
+		return "files";
+	}
+}
+
+function writePanelPreference(panel: "files" | "apps") {
+	try {
+		localStorage.setItem(RIGHT_SIDEBAR_PANEL_KEY, panel);
+	} catch {
+		// A storage policy must not prevent switching panels.
+	}
+}
+
+let activePanel = $state<"files" | "apps">(readPanelPreference());
+function selectPanel(panel: "files" | "apps") {
+	activePanel = panel;
+	writePanelPreference(panel);
+}
 
 /**
  * Keep the desktop tree mounted through the collapse width tween so the
@@ -140,6 +171,11 @@ $effect(() => {
 	{#if desktopMounted}
 		<div class="panel-shell-inner relative" style={`width: ${desktopWidth}px`}>
 			<div class="panel-shell-fade">
+				<div class="flex h-10 items-center gap-1 border-b border-border-subtle px-2" role="tablist" aria-label="Workspace resources">
+					<button type="button" role="tab" aria-selected={activePanel === "files"} class="inline-flex h-7 items-center gap-1.5 rounded-[5px] px-2 text-[11px] font-medium transition-colors {activePanel === "files" ? "bg-bg-elevated text-text-primary" : "text-text-tertiary hover:text-text-secondary"}" onclick={() => selectPanel("files")}><Files class="h-3.5 w-3.5" />Files</button>
+					<button type="button" role="tab" aria-selected={activePanel === "apps"} class="inline-flex h-7 items-center gap-1.5 rounded-[5px] px-2 text-[11px] font-medium transition-colors {activePanel === "apps" ? "bg-bg-elevated text-text-primary" : "text-text-tertiary hover:text-text-secondary"}" onclick={() => selectPanel("apps")}><PanelsTopLeft class="h-3.5 w-3.5" />Apps</button>
+				</div>
+				{#if activePanel === "files"}
 				<SpaceFileSidebar
 					{nodes}
 					{selectedPath}
@@ -168,6 +204,10 @@ $effect(() => {
 					{canWrite}
 					{previewEndpoints}
 				/>
+				{:else}
+					<AppsSidebarPanel {spaceId} canWrite={canWrite} {onOpenMarketplace} onOpenInstalled={onOpenInstalledApp} />
+				{/if}
+				{#if activePanel === "files"}
 				<FileUploadPane
 					{spaceId}
 					targetDir={uploadPaneTargetDir}
@@ -177,6 +217,7 @@ $effect(() => {
 					onClose={onUploadPaneClose}
 					onComplete={onUploadComplete}
 				/>
+				{/if}
 			</div>
 			{#if !desktopCollapsed}
 				<button
@@ -199,6 +240,11 @@ $effect(() => {
 	<!-- Retract surface: dragging a tree item out of here slides the drawer away
 	     so the board behind it can receive the drop. -->
 	<div class="h-full" data-pointer-drag-surface>
+	<div class="flex h-10 items-center gap-1 border-b border-border-subtle bg-bg-primary px-2" role="tablist" aria-label="Workspace resources">
+		<button type="button" role="tab" aria-selected={activePanel === "files"} class="inline-flex h-7 items-center gap-1.5 rounded-[5px] px-2 text-[11px] font-medium {activePanel === "files" ? "bg-bg-elevated text-text-primary" : "text-text-tertiary"}" onclick={() => selectPanel("files")}><Files class="h-3.5 w-3.5" />Files</button>
+		<button type="button" role="tab" aria-selected={activePanel === "apps"} class="inline-flex h-7 items-center gap-1.5 rounded-[5px] px-2 text-[11px] font-medium {activePanel === "apps" ? "bg-bg-elevated text-text-primary" : "text-text-tertiary"}" onclick={() => selectPanel("apps")}><PanelsTopLeft class="h-3.5 w-3.5" />Apps</button>
+	</div>
+	{#if activePanel === "files"}
 	<SpaceFileSidebar
 		{nodes}
 		{selectedPath}
@@ -226,6 +272,10 @@ $effect(() => {
 		{canWrite}
 		{previewEndpoints}
 	/>
+	{:else}
+		<AppsSidebarPanel {spaceId} canWrite={canWrite} {onOpenMarketplace} onOpenInstalled={onOpenInstalledApp} />
+	{/if}
+	{#if activePanel === "files"}
 	<FileUploadPane
 		{spaceId}
 		targetDir={uploadPaneTargetDir}
@@ -235,6 +285,7 @@ $effect(() => {
 		onClose={onUploadPaneClose}
 		onComplete={onUploadComplete}
 	/>
+	{/if}
 	</div>
 </MobileRightDrawer>
 

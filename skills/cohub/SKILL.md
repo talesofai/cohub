@@ -139,6 +139,7 @@ cohub spaces files ls [path]
 cohub -s <spaceId> spaces files ls [path]
 cohub spaces files cat <path>
 cohub spaces files write <path> -c "<content>"
+# Upload lands FILE(s) under --dir; a DIR contributes its contents (no extra level).
 cohub spaces files upload <files...> --dir <dir>
 cohub spaces files mkdir <path>
 cohub spaces files mv <from> <to>

@@ -1,9 +1,9 @@
 /**
  * Build a throwaway Pixi scene for one export.
  *
- * This drives the *same* card renderers the editor uses, which is the whole
- * point: there is no second drawing implementation to drift. Unlike the live
- * scene it is deliberately naive — no culling, no pooling, no far LOD — because
+ * This uses the same canonical Board geometry and card semantics as the editor;
+ * only the backend-specific drawing primitive differs. Unlike the live scene it
+ * is deliberately naive — no culling, no pooling, no far LOD — because
  * an export must be complete and runs once, so every optimisation the editor
  * needs here would only cost fidelity.
  */
@@ -80,6 +80,7 @@ function buildContext(input: BoardExportSceneInput): {
     palette: { ...defaultBoardPalette(input.colorScheme), ...input.palette },
     colors: input.colors ?? buildFallbackShapeColors(input.colorScheme),
     colorScheme: input.colorScheme,
+    rendererType: "canvas",
     // Text rasterises against this, so passing the export scale (not the
     // editor's camera zoom) is what keeps exported glyphs crisp at any factor.
     zoom: input.scale,

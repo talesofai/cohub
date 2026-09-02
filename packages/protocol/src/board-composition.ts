@@ -29,8 +29,8 @@ export type BoardAnimationTarget = z.infer<typeof BoardAnimationTargetSchema>;
 
 const vector2Schema = z.object({ x: finiteSchema, y: finiteSchema }).strict();
 const scaleSchema = z.union([
-	finiteSchema.positive(),
-	z.object({ x: finiteSchema.positive(), y: finiteSchema.positive() }).strict(),
+	finiteSchema.nonnegative(),
+	z.object({ x: finiteSchema.nonnegative(), y: finiteSchema.nonnegative() }).strict(),
 ]);
 export const BOARD_ANIMATION_CHANNELS = {
 	"transform.translation": {

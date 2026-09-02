@@ -5,14 +5,14 @@ description: Cohub is a living Space where people and agents create, save, share
 
 Cohub is a shared creative workspace for people and agents.
 
-Open a Space, talk, edit files, run tools in a Sandbox, save meaningful moments, and publish shareable Works. The same surface is available from the web app, CLI, and SDK.
+Open a Space, talk, edit files, run tools in a Sandbox, save meaningful moments, and publish shareable Apps. The same surface is available from the web app, CLI, and SDK.
 
 ## What you can do
 
 - Start from a Space instead of a blank chat
 - Work with an Agent that can read files, run commands, and keep context
 - Save a checkpoint when the work becomes worth keeping
-- Publish a file, directory, or port as a Work
+- Publish a file, directory, or port as an App
 - Automate later with CLI, SDK, Channels, and hooks
 
 ## The main loop
@@ -22,7 +22,7 @@ Create a Space
   → Chat with an Agent
   → Edit files / run in Sandbox
   → Save a checkpoint
-  → Publish a Work
+  → Publish an App
 ```
 
 That loop is the product. Everything else extends it: Labels, Channels, Mods, Skills, scheduled prompts, commerce, and developer APIs.

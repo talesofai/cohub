@@ -115,6 +115,19 @@ const isRecord = (value: unknown): value is Record<string, unknown> =>
 
 const jsonBytes = (value: unknown) => Buffer.byteLength(JSON.stringify(value ?? {}), "utf8");
 
+export function boardSchemaDiagnostics(
+  error: { issues: readonly { path: readonly PropertyKey[]; message: string }[] },
+  code: string,
+  prefix: string,
+): BoardDiagnostic[] {
+  return error.issues.slice(0, 32).map((issue) => ({
+    severity: "error",
+    code,
+    message: issue.message,
+    path: [prefix, ...issue.path].map(String).join("."),
+  }));
+}
+
 function assertSafeJson(value: unknown, path: string): void {
   if (typeof value === "string") return;
   if (Array.isArray(value)) {
@@ -351,7 +364,14 @@ function cameraFocusNodeIds(clip: Pick<BoardProceduralClip, "kind" | "params">):
 
 function parseEffect(value: unknown) {
   const parsed = BoardEffectSchema.omit({ boardId: true, revision: true }).safeParse(value);
-  if (!parsed.success) throw new BoardServiceError(400, parsed.error.issues[0]?.message ?? "invalid effect");
+  if (!parsed.success) {
+    throw new BoardServiceError(
+      400,
+      "Board effect is invalid.",
+      "INVALID_BOARD_EFFECT",
+      boardSchemaDiagnostics(parsed.error, "INVALID_BOARD_EFFECT", "effect"),
+    );
+  }
   assertSafeJson(parsed.data.params, "effect.params");
   assertSafeJson(parsed.data.metadata, "effect.metadata");
   for (const ref of parsed.data.assetRefs) {
@@ -370,7 +390,15 @@ function parseComposition(value: unknown): Omit<BoardComposition, "revision"> {
   try {
     composition = parseBoardCompositionInput(value);
   } catch (error) {
-    throw new BoardServiceError(400, error instanceof Error ? error.message : "invalid composition");
+    const diagnostics = error && typeof error === "object" && "issues" in error && Array.isArray(error.issues)
+      ? boardSchemaDiagnostics(error as { issues: { path: PropertyKey[]; message: string }[] }, "INVALID_COMPOSITION", "composition")
+      : undefined;
+    throw new BoardServiceError(
+      400,
+      diagnostics?.[0]?.message ?? (error instanceof Error ? error.message : "Board composition is invalid."),
+      "INVALID_COMPOSITION",
+      diagnostics,
+    );
   }
   assertSafeJson(composition.metadata, "composition.metadata");
   for (const [index, marker] of composition.timeline.markers.entries()) {

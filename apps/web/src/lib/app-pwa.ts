@@ -5,18 +5,18 @@ import {
 
 export type AppPwaDetail = AppPageDetail;
 
-const PUBLIC_WORK_SEGMENT = "w";
+const PUBLIC_APP_SEGMENT = "w";
 
-export type PublicWorkPath = {
+export type PublicAppPath = {
 	username: string;
 	spaceSlug: string;
 	appSlug: string;
 	pathname: string;
 };
 
-export function parsePublicWorkPath(pathname: string): PublicWorkPath | null {
+export function parsePublicAppPath(pathname: string): PublicAppPath | null {
 	const segments = pathname.split("/").filter(Boolean);
-	if (segments.length !== 4 || segments[2] !== PUBLIC_WORK_SEGMENT) return null;
+	if (segments.length !== 4 || segments[2] !== PUBLIC_APP_SEGMENT) return null;
 	const [username, spaceSlug, , appSlug] = segments;
 	if (!username || !spaceSlug || !appSlug) return null;
 	return { username, spaceSlug, appSlug, pathname: `/${segments.join("/")}` };
@@ -34,7 +34,7 @@ export function resolvePublicAppStartUrl(requestUrl: URL) {
 	}
 	if (parsed.origin !== requestUrl.origin) return { startUrl: "/", path: null };
 
-	const path = parsePublicWorkPath(parsed.pathname);
+	const path = parsePublicAppPath(parsed.pathname);
 	if (!path) return { startUrl: "/", path: null };
 
 	return { startUrl: path.pathname, path };

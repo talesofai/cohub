@@ -1,8 +1,8 @@
 <script lang="ts">
 import type {
+	AppPromotionProviderStatus,
+	AppPromotionRecord,
 	AppPromotionStatsResponse,
-	WorkPromotionProviderStatus,
-	WorkPromotionRecord,
 } from "@neta-art/cohub";
 import {
 	BarChart3,
@@ -26,8 +26,8 @@ type Props = {
 let { appId, publicRoute }: Props = $props();
 
 const locale = $derived(getLocale());
-let promotions = $state<WorkPromotionRecord[]>([]);
-let providers = $state<WorkPromotionProviderStatus[]>([]);
+let promotions = $state<AppPromotionRecord[]>([]);
+let providers = $state<AppPromotionProviderStatus[]>([]);
 let selectedId = $state<string | null>(null);
 let stats = $state<AppPromotionStatsResponse | null>(null);
 let loading = $state(true);
@@ -47,7 +47,7 @@ const selected = $derived(
 	promotions.find((promotion) => promotion.id === selectedId) ?? null,
 );
 
-function promotionUrl(promotion: WorkPromotionRecord) {
+function promotionUrl(promotion: AppPromotionRecord) {
 	const url = new URL(publicRoute, window.location.origin);
 	url.searchParams.set("cohub_campaign", promotion.id);
 	for (const [key, value] of Object.entries(promotion.parameters)) {
@@ -60,7 +60,7 @@ async function loadPromotions() {
 	loading = true;
 	error = "";
 	try {
-		const result = await sdk.works.listPromotions(appId);
+		const result = await sdk.apps.listPromotions(appId);
 		promotions = result.promotions;
 		providers = result.providers;
 		selectedId =
@@ -78,7 +78,7 @@ async function loadPromotions() {
 async function loadStats(promotionId: string) {
 	statsLoading = true;
 	try {
-		stats = await sdk.works.getPromotionStats(appId, promotionId);
+		stats = await sdk.apps.getPromotionStats(appId, promotionId);
 	} catch {
 		stats = null;
 	} finally {
@@ -104,7 +104,7 @@ async function createPromotion(event: SubmitEvent) {
 				utm_content: utmContent.trim(),
 			}).filter(([, value]) => value.length > 0),
 		);
-		const result = await sdk.works.createPromotion(appId, {
+		const result = await sdk.apps.createPromotion(appId, {
 			name: name.trim(),
 			provider,
 			parameters,
@@ -125,7 +125,7 @@ async function createPromotion(event: SubmitEvent) {
 	}
 }
 
-async function copyPromotion(promotion: WorkPromotionRecord) {
+async function copyPromotion(promotion: AppPromotionRecord) {
 	await navigator.clipboard.writeText(promotionUrl(promotion));
 	copiedId = promotion.id;
 	window.setTimeout(() => {

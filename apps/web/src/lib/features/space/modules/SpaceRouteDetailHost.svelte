@@ -85,8 +85,8 @@ function handleCronjobLoaded(job: CronJobRecord | null) {
 	onHeaderMeta(job ? { view: "cronjob", id: job.id, title: job.title } : null);
 }
 
-function handleWorkLoaded(work: AppRecord | null) {
-	onHeaderMeta(work ? { view: "app", id: work.id, title: work.slug } : null);
+function handleAppLoaded(app: AppRecord | null) {
+	onHeaderMeta(app ? { view: "app", id: app.id, title: app.slug } : null);
 }
 
 function handleTaskLoaded(run: TaskRunRecord | null) {
@@ -126,7 +126,7 @@ function handleTaskLoaded(run: TaskRunRecord | null) {
 		{ownerUsername}
 		{spaceSlug}
 		{canEditSpace}
-		onDetailLoaded={handleWorkLoaded}
+		onDetailLoaded={handleAppLoaded}
 		{onPreviewApp}
 	/>
 {:else if route.view === "task"}

@@ -10,6 +10,13 @@ const previewSource = readFileSync(
 	new URL("../lib/features/space/modules/AppWindow.svelte", import.meta.url),
 	"utf8",
 );
+const appControllerSource = readFileSync(
+	new URL(
+		"../lib/features/space/modules/app-window-controller.svelte.ts",
+		import.meta.url,
+	),
+	"utf8",
+);
 const backgroundSource = readFileSync(
 	new URL("../lib/components/NewChatBackground.svelte", import.meta.url),
 	"utf8",
@@ -30,7 +37,7 @@ const workspaceSource = readFileSync(
 	"utf8",
 );
 
-test("composer context alone enables the Work Surface message host", () => {
+test("composer context alone enables the App Surface message host", () => {
 	assert.match(
 		source,
 		/onSurfaceHost \|\| onComposerChip\s*\? createAppSurfaceHost/,
@@ -47,7 +54,7 @@ test("runtime context waits for the embedded document handshake", () => {
 	);
 });
 
-test("all Work frames delegate low-risk user-activated capabilities", () => {
+test("all App frames delegate low-risk user-activated capabilities", () => {
 	assert.match(
 		source,
 		/const framePermissions\s*=\s*"clipboard-read; clipboard-write; fullscreen; web-share"/,
@@ -55,34 +62,53 @@ test("all Work frames delegate low-risk user-activated capabilities", () => {
 	assert.match(source, /<iframe[\s\S]*?allow=\{framePermissions\}/);
 });
 
-test("background Work frames still exclude pointer lock", () => {
+test("background App frames still exclude pointer lock", () => {
 	assert.match(
 		source,
 		/allow-modals\$\{isBackground \? "" : " allow-pointer-lock"\}/,
 	);
 });
 
-test("a reopened Work preview remounts its surface lifecycle", () => {
+test("a reopened App preview remounts its surface lifecycle", () => {
 	assert.match(previewSource, /\{#key preview\.mountKey\}/);
 });
 
-test("Work authorization receives the mounted surface mode", () => {
+test("App authorization receives the mounted surface mode", () => {
 	assert.match(source, /authorizationContext: \{ surface: mode \}/);
 });
 
-test("Work previews pass invocation context through the runtime bridge", () => {
+test("Workspace App tabs require a complete invocation context", () => {
+	assert.match(appControllerSource, /openContext: WorkspaceAppOpenContext/);
 	assert.match(
-		previewSource,
-		/invocation=\{preview\.invocation \?\? undefined\}/,
+		appControllerSource,
+		/createWorkspaceAppInvocation\(\s*options\.getSpaceId\(\),\s*input\.openContext/,
 	);
-	assert.match(source, /createAppBridgeHost\(\{[\s\S]*?invocation,/);
+	assert.match(previewSource, /invocation=\{preview\.invocation\}/);
 	assert.match(
 		workspaceSource,
-		/invocation: AppRuntimeInvocationContext[\s\S]*?sessionId: context\.source\.sessionId/,
+		/onPreviewApp=\{\(app\) =>[\s\S]*?openContext: \{ source: "user" \}/,
 	);
 });
 
-test("New Chat Work composer context reaches the workspace coordinator", () => {
+test("App previews pass invocation context through the runtime bridge", () => {
+	assert.match(previewSource, /invocation=\{preview\.invocation\}/);
+	assert.match(source, /createAppBridgeHost\(\{[\s\S]*?invocation,/);
+	assert.match(
+		workspaceSource,
+		/openContext: WorkspaceAppOpenContext[\s\S]*?sessionId: context\.source\.sessionId/,
+	);
+});
+
+test("New Chat App receives the hosting Space invocation context", () => {
+	assert.match(workBackgroundSource, /currentSpaceId\?: string \| null/);
+	assert.match(
+		workBackgroundSource,
+		/invocation=\{currentSpaceId[\s\S]*?surface: "background", source: "route", spaceId: currentSpaceId/,
+	);
+	assert.match(backgroundSource, /currentSpaceId=\{spaceId\}/);
+});
+
+test("New Chat App composer context reaches the workspace coordinator", () => {
 	assert.match(workBackgroundSource, /onComposerChip=\{\(chip\) =>/);
 	assert.match(backgroundSource, /onComposerChip=\{onAppComposerChip\}/);
 	assert.match(
@@ -95,18 +121,18 @@ test("New Chat Work composer context reaches the workspace coordinator", () => {
 	);
 });
 
-test("active previews take priority over background Work context", () => {
+test("active previews take priority over background App context", () => {
 	assert.match(
 		workspaceSource,
-		/if \(activeWindowKind\) \{[\s\S]{0,160}?reportActiveSource\(null\);[\s\S]{0,100}?if \(newChatBackgroundWorkContext\)/,
+		/if \(activeWindowKind\) \{[\s\S]{0,160}?reportActiveSource\(null\);[\s\S]{0,100}?if \(newChatBackgroundAppContext\)/,
 	);
 	assert.match(
 		workspaceSource,
-		/if \(!shouldShowNewChatBackground\) newChatBackgroundWorkContext = null/,
+		/if \(!shouldShowNewChatBackground\) newChatBackgroundAppContext = null/,
 	);
 });
 
-test("unregistering a surface never reads the preview it is leaving", () => {
+test("unregistering an App surface never reads the preview it is leaving", () => {
 	// The surface reports `null` from its unmount cleanup, which runs while the
 	// panel is being destroyed and `preview` is already gone. Reading the prop in
 	// that callback faults and aborts the teardown, so the next open finds a
@@ -115,10 +141,10 @@ test("unregistering a surface never reads the preview it is leaving", () => {
 	assert.match(previewSource, /onComposerChip=\{handleComposerChip\}/);
 	assert.doesNotMatch(previewSource, /onSurfaceHost=\{\(host\) =>/);
 	assert.doesNotMatch(previewSource, /onComposerChip=\{\(chip\) =>/);
-	assert.match(previewSource, /let surfaceWorkId: string \| null = null/);
+	assert.match(previewSource, /let surfaceAppId: string | null = null/);
 	assert.match(
 		previewSource,
-		/function handleSurfaceHost\([\s\S]{0,200}?onRegisterSurface\(surfaceWorkId, host\)/,
+		/function handleSurfaceHost\([\s\S]{0,240}?if \(surfaceAppId\) onRegisterSurface\(surfaceAppId, host\)/,
 	);
 });
 

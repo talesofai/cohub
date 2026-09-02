@@ -2,8 +2,10 @@ import { randomUUID } from "node:crypto";
 import {
   BoardAuthoringItemSchema,
   BoardItemPatchSchema,
+  type BoardAuthoringItem,
   type BoardSemanticCommand,
 } from "@neta-art/cohub";
+import { computeArrowFrame, computeDrawBounds } from "@neta-art/cohub/board";
 import type { Command } from "commander";
 import {
   BOARD_DOMAIN_INPUT_MAX_BYTES,
@@ -11,6 +13,8 @@ import {
 } from "../../board-command-support.js";
 import { handleHttp, json, jsonRequested, ok, table } from "../../output.js";
 import {
+  readInput,
+  readOptions,
   type JsonOptions,
   resolvedBoard,
   withJson,
@@ -65,24 +69,66 @@ function mutationOptions(command: Command) {
     .option("--dry-run", "Validate on the server (references, version, cascade) without writing");
 }
 
+function itemLayout(item: BoardAuthoringItem) {
+  if ("position" in item) {
+    const size = "size" in item ? item.size : undefined;
+    return { x: item.position.x, y: item.position.y, width: size?.width ?? "", height: size?.height ?? "" };
+  }
+  if (item.type === "draw") {
+    const points = item.props.points;
+    const strokeWidth = item.style?.strokeWidth ?? 4;
+    const bounds = computeDrawBounds(points, strokeWidth);
+    return { x: bounds.x, y: bounds.y, width: bounds.width, height: bounds.height };
+  }
+  const bounds = computeArrowFrame({
+    start: item.props.start,
+    end: item.props.end,
+    bend: item.props.bend,
+    size: item.style?.strokeWidth ?? 2.5,
+  });
+  return { x: bounds.x, y: bounds.y, width: bounds.width, height: bounds.height };
+}
+
 export function registerBoardItemCommands(boards: Command): void {
   const items = boards.command("items").description("Author Board items with semantic JSON");
 
-  withJson(items.command("list <board>").alias("ls").description("List semantic Board items"))
-    .action(async (target: string, options: JsonOptions) => {
+  readOptions(withJson(items.command("list <board>").alias("ls").description("List semantic Board items")))
+    .action(async (target: string, options: JsonOptions & { ids?: string }) => {
       try {
         const board = await resolvedBoard(boards, target);
-        const snapshot = await board.authoring();
+        const snapshot = await board.authoring(readInput(options, "items"));
         const items = snapshot.items ?? [];
         if (jsonRequested(options)) return json(items);
         table(items.map((item) => ({
           id: item.id,
           type: item.type,
-          x: item.frame.x,
-          y: item.frame.y,
-          width: item.frame.width,
-          height: item.frame.height,
+          ...itemLayout(item),
         })), [
+          { key: "id", label: "ID" },
+          { key: "type", label: "TYPE" },
+          { key: "x", label: "X" },
+          { key: "y", label: "Y" },
+          { key: "width", label: "WIDTH" },
+          { key: "height", label: "HEIGHT" },
+        ]);
+      } catch (cause) {
+        handleHttp(cause);
+      }
+    });
+
+  withJson(items.command("get <board> <item-id>").description("Get one complete Board item"))
+    .action(async (target: string, itemId: string, options: JsonOptions) => {
+      try {
+        const board = await resolvedBoard(boards, target);
+        const snapshot = await board.authoring({ include: ["items"], itemIds: [itemId] });
+        const item = snapshot.items?.[0];
+        if (!item) throw new Error(`Item not found: ${itemId}`);
+        if (jsonRequested(options)) return json(item);
+        table([{
+          id: item.id,
+          type: item.type,
+          ...itemLayout(item),
+        }], [
           { key: "id", label: "ID" },
           { key: "type", label: "TYPE" },
           { key: "x", label: "X" },
@@ -100,7 +146,7 @@ export function registerBoardItemCommands(boards: Command): void {
     .requiredOption("-i, --input <file>", "Board Item JSON; use - for stdin")
     .addHelpText("after", `
 Minimal text item:
-  {"id":"title","type":"text","frame":{"x":120,"y":80,"width":320,"height":48,"rotation":0},"props":{"text":"Launch plan","fontSize":32},"style":{"color":"brand"}}`))
+  {"id":"title","type":"text","position":{"x":120,"y":80},"size":{"width":320,"height":48},"props":{"text":"Launch plan","fontSize":32},"style":{"color":"brand"}}`))
     .action(async (target: string, options: MutationOptions & { input: string }) => {
       try {
         const value = await readBoardJsonObject(options.input, BOARD_DOMAIN_INPUT_MAX_BYTES);
@@ -119,7 +165,7 @@ Minimal text item:
     .addHelpText("after", `
 Objects merge recursively, arrays replace, and null clears optional fields.
 Move and rename a text item without replacing its size or font:
-  {"frame":{"x":160,"y":120},"props":{"text":"Updated"}}`))
+  {"position":{"x":160,"y":120},"props":{"text":"Updated"}}`))
     .action(async (target: string, itemId: string, options: MutationOptions & { input: string }) => {
       try {
         const value = await readBoardJsonObject(options.input, BOARD_DOMAIN_INPUT_MAX_BYTES);

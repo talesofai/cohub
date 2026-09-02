@@ -10,7 +10,9 @@ import {
 const text = {
 	id: "title",
 	type: "text" as const,
-	frame: { x: 10, y: 20, width: 320, height: 48, rotation: 0 },
+	position: { x: 10, y: 20 },
+	size: { width: 320, height: 48 },
+	rotation: 0,
 	props: { text: "Launch plan", fontSize: 32 },
 	style: { color: "brand" as const },
 };
@@ -25,11 +27,11 @@ test("authoring Item compiles and round-trips through internal node storage", ()
 
 test("Item patch recursively merges objects and preserves untouched fields", () => {
 	const patched = applyBoardItemPatch(text, {
-		frame: { x: 160 },
+		position: { x: 160 },
 		props: { text: "Updated" },
 	});
-	assert.equal(patched.frame.x, 160);
-	assert.equal(patched.frame.width, 320);
+	assert.equal((patched as { position: { x: number } }).position.x, 160);
+	assert.equal((patched as { size?: { width: number } }).size?.width, 320);
 	const props = patched.props as { text: string; fontSize: number };
 	assert.equal(props.text, "Updated");
 	assert.equal(props.fontSize, 32);
@@ -40,7 +42,9 @@ test("explicit null clearing does not restore opaque source or style", () => {
 		id: "extension",
 		type: "extension.demo.node",
 		kindVersion: 1,
-		frame: { x: 0, y: 0, width: 100, height: 100, rotation: 0 },
+		position: { x: 0, y: 0 },
+		size: { width: 100, height: 100 },
+		rotation: 0,
 		props: {},
 		source: { kind: "asset", ref: "asset:one" },
 		style: { runtimeStyle: true },
@@ -49,7 +53,9 @@ test("explicit null clearing does not restore opaque source or style", () => {
 		id: "extension",
 		type: "extension.demo.node",
 		kindVersion: 1,
-		frame: { x: 0, y: 0, width: 100, height: 100, rotation: 0 },
+		position: { x: 0, y: 0 },
+		size: { width: 100, height: 100 },
+		rotation: 0,
 		props: {},
 	}, { orderKey: before.orderKey });
 	const cleared = preserveOpaqueNodeFields(before, compiled, {
@@ -83,9 +89,9 @@ test("Item patch replaces arrays and rejects identity changes", () => {
 	const draw = {
 		id: "stroke",
 		type: "draw" as const,
-		frame: { x: 0, y: 0, width: 100, height: 100, rotation: 0 },
+		rotation: 0,
 		props: { points: [{ x: 0, y: 0, p: 0.5 }] },
-	};
+	} as Parameters<typeof applyBoardItemPatch>[0];
 	const patched = applyBoardItemPatch(draw, {
 		props: { points: [{ x: 10, y: 10, p: 1 }] },
 	});

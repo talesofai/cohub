@@ -4,8 +4,8 @@ import type {
 } from "@cohub/protocol/model/status";
 
 /**
- * Selector dot color levels. Derived from the 5-minute probe window so the
- * indicator reflects current availability, not long-term history.
+ * Selector dot color levels. The API prefers the 5-minute observed-traffic
+ * window and falls back to probe data when observed traffic is unavailable.
  *
  * - `available` (green): ≥95% success.
  * - `degraded` (amber): 75–95%.

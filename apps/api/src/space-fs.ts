@@ -54,6 +54,7 @@ export class SpaceFsError extends Error {
     message: string,
   ) {
     super(message);
+    this.name = "SpaceFsError";
   }
 }
 
@@ -816,6 +817,7 @@ function toFsCdnMeta(spaceId: string, target: string, relativePath: string, stat
     size: stats.size,
     mimeType,
     mtimeMs: stats.mtimeMs,
+    ctimeMs: stats.ctimeMs,
   };
 }
 
@@ -827,6 +829,7 @@ function toInlineFileResponse(target: string, relativePath: string, stats: Stats
     size: stats.size,
     mimeType,
     mtimeMs: stats.mtimeMs,
+    ctimeMs: stats.ctimeMs,
     kind,
     encoding: kind === "text" ? "utf-8" : "base64",
     content: kind === "text" ? buffer.toString("utf8") : buffer.toString("base64"),
@@ -1220,7 +1223,15 @@ export async function streamSpaceFile(
       () => ({ visible: true, fileSizeBytes: stats.size }),
     );
 
-    const response = { path: relativePath, name: basename(target), size: stats.size, mimeType: getMimeType(target), mtimeMs: stats.mtimeMs, target };
+    const response = {
+      path: relativePath,
+      name: basename(target),
+      size: stats.size,
+      mimeType: getMimeType(target),
+      mtimeMs: stats.mtimeMs,
+      ctimeMs: stats.ctimeMs,
+      target,
+    };
     observation.result = { fileSizeBytes: response.size, mimeType: response.mimeType };
     return response;
   });

@@ -148,6 +148,38 @@ describe("headless board export", { skip: available ? false : "@napi-rs/canvas i
     assert.ok(result.bytes.length > 1000, "expected a non-trivial image");
   });
 
+  test("renders a draw item to visible pixels", async () => {
+    const draw: BoardItem = {
+      id: "draw-only",
+      type: "draw",
+      points: [
+        { x: 12, y: 12, p: 0.5 },
+        { x: 50, y: 80, p: 0.8 },
+        { x: 88, y: 20, p: 0.4 },
+      ],
+      color: "brand",
+      size: 6,
+      frame: frame(0, 0, 100, 100),
+    };
+    const result = exportBoardImageBytes(
+      headless,
+      { ...document, items: [draw], connections: [] },
+      { scale: 1, background: "transparent" },
+    );
+    assert.ok(result);
+    const { loadImage, createCanvas } = await import("@napi-rs/canvas");
+    const image = await loadImage(result.bytes);
+    const canvas = createCanvas(result.plan.width, result.plan.height);
+    const context = canvas.getContext("2d");
+    context.drawImage(image, 0, 0);
+    const pixels = context.getImageData(0, 0, canvas.width, canvas.height).data;
+    let visible = 0;
+    for (let index = 3; index < pixels.length; index += 4) {
+      if ((pixels[index] ?? 0) > 0) visible += 1;
+    }
+    assert.ok(visible > 100, `expected draw pixels, got ${visible}`);
+  });
+
   test("renders a task-only document to non-transparent pixels", async () => {
     const task = items.find((item) => item.type === "task");
     assert.ok(task);

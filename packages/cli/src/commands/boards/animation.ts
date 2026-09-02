@@ -12,6 +12,8 @@ import {
 import { handleHttp, json, jsonRequested, table } from "../../output.js";
 import {
   mutateSemantic,
+  readInput,
+  readOptions,
   type JsonOptions,
   resolvedBoard,
   showUpdated,
@@ -20,11 +22,11 @@ import {
 
 export function registerBoardAnimationCommands(boards: Command): void {
   const effects = boards.command("effects").description("Manage Board effects");
-  withJson(effects.command("list <board>").alias("ls").description("List effects"))
-    .action(async (target: string, options: JsonOptions) => {
+  readOptions(withJson(effects.command("list <board>").alias("ls").description("List effects")))
+    .action(async (target: string, options: JsonOptions & { ids?: string }) => {
       try {
         const board = await resolvedBoard(boards, target);
-        const result = await board.authoring({ include: ["effects"] });
+        const result = await board.authoring(readInput(options, "effects"));
         const effects = result.effects ?? [];
         if (jsonRequested(options)) return json(effects);
         table(effects, [
@@ -37,6 +39,25 @@ export function registerBoardAnimationCommands(boards: Command): void {
         handleHttp(cause);
       }
     });
+  withJson(effects.command("get <board> <effect-id>").description("Get one complete Board effect"))
+    .action(async (target: string, effectId: string, options: JsonOptions) => {
+      try {
+        const board = await resolvedBoard(boards, target);
+        const result = await board.authoring({ include: ["effects"], effectIds: [effectId] });
+        const effect = result.effects?.[0];
+        if (!effect) throw new Error(`Effect not found: ${effectId}`);
+        if (jsonRequested(options)) return json(effect);
+        table([effect], [
+          { key: "id", label: "ID" },
+          { key: "kind", label: "KIND" },
+          { key: "enabled", label: "ENABLED" },
+          { key: "layer", label: "LAYER" },
+        ]);
+      } catch (cause) {
+        handleHttp(cause);
+      }
+    });
+
   withJson(effects.command("apply <board>")
     .description("Atomically create or replace an effect")
     .requiredOption("-i, --input <file>", "Board effect JSON; use - for stdin")
@@ -70,11 +91,11 @@ Discover supported effect kinds:
     .command("compositions")
     .description("Manage atomic Board animation compositions");
 
-  withJson(compositions.command("list <board>").alias("ls").description("List compositions"))
-    .action(async (target: string, options: JsonOptions) => {
+  readOptions(withJson(compositions.command("list <board>").alias("ls").description("List compositions")))
+    .action(async (target: string, options: JsonOptions & { ids?: string }) => {
       try {
         const board = await resolvedBoard(boards, target);
-        const result = await board.authoring({ include: ["compositions"] });
+        const result = await board.authoring(readInput(options, "compositions"));
         const compositions = result.compositions ?? [];
         if (jsonRequested(options)) return json(compositions);
         table(compositions.map((composition) => ({
@@ -101,8 +122,8 @@ Discover supported effect kinds:
     .action(async (target: string, compositionId: string, options: JsonOptions) => {
       try {
         const board = await resolvedBoard(boards, target);
-        const result = await board.authoring({ include: ["compositions"] });
-        const composition = (result.compositions ?? []).find((item) => item.id === compositionId);
+        const result = await board.authoring({ include: ["compositions"], compositionIds: [compositionId] });
+        const composition = result.compositions?.[0];
         if (!composition) throw new Error(`Composition not found: ${compositionId}`);
         if (jsonRequested(options)) return json(composition);
         table([{

@@ -3,6 +3,7 @@ package ws
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log/slog"
 	"net/http"
@@ -270,11 +271,6 @@ func (s *Server) attachIdentity(session *connectionSession, identity string) {
 }
 
 func (s *Server) SendToIdentity(identity string, v interface{}) error {
-	payload, err := json.Marshal(v)
-	if err != nil {
-		return err
-	}
-
 	s.mu.RLock()
 	ids := s.sessionIDsByIdentity[identity]
 	targets := make([]*connectionSession, 0, len(ids))
@@ -284,13 +280,30 @@ func (s *Server) SendToIdentity(identity string, v interface{}) error {
 		}
 	}
 	s.mu.RUnlock()
+	if len(targets) == 0 {
+		return fmt.Errorf("no active session for identity %q", identity)
+	}
 
+	payload, err := json.Marshal(v)
+	if err != nil {
+		return err
+	}
+
+	var sendErrs []error
+	sent := 0
 	for _, session := range targets {
 		if err := enqueuePayload(session, payload); err != nil {
 			s.logger.Warn("failed to enqueue identity payload", slog.String("identity", identity), slog.String("connectionId", session.id), slog.String("error", err.Error()))
+			session.cancel()
+			sendErrs = append(sendErrs, fmt.Errorf("connection %s: %w", session.id, err))
+			continue
 		}
+		sent++
 	}
-	return nil
+	if sent > 0 {
+		return nil
+	}
+	return errors.Join(sendErrs...)
 }
 
 func (s *Server) attachedSessionCount() int {

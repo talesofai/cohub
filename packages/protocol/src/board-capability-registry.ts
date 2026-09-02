@@ -86,7 +86,6 @@ export function estimateBuiltinBoardClipCost(
 		case "effects.flash":
 			return { vertices: 64, drawCalls: 1 };
 		case "draw.reveal":
-		case "draw.handwrite":
 			return { drawCalls: 1, dynamicVertices: 1 };
 		case "motion.path":
 			return { simulationSteps: Array.isArray(clip.params.points) ? clip.params.points.length : 0 };

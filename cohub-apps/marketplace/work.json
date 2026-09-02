@@ -1,0 +1,10 @@
+{
+  "key": "marketplace",
+  "title": "Marketplace",
+  "targetType": "directory",
+  "targetRef": "dist",
+  "appScopes": ["file.view", "file.edit"],
+  "presentation": {
+    "hideCohubBar": true
+  }
+}

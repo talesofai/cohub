@@ -21,10 +21,10 @@
   "dependencies": {
     "@cohub/infra": "workspace:*",
     "@cohub/protocol": "workspace:*",
-    "ws": "^8.21.1"
+    "ws": "^8.21.3"
   },
   "devDependencies": {
-    "@types/node": "26.1.1",
+    "@types/node": "26.4.0",
     "@types/ws": "^8.18.1",
     "typescript": "^7.0.2"
   }

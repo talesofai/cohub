@@ -4,6 +4,7 @@ import {
 	boardPathMatchesTarget,
 	canAdoptBoardVersion,
 	hasBoardIdentity,
+	mergeChangedRecords,
 } from "../lib/board/board-sync-policy.ts";
 
 test("board identity lookup is independent of the active path", () => {
@@ -24,6 +25,26 @@ test("recursive path matching respects directory boundaries", () => {
 		boardPathMatchesTarget("plans/a.board", "plans/a.board", false),
 		true,
 	);
+});
+
+test("changed record merge preserves untouched records and applies deletes", () => {
+	const merged = mergeChangedRecords(
+		[
+			{ id: "keep", value: 1 },
+			{ id: "update", value: 1 },
+			{ id: "delete", value: 1 },
+		],
+		[
+			{ id: "update", value: 2 },
+			{ id: "create", value: 3 },
+		],
+		["update", "delete", "create"],
+	);
+	assert.deepEqual(merged, [
+		{ id: "keep", value: 1 },
+		{ id: "update", value: 2 },
+		{ id: "create", value: 3 },
+	]);
 });
 
 test("board bootstrap versions only move forward", () => {

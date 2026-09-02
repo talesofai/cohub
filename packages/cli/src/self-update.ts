@@ -4,6 +4,7 @@ import { homedir } from "node:os";
 import { dirname, join } from "node:path";
 
 const PACKAGE_NAME = "@neta-art/cohub-cli";
+export const SELF_UPDATE_WORKER_ENV = "COHUB_CLI_SELF_UPDATE_WORKER";
 const DEFAULT_INTERVAL_MS = 6 * 60 * 60 * 1000;
 const DEFAULT_TIMEOUT_MS = 60_000;
 const LOCK_STALE_MS = 5 * 60 * 1000;
@@ -67,7 +68,7 @@ export function resolveSelfUpdateResult(beforeVersion: string | undefined, after
   return updatedByPeer ? "updated-by-peer" : "updated";
 }
 
-const isDue = () => {
+export const isCliSelfUpdateDue = (): boolean => {
   const state = readState();
   if (!state.lastUpdatedAt) return true;
   const lastUpdatedAt = Date.parse(state.lastUpdatedAt);
@@ -149,9 +150,21 @@ const runNpmUpdate = (timeoutMs: number) => {
   });
 };
 
+export function startCliSelfUpdate(entrypoint: string): void {
+  if (process.env.COHUB_CLI_AUTO_UPDATE === "0" || !isCliSelfUpdateDue()) return;
+
+  const worker = spawn(process.execPath, [entrypoint], {
+    detached: true,
+    env: { ...process.env, [SELF_UPDATE_WORKER_ENV]: "1" },
+    stdio: "ignore",
+  });
+  worker.on("error", () => undefined);
+  worker.unref();
+}
+
 export async function ensureCliSelfUpdated(): Promise<CliSelfUpdateResult> {
   if (process.env.COHUB_CLI_AUTO_UPDATE === "0") return "current";
-  if (!isDue()) return "current";
+  if (!isCliSelfUpdateDue()) return "current";
 
   const beforeVersion = readInstalledVersion();
   const timeoutMs = getTimeoutMs();
@@ -163,7 +176,7 @@ export async function ensureCliSelfUpdated(): Promise<CliSelfUpdateResult> {
   try {
     // Another process may have completed the update while this process was
     // waiting for the lock.
-    if (!isDue()) {
+    if (!isCliSelfUpdateDue()) {
       return resolveSelfUpdateResult(beforeVersion, readInstalledVersion(), true);
     }
 

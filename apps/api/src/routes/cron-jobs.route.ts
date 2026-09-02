@@ -219,7 +219,7 @@ router.delete("/:id", async (c) => {
   if (!job) return c.json({ message: "not found" }, 404);
   if (!(await authorizeCronJobManage(c, user, job))) return authzDenied(c);
 
-  await removeCronJob(cronJobId, job.bullJobKey);
+  await removeCronJob(cronJobId);
   return c.json({ ok: true });
 });
 
@@ -298,7 +298,7 @@ router.patch("/:id", async (c) => {
 
   if (patch.enabled !== undefined && Object.keys(patch).length === 1) {
     if (patch.enabled && !job.enabled) {
-      const enabledJob = await enableCronJob(cronJobId, job.bullJobKey, {
+      const enabledJob = await enableCronJob(cronJobId, {
         taskType: job.taskType,
         payload: job.payload as Record<string, unknown>,
         cronExpression: job.cronExpression,
@@ -311,7 +311,7 @@ router.patch("/:id", async (c) => {
       return c.json({ ok: true, job: hydrated });
     }
     if (!patch.enabled && job.enabled) {
-      await disableCronJob(cronJobId, job.bullJobKey);
+      await disableCronJob(cronJobId);
     }
     const [freshJob] = await db.select().from(cronJobs).where(eq(cronJobs.id, cronJobId)).limit(1);
     const [hydrated] = await hydrateCronJobUserProfiles([freshJob ?? { ...job, enabled: patch.enabled }]);

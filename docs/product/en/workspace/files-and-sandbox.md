@@ -28,7 +28,7 @@ Good fits:
 - Docs and notes for the project
 - Generated assets you want to keep
 - Scripts the Agent should rerun
-- Publish targets for Works
+- Publish targets for Apps
 
 Avoid treating Chat history as the only source of truth.
 
@@ -66,7 +66,7 @@ Use port preview when:
 
 - You are running a dev server
 - The result is an app, not a static file
-- You want to publish a live Work from that port
+- You want to publish a live App from that port
 
 Static HTML can often be previewed directly as a file without a long-running process.
 
@@ -125,4 +125,4 @@ This is useful when you want Cohub Agents against a local working tree. See [CLI
 
 - [Chats](/docs/workspace/chats)
 - [Saves](/docs/workspace/saves)
-- [Works](/docs/create/works)
+- [Apps](/docs/create/apps)

@@ -1,6 +1,6 @@
 ---
 title: SDK
-description: Use the Cohub TypeScript SDK for Spaces, Chats, Works, realtime updates, and Work runtime APIs.
+description: Use the Cohub TypeScript SDK for Spaces, Chats, Apps, realtime updates, and App runtime APIs.
 ---
 
 The Cohub SDK is the TypeScript client for product APIs and realtime collaboration.
@@ -62,7 +62,7 @@ Product mapping:
 - Space → `client.spaces` / `client.space(id)`
 - Chat → session APIs under a Space
 - Save → checkpoint APIs under a Space
-- Work → `client.works`
+- App → `client.apps`
 
 ## Session realtime
 
@@ -81,21 +81,21 @@ const stop = session.subscribe({
 stop();
 ```
 
-## Works
+## Apps
 
-Create and manage Works through `client.works`, including publish, update, versions, and lookups by slug.
+Create and manage Apps through `client.apps`, including publish, update, versions, and lookups by slug.
 
-For ordinary server/automation code, use normal user auth. For code **inside a published Work**, use the Work runtime APIs below.
+For ordinary server/automation code, use normal user auth. For code **inside a published App**, use the App runtime APIs below.
 
-## Work runtime
+## App runtime
 
-Published Works can run with short-lived runtime auth provided by the Cohub shell.
+Published Apps can run with short-lived runtime auth provided by the Cohub shell.
 
 ```ts
-const client = createCohubClient(); // token comes from Work runtime
+const client = createCohubClient(); // token comes from the App runtime
 
 const context = await client.context();
-// Work identity, Space identity, viewer state
+// App identity, Space identity, viewer state
 
 await client.auth.request({
   scopes: ["session.prompt.readonly"],
@@ -105,16 +105,16 @@ await client.auth.request({
 
 Important:
 
-- Runtime APIs work inside a published Work
+- Runtime APIs work inside a published App
 - They do not work from arbitrary static hosting or local file open
 - App scopes and per-space viewer grants are enforced
 
-Commerce helpers live under `client.app.commerce.*` when commerce is enabled and the Work is published.
+Commerce helpers live under `client.app.commerce.*` when commerce is enabled and the App is published.
 
 ### Realtime rooms
 
-Inside a published Work, `client.app.realtime` provides temporary rooms for
-multiplayer state, presence, and generic JSON events. It uses the Work runtime
+Inside a published App, `client.app.realtime` provides temporary rooms for
+multiplayer state, presence, and generic JSON events. It uses the App runtime
 identity and needs no additional scope or consent dialog.
 
 ```ts
@@ -137,13 +137,13 @@ high-rate traffic, and resync authoritative state after reconnecting. Realtime
 rooms are runtime-only; normal server auth and the CLI cannot create or join
 them.
 
-See the [App Runtime Guide](https://github.com/talesofai/cohub/blob/main/packages/sdk/docs/work-runtime-guide.md#realtime-rooms-apprealtime)
+See the [App Runtime Guide](https://github.com/talesofai/cohub/blob/main/packages/sdk/docs/app-runtime-guide.md#realtime-rooms-apprealtime)
 for lifecycle, presence, membership, seat, and limit details.
 
 ### Callable surface
 
-A Work can expose named methods to the Cohub host embedding it, so an Agent can
-call into the running Work with `cohub desktop open <work> --call <method>`.
+An App can expose named methods to the Cohub host embedding it, so an Agent can
+call into the running App with `cohub desktop open <app> --call <method>`.
 
 ```ts
 client.app.surface.handle("image.open", async (input, { commandId }) => {
@@ -158,14 +158,14 @@ await client.ui.reportResult(commandId, {
 ```
 
 Only registered methods are reachable. There is no DOM access or script
-execution. A Surface response only acknowledges delivery; the Work reports the
+execution. A Surface response only acknowledges delivery; the App reports the
 final result through the same UI command with `client.ui.reportResult()`.
 
 Calls are delivered at-least-once, so prefer methods that are safe to repeat.
 
 ### Composer context
 
-A Work running in the workspace preview or as the New Chat background can attach
+An App running in the workspace preview or as the New Chat background can attach
 one compact context chip to the Cohub composer. The label stays short while the
 full content is available to the user and sent with each message while attached:
 
@@ -181,19 +181,19 @@ client.app.composer.clearChip("selection");
 
 Calling `setChip()` again with the same key updates the existing chip. Cohub owns
 the chip's appearance and treats its content as plain text. Labels are limited to
-120 characters and content to 32KB. A preview chip is attached while that Work is
+120 characters and content to 32KB. A preview chip is attached while that App is
 active. A background chip is attached while the New Chat background is visible
 and no preview is active. Closing or reloading either surface clears its chip.
 
 New Chat backgrounds expose composer context but are not callable through UI
 commands.
 
-Because a published Work is publicly embeddable, surface calls and composer
+Because a published App is publicly embeddable, surface calls and composer
 context are accepted only from an
-explicit list of Cohub app origins (or the Work's own origin), and replies go to
-that origin rather than being broadcast. A Work embedded by any other site
+explicit list of Cohub app origins (or the App's own origin), and replies go to
+that origin rather than being broadcast. An App embedded by any other site
 registers its methods but never answers. The list is deliberately not a
-`*.cohub.live` suffix match, since Works themselves are served from a Cohub
+`*.cohub.live` suffix match, since Apps themselves are served from a Cohub
 subdomain. Self-hosted deployments and local development widen it explicitly:
 
 ```ts
@@ -207,31 +207,31 @@ The client groups product APIs intentionally:
 | Area | Client surface |
 | --- | --- |
 | Spaces / sessions / files | `client.spaces`, `client.space(id)` |
-| Works | `client.works` |
+| Apps | `client.apps` |
 | Generations | `client.generations` |
 | Models | `client.models` |
 | Search | `client.search` |
 | Tasks / cron | `client.tasks`, `client.cronJobs` |
 | Channels | `client.channels` |
-| Billing / commerce | `client.billing`, `client.workCommerce` |
-| Work runtime | `client.context()`, `client.auth`, `client.app` |
+| Billing / commerce | `client.billing`, `client.appCommerce` |
+| App runtime | `client.context()`, `client.auth`, `client.app` |
 | Cohub UI commands | `client.ui` |
 
-Use only the surfaces you need. Start with Spaces, sessions, and Works.
+Use only the surfaces you need. Start with Spaces, sessions, and Apps.
 
 ## Auth model
 
-Outside Work runtime:
+Outside App runtime:
 
 - Provide `getAccessToken`
 - Optionally handle token storage helpers if you integrate login yourself
 
-Inside Work runtime:
+Inside App runtime:
 
 - The host can provide short-lived tokens
 - Request additional viewer grants only when required
 
-Prefer least privilege for any Work that runs in other people’s browsers.
+Prefer least privilege for any App that runs in other people’s browsers.
 
 ## Practical tips
 
@@ -242,6 +242,7 @@ Prefer least privilege for any Work that runs in other people’s browsers.
 
 ## Related
 
+- [App development](/docs/developers/apps) — runtime capabilities and permissions
 - [CLI](/docs/developers/cli)
-- [Works](/docs/create/works)
+- [Apps](/docs/create/apps)
 - [Core concepts](/docs/learn/core-concepts)

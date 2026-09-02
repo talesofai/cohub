@@ -16,6 +16,25 @@ type TaskEnqueueOptions = Omit<JobsOptions, "scheduledAt"> & { scheduledAt?: Dat
 
 const QUEUE_NAME = COHUB_TASKS_QUEUE;
 
+/** bullmq v6 job scheduler id for a cron job; stored in cronJobs.bullJobKey. */
+const cronSchedulerId = (cronJobId: string) => `cron-${cronJobId}`;
+
+const sleep = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms));
+
+async function removeCronScheduler(schedulerId: string) {
+  let lastError: unknown;
+  for (let attempt = 0; attempt < 3; attempt += 1) {
+    try {
+      await taskQueue.removeJobScheduler(schedulerId);
+      return;
+    } catch (error) {
+      lastError = error;
+      if (attempt < 2) await sleep(250 * 2 ** attempt);
+    }
+  }
+  throw lastError instanceof Error ? lastError : new Error(`Failed to remove scheduler ${schedulerId}`);
+}
+
 export const taskQueue = createBullmqQueue(QUEUE_NAME, {
   redisUrl: config.bullmqRedisUrl,
   telemetryServiceName: "cohub-api",
@@ -45,14 +64,6 @@ export const createCronJob = async (params: {
   spaceId?: string | null;
   sessionId?: string | null;
 }) => {
-  const taskPayload: TaskPayload = {
-    type: params.taskType,
-    spaceId: params.spaceId ?? undefined,
-    sessionId: params.sessionId ?? undefined,
-    userId: params.userId,
-    data: params.payload,
-  };
-
   const cronJobResult = await db.insert(cronJobs).values({
     userUuid: params.userId,
     title: params.title,
@@ -68,28 +79,21 @@ export const createCronJob = async (params: {
   const cronJob = cronJobResult[0];
   if (!cronJob) throw new Error("Failed to create cron job record");
 
+  let schedulerId: string | null = null;
   try {
-    const job = await taskQueue.add(
-      params.taskType,
-      { ...taskPayload, cronJobId: cronJob.id },
-      {
-        repeat: {
-          pattern: params.schedule.pattern,
-          tz: params.schedule.timezone ?? "Asia/Shanghai",
-        },
-        jobId: `cron-${cronJob.id}`,
-        ...defaultJobRetention,
-        attempts: 3,
-        backoff: { type: "exponential", delay: 60_000 },
-      },
-    );
-
-    const repeatJobKey = job.repeatJobKey;
-    if (!repeatJobKey) throw new Error("Failed to get repeat job key");
+    schedulerId = await replaceCronScheduler(cronJob.id, {
+      taskType: params.taskType,
+      payload: params.payload,
+      cronExpression: params.schedule.pattern,
+      timezone: params.schedule.timezone ?? "Asia/Shanghai",
+      userUuid: params.userId,
+      spaceId: params.spaceId,
+      sessionId: params.sessionId,
+    });
 
     await db
       .update(cronJobs)
-      .set({ bullJobKey: repeatJobKey })
+      .set({ bullJobKey: schedulerId })
       .where(eq(cronJobs.id, cronJob.id));
 
     const [createdJob] = await db
@@ -101,10 +105,29 @@ export const createCronJob = async (params: {
 
     return createdJob;
   } catch (queueError) {
-    await db
-      .update(cronJobs)
-      .set({ enabled: false, updatedAt: new Date() })
-      .where(eq(cronJobs.id, cronJob.id));
+    if (schedulerId) {
+      try {
+        await removeCronScheduler(schedulerId);
+      } catch (cleanupError) {
+        logger.warn("[CronJob] failed to clean up scheduler after create failure", {
+          cronJobId: cronJob.id,
+          schedulerId,
+          error: cleanupError,
+        });
+      }
+    }
+    try {
+      await db
+        .update(cronJobs)
+        .set({ enabled: false, bullJobKey: schedulerId ?? "", updatedAt: new Date() })
+        .where(eq(cronJobs.id, cronJob.id));
+    } catch (persistenceError) {
+      logger.warn("[CronJob] failed to persist failed create state", {
+        cronJobId: cronJob.id,
+        schedulerId,
+        error: persistenceError,
+      });
+    }
 
     throw new Error(
       `Cron job record created but failed to schedule in queue: ${queueError instanceof Error ? queueError.message : String(queueError)}`,
@@ -112,20 +135,16 @@ export const createCronJob = async (params: {
   }
 };
 
-export const removeCronJob = async (cronJobId: string, bullJobKey: string) => {
-  if (bullJobKey) {
-    await taskQueue.removeRepeatableByKey(bullJobKey);
-  }
+export const removeCronJob = async (cronJobId: string) => {
+  await removeCronScheduler(cronSchedulerId(cronJobId));
   await db
     .update(cronJobs)
     .set({ deletedAt: new Date(), updatedAt: new Date() })
     .where(eq(cronJobs.id, cronJobId));
 };
 
-export const disableCronJob = async (cronJobId: string, bullJobKey: string) => {
-  if (bullJobKey) {
-    await taskQueue.removeRepeatableByKey(bullJobKey);
-  }
+export const disableCronJob = async (cronJobId: string) => {
+  await removeCronScheduler(cronSchedulerId(cronJobId));
   await db
     .update(cronJobs)
     .set({ enabled: false, updatedAt: new Date() })
@@ -142,14 +161,18 @@ type CronJobScheduleData = {
   sessionId?: string | null;
 };
 
-async function scheduleCronJobRepeat(
+const cronJobOptions = {
+  ...defaultJobRetention,
+  attempts: 3,
+  backoff: { type: "exponential", delay: 60_000 },
+};
+
+async function replaceCronScheduler(
   cronJobId: string,
-  bullJobKey: string,
   jobData: CronJobScheduleData,
+  previousSchedulerId?: string,
 ) {
-  if (bullJobKey) {
-    await taskQueue.removeRepeatableByKey(bullJobKey);
-  }
+  const schedulerId = cronSchedulerId(cronJobId);
 
   const taskPayload: TaskPayload = {
     type: jobData.taskType,
@@ -160,21 +183,32 @@ async function scheduleCronJobRepeat(
     cronJobId,
   };
 
-  const job = await taskQueue.add(
-    jobData.taskType,
-    taskPayload,
+  await taskQueue.upsertJobScheduler(
+    schedulerId,
+    { pattern: jobData.cronExpression, tz: jobData.timezone },
     {
-      repeat: { pattern: jobData.cronExpression, tz: jobData.timezone },
-      jobId: `cron-${cronJobId}`,
-      ...defaultJobRetention,
-      attempts: 3,
-      backoff: { type: "exponential", delay: 60_000 },
+      name: jobData.taskType,
+      data: taskPayload,
+      opts: cronJobOptions,
     },
   );
 
-  const repeatJobKey = job.repeatJobKey;
-  if (!repeatJobKey) throw new Error("Failed to get repeat job key");
-  return repeatJobKey;
+  if (previousSchedulerId && previousSchedulerId !== schedulerId) {
+    try {
+      await removeCronScheduler(previousSchedulerId);
+    } catch (error) {
+      await removeCronScheduler(schedulerId).catch((cleanupError) => {
+        logger.warn("[CronJob] failed to roll back new scheduler after cleanup failure", {
+          cronJobId,
+          schedulerId,
+          error: cleanupError,
+        });
+      });
+      throw error;
+    }
+  }
+
+  return schedulerId;
 }
 
 const cronJobScheduleData = (job: CronJobRow): CronJobScheduleData => ({
@@ -187,18 +221,36 @@ const cronJobScheduleData = (job: CronJobRow): CronJobScheduleData => ({
   sessionId: job.sessionId,
 });
 
-export const enableCronJob = async (cronJobId: string, bullJobKey: string, jobData: CronJobScheduleData) => {
-  const repeatJobKey = await scheduleCronJobRepeat(cronJobId, bullJobKey, jobData);
+export const enableCronJob = async (cronJobId: string, jobData: CronJobScheduleData) => {
+  const schedulerId = await replaceCronScheduler(cronJobId, jobData);
 
   try {
     await db
       .update(cronJobs)
-      .set({ enabled: true, bullJobKey: repeatJobKey, updatedAt: new Date() })
+      .set({ enabled: true, bullJobKey: schedulerId, updatedAt: new Date() })
       .where(eq(cronJobs.id, cronJobId));
   } catch (error) {
-    await taskQueue.removeRepeatableByKey(repeatJobKey).catch((cleanupError) => {
-      logger.warn("[CronJob] failed to remove repeat job after enable persistence failure", { cronJobId, error: cleanupError });
-    });
+    try {
+      await removeCronScheduler(schedulerId);
+    } catch (cleanupError) {
+      logger.warn("[CronJob] failed to remove scheduler after enable persistence failure", {
+        cronJobId,
+        schedulerId,
+        error: cleanupError,
+      });
+      try {
+        await db
+          .update(cronJobs)
+          .set({ enabled: true, bullJobKey: schedulerId, updatedAt: new Date() })
+          .where(eq(cronJobs.id, cronJobId));
+      } catch (persistenceError) {
+        logger.warn("[CronJob] failed to persist scheduler after enable failure", {
+          cronJobId,
+          schedulerId,
+          error: persistenceError,
+        });
+      }
+    }
     throw error;
   }
 
@@ -250,23 +302,23 @@ export const updateCronJob = async (
       .returning();
     if (!updatedConfig) throw new Error("Failed to update cron job");
 
-    let nextBullJobKey: string | null = null;
+    let nextSchedulerId: string | null = null;
     try {
-      nextBullJobKey = await scheduleCronJobRepeat(
+      nextSchedulerId = await replaceCronScheduler(
         current.id,
-        current.bullJobKey,
         cronJobScheduleData(updatedConfig),
+        current.bullJobKey,
       );
       const [updatedJob] = await db
         .update(cronJobs)
-        .set({ bullJobKey: nextBullJobKey, enabled: true, updatedAt: new Date() })
+        .set({ bullJobKey: nextSchedulerId, enabled: true, updatedAt: new Date() })
         .where(eq(cronJobs.id, current.id))
         .returning();
       if (!updatedJob) throw new Error("Failed to persist cron job schedule");
       return updatedJob;
     } catch (error) {
-      if (nextBullJobKey) {
-        await taskQueue.removeRepeatableByKey(nextBullJobKey).catch((cleanupError) => {
+      if (nextSchedulerId) {
+        await removeCronScheduler(nextSchedulerId).catch((cleanupError) => {
           logger.warn("[CronJob] failed to remove partially scheduled repeat job", { cronJobId: current.id, error: cleanupError });
         });
       }
@@ -286,7 +338,11 @@ export const updateCronJob = async (
       if (!rolledBack) logger.warn("[CronJob] failed to roll back cron job after reschedule failure", { cronJobId: current.id });
       if (current.enabled) {
         try {
-          const restoredBullJobKey = await scheduleCronJobRepeat(current.id, "", cronJobScheduleData(current));
+          const restoredBullJobKey = await replaceCronScheduler(
+            current.id,
+            cronJobScheduleData(current),
+            current.bullJobKey,
+          );
           await db
             .update(cronJobs)
             .set({ bullJobKey: restoredBullJobKey, enabled: true, updatedAt: new Date() })
@@ -300,7 +356,7 @@ export const updateCronJob = async (
   }
 
   if (patch.enabled === true && !current.enabled) {
-    const enabledJob = await enableCronJob(current.id, current.bullJobKey, cronJobScheduleData({ ...current, ...patch }));
+    const enabledJob = await enableCronJob(current.id, cronJobScheduleData({ ...current, ...patch }));
     if (patch.title === undefined) return enabledJob;
     const [updatedJob] = await db
       .update(cronJobs)
@@ -312,7 +368,7 @@ export const updateCronJob = async (
   }
 
   if (patch.enabled === false && current.enabled) {
-    await disableCronJob(current.id, current.bullJobKey);
+    await disableCronJob(current.id);
   }
 
   const [updatedJob] = await db

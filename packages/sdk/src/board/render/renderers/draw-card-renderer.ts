@@ -1,7 +1,7 @@
-import { Container, Graphics } from "pixi.js";
+import { Container, Graphics, Mesh, MeshGeometry, Texture } from "pixi.js";
 import type { BoardDrawItem } from "@cohub/protocol/board-document";
 import {
-	buildStrokeOutline,
+	buildStrokeRibbonGeometry,
 	computeDrawBounds,
 } from "../../core/draw-geometry.js";
 import { pickBoardColor } from "../../core/palette.js";
@@ -14,7 +14,7 @@ import { drawFarStroke } from "./far-plate.js";
 
 type DrawParts = {
 	root: Container;
-	stroke: Graphics;
+	stroke: Graphics | Mesh;
 	sig: string;
 	/** Last points array rendered; a new array (edit/undo) forces a redraw. */
 	points: unknown;
@@ -23,6 +23,27 @@ type DrawParts = {
 };
 
 const partsByContainer = new WeakMap<Container, DrawParts>();
+
+/** Canvas fallback for environments where Pixi intentionally has no Mesh pipe. */
+function createCanvasStroke(
+	positions: Float32Array,
+	indices: Uint32Array,
+	color: number,
+	alpha: number,
+): Graphics {
+	const graphics = new Graphics();
+	for (let offset = 0; offset < indices.length; offset += 3) {
+		const a = (indices[offset] ?? 0) * 2;
+		const b = (indices[offset + 1] ?? 0) * 2;
+		const c = (indices[offset + 2] ?? 0) * 2;
+		graphics
+			.moveTo(positions[a] ?? 0, positions[a + 1] ?? 0)
+			.lineTo(positions[b] ?? 0, positions[b + 1] ?? 0)
+			.lineTo(positions[c] ?? 0, positions[c + 1] ?? 0)
+			.closePath();
+	}
+	return graphics.fill({ color, alpha });
+}
 
 function sync(
 	container: Container,
@@ -54,26 +75,31 @@ function sync(
 		parts.points = item.points;
 		parts.baseWidth = computeDrawBounds(item.points, item.size).width;
 
-		parts.stroke.clear();
-		const outline = buildStrokeOutline(item.points, item.size);
-		const origin = outline[0];
-		if (origin && outline.length >= 3) {
-			parts.stroke.moveTo(origin.x, origin.y);
-			for (let i = 1; i < outline.length; i += 1) {
-				const point = outline[i];
-				if (point) parts.stroke.lineTo(point.x, point.y);
-			}
-			parts.stroke.closePath();
-			parts.stroke.fill({
-				color: color.stroke,
-				alpha: selected || hovered ? 1 : 0.92,
-			});
+		const ribbon = buildStrokeRibbonGeometry(item.points, item.size);
+		const alpha = selected || hovered ? 1 : 0.92;
+		const nextStroke = context.rendererType !== "canvas"
+			? new Mesh({
+					geometry: new MeshGeometry({
+						positions: ribbon.positions,
+						indices: ribbon.indices,
+					}),
+					texture: Texture.WHITE,
+				})
+			: createCanvasStroke(ribbon.positions, ribbon.indices, color.stroke, alpha);
+		if (nextStroke instanceof Mesh) {
+			nextStroke.tint = color.stroke;
+			nextStroke.alpha = alpha;
 		}
+		const previous = parts.stroke;
+		parts.stroke = nextStroke;
+		parts.root.removeChild(previous);
+		previous.destroy();
+		parts.root.addChild(nextStroke);
 	}
 
-	// A live resize only grows the frame; scale the existing tessellation on the
-	// GPU instead of rebuilding the ribbon each pointer move. The points are baked
-	// at the final scale on pointer-up, which resets this back to 1.
+	// A live resize only grows the frame; scale the existing tessellation instead
+	// of rebuilding the ribbon on every pointer move. The points are baked at the
+	// final scale on pointer-up, which resets this back to 1.
 	const previewScale = item.frame.width / Math.max(0.0001, parts.baseWidth);
 	parts.stroke.scale.set(Number.isFinite(previewScale) ? previewScale : 1);
 }

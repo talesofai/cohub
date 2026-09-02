@@ -79,9 +79,20 @@ export function isSandboxRpcError(error: unknown): error is SandboxRpcError {
 }
 
 export function getSandboxRpcFailurePresentation(error: SandboxRpcError): SandboxRpcFailurePresentation {
-  const text = `${error.transportReason ?? ""} ${error.message}`.toLowerCase();
+  // Business errors can contain arbitrary file content in their message. Only
+  // IO_ERROR represents a transport/infrastructure failure, so never classify
+  // other RPC codes by scanning their text for connection-looking words.
+  if (error.rpcErrorCode !== "IO_ERROR") {
+    return {
+      kind: "rpc_error",
+      message: error.message,
+      infrastructure: false,
+    };
+  }
 
-  if (error.message === SANDBOX_NOT_READY_MESSAGE || includesAny(text, CONNECTION_NOT_READY_PATTERNS)) {
+  const transportText = (error.transportReason ?? "").toLowerCase();
+
+  if (includesAny(transportText, CONNECTION_NOT_READY_PATTERNS)) {
     return {
       kind: "connect_failed",
       message: SANDBOX_NOT_READY_MESSAGE,
@@ -89,7 +100,7 @@ export function getSandboxRpcFailurePresentation(error: SandboxRpcError): Sandbo
     };
   }
 
-  if (error.message === SANDBOX_CONNECTION_LOST_MESSAGE || includesAny(text, CONNECTION_LOST_PATTERNS)) {
+  if (includesAny(transportText, CONNECTION_LOST_PATTERNS)) {
     return {
       kind: "connection_lost",
       message: SANDBOX_CONNECTION_LOST_MESSAGE,

@@ -1,5 +1,61 @@
 # @neta-art/cohub
 
+## 8.7.0
+
+### Minor Changes
+
+- f9b6156: Normalize Board item geometry across semantic authoring and storage:
+
+  - Draw points and arrow start/end points are now consistently world-space; authoring items use optional `position`/`size` and the persisted frame is derived automatically.
+  - Export `computeArrowFrame` (previously internal arrow geometry) so arrow item frames can be computed outside the renderer.
+  - Share geometry helpers between the API, CLI, and renderers, and fix draw renderer performance by computing geometry once per item.
+
+## 8.6.0
+
+### Minor Changes
+
+- 6685de4: Export `BoardSemanticCommandSchema` from the public SDK so board mutations can be validated and compiled outside the API.
+
+## 8.5.1
+
+### Patch Changes
+
+- a279343: Optimize debugger response body capture by skipping oversized fetch bodies and reducing repeated UTF-8 encoding work when creating payload previews.
+
+## 8.5.0
+
+### Minor Changes
+
+- 9884704: Add app workspace navigation bridge: apps and chat backgrounds can navigate the embedding Cohub workspace via `client.navigation.open(target)` and `appRuntime.navigationOpen(target, call)`. Targets are validated `AppNavigationTarget` payloads from `@cohub/protocol/app-navigation` (a string is accepted as an app ref), responses report `handled` with a `reason` (`unsupported`/`timeout`) when the host cannot navigate, and `PopupBrokerTransport` reports navigation as unsupported.
+
+## 8.4.0
+
+### Minor Changes
+
+- 7baf58e: App runtime context now exposes the hosting Space as `app.homeSpace` (id and name), so chat backgrounds and apps can theme against the Space they run in. The top-level `space` field is deprecated in favor of `app.homeSpace`, and the legacy `work` projection stays stable as App context gains fields.
+- 7baf58e: Space FS reads, stat, and ls results now expose file metadata change time as `ctimeMs` (epoch milliseconds, when available), and stat reports `isFile`. SDK `SpaceFsFileResponse` gains the matching optional `ctimeMs` field.
+
+## 8.3.1
+
+### Patch Changes
+
+- 0511cbe: Palette: scope the overview-backed default list to the space picker "Recent" tab and order it strictly by personal activity.
+
+  - Plain palette default list (no query, no `a:`) and the All / Mine / Pinned tabs return to the pre-overview local derivation: first frame from the same IndexedDB / space-list caches as before, no overview snapshot, no overview refetch, no snapshot-driven re-sort.
+  - Recent tab keeps the overview path: the first frame is the last received server payload (the cached overview snapshot) folded with local caches — device visits and viewer-authored turns re-rank it, newly cached spaces/sessions merge in — instead of an "All"-ordered legacy list that visibly re-sorted once the refetched overview landed. When no snapshot exists at all, the frame falls back to a purely local synthesis with the same ordering semantics.
+  - Recent ordering drops the pinned-first tier on both the client build and the overview API: spaces are ordered strictly by personal activity time (visits + viewer-authored turns + server participation), so a stale pinned space no longer floats above recently used ones. Pinning still marks the item; the dedicated Pinned tab is unchanged.
+  - The overview refetch is no longer tied to the palette's search abort signal, which previously cancelled it mid-flight and delayed the correct list by a re-request cycle.
+
+## 8.3.0
+
+### Minor Changes
+
+- - Add `search.overview()` (`GET /api/palette/overview`) plus `PaletteOverviewResponse` types for viewer-relative palette default data, including `recentSpaceIds` hints from local activity
+  - `search.query()` gains `groupTurns` to toggle per-session turn grouping
+  - Expose prompt quick-action fields (`quickAction`, `buttonLabel`, `order`) on `PromptTemplateCatalogEntry`
+  - App bridge retries authorization once with a forced token refresh, so consent flows survive short-lived access tokens
+  - Drop legacy `s3_post_v1` public asset upload protocol; uploads always use presigned PUT
+
 ## 8.2.0
 
 ### Minor Changes

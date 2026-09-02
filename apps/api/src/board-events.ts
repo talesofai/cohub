@@ -1,5 +1,7 @@
 import { randomUUID } from "node:crypto";
 import type {
+  BoardComposition,
+  BoardEffect,
   BoardMutationReceipt,
   BoardPlaybackSnapshot,
   RequestSource,
@@ -14,6 +16,11 @@ export async function dispatchBoardChanged(input: {
   version: number;
   changed: BoardMutationReceipt["changed"];
   source?: RequestSource | null;
+  animationPatch?: {
+    effects: BoardEffect[];
+    compositions: BoardComposition[];
+    playback?: BoardPlaybackSnapshot | null;
+  };
 }) {
   await dispatchRealtimeEvent({
     id: randomUUID(),
@@ -28,6 +35,7 @@ export async function dispatchBoardChanged(input: {
       mutationId: input.mutationId,
       version: input.version,
       changed: input.changed,
+      ...(input.animationPatch ? { animationPatch: input.animationPatch } : {}),
       ...(input.source ? { source: input.source } : {}),
     },
   });

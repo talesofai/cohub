@@ -52,6 +52,10 @@ import { logtoClient } from "$lib/auth";
 import { handleUnauthorizedError } from "$lib/auth-redirect";
 import { clearAllIndexedDbCache } from "$lib/cache/clear";
 import { canUseUserScopedCache, getCacheUserKey } from "$lib/cache/keys";
+import {
+	clearCachedPaletteOverview,
+	invalidatePaletteOverview,
+} from "$lib/command-palette/palette-overview";
 import ChannelProviderIcon from "$lib/components/ChannelProviderIcon.svelte";
 import NewLabelPopover from "$lib/components/NewLabelPopover.svelte";
 import SidebarFlyout from "$lib/components/SidebarFlyout.svelte";
@@ -101,6 +105,7 @@ import {
 } from "$lib/session-sort";
 import {
 	buildSessionsRoute,
+	buildSpaceActivityRoute,
 	buildSpaceAppRoute,
 	buildSpaceCheckpointNewRoute,
 	buildSpaceCheckpointRoute,
@@ -2992,6 +2997,7 @@ async function handleLogout() {
 		// Ignore storage cleanup failures during logout.
 	}
 	clearAllCachedSpaceLists();
+	clearCachedPaletteOverview();
 	clearTaskRunsMemoryCache();
 	await clearAllIndexedDbCache().catch((error) => {
 		console.warn("[sidebar] Failed to clear IndexedDB cache", error);
@@ -3346,6 +3352,7 @@ $effect(() => {
 	untrack(() => {
 		const sessionId = activeSession?.id ?? null;
 		setRecentSpace(userUuid, currentSpaceId, sessionId);
+		invalidatePaletteOverview();
 	});
 });
 </script>
@@ -3932,6 +3939,15 @@ $effect(() => {
             </button>
             <button
               type="button"
+              class="flex h-8 w-8 items-center justify-center rounded-[6px] transition-colors duration-100 {currentPath === buildSpaceActivityRoute(currentSpaceId!) ? 'bg-bg-active text-text-primary' : 'text-text-tertiary hover:bg-bg-hover hover:text-text-secondary'}"
+              onclick={() => { void handleNavigate(buildSpaceActivityRoute(currentSpaceId!)); }}
+              aria-label={m.nav_activity({}, { locale })}
+              title={m.nav_activity({}, { locale })}
+            >
+              <Activity class="h-4 w-4" />
+            </button>
+            <button
+              type="button"
               class="flex h-8 w-8 items-center justify-center rounded-[6px] text-text-tertiary transition-colors duration-100 hover:bg-bg-hover hover:text-text-secondary"
               onclick={handleNavigateToNewCheckpoint}
               aria-label={m.sidebar_new_save({}, { locale })}
@@ -4177,6 +4193,15 @@ $effect(() => {
         >
           <Settings class="w-3.5 h-3.5 shrink-0" />
           <span class="text-[12px] font-medium">{m.nav_settings({}, { locale })}</span>
+        </button>
+        <button
+          type="button"
+          class="flex items-center gap-2 w-full px-1.5 py-1.5 rounded-[5px] text-text-tertiary hover:text-text-primary hover:bg-bg-hover transition-colors duration-100 disabled:opacity-50"
+          onclick={() => { void handleNavigate(buildSpaceActivityRoute(currentSpaceId!)); }}
+          title={m.nav_activity({}, { locale })}
+        >
+          <Activity class="w-3.5 h-3.5 shrink-0" />
+          <span class="text-[12px] font-medium">{m.nav_activity({}, { locale })}</span>
         </button>
         <button
           type="button"

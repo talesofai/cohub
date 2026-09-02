@@ -1,3 +1,4 @@
+import { execFileSync } from "node:child_process";
 import { readFileSync, writeFileSync, existsSync, mkdirSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { z } from "zod";
@@ -8,7 +9,6 @@ export const ENTRIES_PATH = join(
 );
 
 export const AgentResponseSchema = z.object({
-	version: z.string().regex(/^\d+\.\d+$/),
 	highlights: z.array(z.string().min(1)).min(1).max(6),
 	fixes: z.array(z.string().min(1)).optional(),
 });
@@ -35,5 +35,17 @@ export function readEntries(): ChangelogEntry[] {
 
 export function writeEntries(entries: ChangelogEntry[]): void {
 	mkdirSync(dirname(ENTRIES_PATH), { recursive: true });
-	writeFileSync(ENTRIES_PATH, JSON.stringify(entries, null, 2) + "\n", "utf-8");
+	writeFileSync(ENTRIES_PATH, `${JSON.stringify(entries, null, "\t")}\n`, "utf-8");
+	canonicalize();
+}
+
+/** Apply the same biome pass the pre-commit hook uses, so output matches the committed format. */
+function canonicalize(): void {
+	try {
+		execFileSync(join(process.cwd(), "node_modules/.bin/biome"), ["check", "--write", ENTRIES_PATH], {
+			stdio: "pipe",
+		});
+	} catch {
+		// File is valid JSON either way; the pre-commit hook normalizes as a fallback.
+	}
 }

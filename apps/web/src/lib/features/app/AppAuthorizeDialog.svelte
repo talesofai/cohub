@@ -1,10 +1,23 @@
 <script lang="ts">
 import type { Permission } from "@neta-art/cohub";
-import { AlertTriangle, Check, Loader2, ShieldCheck } from "lucide-svelte";
+import {
+	AlertTriangle,
+	ArrowLeft,
+	Check,
+	Loader2,
+	Search,
+	ShieldCheck,
+} from "lucide-svelte";
 import Dialog from "$lib/components/Dialog.svelte";
 import { APP_SCOPE_OPTIONS } from "$lib/features/space/modules/app-utils";
 import { getLocale } from "$lib/i18n/locale.svelte";
 import { m } from "$lib/paraglide/messages.js";
+import {
+	normalizeSpacePickerQuery,
+	type SpacePickerFilter,
+	selectSpacePickerItems,
+} from "$lib/space-picker-model";
+import { authStore } from "$lib/stores/auth.svelte";
 
 const {
 	open,
@@ -23,7 +36,12 @@ const {
 		spaceId?: string;
 		spaceName?: string | null;
 		selectSpace?: boolean;
-		spaces?: Array<{ id: string; name: string | null }> | null;
+		spaces?: Array<{
+			id: string;
+			name: string | null;
+			ownerUserUuid?: string | null;
+			isPinned?: boolean;
+		}> | null;
 		homeSpaceName?: string | null;
 	} | null;
 	error: string | null;
@@ -104,13 +122,35 @@ const displayName = $derived(appName?.trim() || "this app");
 
 // Picker selection resets whenever a new request opens the dialog.
 let selectedSpaceId = $state("");
+let spaceQuery = $state("");
+let spaceFilter = $state<SpacePickerFilter>("recent");
+let pickerStep = $state<"choose" | "review">("review");
 $effect(() => {
 	void pending;
 	selectedSpaceId = "";
+	spaceQuery = "";
+	spaceFilter = "recent";
+	pickerStep = pending?.selectSpace ? "choose" : "review";
 });
 
-const picking = $derived(Boolean(pending?.selectSpace));
+const picking = $derived(
+	Boolean(pending?.selectSpace && pickerStep === "choose"),
+);
 const spaceOptions = $derived(pending?.spaces ?? null);
+function handleSpaceQueryInput(event: Event) {
+	spaceQuery = (event.currentTarget as HTMLInputElement).value;
+	if (spaceQuery.trim()) spaceFilter = "all";
+}
+
+const visibleSpaceOptions = $derived.by(() => {
+	if (!spaceOptions) return null;
+	return selectSpacePickerItems(spaceOptions, {
+		filter: spaceFilter,
+		query: normalizeSpacePickerQuery(spaceQuery),
+		viewerUserUuid: authStore.userUuid,
+		limit: 6,
+	});
+});
 const spaceLabel = $derived.by(() => {
 	if (!pending) return null;
 	if (pending.spaceId) return pending.spaceName?.trim() || pending.spaceId;
@@ -120,13 +160,7 @@ const spaceLabel = $derived.by(() => {
 const requiresGenerationQuota = $derived(
 	Boolean(pending?.scopes.includes("generation.create")),
 );
-const confirmLabel = $derived(
-	pending?.selectSpace
-		? spaceOptions && spaceOptions.length > 0
-			? "Choose and authorize"
-			: "Authorize and continue"
-		: "Authorize and continue",
-);
+const confirmLabel = "Authorize and continue";
 const confirmDisabled = $derived(
 	saving || (Boolean(pending?.selectSpace) && !selectedSpaceId),
 );
@@ -136,9 +170,9 @@ const scopeLabel = (scope: string) =>
 	APP_SCOPE_OPTIONS.find((option) => option.scope === scope)?.label ?? scope;
 </script>
 
-<Dialog {open} onClose={onCancel} maxWidth="440px">
+<Dialog {open} onClose={onCancel} maxWidth="440px" maxHeight="90vh" scrollable={false}>
 	{#if pending}
-		<div class="auth-panel">
+		<div class="auth-panel" class:auth-review={!picking}>
 			<div class="auth-intro">
 				<div class="auth-icon"><ShieldCheck class="h-4 w-4" /></div>
 				<div class="min-w-0">
@@ -156,30 +190,62 @@ const scopeLabel = (scope: string) =>
 			<hr class="auth-divider" />
 
 			{#if picking}
-				<section class="auth-section">
-					<div class="auth-section-label">Choose a Space</div>
+				<section class="auth-section auth-picker-step">
+					<div class="auth-step-heading">
+						<div>
+							<div class="auth-section-label">Choose a Space</div>
+							<div class="auth-step-copy">Select where this app can act.</div>
+						</div>
+					</div>
 					{#if spaceOptions === null}
 						<div class="auth-space-empty">Couldn't load your Spaces. Deny and try again.</div>
 					{:else if spaceOptions.length === 0}
 						<div class="auth-space-empty">You don't have any Spaces yet.</div>
 					{:else}
+						<label class="auth-space-search">
+							<Search class="h-3.5 w-3.5" />
+							<input value={spaceQuery} oninput={handleSpaceQueryInput} placeholder="Search Spaces" aria-label="Search Spaces" />
+						</label>
+						<div class="auth-space-filters" role="tablist" aria-label="Filter Spaces">
+							{#each [{ key: "recent", label: "Recent" }, { key: "all", label: "All" }, { key: "mine", label: "Mine" }, { key: "pinned", label: "Pinned" }] as filter}
+								<button type="button" class:active={spaceFilter === filter.key} role="tab" aria-selected={spaceFilter === filter.key} onclick={() => (spaceFilter = filter.key as SpacePickerFilter)}>{filter.label}</button>
+							{/each}
+						</div>
 						<div class="auth-space-list" role="radiogroup" aria-label="Choose a Space">
-							{#each spaceOptions as space (space.id)}
-								<label class="auth-space-option">
+							{#each visibleSpaceOptions ?? [] as space (space.id)}
+								<label class="auth-space-option" class:selected={selectedSpaceId === space.id}>
 									<input type="radio" bind:group={selectedSpaceId} value={space.id} />
 									<span class="auth-space-option-name">{space.name || space.id}</span>
 								</label>
 							{/each}
+							{#if (visibleSpaceOptions?.length ?? 0) === 0}
+								<div class="auth-space-empty">No matching Spaces.</div>
+							{/if}
 						</div>
 					{/if}
+					<div class="auth-picker-actions">
+						<button type="button" class="auth-cancel" disabled={saving} onclick={onCancel}>Deny</button>
+						<button type="button" class="auth-confirm" disabled={saving || !selectedSpaceId} onclick={() => (pickerStep = "review")}>Review access</button>
+					</div>
 				</section>
-			{:else if spaceLabel}
-				<section class="auth-space">
-					<div class="auth-space-label">Space</div>
-					<div class="auth-space-name" title={pending.spaceId ?? undefined}>{spaceLabel}</div>
-				</section>
+			{:else}
+				{#if pending.selectSpace}
+					<section class="auth-space auth-selected-space">
+						<div class="auth-space-label">Space</div>
+						<div class="auth-selected-row">
+							<div class="auth-space-name" title={selectedSpaceId}>{pending.spaces?.find((space) => space.id === selectedSpaceId)?.name || selectedSpaceId}</div>
+							<button type="button" class="auth-change-space" onclick={() => (pickerStep = "choose")}><ArrowLeft class="h-3 w-3" /> Change</button>
+						</div>
+					</section>
+				{:else if spaceLabel}
+					<section class="auth-space">
+						<div class="auth-space-label">Space</div>
+						<div class="auth-space-name" title={pending.spaceId ?? undefined}>{spaceLabel}</div>
+					</section>
+				{/if}
 			{/if}
 
+			{#if !picking}
 			<section class="auth-section">
 				<div class="auth-section-label">{m.app_auth_once_authorized({}, { locale })}</div>
 				<div class="auth-scope-list">
@@ -213,13 +279,14 @@ const scopeLabel = (scope: string) =>
 				<div class="auth-error"><AlertTriangle class="h-3.5 w-3.5" /> {error}</div>
 			{/if}
 
-			<div class="auth-actions">
-				<button type="button" class="auth-cancel" disabled={saving} onclick={onCancel}>Deny</button>
-				<button type="button" class="auth-confirm" disabled={confirmDisabled} onclick={() => onConfirm(selectedSpaceId || undefined)}>
-					{#if saving}<Loader2 class="h-3.5 w-3.5 animate-spin" />{/if}
-					{confirmLabel}
-				</button>
-			</div>
+				<div class="auth-actions">
+					<button type="button" class="auth-cancel" disabled={saving} onclick={onCancel}>Deny</button>
+					<button type="button" class="auth-confirm" disabled={confirmDisabled} onclick={() => onConfirm(selectedSpaceId || undefined)}>
+						{#if saving}<Loader2 class="h-3.5 w-3.5 animate-spin" />{/if}
+						{confirmLabel}
+					</button>
+				</div>
+			{/if}
 		</div>
 	{/if}
 </Dialog>
@@ -229,6 +296,11 @@ const scopeLabel = (scope: string) =>
 		display: grid;
 		gap: 16px;
 		padding: 18px;
+	}
+
+	.auth-panel.auth-review {
+		gap: 12px;
+		padding: 16px;
 	}
 
 	.auth-intro {
@@ -292,8 +364,6 @@ const scopeLabel = (scope: string) =>
 
 	.auth-space-list {
 		display: grid;
-		max-height: 216px;
-		overflow-y: auto;
 		border: 1px solid var(--border-subtle);
 		border-radius: 10px;
 		background: var(--bg-elevated);
@@ -313,8 +383,108 @@ const scopeLabel = (scope: string) =>
 		border-top: 1px solid var(--border-subtle);
 	}
 
-	.auth-space-option:hover {
+	.auth-space-option:hover,
+	.auth-space-option.selected {
 		background: var(--bg-hover);
+	}
+
+	.auth-space-search {
+		display: flex;
+		align-items: center;
+		gap: 8px;
+		min-height: 34px;
+		border: 1px solid var(--border-subtle);
+		border-radius: 8px;
+		padding: 0 10px;
+		color: var(--text-tertiary);
+	}
+
+	.auth-space-search:focus-within {
+		border-color: var(--brand-border);
+		box-shadow: 0 0 0 2px var(--brand-ring);
+	}
+
+	.auth-space-search input {
+		width: 100%;
+		min-width: 0;
+		border: 0;
+		outline: 0;
+		background: transparent;
+		font: inherit;
+		font-size: 12px;
+		color: var(--text-primary);
+	}
+
+	.auth-space-search input::placeholder {
+		color: var(--text-placeholder);
+	}
+
+	.auth-space-filters {
+		display: flex;
+		gap: 2px;
+		overflow-x: auto;
+		padding: 2px;
+		border-radius: 7px;
+		background: var(--bg-elevated);
+	}
+
+	.auth-space-filters button {
+		min-height: 28px;
+		flex: 1 0 auto;
+		border: 0;
+		border-radius: 5px;
+		background: transparent;
+		padding: 3px 9px;
+		font-size: 11px;
+		color: var(--text-tertiary);
+		cursor: pointer;
+	}
+
+	.auth-space-filters button:hover,
+	.auth-space-filters button.active {
+		background: var(--bg-hover);
+		color: var(--text-primary);
+	}
+
+	.auth-space-filters button.active {
+		box-shadow: inset 0 0 0 1px var(--border-subtle);
+	}
+
+	.auth-step-copy {
+		margin-top: 3px;
+		font-size: 11px;
+		color: var(--text-tertiary);
+	}
+
+	.auth-picker-actions {
+		display: flex;
+		justify-content: flex-end;
+		gap: 8px;
+		padding-top: 2px;
+	}
+
+	.auth-selected-row {
+		display: flex;
+		align-items: center;
+		justify-content: space-between;
+		gap: 10px;
+	}
+
+	.auth-change-space {
+		display: inline-flex;
+		align-items: center;
+		gap: 4px;
+		flex: 0 0 auto;
+		border: 0;
+		background: transparent;
+		padding: 2px 0;
+		font-size: 11px;
+		color: var(--text-tertiary);
+		cursor: pointer;
+	}
+
+	.auth-change-space:hover {
+		color: var(--brand);
 	}
 
 	.auth-space-option input {
@@ -359,8 +529,8 @@ const scopeLabel = (scope: string) =>
 	.auth-scope-row {
 		display: grid;
 		grid-template-columns: 18px minmax(0, 1fr);
-		gap: 11px;
-		padding: 12px;
+		gap: 10px;
+		padding: 10px;
 		background: var(--bg-elevated);
 	}
 
@@ -390,9 +560,9 @@ const scopeLabel = (scope: string) =>
 	}
 
 	.auth-scope-description {
-		margin-top: 3px;
-		font-size: 12px;
-		line-height: 1.45;
+		margin-top: 2px;
+		font-size: 11.5px;
+		line-height: 1.35;
 		color: var(--text-secondary);
 	}
 
@@ -435,8 +605,8 @@ const scopeLabel = (scope: string) =>
 	}
 
 	.auth-usage-copy {
-		font-size: 12px;
-		line-height: 1.5;
+		font-size: 11.5px;
+		line-height: 1.4;
 		color: var(--text-secondary);
 	}
 

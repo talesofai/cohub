@@ -78,7 +78,7 @@ function mountHost(
 	};
 }
 
-test("trusted Work composer context updates, clears, and resets", () => {
+test("trusted App composer context updates, clears, and resets", () => {
 	const { host, composerChips, setComposerChip, clearComposerChip } =
 		mountHost();
 	const chip = {
@@ -99,7 +99,7 @@ test("trusted Work composer context updates, clears, and resets", () => {
 	assert.deepEqual(composerChips, [chip, null, chip, null]);
 });
 
-test("spoofed Work composer context is ignored", () => {
+test("spoofed App composer context is ignored", () => {
 	const { composerChips, contentWindow, setComposerChip } = mountHost();
 	const chip = { key: "selection", label: "Selected", content: "customer_123" };
 
@@ -191,7 +191,7 @@ test("a context sync failure is explicit and does not block later calls", async 
 	assert.deepEqual(await recovered, { ok: true });
 });
 
-test("a call waits for a newly mounted Work to announce readiness", async () => {
+test("a call waits for a newly mounted App to announce readiness", async () => {
 	const { host, posted, ready, respond } = mountHost();
 	const pending = host.call({
 		method: "image.open",
@@ -209,7 +209,7 @@ test("a call waits for a newly mounted Work to announce readiness", async () => 
 	assert.deepEqual(await pending, { ok: true });
 });
 
-test("a call resolves when the Work acknowledges it", async () => {
+test("a call resolves when the App acknowledges it", async () => {
 	const { host, posted, ready, respond } = mountHost();
 	ready(["selection.get"]);
 	assert.equal(host.ready, true);
@@ -261,7 +261,7 @@ test("an unannounced method fails fast instead of hanging", async () => {
 	assert.equal(result.ok === false && result.code, "method_not_found");
 });
 
-test("a Work that never registers methods reports not-ready", async () => {
+test("an App that never registers methods reports not-ready", async () => {
 	const { host } = mountHost();
 	const result = await host.call({
 		method: "ping",

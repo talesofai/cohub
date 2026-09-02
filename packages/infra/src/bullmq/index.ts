@@ -277,7 +277,7 @@ const getWorkerCount = async (queue: Queue, options: QueueSnapshotOptions = {}) 
 
 export const getQueueSnapshot = async (queue: Queue, options: QueueSnapshotOptions = {}): Promise<QueueSnapshot> => {
   const [counts, isPaused, workers, waitingJobs] = await Promise.all([
-    queue.getJobCounts("waiting", "active", "delayed", "failed", "completed", "paused", "prioritized", "waiting-children"),
+    queue.getJobCounts("waiting", "active", "delayed", "failed", "completed", "prioritized", "waiting-children"),
     queue.isPaused(),
     getWorkerCount(queue, options).catch(() => 0),
     queue.getJobs(["waiting"], 0, 0, true),

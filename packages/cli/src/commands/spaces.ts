@@ -16,6 +16,7 @@ import { createClient } from "../client.js";
 import { table, json as outJson, jsonRequested, ok, error, handleHttp, formatEpochMs } from "../output.js";
 import { resolveSpace } from "../space.js";
 import { registerSpaceCommerce } from "./space-commerce.js";
+import { registerSpaceActivity } from "./space-activity.js";
 import { registerSpaceInvitations } from "./space-invitations.js";
 import { registerSpaceTurns } from "./space-turns.js";
 
@@ -177,15 +178,14 @@ const formatAutoDestroy = (policy: { mode: "idle"; ttlSeconds: number } | { mode
 
 const slashPath = (value: string) => value.split(sep).join("/");
 
-const walkUploadPath = async (input: string, root: string, prefix = ""): Promise<UploadFile[]> => {
-  const localPath = resolve(input);
+const walkUploadPath = async (localPath: string, root: string): Promise<UploadFile[]> => {
   const info = await stat(localPath);
   const name = basename(localPath);
-  const relativePath = slashPath(prefix ? `${prefix}/${name}` : relative(root, localPath) || name);
+  const relativePath = slashPath(relative(root, localPath) || name);
 
   if (info.isDirectory()) {
     const children = await readdir(localPath);
-    const nested = await Promise.all(children.map((child) => walkUploadPath(resolve(localPath, child), root, relativePath)));
+    const nested = await Promise.all(children.map((child) => walkUploadPath(resolve(localPath, child), root)));
     return nested.flat();
   }
   if (!info.isFile()) return [];
@@ -202,15 +202,28 @@ const walkUploadPath = async (input: string, root: string, prefix = ""): Promise
 
 const randomUploadEntryId = () => randomUUID();
 
-async function collectUploadFiles(paths: string[]): Promise<UploadFile[]> {
+// Upload semantics: a file keeps its name, and a directory contributes its
+// contents directly under the target dir — like `aws s3 cp dir remote:path`
+// or `rclone copy`.
+export const planUploadInput = async (input: string): Promise<UploadFile[]> => {
+  const localPath = resolve(input);
+  const info = await stat(localPath);
+  if (!info.isDirectory()) return walkUploadPath(localPath, dirname(localPath));
+  const children = await readdir(localPath);
+  const nested = await Promise.all(children.map((child) => walkUploadPath(resolve(localPath, child), localPath)));
+  return nested.flat();
+};
+
+export async function collectUploadFiles(paths: string[]): Promise<UploadFile[]> {
   if (paths.length === 0) return error("No files provided", "Pass one or more local files or directories.");
-  const roots = paths.map((path) => {
-    const resolved = resolve(path);
-    return dirname(resolved);
-  });
-  const nested = await Promise.all(paths.map((path, index) => walkUploadPath(path, roots[index] ?? process.cwd())));
-  const files = nested.flat();
+  const files = (await Promise.all(paths.map(planUploadInput))).flat();
   if (files.length === 0) return error("No regular files found");
+  const seen = new Map<string, string>();
+  for (const file of files) {
+    const source = seen.get(file.relativePath);
+    if (source) throw new Error(`Duplicate upload path "${file.relativePath}" from ${source} and ${file.localPath}`);
+    seen.set(file.relativePath, file.localPath);
+  }
   return files;
 }
 
@@ -763,6 +776,9 @@ export function registerSpaces(program: Command): void {
   // ── spaces commerce ──
   registerSpaceCommerce(spacesCmd);
 
+  // ── spaces activity ──
+  registerSpaceActivity(spacesCmd);
+
   // ── spaces usage ──
   spacesCmd
     .command("usage [days]")
@@ -1279,7 +1295,7 @@ function registerFiles(spacesCmd: Command): void {
 
   filesCmd
     .command("upload <paths...>")
-    .description("Upload local files or directories")
+    .description("Upload local files; directory contents land under the target dir")
     .option("--dir <path>", "Target directory in the space")
     .option("--json", "Output as JSON")
     .action((paths: string[], opts: UploadOptions) => uploadFiles(spacesCmd, paths, opts));

@@ -11,7 +11,54 @@ import {
 import {
 	BOARD_NATIVE_NODE_TYPES,
 	validateBoardNodeInput,
+	type BoardNodeValidationDiagnostic,
 } from "./board-node.js";
+import {
+	boardArrowFrame,
+	boardDrawBounds,
+	boardDrawPointsToLocal,
+	boardDrawPointsToWorld,
+} from "./board-geometry.js";
+
+export class BoardItemValidationError extends Error {
+	diagnostics: BoardNodeValidationDiagnostic[];
+
+	constructor(diagnostics: BoardNodeValidationDiagnostic[]) {
+		super(diagnostics[0]?.message ?? "invalid Board item");
+		this.name = "BoardItemValidationError";
+		this.diagnostics = diagnostics;
+	}
+}
+
+export function authoringSchemaDiagnostics(
+	error: { issues: readonly { path: readonly PropertyKey[]; message: string }[] },
+	path: string,
+): BoardNodeValidationDiagnostic[] {
+	return error.issues.slice(0, 32).map((issue) => ({
+		severity: "error" as const,
+		code: "INVALID_BOARD_NODE" as const,
+		message: issue.message,
+		path: `${path}.${issue.path.map(String).join(".") || "item"}`,
+	}));
+}
+
+function authoringDiagnostic(
+	diagnostic: BoardNodeValidationDiagnostic,
+	path: string,
+): BoardNodeValidationDiagnostic {
+	const internalPath = diagnostic.path;
+	const suffix = internalPath.replace(/^node(?:\.|$)/, "");
+	const authoringSuffix = suffix
+		.replace(/^data\.points/, "props.points")
+		.replace(/^data\./, "props.")
+		.replace(/^style\./, "style.")
+		.replace(/^view\./, "source.snapshot.")
+		.replace(/^nodeId$/, "id")
+		.replace(/^(x|y)$/, "position.$1")
+		.replace(/^(width|height)$/, "size.$1");
+	const mappedPath = `${path}${authoringSuffix ? `.${authoringSuffix}` : ""}`;
+	return { ...diagnostic, path: mappedPath, message: diagnostic.message.replace(internalPath, mappedPath) };
+}
 
 const isRecord = (value: unknown): value is Record<string, unknown> =>
 	Boolean(value && typeof value === "object" && !Array.isArray(value));
@@ -19,7 +66,9 @@ const isRecord = (value: unknown): value is Record<string, unknown> =>
 function baseItem(node: BoardNodeInput) {
 	return {
 		id: node.nodeId,
-		frame: { x: node.x, y: node.y, width: node.width, height: node.height, rotation: node.rotation },
+		position: { x: node.x, y: node.y },
+		size: { width: node.width, height: node.height },
+		rotation: node.rotation,
 		...(node.parentId ? { parentId: node.parentId } : {}),
 		...(node.data.locked === true ? { locked: true } : {}),
 		...(isRecord(node.data.metadata) ? { metadata: node.data.metadata } : {}),
@@ -41,12 +90,16 @@ function style(node: BoardNodeInput) {
 
 export function boardNodeToAuthoringItem(node: BoardNodeInput | BoardNodeRecord): BoardAuthoringItem {
 	const base = baseItem(node);
+	if (node.type === "draw" || node.type === "arrow") {
+		delete (base as { size?: unknown }).size;
+		delete (base as { position?: unknown }).position;
+	}
 	const visual = style(node);
 	let candidate: Record<string, unknown>;
 	switch (node.type) {
 		case "text": candidate = { ...base, type: "text", props: { text: node.data.text ?? "", fontSize: node.data.fontSize ?? 24 }, ...(visual ? { style: visual } : {}) }; break;
 		case "geo": candidate = { ...base, type: "geo", props: { shape: node.data.geo ?? "rectangle", text: node.data.text ?? "" }, ...(visual ? { style: visual } : {}) }; break;
-		case "draw": candidate = { ...base, type: "draw", props: { points: Array.isArray(node.data.points) ? node.data.points : [] }, ...(visual ? { style: visual } : {}) }; break;
+		case "draw": candidate = { ...base, type: "draw", props: { points: Array.isArray(node.data.points) ? boardDrawPointsToWorld(node.data.points as Array<{ x: number; y: number; p: number }>, node.x, node.y) : [] }, ...(visual ? { style: visual } : {}) }; break;
 		case "arrow": candidate = { ...base, type: "arrow", props: { start: node.data.start, end: node.data.end, bend: node.data.bend ?? 0, arrowStart: node.data.arrowStart ?? false, arrowEnd: node.data.arrowEnd ?? true, label: node.data.label ?? "" }, ...(visual ? { style: visual } : {}) }; break;
 		case "frame": candidate = { ...base, type: "frame", props: { label: node.data.label ?? "Frame" }, ...(visual ? { style: visual } : {}) }; break;
 		case "image": candidate = { ...base, type: "image", props: isRecord(node.data.crop) ? { crop: node.data.crop } : {}, source: { kind: "space-file", path: filePath(node), ...(Object.keys(node.view).length ? { snapshot: node.view } : {}) } }; break;
@@ -69,18 +122,40 @@ function commonData(item: BoardAuthoringItem) {
 	return { ...(item.locked ? { locked: true } : {}), ...(item.metadata ? { metadata: item.metadata } : {}) };
 }
 
-export function boardAuthoringItemToNode(value: unknown, options: { orderKey?: string | null } = {}): BoardNodeInput {
+function defaultSize(type: BoardAuthoringItem["type"]) {
+	if (type === "frame") return { width: 480, height: 320 };
+	if (type === "text") return { width: 320, height: 48 };
+	if (type === "task") return { width: 420, height: 240 };
+	if (type === "image" || type === "video") return { width: 640, height: 360 };
+	if (type === "audio") return { width: 480, height: 96 };
+	if (type === "file") return { width: 360, height: 220 };
+	return { width: 240, height: 160 };
+}
+
+function authoringFrame(item: BoardAuthoringItem) {
+	if (item.type === "draw") {
+		const points = item.props as { points: Array<{ x: number; y: number; p: number }> };
+		const size = Number((item.style as { strokeWidth?: unknown } | undefined)?.strokeWidth ?? 4);
+		const bounds = boardDrawBounds(points.points, size);
+		return { x: bounds.x, y: bounds.y, width: bounds.width, height: bounds.height, rotation: item.rotation };
+	}
+	if (item.type === "arrow") {
+		const props = item.props as { start: { x: number; y: number }; end: { x: number; y: number }; bend: number };
+		return { ...boardArrowFrame({ ...props, size: Number((item.style as { strokeWidth?: unknown } | undefined)?.strokeWidth ?? 2.5) }), rotation: item.rotation };
+	}
+	const position = (item as { position: { x: number; y: number } }).position;
+	const size = (item as { size?: { width: number; height: number } }).size ?? defaultSize(item.type);
+	return { x: position.x, y: position.y, width: size.width, height: size.height, rotation: item.rotation };
+}
+
+export function boardAuthoringItemToNode(value: unknown, options: { orderKey?: string | null; path?: string } = {}): BoardNodeInput {
 	const item = BoardAuthoringItemSchema.parse(value);
 	const node: BoardNodeInput = {
 		nodeId: item.id,
 		type: item.type,
 		parentId: item.parentId ?? null,
 		orderKey: options.orderKey ?? null,
-		x: item.frame.x,
-		y: item.frame.y,
-		width: item.frame.width,
-		height: item.frame.height,
-		rotation: item.frame.rotation,
+		...authoringFrame(item),
 		refKind: null,
 		refPath: null,
 		refUrl: null,
@@ -95,7 +170,11 @@ export function boardAuthoringItemToNode(value: unknown, options: { orderKey?: s
 	switch (item.type) {
 		case "text": node.data = { ...node.data, ...item.props, color: color ?? "neutral" }; break;
 		case "geo": node.data = { ...node.data, geo: item.props.shape, text: item.props.text, color: color ?? "brand", fillOpacity: fillOpacity ?? 0 }; break;
-		case "draw": node.data = { ...node.data, points: item.props.points, color: color ?? "brand", size: strokeWidth ?? 4 }; break;
+		case "draw": {
+			const points = item.props as { points: Array<{ x: number; y: number; p: number }> };
+			node.data = { ...node.data, points: boardDrawPointsToLocal(points.points, node.x, node.y), color: color ?? "brand", size: strokeWidth ?? 4 };
+			break;
+		}
 		case "arrow": node.data = { ...node.data, ...item.props, color: color ?? "brand", size: strokeWidth ?? 2.5 }; break;
 		case "frame": node.data = { ...node.data, ...item.props, color: color ?? "neutral" }; break;
 		case "image": {
@@ -120,21 +199,36 @@ export function boardAuthoringItemToNode(value: unknown, options: { orderKey?: s
 	}
 	if ((BOARD_NATIVE_NODE_TYPES as readonly string[]).includes(node.type)) {
 		const diagnostics = validateBoardNodeInput(node);
-		if (diagnostics.length) throw new Error(diagnostics[0]?.message ?? "invalid Board item");
+		if (diagnostics.length) {
+			throw new BoardItemValidationError(diagnostics.map((diagnostic) =>
+				authoringDiagnostic(diagnostic, options.path ?? "item"),
+			));
+		}
 	} else {
 		const parsed = BoardNodeInputSchema.safeParse(node);
-		if (!parsed.success) throw new Error(parsed.error.issues[0]?.message ?? "invalid extension Board item");
+		if (!parsed.success) {
+			throw new BoardItemValidationError(parsed.error.issues.map((issue) => ({
+				severity: "error" as const,
+				code: "INVALID_BOARD_NODE" as const,
+				message: issue.message,
+				path: `${options.path ?? "item"}.${issue.path.join(".") || "item"}`,
+			})));
+		}
 	}
 	return node;
 }
 
-export function applyBoardItemPatch(current: BoardAuthoringItem, value: unknown): BoardAuthoringItem {
+export function applyBoardItemPatch(current: BoardAuthoringItem, value: unknown, path = "item"): BoardAuthoringItem {
 	const patch = BoardItemPatchSchema.parse(value);
 	const merged = mergePatch(current, patch) as Record<string, unknown>;
 	merged.id = current.id;
 	merged.type = current.type;
 	if ("kindVersion" in current) merged.kindVersion = current.kindVersion;
-	return BoardAuthoringItemSchema.parse(merged);
+	const parsed = BoardAuthoringItemSchema.safeParse(merged);
+	if (!parsed.success) {
+		throw new BoardItemValidationError(authoringSchemaDiagnostics(parsed.error, path));
+	}
+	return parsed.data;
 }
 
 function mergePatch(current: unknown, patch: unknown): unknown {

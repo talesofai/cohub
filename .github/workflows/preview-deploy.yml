@@ -168,6 +168,7 @@ jobs:
           PUBLIC_LOGTO_ENDPOINT=https://dev-auth.neta.art/
           PUBLIC_LOGTO_APP_ID=vpikk7sl9zwvefiptowtn
           PUBLIC_LOGTO_API_RESOURCE=https://api.talesofai
+          PUBLIC_MARKETPLACE_APP_ID=899432b9-7976-4bd1-a7b9-b9b83ea11f32
           EOF
 
       - name: Build

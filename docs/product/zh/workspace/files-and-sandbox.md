@@ -28,7 +28,7 @@ Agent 使用同一工作区。重要变更应落在文件里，而不只存在�
 - 项目文档与笔记
 - 想保留的生成资产
 - Agent 应重复运行的脚本
-- Works 的发布目标
+- Apps 的发布目标
 
 避免把 Chat 历史当成唯一事实来源。
 
@@ -66,7 +66,7 @@ Space settings 可能包含：
 
 - 正在运行 dev server
 - 结果是应用，而不是静态文件
-- 想把该端口发布为 live Work
+- 想把该端口发布为 live App
 
 静态 HTML 通常可直接作为文件预览，不必长期跑进程。
 
@@ -125,4 +125,4 @@ cohub sandbox up ./my-project
 
 - [Chats](/zh/docs/workspace/chats)
 - [Saves](/zh/docs/workspace/saves)
-- [Works](/zh/docs/create/works)
+- [Apps](/zh/docs/create/apps)

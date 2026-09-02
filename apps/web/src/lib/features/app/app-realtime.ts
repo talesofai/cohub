@@ -2,6 +2,7 @@ import type { ChannelEnvelope } from "@cohub/protocol/realtime";
 import type { AppRecord, AppVersionRecord } from "@neta-art/cohub";
 
 export const APPS_CHANGED_EVENT = "cohub:apps-changed";
+export const INSTALLED_APPS_CHANGED_EVENT = "cohub:installed-apps-changed";
 
 export type AppVersionPublishedPayload = {
 	app: AppRecord;
@@ -124,4 +125,11 @@ export function createAppMutationBuffer() {
 export function dispatchAppsChanged(detail: AppsChangedDetail) {
 	if (typeof window === "undefined") return;
 	window.dispatchEvent(new CustomEvent(APPS_CHANGED_EVENT, { detail }));
+}
+
+export function dispatchInstalledAppsChanged(spaceId: string) {
+	if (typeof window === "undefined") return;
+	window.dispatchEvent(
+		new CustomEvent(INSTALLED_APPS_CHANGED_EVENT, { detail: { spaceId } }),
+	);
 }

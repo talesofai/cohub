@@ -67,6 +67,7 @@ import type {
   SpaceFsTreeResponse,
   SpaceFsUploadResponse,
   SpaceUsageResponse,
+  SpaceActivityResponse,
   SpaceStartupResponse,
   SpaceFsWriteFileInput,
   LabelItemsResponse,
@@ -1151,6 +1152,21 @@ export class SpaceUsageApi {
   }
 }
 
+export class SpaceActivityApi {
+  constructor(
+    private readonly transport: HttpTransport,
+    private readonly spaceId: string,
+  ) {}
+
+  get(days = 30, customFetch?: Fetch) {
+    const params = new URLSearchParams({ days: String(days) });
+    return this.transport.request<SpaceActivityResponse>(
+      `/api/spaces/${this.spaceId}/activity?${params.toString()}`,
+      { fetch: customFetch },
+    );
+  }
+}
+
 export type SpaceChannelBindingRecord = {
   id: string;
   spaceId: string;
@@ -2029,6 +2045,7 @@ export class SpaceClient {
   readonly access: SpaceAccessApi;
   readonly checkpoints: SpaceCheckpointsApi;
   readonly usage: SpaceUsageApi;
+  readonly activity: SpaceActivityApi;
   readonly channels: SpaceChannelsApi;
   readonly mods: SpaceModsApi;
   readonly env: SpaceEnvApi;
@@ -2052,6 +2069,7 @@ export class SpaceClient {
     this.access = new SpaceAccessApi(transport, id);
     this.checkpoints = createSpaceCheckpointsApi(transport, id);
     this.usage = new SpaceUsageApi(transport, id);
+    this.activity = new SpaceActivityApi(transport, id);
     this.channels = new SpaceChannelsApi(transport, id);
     this.mods = new SpaceModsApi(transport, id);
     this.env = new SpaceEnvApi(transport, id);

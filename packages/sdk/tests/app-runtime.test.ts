@@ -103,6 +103,90 @@ test("ParentBridgeTransport does not announce readiness without a trusted parent
 	assert.equal(posts, 0);
 });
 
+test("AppRuntimeApi sends navigation targets and optional calls through the bridge", async () => {
+  const messages: Record<string, unknown>[] = [];
+  const transport: AppRuntimeTransport = {
+    supportsNavigation: true,
+    request: async (message) => {
+      messages.push(message);
+      return {
+        protocol: "cohub.app.navigation",
+        version: 1,
+        type: "open.result",
+        requestId: String(message.requestId),
+        handled: true,
+        call: { ok: true, result: { selected: 1 } },
+      };
+    },
+  };
+  const runtime = createAppRuntime(transport);
+  const result = await runtime.navigationOpen(
+    { kind: "app", ref: "app://alice/studio/demo" },
+    { method: "selection.get", input: { hidden: false } },
+  );
+
+  assert.equal(result.handled, true);
+  assert.deepEqual(messages[0]?.target, {
+    kind: "app",
+    ref: "app://alice/studio/demo",
+  });
+  assert.deepEqual(messages[0]?.call, {
+    method: "selection.get",
+    input: { hidden: false },
+  });
+});
+
+test("ParentBridgeTransport preserves a caller-provided request id", async () => {
+  let messageHandler: ((event: MessageEvent) => void) | null = null;
+  let posted: Record<string, unknown> | null = null;
+  const parent = {
+    postMessage(message: Record<string, unknown>) {
+      posted = message;
+      queueMicrotask(() => {
+        messageHandler?.({
+          source: parent,
+          origin: "https://cohub.run",
+          data: {
+            protocol: "cohub.app.navigation",
+            version: 1,
+            type: "open.result",
+            requestId: message.requestId,
+            handled: true,
+          },
+        } as MessageEvent);
+      });
+    },
+  };
+  globalThis.window = {
+    parent,
+    location: { ancestorOrigins: ["https://cohub.run"] },
+    addEventListener: (_type: string, listener: (event: MessageEvent) => void) => {
+      messageHandler = listener;
+    },
+    removeEventListener: () => {
+      messageHandler = null;
+    },
+  } as unknown as Window & typeof globalThis;
+  globalThis.document = { referrer: "" } as Document;
+
+  const transport = new ParentBridgeTransport();
+  const response = await transport.request({
+    protocol: "cohub.app.navigation",
+    version: 1,
+    type: "open",
+    requestId: "navigation-1",
+  });
+  assert.equal(posted?.requestId, "navigation-1");
+  assert.equal((response as { requestId: string }).requestId, "navigation-1");
+});
+
+test("AppRuntimeApi reports navigation as unsupported without a host", async () => {
+  const runtime = createAppRuntime({ request: async () => null, supportsNavigation: false });
+  const result = await runtime.navigationOpen({ kind: "app", ref: "app://alice/studio/demo" });
+  assert.equal(result.handled, false);
+  assert.equal(result.reason, "unsupported");
+});
+
 test("AppRuntimeApi delegates context change subscriptions to its transport", () => {
 	let subscribed: AppContextChangedListener | null = null;
 	const transport: AppRuntimeTransport = {

@@ -1,5 +1,7 @@
 import {
   BoardAuthoringItemSchema,
+  boardAuthoringItemToNode,
+  boardDrawPointsToWorld,
   type BoardAuthoringItem,
   type BoardAuthoringSnapshot,
   type BoardMutationReceipt,
@@ -23,9 +25,10 @@ export const DEFAULT_BOARD_APPEARANCE = BoardAppearanceSchema.parse({
 
 /** Convert a public authoring Item to the renderer/editor document shape. */
 export function boardAuthoringItemToDocumentItem(item: BoardAuthoringItem): BoardItem {
+  const node = boardAuthoringItemToNode(item);
   const base = {
     id: item.id,
-    frame: item.frame,
+    frame: { x: node.x, y: node.y, width: node.width, height: node.height, rotation: node.rotation },
     ...(item.parentId !== undefined ? { parentId: item.parentId } : {}),
     ...(item.locked ? { locked: true } : {}),
     ...(item.metadata ? { metadata: item.metadata } : {}),
@@ -36,7 +39,7 @@ export function boardAuthoringItemToDocumentItem(item: BoardAuthoringItem): Boar
   switch (item.type) {
     case "text": return { ...base, type: "text", text: String(props.text ?? ""), fontSize: Number(props.fontSize ?? 24), color: String(style?.color ?? "neutral") } as BoardItem;
     case "geo": return { ...base, type: "geo", geo: String(props.shape ?? "rectangle"), text: String(props.text ?? ""), color: String(style?.color ?? "brand"), fillOpacity: Number(style?.fillOpacity ?? 0) } as BoardItem;
-    case "draw": return { ...base, type: "draw", points: props.points as Extract<BoardItem, { type: "draw" }>["points"], color: String(style?.color ?? "brand"), size: Number(style?.strokeWidth ?? 4) } as BoardItem;
+    case "draw": return { ...base, type: "draw", points: node.data.points as Extract<BoardItem, { type: "draw" }>["points"], color: String(style?.color ?? "brand"), size: Number(style?.strokeWidth ?? 4) } as BoardItem;
     case "arrow": return { ...base, type: "arrow", ...props, color: String(style?.color ?? "brand"), size: Number(style?.strokeWidth ?? 2.5) } as BoardItem;
     case "frame": return { ...base, type: "frame", label: String(props.label ?? "Frame"), color: String(style?.color ?? "neutral") } as BoardItem;
     case "image": return { ...base, type: "image", ref: { kind: "space-file", path: String(source?.path ?? "") }, ...(source?.snapshot ? { snapshot: source.snapshot } : {}), ...(props.crop ? { crop: props.crop } : {}) } as BoardItem;
@@ -61,7 +64,11 @@ export function boardItemToAuthoringItem(item: BoardItem): BoardAuthoringItem | 
   }
   const base = {
     id: item.id,
-    frame: item.frame,
+    ...(item.type === "draw" || item.type === "arrow" ? {} : {
+      position: { x: item.frame.x, y: item.frame.y },
+      size: { width: item.frame.width, height: item.frame.height },
+    }),
+    rotation: item.frame.rotation,
     ...(item.parentId !== undefined ? { parentId: item.parentId } : {}),
     ...(item.locked ? { locked: true } : {}),
     ...(item.metadata ? { metadata: item.metadata } : {}),
@@ -69,7 +76,7 @@ export function boardItemToAuthoringItem(item: BoardItem): BoardAuthoringItem | 
   switch (item.type) {
     case "text": return { ...base, type: "text", props: { text: item.text, fontSize: item.fontSize }, style: { color: item.color } } as BoardAuthoringItem;
     case "geo": return { ...base, type: "geo", props: { shape: item.geo, text: item.text }, style: { color: item.color, fillOpacity: item.fillOpacity } } as BoardAuthoringItem;
-    case "draw": return { ...base, type: "draw", props: { points: item.points }, style: { color: item.color, strokeWidth: item.size } } as BoardAuthoringItem;
+    case "draw": return { ...base, type: "draw", props: { points: boardDrawPointsToWorld(item.points, item.frame.x, item.frame.y) }, style: { color: item.color, strokeWidth: item.size } } as BoardAuthoringItem;
     case "arrow": return { ...base, type: "arrow", props: { start: item.start, end: item.end, bend: item.bend, arrowStart: item.arrowStart, arrowEnd: item.arrowEnd, label: item.label }, style: { color: item.color, strokeWidth: item.size } } as BoardAuthoringItem;
     case "frame": return { ...base, type: "frame", props: { label: item.label }, style: { color: item.color } } as BoardAuthoringItem;
     case "image": return { ...base, type: "image", props: item.crop ? { crop: item.crop } : {}, source: { kind: "space-file", path: item.ref.path, ...(item.snapshot ? { snapshot: item.snapshot } : {}) } } as BoardAuthoringItem;

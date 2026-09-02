@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 import {
 	buildStrokeOutline,
+	buildStrokeRibbonGeometry,
 	computeDrawBounds,
 	sampleRadius,
 } from "../../src/board/core/draw-geometry.js";
@@ -33,6 +34,27 @@ test("freehand outline derivation preserves raw samples", () => {
 	const before = structuredClone(points);
 	buildStrokeOutline(points, 8);
 	assert.deepEqual(points, before);
+});
+
+test("ribbon geometry keeps a folded stroke as bounded primitives", () => {
+	const ribbon = buildStrokeRibbonGeometry(sharpReversal, 8);
+	assert.ok(ribbon.positions.length > 0);
+	assert.equal(ribbon.positions.length, ribbon.uvs.length);
+	assert.equal(ribbon.positions.length, ribbon.progress.length * 2);
+	for (const value of ribbon.positions) assert.ok(Number.isFinite(value));
+	for (let offset = 0; offset < ribbon.indices.length; offset += 3) {
+		const a = ribbon.indices[offset] as number;
+		const b = ribbon.indices[offset + 1] as number;
+		const c = ribbon.indices[offset + 2] as number;
+		const ax = ribbon.positions[a * 2] as number;
+		const ay = ribbon.positions[a * 2 + 1] as number;
+		const bx = ribbon.positions[b * 2] as number;
+		const by = ribbon.positions[b * 2 + 1] as number;
+		const cx = ribbon.positions[c * 2] as number;
+		const cy = ribbon.positions[c * 2 + 1] as number;
+		const area = Math.abs((bx - ax) * (cy - ay) - (by - ay) * (cx - ax));
+		assert.ok(area < 1_000, `unexpected giant triangle area: ${area}`);
+	}
 });
 
 test("a single sample remains a compact round dot", () => {

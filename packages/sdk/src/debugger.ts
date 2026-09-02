@@ -30,6 +30,7 @@ export interface CohubDebuggerOptions {
   maxNetworkEntries?: number;
   maxPayloadBytes?: number;
   maxLineBytes?: number;
+  maxResponseCaptureBytes?: number;
   captureHeaders?: boolean;
   captureRequestBody?: boolean;
   captureResponseBody?: boolean;
@@ -89,6 +90,7 @@ export interface CohubNetworkEntry {
   truncated?: boolean;
   eventName?: string;
   payload?: SerializedValue | string;
+  bodyCaptureSkipped?: boolean;
   error?: string;
   close?: {
     code: number;
@@ -241,6 +243,7 @@ const DEFAULT_OPTIONS: Required<CohubDebuggerOptions> = {
   maxNetworkEntries: 5_000,
   maxPayloadBytes: 64 * 1024,
   maxLineBytes: 16 * 1024,
+  maxResponseCaptureBytes: 256 * 1024,
   captureHeaders: true,
   captureRequestBody: true,
   captureResponseBody: true,
@@ -447,6 +450,10 @@ function installFetchCollector(state: DebuggerState): void {
       const responseHeaders = state.options.captureHeaders
         ? headersToRecord(response.headers, state.options)
         : undefined;
+      const responseBodyCaptureSkipped = isResponseBodyCaptureSkipped(
+        response,
+        state.options,
+      );
 
       appendNetwork(state, {
         connectionId,
@@ -458,6 +465,7 @@ function installFetchCollector(state: DebuggerState): void {
         statusText: response.statusText,
         durationMs,
         responseHeaders,
+        bodyCaptureSkipped: responseBodyCaptureSkipped,
       });
 
       collectFetchResponseBody(
@@ -576,7 +584,7 @@ function installXhrCollector(state: DebuggerState): void {
           responseHeaders: state.options.captureHeaders
             ? parseRawHeaders(this.getAllResponseHeaders(), state.options)
             : undefined,
-          payload: getXhrResponsePreview(this, state.options),
+          ...getXhrResponsePreview(this, state.options),
         });
       });
       this.addEventListener("error", () => {
@@ -1026,7 +1034,11 @@ function collectFetchResponseBody(
   url: string,
   response: Response,
 ): void {
-  if (!state.options.captureResponseBody || !response.body) {
+  if (
+    !state.options.captureResponseBody ||
+    !response.body ||
+    isResponseBodyCaptureSkipped(response, state.options)
+  ) {
     return;
   }
 
@@ -1046,6 +1058,7 @@ function collectFetchResponseBody(
 
   void clone.text().then(
     (text) => {
+      const preview = createTextPreview(text, state.options.maxPayloadBytes);
       appendNetwork(state, {
         connectionId,
         kind: "fetch",
@@ -1054,9 +1067,9 @@ function collectFetchResponseBody(
         url,
         direction: "incoming",
         lineNumber: 1,
-        payload: truncateText(text, state.options.maxPayloadBytes),
-        sizeBytes: byteLength(text),
-        truncated: byteLength(text) > state.options.maxPayloadBytes,
+        payload: preview.payload,
+        sizeBytes: preview.sizeBytes,
+        truncated: preview.truncated,
       });
     },
     () => {
@@ -1278,9 +1291,7 @@ function appendLine(
     direction: details.direction,
     lineNumber: details.lineNumber,
     eventName: details.eventName,
-    payload: truncateText(details.text, state.options.maxLineBytes),
-    sizeBytes: byteLength(details.text),
-    truncated: byteLength(details.text) > state.options.maxLineBytes,
+    ...createTextPreview(details.text, state.options.maxLineBytes),
   });
 }
 
@@ -1336,22 +1347,28 @@ function normalizeFetchRequest(
 function getXhrResponsePreview(
   xhr: XMLHttpRequest,
   options: Required<CohubDebuggerOptions>,
-): SerializedValue | string | undefined {
+): {
+  payload?: SerializedValue | string;
+  sizeBytes?: number;
+  truncated?: boolean;
+} {
   if (!options.captureResponseBody) {
-    return undefined;
+    return {};
   }
 
   if (xhr.responseType && xhr.responseType !== "text") {
-    return serializeValue(
-      {
-        responseType: xhr.responseType,
-        note: "Non-text XHR response body was not captured.",
-      },
-      options,
-    );
+    return {
+      payload: serializeValue(
+        {
+          responseType: xhr.responseType,
+          note: "Non-text XHR response body was not captured.",
+        },
+        options,
+      ),
+    };
   }
 
-  return truncateText(xhr.responseText, options.maxPayloadBytes);
+  return createTextPreview(xhr.responseText, options.maxPayloadBytes);
 }
 
 function serializeBodyPreview(
@@ -1367,20 +1384,12 @@ function serializeBodyPreview(
   }
 
   if (typeof body === "string") {
-    return {
-      payload: truncateText(body, options.maxPayloadBytes),
-      sizeBytes: byteLength(body),
-      truncated: byteLength(body) > options.maxPayloadBytes,
-    };
+    return createTextPreview(body, options.maxPayloadBytes);
   }
 
   if (typeof URLSearchParams !== "undefined" && body instanceof URLSearchParams) {
     const text = body.toString();
-    return {
-      payload: truncateText(text, options.maxPayloadBytes),
-      sizeBytes: byteLength(text),
-      truncated: byteLength(text) > options.maxPayloadBytes,
-    };
+    return createTextPreview(text, options.maxPayloadBytes);
   }
 
   if (typeof Blob !== "undefined" && body instanceof Blob) {
@@ -2160,28 +2169,76 @@ export function redactUrl(url: string): string {
   );
 }
 
-function truncateText(text: string, maxBytes: number): string {
-  if (byteLength(text) <= maxBytes) {
+function createTextPreview(
+  text: string,
+  maxBytes: number,
+): { payload: string; sizeBytes: number; truncated: boolean } {
+  const sizeBytes = byteLength(text);
+  return {
+    payload: truncateText(text, maxBytes, sizeBytes),
+    sizeBytes,
+    truncated: sizeBytes > maxBytes,
+  };
+}
+
+function truncateText(
+  text: string,
+  maxBytes: number,
+  knownSizeBytes = byteLength(text),
+): string {
+  if (knownSizeBytes <= maxBytes) {
     return text;
   }
 
-  let result = "";
-  let size = 0;
-
-  for (const char of text) {
-    const charSize = byteLength(char);
-    if (size + charSize > maxBytes) {
-      break;
+  // Find the largest UTF-16 prefix that fits the UTF-8 byte budget. This keeps
+  // the byte limit correct for CJK and emoji without encoding every character.
+  let low = 0;
+  let high = Math.min(text.length, maxBytes);
+  while (low < high) {
+    const middle = Math.ceil((low + high) / 2);
+    if (byteLength(text.slice(0, middle)) <= maxBytes) {
+      low = middle;
+    } else {
+      high = middle - 1;
     }
-    result += char;
-    size += charSize;
   }
 
-  return `${result}\n[truncated at ${maxBytes} bytes]`;
+  // Never return half of a surrogate pair when the byte boundary falls there.
+  if (low > 0 && low < text.length) {
+    const previous = text.charCodeAt(low - 1);
+    const next = text.charCodeAt(low);
+    if (
+      previous >= 0xd800 &&
+      previous <= 0xdbff &&
+      next >= 0xdc00 &&
+      next <= 0xdfff
+    ) {
+      low -= 1;
+    }
+  }
+
+  return `${text.slice(0, low)}\n[truncated at ${maxBytes} bytes]`;
 }
 
 function byteLength(text: string): number {
   return textEncoder.encode(text).byteLength;
+}
+
+function isResponseBodyCaptureSkipped(
+  response: Response,
+  options: Required<CohubDebuggerOptions>,
+): boolean {
+  if (!options.captureResponseBody) {
+    return false;
+  }
+
+  const contentLength = response.headers.get("content-length");
+  if (contentLength === null) {
+    return false;
+  }
+
+  const size = Number(contentLength);
+  return Number.isFinite(size) && size > options.maxResponseCaptureBytes;
 }
 
 function errorToString(error: unknown): string {

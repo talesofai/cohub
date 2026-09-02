@@ -4,7 +4,7 @@ import {
 	resolveApiBaseUrl,
 } from "@neta-art/cohub";
 import { PUBLIC_API_ORIGIN } from "$env/static/public";
-import type { PublicWorkPath } from "$lib/app-pwa";
+import type { PublicAppPath } from "$lib/app-pwa";
 
 function apiUrl(path: string) {
 	const base = (PUBLIC_API_ORIGIN || resolveApiBaseUrl()).replace(/\/$/, "");
@@ -19,7 +19,7 @@ async function readJson(response: Response): Promise<unknown> {
 	return response.json().catch(() => null);
 }
 
-function asWorkDetail(value: unknown): AppDetailResponse | null {
+function asAppDetail(value: unknown): AppDetailResponse | null {
 	if (!isRecord(value)) return null;
 	const app = isRecord(value.app)
 		? value.app
@@ -37,23 +37,23 @@ function asPublicUserPage(value: unknown): PublicUserPageResponse | null {
 	if (!isRecord(value)) return null;
 	if (!isRecord(value.profile) || typeof value.profile.userUuid !== "string")
 		return null;
-	if (!Array.isArray(value.spaces) || !Array.isArray(value.works)) return null;
+	if (!Array.isArray(value.spaces) || !Array.isArray(value.apps)) return null;
 	return value as PublicUserPageResponse;
 }
 
 export type PublicApiFailure = {
 	ok: false;
 	status: number;
-	/** True when the work likely exists but the anonymous SSR fetch cannot see it. */
+	/** True when the app likely exists but the anonymous SSR fetch cannot see it. */
 	needsClientAuth?: boolean;
 };
 
 /**
- * Public work detail for SSR / manifest.
+ * Public app detail for SSR / manifest.
  * Web Workers do not talk to Postgres — this always goes through the API.
  */
 export async function loadPublicAppDetail(
-	path: PublicWorkPath | null,
+	path: PublicAppPath | null,
 	fetcher: typeof fetch,
 ): Promise<{ ok: true; detail: AppDetailResponse } | PublicApiFailure> {
 	if (!path) return { ok: false, status: 0 };
@@ -72,7 +72,7 @@ export async function loadPublicAppDetail(
 			ok: false,
 			status: response.status >= 500 ? 502 : response.status,
 		};
-	const detail = asWorkDetail(await readJson(response));
+	const detail = asAppDetail(await readJson(response));
 	if (!detail) return { ok: false, status: 502 };
 	return { ok: true, detail };
 }

@@ -38,6 +38,7 @@ type Props = {
 	onMarkdownSegmentStart?: () => void;
 	onLoadToolCalls?: () => Promise<MessageToolCallsFile | null>;
 	onOpenFile?: (target: OpenWorkspaceFileTarget) => void;
+	onOpenUrl?: (href: string, event: MouseEvent) => void | Promise<void>;
 };
 
 type Segment =
@@ -58,6 +59,7 @@ const {
 	onMarkdownSegmentStart,
 	onLoadToolCalls,
 	onOpenFile,
+	onOpenUrl,
 }: Props = $props();
 
 const locale = $derived(getLocale());
@@ -262,7 +264,7 @@ const segments = $derived.by(() => {
 		<div class={index === 0 ? "" : "mt-2"}>
 			{#if segment.type === 'text'}
 				{@const generationMedia = isStreaming ? [] : generationMediaForBlocks(segment.blocks)}
-				<MarkdownView blocks={segment.blocks} variant="chat" {isStreaming} onStart={onMarkdownSegmentStart} onRendered={onMarkdownSegmentRendered} {onOpenFile} />
+				<MarkdownView blocks={segment.blocks} variant="chat" {isStreaming} onStart={onMarkdownSegmentStart} onRendered={onMarkdownSegmentRendered} {onOpenFile} {onOpenUrl} />
 				{#if generationMedia.length > 0}
 					<div class="mt-3 space-y-2">
 						{#each generationMedia as media (media.url)}

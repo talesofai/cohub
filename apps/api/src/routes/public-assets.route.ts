@@ -23,8 +23,8 @@ router.post("/uploads", async (c) => {
   if (body.purpose !== "user_avatar" && body.purpose !== "space_avatar" && body.purpose !== "chat_attachment") {
     return c.json({ message: "invalid public asset purpose" }, 400);
   }
-  if (body.uploadProtocol != null && body.uploadProtocol !== "s3_post_v1" && body.uploadProtocol !== "presigned_put_v1") {
-    return c.json({ message: "invalid upload protocol" }, 400);
+  if (body.uploadProtocol !== "presigned_put_v1") {
+    return c.json({ message: "presigned_put_v1 upload protocol is required" }, 400);
   }
 
   if (body.purpose === "space_avatar") {

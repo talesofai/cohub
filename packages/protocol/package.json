@@ -43,6 +43,10 @@
       "types": "./dist/board-document.d.ts",
       "default": "./dist/board-document.js"
     },
+    "./board-geometry": {
+      "types": "./dist/board-geometry.d.ts",
+      "default": "./dist/board-geometry.js"
+    },
     "./board-order": {
       "types": "./dist/board-order.d.ts",
       "default": "./dist/board-order.js"
@@ -127,6 +131,14 @@
       "types": "./dist/app-runtime.d.ts",
       "default": "./dist/app-runtime.js"
     },
+    "./app-navigation": {
+      "types": "./dist/app-navigation.d.ts",
+      "default": "./dist/app-navigation.js"
+    },
+    "./navigation": {
+      "types": "./dist/navigation.d.ts",
+      "default": "./dist/navigation.js"
+    },
     "./public-identifiers": {
       "types": "./dist/public-identifiers.d.ts",
       "default": "./dist/public-identifiers.js"
@@ -154,8 +166,8 @@
     "typecheck": "tsc -p tsconfig.json --noEmit"
   },
   "dependencies": {
-    "@neta-art/generation": "^0.1.21",
-    "zod": "^4.4.3"
+    "@neta-art/generation": "^0.1.23",
+    "zod": "^4.5.4"
   },
   "devDependencies": {
     "typescript": "^7.0.2"

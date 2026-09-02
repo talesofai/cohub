@@ -1,3 +1,4 @@
+import { invalidatePaletteOverview } from "$lib/command-palette/palette-overview";
 import { sdk } from "$lib/sdk";
 import { authStore } from "$lib/stores/auth.svelte";
 import {
@@ -40,6 +41,7 @@ async function refreshPinnedState(spaceId: string) {
 			(a) => a.labelSystemKey === "user:pinned",
 		);
 		setPinnedInCache(spaceId, isPinned);
+		invalidatePaletteOverview();
 	} catch {
 		// Non-critical: the next list refetch will reconcile.
 	}
@@ -57,8 +59,9 @@ export async function toggleSpacePin(spaceId: string): Promise<void> {
 	const space = current.find((s) => s.id === spaceId);
 	const wasPinned = space?.isPinned ?? false;
 
-	// Optimistic update
+	// Optimistic update. The overview snapshot contains pin state too.
 	setPinnedInCache(spaceId, !wasPinned);
+	invalidatePaletteOverview();
 
 	try {
 		await sdk.user.labels.patchResourceLabels(
@@ -69,8 +72,10 @@ export async function toggleSpacePin(spaceId: string): Promise<void> {
 				: { addLabelRefs: [PINNED_LABEL_REF] },
 		);
 	} catch (error) {
-		// Rollback on failure
+		// Rollback on failure; keep the overview invalidated so the next read
+		// reconciles against the server.
 		setPinnedInCache(spaceId, wasPinned);
+		invalidatePaletteOverview();
 		throw error;
 	}
 }

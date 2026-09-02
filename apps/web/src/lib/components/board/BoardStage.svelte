@@ -3,17 +3,19 @@ import type {
 	BoardFileSnapshot,
 	BoardItem,
 	BoardTaskSnapshot,
+	DrawPoint,
 } from "@neta-art/cohub/board";
 import {
 	type BoardShapeColors,
-	buildStrokeOutline,
 	expandRect,
 	featuredTaskArtifact,
+	isStrokeCorner,
 	pickBoardColor,
 	pointToWorld,
 	resolveArrow,
 	resolveConnection,
 	type ScreenPoint,
+	sampleRadius,
 	screenPoint,
 	screenToWorld,
 	shapeCapabilities,
@@ -30,7 +32,13 @@ import {
 	getBoardThemeRenderer,
 	textZoomBucket,
 } from "@neta-art/cohub/board/render";
-import { Application, Container, Graphics, type Renderer } from "pixi.js";
+import {
+	Application,
+	Container,
+	Graphics,
+	type Renderer,
+	RendererType,
+} from "pixi.js";
 import { onDestroy, onMount, untrack } from "svelte";
 import { goto } from "$app/navigation";
 import { createBoardAssetManager } from "$lib/board/board-asset-manager";
@@ -406,6 +414,7 @@ function buildContext(
 		palette,
 		colors: resolveTheme().colors,
 		colorScheme,
+		rendererType: app?.renderer.type === RendererType.CANVAS ? "canvas" : "gpu",
 		zoom: editor.camera.zoom,
 		assetKey: assets.assetKey,
 		getTexture: (key) => assets.getTexture(key),
@@ -644,6 +653,49 @@ function syncStage() {
 	scheduleRender();
 }
 
+function drawFreehandStroke(
+	graphics: Graphics,
+	points: readonly DrawPoint[],
+	style: { color: number; size: number; alpha: number },
+) {
+	if (points.length === 0) return;
+	if (points.length === 1) {
+		const point = points[0];
+		if (point) {
+			graphics
+				.circle(point.x, point.y, sampleRadius(style.size, point.p))
+				.fill({
+					color: style.color,
+					alpha: style.alpha,
+				});
+		}
+		return;
+	}
+	for (let index = 1; index < points.length; index += 1) {
+		const from = points[index - 1];
+		const to = points[index];
+		if (!from || !to) continue;
+		const width =
+			sampleRadius(style.size, from.p) + sampleRadius(style.size, to.p);
+		graphics.moveTo(from.x, from.y).lineTo(to.x, to.y).stroke({
+			color: style.color,
+			width,
+			alpha: style.alpha,
+			cap: "round",
+			join: "round",
+		});
+	}
+	for (let index = 0; index < points.length; index += 1) {
+		const point = points[index];
+		if (!point) continue;
+		if (!isStrokeCorner(points, index)) continue;
+		graphics.circle(point.x, point.y, sampleRadius(style.size, point.p)).fill({
+			color: style.color,
+			alpha: style.alpha,
+		});
+	}
+}
+
 function drawRemoteAwareness(colors: BoardShapeColors, mode: "dark" | "light") {
 	if (!overlay) return;
 	const inv = 1 / Math.max(editor.camera.zoom, 0.0001);
@@ -669,15 +721,11 @@ function drawRemoteAwareness(colors: BoardShapeColors, mode: "dark" | "light") {
 		if (!gesture) continue;
 		if (gesture.kind === "draw") {
 			const color = pickBoardColor(colors, gesture.color, mode);
-			const outline = buildStrokeOutline(gesture.points, gesture.size);
-			const first = outline[0];
-			if (!first || outline.length < 3) continue;
-			overlay.moveTo(first.x, first.y);
-			for (let index = 1; index < outline.length; index += 1) {
-				const point = outline[index];
-				if (point) overlay.lineTo(point.x, point.y);
-			}
-			overlay.closePath().fill({ color: color.stroke, alpha: 0.9 });
+			drawFreehandStroke(overlay, gesture.points, {
+				color: color.stroke,
+				size: gesture.size,
+				alpha: 0.9,
+			});
 			continue;
 		}
 		if (gesture.kind === "arrow") {
@@ -807,13 +855,11 @@ function drawTransient(
 
 	if (interaction.type === "drawing" && interaction.points.length > 0) {
 		const color = pickBoardColor(colors, interaction.color, mode);
-		const outline = buildStrokeOutline(interaction.points, interaction.size);
-		if (outline.length >= 3) {
-			overlay.moveTo(outline[0].x, outline[0].y);
-			for (let i = 1; i < outline.length; i += 1)
-				overlay.lineTo(outline[i].x, outline[i].y);
-			overlay.closePath().fill({ color: color.stroke, alpha: 0.92 });
-		}
+		drawFreehandStroke(overlay, interaction.points, {
+			color: color.stroke,
+			size: interaction.size,
+			alpha: 0.92,
+		});
 	}
 
 	if (interaction.type === "creatingArrow") {

@@ -78,10 +78,11 @@ export type BashTermination = {
   exitCode: number | null;
   timeoutSecs?: number;
   message?: string;
+  outputTruncated?: boolean;
 };
 
 export type BashExecutionResult =
-  | { exitCode: number | null; termination?: BashTermination }
+  | { exitCode: number | null; termination?: BashTermination; outputTruncated?: boolean }
   | { failure: ToolFailureDetails };
 
 export type BashCommandRequest = {
@@ -105,8 +106,11 @@ export interface BashOperations {
   startBackground?: (input: BashBackgroundRequest) => Promise<{ taskRunId: string }>;
 }
 
-function normalizeBashTermination(result: { exitCode: number | null; termination?: BashTermination }): BashTermination {
-  return result.termination ?? { reason: "exited", exitCode: result.exitCode };
+function normalizeBashTermination(result: { exitCode: number | null; termination?: BashTermination; outputTruncated?: boolean }): BashTermination {
+  const termination = result.termination ?? { reason: "exited", exitCode: result.exitCode };
+  return result.outputTruncated === true || termination.outputTruncated === true
+    ? { ...termination, outputTruncated: true }
+    : termination;
 }
 
 function formatBashTerminationNote(termination: BashTermination) {
@@ -159,25 +163,302 @@ function resolveToCwd(path: string, cwd: string): string {
   return `${cwd.replace(/\/$/, "")}/${path}`;
 }
 
+type EditMatch = {
+  start: number;
+  end: number;
+  fuzzy: boolean;
+};
+
+type NormalizedEditText = {
+  text: string;
+};
+
+type EditOccurrenceSearch = {
+  positions: number[];
+  truncated: boolean;
+};
+
+type EditMatchSearch = {
+  matches: EditMatch[];
+  truncated: boolean;
+};
+
+const MAX_EDIT_MATCHES = 9;
+
 /**
- * Apply exact-text replacements to content, matching each oldText exactly
- * once. Throws when an oldText is missing or not unique. Shared by the edit
- * tool's fallback path and sandbox capability-degraded applyEdits so the
- * matching semantics and error messages never diverge.
+ * Normalize only representation-level differences that are safe to repair:
+ * line endings and spaces or tabs at the end of a line. Match offsets are
+ * mapped back lazily so a failed high-frequency search never allocates one
+ * entry per source character.
+ */
+function normalizeEditText(text: string): NormalizedEditText {
+  let normalized = "";
+
+  for (let lineStart = 0; lineStart < text.length;) {
+    let lineEnd = lineStart;
+    while (lineEnd < text.length && text[lineEnd] !== "\n" && text[lineEnd] !== "\r") lineEnd += 1;
+
+    let contentEnd = lineEnd;
+    while (contentEnd > lineStart && (text[contentEnd - 1] === " " || text[contentEnd - 1] === "\t")) contentEnd -= 1;
+    normalized += text.slice(lineStart, contentEnd);
+
+    if (lineEnd === text.length) break;
+    let newlineEnd = lineEnd + 1;
+    if (text[lineEnd] === "\r" && text[newlineEnd] === "\n") newlineEnd += 1;
+    normalized += "\n";
+    lineStart = newlineEnd;
+  }
+
+  return { text: normalized };
+}
+
+function findEditOccurrences(text: string, pattern: string): EditOccurrenceSearch {
+  if (pattern.length === 0) return { positions: [], truncated: false };
+  const positions: number[] = [];
+  for (let cursor = 0; cursor <= text.length - pattern.length;) {
+    const index = text.indexOf(pattern, cursor);
+    if (index === -1) break;
+    positions.push(index);
+    if (positions.length >= MAX_EDIT_MATCHES) return { positions, truncated: true };
+    cursor = index + pattern.length;
+  }
+  return { positions, truncated: false };
+}
+
+function originalOffsetForNormalizedBoundary(text: string, target: number): number | undefined {
+  if (target < 0) return undefined;
+  if (text.length === 0) return target === 0 ? 0 : undefined;
+
+  let normalizedOffset = 0;
+  for (let lineStart = 0; lineStart < text.length;) {
+    let lineEnd = lineStart;
+    while (lineEnd < text.length && text[lineEnd] !== "\n" && text[lineEnd] !== "\r") lineEnd += 1;
+
+    let contentEnd = lineEnd;
+    while (contentEnd > lineStart && (text[contentEnd - 1] === " " || text[contentEnd - 1] === "\t")) contentEnd -= 1;
+    const contentLength = contentEnd - lineStart;
+    if (target <= normalizedOffset + contentLength) return lineStart + target - normalizedOffset;
+    normalizedOffset += contentLength;
+
+    if (lineEnd === text.length) return target === normalizedOffset ? contentEnd : undefined;
+    let newlineEnd = lineEnd + 1;
+    if (text[lineEnd] === "\r" && text[newlineEnd] === "\n") newlineEnd += 1;
+    normalizedOffset += 1;
+    if (target <= normalizedOffset) return newlineEnd;
+    lineStart = newlineEnd;
+  }
+
+  return target === normalizedOffset ? text.length : undefined;
+}
+
+function findEditMatches(content: string, oldText: string): EditMatchSearch {
+  const exactOccurrences = findEditOccurrences(content, oldText);
+  if (exactOccurrences.positions.length > 0) {
+    return {
+      matches: exactOccurrences.positions.map((start) => ({ start, end: start + oldText.length, fuzzy: false })),
+      truncated: exactOccurrences.truncated,
+    };
+  }
+
+  const normalizedContent = normalizeEditText(content);
+  const normalizedOldText = normalizeEditText(oldText);
+  if (normalizedOldText.text.length === 0) return { matches: [], truncated: false };
+
+  const normalizedOccurrences = findEditOccurrences(normalizedContent.text, normalizedOldText.text);
+  const matches = normalizedOccurrences.positions.flatMap((start) => {
+    const end = start + normalizedOldText.text.length;
+    const originalStart = originalOffsetForNormalizedBoundary(content, start);
+    const originalEnd = originalOffsetForNormalizedBoundary(content, end);
+    return originalStart === undefined || originalEnd === undefined
+      ? []
+      : [{ start: originalStart, end: originalEnd, fuzzy: true }];
+  });
+  return { matches, truncated: normalizedOccurrences.truncated };
+}
+
+function editLineNumber(content: string, offset: number): number {
+  const end = Math.min(Math.max(offset, 0), content.length);
+  let line = 1;
+  for (let index = 0; index < end; index += 1) {
+    if (content[index] === "\r") {
+      line += 1;
+      if (content[index + 1] === "\n") index += 1;
+    } else if (content[index] === "\n") {
+      line += 1;
+    }
+  }
+  return line;
+}
+
+function editLineBounds(content: string, start: number): { end: number; nextStart: number } {
+  let end = start;
+  while (end < content.length && content[end] !== "\n" && content[end] !== "\r") end += 1;
+  if (end === content.length) return { end, nextStart: end };
+  let nextStart = end + 1;
+  if (content[end] === "\r" && content[nextStart] === "\n") nextStart += 1;
+  return { end, nextStart };
+}
+
+function formatEditHintLine(content: string, start: number, end: number, lineNumber: number): string {
+  const preview = Array.from(content.slice(start, Math.min(end, start + 480))).slice(0, 240).join("");
+  return `${lineNumber}: ${preview}${end - start > 240 ? "..." : ""}`;
+}
+
+function collectEditHintCandidates(text: string): string[] {
+  const candidates: string[] = [];
+  const add = (raw: string) => {
+    const candidate = Array.from(raw.trim()).slice(0, 240).join("");
+    if (candidate.length < 4 || candidates.includes(candidate)) return;
+    candidates.push(candidate);
+    candidates.sort((left, right) => right.length - left.length);
+    if (candidates.length > 16) candidates.pop();
+  };
+
+  let line: string[] = [];
+  let token: string[] = [];
+  const flushLine = () => {
+    add(line.join(""));
+    line = [];
+  };
+  const flushToken = () => {
+    add(token.join(""));
+    token = [];
+  };
+
+  for (const character of text) {
+    if (character === "\r" || character === "\n") {
+      flushLine();
+      flushToken();
+      continue;
+    }
+    if (line.length < 240) line.push(character);
+    if (/^[A-Za-z0-9_./:-]$/.test(character)) {
+      if (token.length < 240) token.push(character);
+    } else {
+      flushToken();
+    }
+  }
+  flushLine();
+  flushToken();
+  return candidates;
+}
+
+function findEditHintBlock(content: string, oldText: string): string | undefined {
+  const candidates = collectEditHintCandidates(oldText);
+  for (const candidate of candidates) {
+    let lineStart = 0;
+    let lineNumber = 1;
+    let previousLine: string | undefined;
+    while (lineStart <= content.length) {
+      const { end, nextStart } = editLineBounds(content, lineStart);
+      const candidateStart = content.indexOf(candidate, lineStart);
+      if (candidateStart >= lineStart && candidateStart < end) {
+        const lines = previousLine ? [previousLine] : [];
+        lines.push(formatEditHintLine(content, lineStart, end, lineNumber));
+        if (end < content.length) {
+          const nextBounds = editLineBounds(content, nextStart);
+          lines.push(formatEditHintLine(content, nextStart, nextBounds.end, lineNumber + 1));
+        }
+        return lines.join("\n");
+      }
+      previousLine = formatEditHintLine(content, lineStart, end, lineNumber);
+      if (end === content.length) break;
+      lineStart = nextStart;
+      lineNumber += 1;
+    }
+  }
+  return undefined;
+}
+
+function detectEditLineEnding(content: string): "\r\n" | "\r" | "\n" {
+  for (let index = 0; index < content.length; index += 1) {
+    if (content[index] === "\r") return content[index + 1] === "\n" ? "\r\n" : "\r";
+    if (content[index] === "\n") return "\n";
+  }
+  return "\n";
+}
+
+function restoreEditLineEndings(text: string, content: string): string {
+  const normalized = text.replace(/\r\n/g, "\n").replace(/\r/g, "\n");
+  const ending = detectEditLineEnding(content);
+  return ending === "\n" ? normalized : normalized.replace(/\n/g, ending);
+}
+
+function formatEditMatchError(
+  content: string,
+  oldText: string,
+  path: string,
+  index: number,
+  total: number,
+  matches: EditMatch[],
+  truncated: boolean,
+): string {
+  const label = total === 1 ? "oldText" : `edits[${index}].oldText`;
+  if (matches.length === 0) {
+    const hintBlock = findEditHintBlock(content, oldText);
+    const hint = hintBlock
+      ? `\nCurrent nearby text:\n${hintBlock}\nCopy the current text exactly; do not reuse stale oldText.`
+      : "";
+    return `${label} must match exactly one region in ${path}, found 0. Re-read the file and retry with the current text, including whitespace, newlines, and escaping.${hint}`;
+  }
+  const lines = matches.slice(0, 8).map((match) => editLineNumber(content, match.start));
+  const suffix = truncated || matches.length > lines.length ? ", ..." : "";
+  const count = truncated ? `${matches.length}+` : `${matches.length}`;
+  return `${label} must match exactly one region in ${path}, found ${count} at lines [${lines.join(", ")}${suffix}]. Add surrounding context to oldText`;
+}
+
+/**
+ * Apply replacements against one original snapshot. Exact matching remains
+ * the first choice; normalized matching is accepted only when it is unique.
+ * No write occurs unless every edit validates and no ranges overlap.
  */
 export function applyEditsToContent(
   content: string,
   edits: Array<{ oldText: string; newText: string }>,
   path: string,
 ): string {
-  for (const edit of edits) {
-    const occurrences = content.split(edit.oldText).length - 1;
-    if (occurrences !== 1) {
-      throw new Error(`oldText must match exactly one region in ${path}, found ${occurrences}`);
+  if (edits.length === 0) throw new Error("edits must contain at least one replacement");
+  const bom = content.startsWith("\uFEFF") ? "\uFEFF" : "";
+  const original = bom ? content.slice(1) : content;
+  const replacements: Array<{ start: number; end: number; newText: string; index: number }> = [];
+
+  for (const [index, edit] of edits.entries()) {
+    const oldText = edit.oldText.startsWith("\uFEFF") ? edit.oldText.slice(1) : edit.oldText;
+    if (oldText.length === 0) throw new Error(`edits[${index}].oldText must not be empty in ${path}`);
+    if (oldText === edit.newText) throw new Error(`edits[${index}].oldText and newText must differ in ${path}`);
+
+    const search = findEditMatches(original, oldText);
+    if (search.matches.length !== 1) {
+      throw new Error(formatEditMatchError(original, oldText, path, index, edits.length, search.matches, search.truncated));
     }
-    content = content.replace(edit.oldText, edit.newText);
+
+      const match = search.matches[0];
+    if (!match) throw new Error(`No match was available for edits[${index}] in ${path}`);
+    replacements.push({
+      start: match.start,
+      end: match.end,
+      newText: match.fuzzy ? restoreEditLineEndings(edit.newText, original) : edit.newText,
+      index,
+    });
   }
-  return content;
+
+  replacements.sort((left, right) => left.start - right.start);
+  for (let index = 1; index < replacements.length; index += 1) {
+    const previous = replacements[index - 1];
+    const current = replacements[index];
+    if (!previous || !current) continue;
+    if (previous.end > current.start) {
+      throw new Error(`edits[${previous.index}] and edits[${current.index}] overlap in ${path}; merge nearby changes into one edit`);
+    }
+  }
+
+  let updated = original;
+  for (let index = replacements.length - 1; index >= 0; index -= 1) {
+    const replacement = replacements[index];
+    if (!replacement) continue;
+    updated = updated.slice(0, replacement.start) + replacement.newText + updated.slice(replacement.end);
+  }
+  return bom + updated;
 }
 
 export function createReadTool(cwd: string, options: { operations: ReadOperations }): AgentTool {
@@ -271,17 +552,18 @@ export function createEditTool(cwd: string, options: { operations: EditOperation
   const parameters = Type.Object({
     path: Type.String({ description: "Path to the file to edit (relative or absolute)" }),
     edits: Type.Array(Type.Object({
-      oldText: Type.String({ description: "Exact text for one targeted replacement. It must match a unique region in the original file." }),
-      newText: Type.String({ description: "Replacement text for this targeted edit." }),
-    }), { description: "One or more targeted replacements." }),
+      oldText: Type.String({ description: "Text copied verbatim from a recent read result. Include real newlines and whitespace; do not use the two characters \\n for a newline. It must match one unique region in the current file." }),
+      newText: Type.String({ description: "Literal replacement text for this targeted edit. Use an empty string to delete the match." }),
+    }), { description: "One or more targeted replacements. All oldText values are checked against the same original file snapshot and must not overlap." }),
   });
   return {
     name: "edit",
     label: "edit",
-    description: "Edit a file by applying exact text replacements.",
+    description: "Edit a file by applying targeted text replacements. Read the target file first and copy oldText verbatim, including whitespace, newlines, and escaping. Use enough surrounding context to make each oldText unique; do not guess file contents or use literal \\n where the file has a real newline. Nearby changes should be merged into one edit, and edits must not overlap.",
     parameters,
     async execute(_toolCallId, rawParams) {
       const params = rawParams as Static<typeof parameters>;
+      if (params.edits.length === 0) throw new Error("edits must contain at least one replacement");
       const absolutePath = resolveToCwd(params.path, cwd);
       await options.operations.access(absolutePath);
       if (options.operations.applyEdits) {
@@ -312,15 +594,15 @@ export function createBashTool(cwd: string, options: { operations: BashOperation
   const parameters = Type.Object({
     command: Type.String({ description: "Bash command to execute" }),
     timeout: Type.Optional(Type.Number({ description: "Timeout in seconds (optional, no default timeout)" })),
-    run_in_background: Type.Optional(Type.Boolean({ description: "Run this command in the background. You will be notified when it completes." })),
   });
+  type BashToolParams = Static<typeof parameters> & { run_in_background?: boolean };
   return {
     name: "bash",
     label: "bash",
-    description: "Execute a bash command in the current working directory. Use run_in_background for long-running commands when you do not need the result immediately. Returns stdout and stderr. Output is truncated to last 2000 lines or 50KB.",
+    description: "Execute a bash command in the current working directory. Returns stdout and stderr. Output is truncated to last 2000 lines or 50KB.",
     parameters,
     async execute(_toolCallId, rawParams, signal, onUpdate) {
-      const params = rawParams as Static<typeof parameters>;
+      const params = rawParams as BashToolParams;
       const timeout = clampBashTimeout(params.timeout);
       if (params.run_in_background) {
         if (!options.operations.startBackground) {
@@ -362,15 +644,19 @@ export function createBashTool(cwd: string, options: { operations: BashOperation
       const output = Buffer.concat(chunks).toString("utf-8");
       const termination = normalizeBashTermination(result);
       const note = formatBashTerminationNote(termination);
-      const renderedOutput = note ? `${output}${output ? "\n\n" : ""}[${note}]` : output || "(no output)";
-      const truncated = truncateHead(renderedOutput, { maxLines: DEFAULT_MAX_LINES, maxBytes: DEFAULT_MAX_BYTES });
+      const outputTruncated = result.outputTruncated === true || termination.outputTruncated === true;
+      const truncationNote = outputTruncated ? "[Output truncated by sandbox transport.]" : "";
+      const renderedOutput = [note ? `[${note}]` : "", truncationNote].filter(Boolean).join("\n");
+      const fullOutput = output ? `${output}${renderedOutput ? `\n\n${renderedOutput}` : ""}` : renderedOutput || "(no output)";
+      const truncated = truncateHead(fullOutput, { maxLines: DEFAULT_MAX_LINES, maxBytes: DEFAULT_MAX_BYTES });
       return {
-        content: [{ type: "text", text: truncated.truncated ? truncated.content : renderedOutput }],
+        content: [{ type: "text", text: truncated.truncated ? truncated.content : fullOutput }],
         details: {
           exitCode: result.exitCode,
           termination,
-          rawOutput: renderedOutput,
-          truncation: truncated.truncated ? truncated : undefined,
+          rawOutput: fullOutput,
+          outputTruncated,
+          truncation: truncated.truncated || outputTruncated ? { ...truncated, truncated: true } : undefined,
         },
       };
     },

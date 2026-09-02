@@ -146,7 +146,7 @@ function eventInput(
 
 export async function startAppPromotion(appId: string, promotionId: string) {
 	const landingEventId = crypto.randomUUID();
-	const runtime = await sdk.works.recordPromotionEvent(
+	const runtime = await sdk.apps.recordPromotionEvent(
 		appId,
 		promotionId,
 		eventInput("landing", landingEventId),
@@ -170,7 +170,7 @@ export async function reportAttributedAppPromotionEvent(input: {
 		{ content_ids: [input.productKey], content_type: "product" },
 		{ eventID: input.eventId },
 	);
-	await sdk.works.recordPromotionEvent(
+	await sdk.apps.recordPromotionEvent(
 		input.appId,
 		attribution.promotionId,
 		eventInput("paywall_viewed", input.eventId, {
@@ -202,7 +202,7 @@ export async function reportAppPromotionRegistration() {
 	const attribution = readAppPromotionAttribution();
 	if (!attribution) return;
 	const context = getAppPromotionCheckoutAttribution(attribution.appId);
-	const result = await sdk.works.recordPromotionRegistration(
+	const result = await sdk.apps.recordPromotionRegistration(
 		attribution.appId,
 		attribution.promotionId,
 		context
@@ -243,7 +243,7 @@ export async function reportAppPromotionReady(
 			{ eventID: eventId },
 		);
 	}
-	await sdk.works.recordPromotionEvent(
+	await sdk.apps.recordPromotionEvent(
 		appId,
 		promotionId,
 		eventInput("ready", eventId),

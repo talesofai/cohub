@@ -24,6 +24,7 @@ export * from "@cohub/protocol/board-connection";
 export * from "@cohub/protocol/board-document";
 export * from "./semantic-document.js";
 export * from "./core/arrow-geometry.js";
+export { boardArrowFrame as computeArrowFrame } from "@cohub/protocol";
 export * from "./core/connections.js";
 export * from "./core/draw-geometry.js";
 export * from "./core/export-assets.js";

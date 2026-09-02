@@ -91,6 +91,7 @@ jobs:
             echo "PUBLIC_LOGTO_ENDPOINT=https://auth.neta.art/" >> .env
             echo "PUBLIC_LOGTO_APP_ID=16ai0wao2mud3xqkbzqo0" >> .env
             echo "PUBLIC_LOGTO_API_RESOURCE=https://api.talesofai" >> .env
+            echo "PUBLIC_MARKETPLACE_APP_ID=98aa1727-a20d-42ac-bd19-674664d010e4" >> .env
           else
             echo "PUBLIC_API_ORIGIN=https://api-dev.cohub.live" >> .env
             echo "PUBLIC_GATEWAY_ORIGIN=https://gateway-dev.cohub.live" >> .env
@@ -98,6 +99,7 @@ jobs:
             echo "PUBLIC_LOGTO_ENDPOINT=https://dev-auth.neta.art/" >> .env
             echo "PUBLIC_LOGTO_APP_ID=vpikk7sl9zwvefiptowtn" >> .env
             echo "PUBLIC_LOGTO_API_RESOURCE=https://api.talesofai" >> .env
+            echo "PUBLIC_MARKETPLACE_APP_ID=899432b9-7976-4bd1-a7b9-b9b83ea11f32" >> .env
           fi
 
       - name: Lint

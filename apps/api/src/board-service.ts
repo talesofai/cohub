@@ -16,6 +16,8 @@ import type {
   BoardCapabilities,
   BoardInspectInput,
   BoardNodeInput,
+  BoardComposition,
+  BoardEffect,
   BoardOperation,
   BoardMutationReceipt,
   BoardPlaybackCommand,
@@ -27,10 +29,12 @@ import type {
 import {
   BOARD_ANIMATION_CHANNEL_CAPABILITIES,
   BOARD_AUTHORING_ITEM_CAPABILITIES,
+  BOARD_ANIMATION_PATCH_MAX_BYTES,
   BOARD_AUTHORING_SCHEMAS,
   BOARD_BUILTIN_CAPABILITIES,
   BOARD_PROTOCOL_VERSION,
   DEFAULT_BOARD_RENDER_LIMITS,
+  isPureBoardAnimationChange,
 } from "@cohub/protocol";
 import {
   boardCompositionInputFromRows as compositionInputFromRows,
@@ -342,6 +346,11 @@ export async function applyBoardTransaction(input: {
     idempotent: boolean;
     receipt: BoardMutationReceipt;
     playback: BoardPlaybackSnapshot | null;
+    animationPatch?: {
+      effects: BoardEffect[];
+      compositions: BoardComposition[];
+      playback?: BoardPlaybackSnapshot | null;
+    } | null;
   } = await db.transaction(async (tx) => {
     const [board] = await tx.select().from(boards)
       .where(and(eq(boards.id, transaction.boardId), eq(boards.spaceId, input.spaceId))).for("update").limit(1);
@@ -527,6 +536,7 @@ export async function applyBoardTransaction(input: {
     let title = board.title;
     let metadata = board.metadata;
     let playback: BoardPlaybackSnapshot | null = null;
+    let playbackChanged = false;
 
     // Node writes are planned in memory and flushed in bulk below, so their cost is
     // a fixed number of round-trips rather than a few queries per operation - which
@@ -569,6 +579,8 @@ export async function applyBoardTransaction(input: {
     const connectionCreatedAt = new Map(
       connectionRows.map((row) => [row.connectionId, row.createdAt]),
     );
+    const animationEffects = new Map<string, BoardEffect>();
+    const animationCompositions = new Map<string, BoardComposition>();
 
     for (const [opIndex, operation] of transaction.operations.entries()) {
       // Planned above; splice its journal entry back into the operation order.
@@ -595,11 +607,19 @@ export async function applyBoardTransaction(input: {
         const previousEffect = previous ? effectFromRow(previous) : null;
         if (previousEffect) {
           const { boardId: _boardId, revision: _revision, ...authored } = previousEffect;
-          if (boardJsonEquals(authored, operation.payload.effect)) continue;
+          if (boardJsonEquals(authored, operation.payload.effect)) {
+            animationEffects.set(previousEffect.id, previousEffect);
+            continue;
+          }
         }
         const values = effectValues(transaction.boardId, operation, (previous?.revision ?? -1) + 1, now);
         await tx.insert(boardEffects).values({ ...values, createdAt: previous?.createdAt ?? now })
           .onConflictDoUpdate({ target: [boardEffects.boardId, boardEffects.id], set: values });
+        animationEffects.set(operation.payload.effect.id, {
+          ...operation.payload.effect,
+          boardId: transaction.boardId,
+          revision: values.revision,
+        });
         operationRows.push({
           type: operation.type,
           payload: operation.payload,
@@ -617,6 +637,7 @@ export async function applyBoardTransaction(input: {
         const [deleted] = await tx.delete(boardEffects).where(and(eq(boardEffects.boardId, transaction.boardId), eq(boardEffects.id, operation.payload.effectId))).returning();
         if (!deleted) throw new BoardServiceError(404, "board effect not found", "EFFECT_NOT_FOUND");
         operationRows.push({ type: operation.type, payload: operation.payload, inverse: { type: "effect.upsert", payload: { effect: effectFromRow(deleted) } } });
+        animationEffects.delete(operation.payload.effectId);
         continue;
       }
       if (operation.type === "composition.apply") {
@@ -641,6 +662,12 @@ export async function applyBoardTransaction(input: {
         // transaction row is still recorded (for idempotent replay) with a
         // validated receipt, so retries return the same answer.
         if (!writePlan.changed) {
+          if (previous) {
+            animationCompositions.set(
+              value.id,
+              compositionsFromRows([previous], previousTracks, previousClips)[0] as BoardComposition,
+            );
+          }
           continue;
         }
         const revision = (previous?.revision ?? -1) + 1;
@@ -657,6 +684,7 @@ export async function applyBoardTransaction(input: {
         };
         await tx.insert(boardCompositions).values({ ...compositionValues, createdAt: previous?.createdAt ?? now })
           .onConflictDoUpdate({ target: [boardCompositions.boardId, boardCompositions.id], set: compositionValues });
+        animationCompositions.set(value.id, { ...value, revision });
         const { removedTrackIds, removedClipIds, changedTracks, changedClips } = writePlan;
         const ROW_WRITE_CHUNK = 500;
         if (removedTrackIds.length) {
@@ -730,6 +758,7 @@ export async function applyBoardTransaction(input: {
           }).where(eq(boardPlaybackStates.boardId, transaction.boardId)).returning();
           if (!stopped) throw new BoardServiceError(500, "failed to stop stale playback");
           playback = playbackFromRow(stopped);
+          playbackChanged = true;
         }
         operationRows.push({
           type: operation.type,
@@ -756,8 +785,14 @@ export async function applyBoardTransaction(input: {
           .where(and(eq(boardClips.boardId, transaction.boardId), eq(boardClips.compositionId, operation.payload.compositionId))),
       ]);
       if (!previous) throw new BoardServiceError(404, "board composition not found", "COMPOSITION_NOT_FOUND");
-      await tx.delete(boardPlaybackStates).where(and(eq(boardPlaybackStates.boardId, transaction.boardId), eq(boardPlaybackStates.compositionId, operation.payload.compositionId)));
-      if (playback?.compositionId === operation.payload.compositionId) playback = null;
+      const [deletedPlayback] = await tx.delete(boardPlaybackStates)
+        .where(and(eq(boardPlaybackStates.boardId, transaction.boardId), eq(boardPlaybackStates.compositionId, operation.payload.compositionId)))
+        .returning();
+      if (deletedPlayback) {
+        playback = null;
+        playbackChanged = true;
+      }
+      animationCompositions.delete(operation.payload.compositionId);
       await Promise.all([
         tx.delete(boardTracks).where(and(eq(boardTracks.boardId, transaction.boardId), eq(boardTracks.compositionId, operation.payload.compositionId))),
         tx.delete(boardClips).where(and(eq(boardClips.boardId, transaction.boardId), eq(boardClips.compositionId, operation.payload.compositionId))),
@@ -914,8 +949,29 @@ export async function applyBoardTransaction(input: {
       createdAt: now,
     })));
     await tx.update(boards).set({ title, metadata, version: nextVersion, updatedAt: now }).where(eq(boards.id, transaction.boardId));
-    return { idempotent: false, receipt, playback };
+
+    let animationPatch: {
+      effects: BoardEffect[];
+      compositions: BoardComposition[];
+      playback?: BoardPlaybackSnapshot | null;
+    } | null = null;
+    const pureAnimation = isPureBoardAnimationChange(receipt.changed);
+    if (pureAnimation) {
+      animationPatch = {
+        effects: [...animationEffects.values()],
+        compositions: [...animationCompositions.values()],
+        ...(playbackChanged ? { playback } : {}),
+      };
+    }
+    return { idempotent: false, receipt, playback, animationPatch };
   });
+
+  // Patch size is a transport concern, not a transaction concern. Check it after
+  // commit so large timelines do not extend the Board row lock.
+  if (
+    result.animationPatch &&
+    Buffer.byteLength(JSON.stringify(result.animationPatch), "utf8") > BOARD_ANIMATION_PATCH_MAX_BYTES
+  ) result.animationPatch = null;
 
   // Broadcast only real changes. A validated/no-op receipt means no board
   // version was produced: broadcasting it would push a phantom event that a
@@ -934,6 +990,7 @@ export async function applyBoardTransaction(input: {
       mutationId: transaction.txId,
       version: result.receipt.board.version,
       changed: result.receipt.changed,
+      ...(result.animationPatch ? { animationPatch: result.animationPatch } : {}),
       source: input.requestSource,
     }).catch(() => undefined);
     if (result.playback) {

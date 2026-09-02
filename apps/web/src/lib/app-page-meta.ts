@@ -1,4 +1,5 @@
-import type { AppDetailResponse, WorkMeta } from "@neta-art/cohub";
+import type { AppDetailResponse, AppMeta } from "@neta-art/cohub";
+import { getAppFramePreconnectOrigin } from "$lib/app-url";
 import {
 	canonicalUrl,
 	defaultOgImage,
@@ -50,7 +51,7 @@ function cleanText(value: unknown, max = 500) {
 
 /** Shared display title for app chrome (bar, iframe title, dialogs). */
 export function appDisplayTitle(
-	meta: WorkMeta | null | undefined,
+	meta: AppMeta | null | undefined,
 	fallback: string,
 ) {
 	if (isRecord(meta)) {
@@ -64,7 +65,7 @@ export function appDisplayTitle(
  * Aligns with `presentation.hideCohubBar` (Pro+):
  * minimal host branding on public share meta as well as the on-page bar.
  */
-export function isMinimalAppBranding(meta: WorkMeta | null | undefined) {
+export function isMinimalAppBranding(meta: AppMeta | null | undefined) {
 	return (
 		isRecord(meta) &&
 		isRecord(meta.presentation) &&
@@ -87,7 +88,7 @@ function humanizeSlug(value: string) {
 }
 
 function appName(input: {
-	meta?: WorkMeta | null;
+	meta?: AppMeta | null;
 	slug?: string | null;
 	spaceName?: string | null;
 }) {
@@ -167,6 +168,8 @@ export type AppPageDetail = {
 	publicUrl?: string | null;
 	/** Published content URL (…/index.html) used to resolve relative media. */
 	contentUrl?: string | null;
+	/** Embedded content kind, used for SSR resource hints. */
+	contentKind?: "web" | "port" | null;
 };
 
 export type AppPageMeta = {
@@ -190,6 +193,7 @@ export type AppPageMeta = {
 	lang: string | null;
 	ogLocale: string | null;
 	themeColor: string | null;
+	framePreconnectOrigin: string | null;
 	jsonLd: string;
 };
 
@@ -239,6 +243,13 @@ export function buildAppPageMeta(
 		160,
 	);
 	const contentUrl = detail?.contentUrl ?? null;
+	const framePreconnectOrigin = detail?.contentKind
+		? getAppFramePreconnectOrigin({
+				contentUrl,
+				baseHref: options?.origin ?? "https://cohub.live/",
+				targetType: detail.contentKind === "port" ? "port" : "file",
+			})
+		: null;
 	// Tab / PWA icon may be SVG; share cards need a raster-friendly image.
 	const iconUrl = resolveMediaRef(
 		isRecord(meta) ? meta.icon : null,
@@ -330,6 +341,7 @@ export function buildAppPageMeta(
 		lang,
 		ogLocale,
 		themeColor,
+		framePreconnectOrigin,
 		jsonLd,
 	};
 }

@@ -23,9 +23,12 @@ export const load: PageServerLoad = async ({
 		setPublicPageCache(setHeaders, {
 			private: (result.detail.app.visibility ?? "public") === "space",
 		});
+		const app = result.detail.app;
 		return {
 			mode: "ready" as const,
-			app: result.detail.app,
+			app,
+			/** @deprecated Use app. Kept for Work-era public page consumers. */
+			work: app,
 			space: result.detail.space,
 			owner: result.detail.owner,
 			content: result.detail.content,

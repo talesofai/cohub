@@ -28,7 +28,7 @@ import {
 	receiptFromStoredTransaction,
 } from "./board-service.js";
 import { db } from "./db/index.js";
-import { BoardServiceError } from "./board-ops.js";
+import { BoardServiceError, boardSchemaDiagnostics } from "./board-ops.js";
 
 const inputFromRecord = (node: Pick<BoardNodeInput, keyof BoardNodeInput>): BoardNodeInput => ({
 	nodeId: node.nodeId,
@@ -170,20 +170,21 @@ function withoutCascadeReferences(
 function compileItemCommand(
 	command: Extract<BoardSemanticMutation["commands"][number], { type: "item.patch" | "item.replace" }>,
 	existing: BoardNodeInput,
+	path = "item",
 ): { operation: BoardOperation | null; next: BoardNodeInput } {
 	if (command.type === "item.replace" && command.item.id !== command.itemId) {
 		throw new BoardServiceError(400, "replacement item id must match itemId", "INVALID_BOARD_ITEM");
 	}
 	const item = command.type === "item.patch"
-		? applyBoardItemPatch(boardNodeToAuthoringItem(existing), command.patch)
+		? applyBoardItemPatch(boardNodeToAuthoringItem(existing), command.patch, path)
 		: command.item;
 	const next = command.type === "item.patch"
 		? preserveOpaqueNodeFields(
 			existing,
-			boardAuthoringItemToNode(item, { orderKey: existing.orderKey }),
+			boardAuthoringItemToNode(item, { orderKey: existing.orderKey, path }),
 			{ preserveSource: command.patch.source !== null, preserveStyle: command.patch.style !== null },
 		)
-		: boardAuthoringItemToNode(item, { orderKey: existing.orderKey });
+		: boardAuthoringItemToNode(item, { orderKey: existing.orderKey, path });
 	const patch = boardNodePatch(existing, next);
 	if (Object.keys(patch).length === 0) return { operation: null, next };
 	return { operation: { type: "node.patch", payload: { nodeId: command.itemId, patch } }, next };
@@ -201,8 +202,9 @@ export async function applySemanticBoardMutation(input: {
 	if (!parsed.success) {
 		throw new BoardServiceError(
 			400,
-			parsed.error.issues[0]?.message ?? "invalid Board mutation",
+			"Board mutation is invalid.",
 			"INVALID_BOARD_MUTATION",
+			boardSchemaDiagnostics(parsed.error, "INVALID_BOARD_MUTATION", "mutation"),
 		);
 	}
 	const mutation = parsed.data as BoardSemanticMutation;
@@ -261,7 +263,7 @@ export async function applySemanticBoardMutation(input: {
 		const nodes = new Map(rows.map((row) => [row.nodeId, inputFromRecord(row)]));
 		const allocateOrderKey = nextOrderKey(lastRows.map(inputFromRecord));
 		const operations: BoardOperation[] = [];
-		for (const command of mutation.commands) {
+		for (const [commandIndex, command] of mutation.commands.entries()) {
 			if (command.type === "board.patch") {
 				operations.push({
 					type: "board.patch",
@@ -272,13 +274,13 @@ export async function applySemanticBoardMutation(input: {
 					} },
 				});
 			} else if (command.type === "item.create") {
-				const node = boardAuthoringItemToNode(command.item, { orderKey: allocateOrderKey() });
+				const node = boardAuthoringItemToNode(command.item, { orderKey: allocateOrderKey(), path: `commands.${commandIndex}.item` });
 				nodes.set(node.nodeId, node);
 				operations.push({ type: "node.create", payload: { node } });
 			} else if (command.type === "item.patch" || command.type === "item.replace") {
 				const existing = nodes.get(command.itemId);
 				if (!existing) throw new BoardServiceError(404, `item does not exist: ${command.itemId}`, "ITEM_NOT_FOUND");
-				const { operation, next } = compileItemCommand(command, existing);
+				const { operation, next } = compileItemCommand(command, existing, `commands.${commandIndex}.item`);
 				if (operation) operations.push(operation);
 				nodes.set(command.itemId, next);
 			} else if (command.type === "item.delete") {
@@ -357,7 +359,7 @@ export async function applySemanticBoardMutation(input: {
 	const allocateOrderKey = nextOrderKey(nodes.values());
 	const operations: BoardOperation[] = [];
 
-	for (const command of mutation.commands) {
+	for (const [commandIndex, command] of mutation.commands.entries()) {
 		if (command.type === "board.patch") {
 			const patch = {
 				...(command.patch.title === undefined ? {} : { title: command.patch.title }),
@@ -419,7 +421,10 @@ export async function applySemanticBoardMutation(input: {
 			if (nodes.has(command.item.id)) {
 				throw new BoardServiceError(409, `item already exists: ${command.item.id}`, "ITEM_EXISTS");
 			}
-			const node = boardAuthoringItemToNode(command.item, { orderKey: allocateOrderKey() });
+			const node = boardAuthoringItemToNode(command.item, {
+				orderKey: allocateOrderKey(),
+				path: `commands.${commandIndex}.item`,
+			});
 			nodes.set(node.nodeId, node);
 			orderedItemIds.push(node.nodeId);
 			operations.push({ type: "node.create", payload: { node } });
@@ -451,7 +456,7 @@ export async function applySemanticBoardMutation(input: {
 			continue;
 		}
 		if (command.type === "item.patch" || command.type === "item.replace") {
-			const { operation, next } = compileItemCommand(command, existing);
+			const { operation, next } = compileItemCommand(command, existing, `commands.${commandIndex}.item`);
 			if (operation) {
 				operations.push(operation);
 				nodes.set(command.itemId, next);

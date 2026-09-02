@@ -1,6 +1,6 @@
 ---
 title: 快速开始
-description: 创建 Space，与 Agent 对话，处理文件，创建 Save，并发布 Work。
+description: 创建 Space，与 Agent 对话，处理文件，创建 Save，并发布 App。
 ---
 
 这是 Cohub 最短、但仍有用的闭环。目标是干净地走通一遍，而不是做到完美。
@@ -17,7 +17,7 @@ description: 创建 Space，与 Agent 对话，处理文件，创建 Save，并�
 2. 如需公开访问，可稍后在设置里配置 slug
 3. 进入 Space，默认落在新 Chat
 
-新 Space 已是完整工作区：文件、Sandbox、Saves、Works 即使为空也已可用。
+新 Space 已是完整工作区：文件、Sandbox、Saves、Apps 即使为空也已可用。
 
 ## 3. 开始 Chat
 
@@ -56,16 +56,16 @@ Agent 工作时：
 
 在工作里程碑后 Save，不要每条消息都 Save。
 
-## 6. 发布 Work
+## 6. 发布 App
 
 如果 Space 已有可分享产物：
 
 1. 打开 HTML 文件、站点目录或运行中的端口
-2. 发布为 Work
-3. 选择 Work slug
+2. 发布为 App
+3. 选择 App slug
 4. 打开公开 URL
 
-Work 目标类型：
+App 目标类型：
 
 | 目标 | 适用场景 |
 | --- | --- |
@@ -87,6 +87,6 @@ Work 目标类型：
 1. 我有一个 Space
 2. 我至少有一段有价值的 Chat 历史
 3. 我创建了可恢复或可继续的 Save
-4. 我知道输出就绪后如何发布 Work
+4. 我知道输出就绪后如何发布 App
 
-接下来可深入 [Spaces](/zh/docs/workspace/spaces)、[Chats](/zh/docs/workspace/chats) 或 [Works](/zh/docs/create/works)。
+接下来可深入 [Spaces](/zh/docs/workspace/spaces)、[Chats](/zh/docs/workspace/chats) 或 [Apps](/zh/docs/create/apps)。

@@ -52,7 +52,7 @@ Prompt templates 可通过 `{{cohub.session.id}}`、`{{cohub.space.id}}` 和 `{{
 
 ### Mentions
 
-当你希望 Agent 拉取另一个你可访问 Space 的上下文时，使用 `@space`。粘贴公开 Work URL 可创建 Work mention，供 Agent 解析或下载。
+当你希望 Agent 拉取另一个你可访问 Space 的上下文时，使用 `@space`。粘贴公开 App URL 可创建 App mention，供 Agent 解析或下载。
 
 Mentions 适合有意的上下文引用，不适合每条消息都用。
 

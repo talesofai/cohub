@@ -199,55 +199,70 @@ cohub -s <spaceId> spaces turns ls --cursor <nextCursor> --json
 cohub -s <spaceId> spaces turns ls --after <snapshotCursor> --before <snapshotAt> --json
 ```
 
+## Space activity
+
+One-shot overview of a Space: usage summary, per-user contributors, top
+models, and most viewed Apps. Cost figures require space-management access.
+
+```bash
+cohub -s <spaceId> spaces activity
+cohub -s <spaceId> spaces activity 7
+cohub -s <spaceId> spaces activity 365 --json
+```
+
 ## Boards
 
-Board commands use the selected Space and support `-h` at every level:
+Board targets accept a Board ID or a `.board` path. Every command supports `-h` and `--json`:
 
 ```bash
 cohub boards -h
-cohub boards inspect -h
-cohub -s <spaceId> boards create boards/plan.board --title "Plan"
-cohub -s <spaceId> boards inspect <boardId> --json
+cohub -s <spaceId> boards inspect boards/plan.board --json
+cohub -s <spaceId> boards items list <boardId>
+cohub -s <spaceId> boards connections list <boardId>
 cohub -s <spaceId> boards capabilities <boardId>
 cohub -s <spaceId> boards watch <boardId> --json
 ```
 
-Pass semantic items, effects, and compositions as JSON when creating a Board. The path and title stay explicit in the command. Generate editable templates instead of guessing fields:
+Use targeted reads for large Boards:
 
 ```bash
-cohub boards examples create > board-content.json
-cohub boards examples item geo > item.json
-cohub boards examples effect pulse > effect.json
-cohub boards examples composition fade > intro.json
+cohub -s <spaceId> boards items get <boardId> <itemId> --json
+cohub -s <spaceId> boards connections get <boardId> <connectionId> --json
+cohub -s <spaceId> boards effects get <boardId> <effectId> --json
+cohub -s <spaceId> boards compositions get <boardId> <compositionId> --json
 ```
 
-Inspect `boards capabilities --json` for supported Item types, animation channels, effect kinds, and coordinate spaces.
-
-```bash
-cohub -s <spaceId> boards create boards/plan.board \
-  --title "Plan" \
-  --input board-content.json
-```
-
-Generate editable semantic JSON templates instead of authoring storage transactions:
+Create semantic JSON from an example, then apply it to one resource:
 
 ```bash
 cohub boards examples item text > item.json
-cohub boards items create <boardId> --input item.json
+cohub -s <spaceId> boards items create <boardId> --input item.json
 
 cohub boards examples composition fade > intro.json
-cohub boards compositions apply <boardId> --input intro.json
-
-cohub boards examples effect pulse > effect.json
-cohub boards effects apply <boardId> --input effect.json
+cohub -s <spaceId> boards compositions apply <boardId> --input intro.json
 ```
 
-Use `--mutation-id` or `--command-id` when a script needs a stable idempotency key across retries.
+Apply related changes atomically with one request. The batch contains semantic commands, not a full Board snapshot:
+
+```json
+{"commands":[
+  {"type":"item.patch","itemId":"title","patch":{"props":{"text":"Updated"}}},
+  {"type":"connection.create","connection":{"id":"title-agent","source":{"itemId":"title"},"target":{"itemId":"agent"}}}
+]}
+```
 
 ```bash
-cohub -s <spaceId> boards play <boardId> <compositionId>
-cohub -s <spaceId> boards seek <boardId> <playbackId> 400
-cohub -s <spaceId> boards stop <boardId> <playbackId>
+cohub boards examples batch basic > changes.json
+cohub -s <spaceId> boards batch <boardId> --input changes.json --dry-run
+cohub -s <spaceId> boards batch <boardId> --input changes.json
+```
+
+Use `--base-version` and `--mutation-id` for controlled, retry-safe scripts. Use `--dry-run` to validate without writing. Playback is grouped under `playback`:
+
+```bash
+cohub -s <spaceId> boards playback play <boardId> <compositionId>
+cohub -s <spaceId> boards playback seek <boardId> <playbackId> 400
+cohub -s <spaceId> boards playback stop <boardId> <playbackId>
 ```
 
 ## Search
@@ -322,60 +337,70 @@ cohub -s <spaceId> spaces files mv <from> <to>
 cohub -s <spaceId> spaces files rm <path>
 ```
 
+`upload` places each file under `--dir`; a directory argument contributes its
+contents directly (like `aws s3 cp dir remote:path`), so `upload dist --dir apps/demo`
+lands at `apps/demo/index.html`, not `apps/demo/dist/index.html`. Upload adds or
+overwrites files; it never deletes existing ones.
+
 Confirm before deleting files or directories.
 
-## Works
+## Apps
 
-Publish and manage Work entries from a Space workspace. Public Work URLs require a username and a Space slug.
+Publish and manage Apps from a Space workspace. Public App URLs require a username and a Space slug.
+
+`--file` and `--dir` take paths relative to the Space workspace — the same paths
+`spaces files ls` shows, not your local filesystem. To publish local build
+output, upload it first (`spaces files upload <dir>`), then publish the
+Space-side path.
 
 ```bash
 cohub profile update --username <username>
 cohub spaces update <spaceId> --slug <space-slug>
-cohub -s <spaceId> works ls --json
-cohub works get <workId|url|username/space/work> --json
-cohub works stats <workId|url|username/space/work>
-cohub works download <workId|url|username/space/work> --output <path>
-cohub -s <spaceId> works publish demo --file dist/index.html
-cohub -s <spaceId> works publish site --dir dist
-cohub -s <spaceId> works publish app --port 3000
-cohub works publish-version <workId>
-cohub works versions <workId> --json
-cohub works rm <workId> --yes
+cohub -s <spaceId> apps ls --json
+cohub apps get <appId|url|username/space/app> --json
+cohub apps stats <appId|url|username/space/app>
+cohub apps download <appId|url|username/space/app> --output <path>
+cohub -s <spaceId> apps publish demo --file dist/index.html
+cohub -s <spaceId> apps publish site --dir dist
+cohub -s <spaceId> apps publish app --port 3000
+cohub apps publish-version <appId>
+cohub apps versions <appId> --json
+cohub apps rm <appId> --yes
 ```
 
-Resolve a published Work by public identity:
+Resolve a published App by public identity:
 
 ```bash
-cohub works resolve <workSlug> --owner <username> --space-slug <spaceSlug>
+cohub apps resolve <appSlug> --owner <username> --space-slug <spaceSlug>
 ```
 
-Use `--json` for machine-readable output. `works get`, `works stats`, and `works download` also accept `cohub://works/<username>/<space>/<work>` mention URIs. `works stats` reports total, 24-hour, 7-day, and 30-day views with a source breakdown. Download restores newly published file and directory artifacts directly from the CDN with checksum verification. HTML files with companion assets are restored as directory bundles; Board and port Works are not downloadable. The resolve command remains available for explicit slug-based lookup.
+Use `--json` for machine-readable output. `apps get`, `apps stats`, and `apps download` also accept `app://<username>/<space>/<app>` mention URIs. `apps stats` reports total, 24-hour, 7-day, and 30-day views with a source breakdown. Download restores newly published file and directory artifacts directly from the CDN with checksum verification. HTML files with companion assets are restored as directory bundles; Board and port apps are not downloadable. The resolve command remains available for explicit slug-based lookup.
 
-Realtime rooms use a published Work's runtime identity, so they are available
+Realtime rooms use a published App's runtime identity, so they are available
 through `client.app.realtime` in the SDK rather than as CLI commands.
 
 ## Drive the Cohub UI
 
-Show a file or Work preview in the Cohub tab that started the current work, and call
-methods the Work exposes.
+Show a file or App preview in the Cohub tab that started the current session, and call
+methods the App exposes.
 
 ```bash
-cohub desktop open <workId|url|cohub://works/...|username/space/work|file://path>
+cohub desktop open <appId|url|app://...|username/space/app|file://path>
 cohub desktop open file://src/main.ts
-cohub desktop open work://alice/studio/launch
-cohub desktop open <work-or-file> --call selection.get
-cohub desktop open <work> --call board.focus --data '{"nodeId":"n1"}'
-cohub desktop open <work> --call report.build --input payload.json --json
+cohub desktop open app://alice/studio/launch
+cohub desktop open <app-or-file> --call selection.get
+cohub desktop open <app> --call board.focus --data '{"nodeId":"n1"}'
+cohub desktop open <app> --call report.build --input payload.json --json
 ```
 
-`ui preview` accepts `file://` Space-relative paths, `work://` Work references, and
+`ui preview` accepts `file://` Space-relative paths, `app://` App references, and
 legacy bare targets. A bare target checks the current Space for a file first, then
-falls back to the same Work references as `works get`. Showing a preview is
+falls back to the same App references as `apps get`. Showing a preview is
 idempotent: repeating it re-activates the same tab and refreshes any launch state
-carried by the reference. With `--call`, the command waits for the Work to announce readiness, invokes the method,
-and waits for the Work to complete the same UI command with `client.ui.reportResult()`.
+carried by the reference. With `--call`, the command waits for the App to announce readiness, invokes the method,
+and waits for the App to complete the same UI command with `client.ui.reportResult()`.
 
-Work authors decide what is callable by registering handlers inside the Work:
+App authors decide what is callable by registering handlers inside the App:
 
 ```ts
 client.app.surface.handle("image.open", async (input, { commandId }) => {
@@ -383,7 +408,7 @@ client.app.surface.handle("image.open", async (input, { commandId }) => {
 });
 ```
 
-A Work answers only a Cohub app origin, so a third-party site that embeds it
+An App answers only a Cohub app origin, so a third-party site that embeds it
 cannot invoke these methods.
 
 Retrying with the same `--command-id` re-delivers the command rather than
@@ -395,7 +420,7 @@ Delivery is at-least-once. Deduplication lives in the receiving tab's memory, so
 retry that spans a page reload can run a `--call` method a second time. Prefer
 methods that are safe to repeat.
 
-Commands reach only the frontend instance that originated the current work,
+Commands reach only the frontend instance that originated the current session,
 resolved from request provenance (`X-Cohub-Source-Client`, propagated into the
 Sandbox as `COHUB_SOURCE_CLIENT_ID`). They cannot target another user's browser,
 and offer no DOM access or script evaluation. Pass `--client` to address a
@@ -448,7 +473,7 @@ Confirm before enabling, disabling, or deleting recurring scheduled prompts.
 
 Confirm before:
 
-- deleting files, directories, or Works
+- deleting files, directories, or Apps
 - creating scheduled or recurring prompts with side effects
 - enabling, disabling, or deleting recurring scheduled prompts
 - changing access policies, member roles, or membership

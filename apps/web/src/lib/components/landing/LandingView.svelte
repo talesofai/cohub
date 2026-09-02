@@ -246,35 +246,28 @@ const cliLines = [
 				<LandingProof {locale} />
 			</div>
 
-			<!-- 3 · Same room — the differentiator, straight after the proof strip -->
+			<!-- 3 · Same room — the differentiator, straight after the proof strip.
+			     Text-only by design until a proper multiplayer capture exists; the
+			     centred pose echoes hero/closing so the whitespace reads as rhythm,
+			     not as a missing image. -->
 			<LandingSection
 				eyebrow={m.landing_section_sameroom_eyebrow({}, { locale })}
 				title={m.landing_section_sameroom_title({}, { locale })}
 				lede={m.landing_section_sameroom_lede({}, { locale })}
+				centered
 				divided
-			>
-				<LandingMedia
-					src="multiplayer"
-					alt={m.landing_section_sameroom_media_alt({}, { locale })}
-					label={m.landing_section_sameroom_media_label({}, { locale })}
-					ratio="16 / 9"
-				/>
-			</LandingSection>
+			/>
 
-			<!-- 4 · Live Works — the strongest outcome: a real URL that feeds back -->
+			<!-- 4 · Live Works — the strongest outcome: a real URL that feeds back.
+			     Text-only like Same room; the centred pose keeps the run of
+			     statements between the hero and Context readable as one voice. -->
 			<LandingSection
 				eyebrow={m.landing_section_liveapps_eyebrow({}, { locale })}
 				title={m.landing_section_liveapps_title({}, { locale })}
 				lede={m.landing_section_liveapps_lede({}, { locale })}
+				centered
 				divided
-			>
-				<LandingMedia
-					src="work"
-					alt={m.landing_section_liveapps_media_alt({}, { locale })}
-					label={m.landing_section_liveapps_media_label({}, { locale })}
-					ratio="16 / 10"
-				/>
-			</LandingSection>
+			/>
 
 			<!-- 5 · Everywhere — the phone capture beside a real terminal session -->
 			<LandingSection
@@ -299,21 +292,15 @@ const cliLines = [
 				</div>
 			</LandingSection>
 
-			<!-- 6 · Any medium — split layout breaks the run of full-width images -->
+			<!-- 6 · Any medium — centred like Same room; the only claim this section
+			     needs is that generation lives in the conversation itself. -->
 			<LandingSection
 				eyebrow={m.landing_section_anymedium_eyebrow({}, { locale })}
 				title={m.landing_section_anymedium_title({}, { locale })}
 				lede={m.landing_section_anymedium_lede({}, { locale })}
+				centered
 				divided
-				split
-			>
-				<LandingMedia
-					src="generation"
-					alt={m.landing_section_anymedium_media_alt({}, { locale })}
-					label={m.landing_section_anymedium_media_label({}, { locale })}
-					ratio="800 / 730"
-				/>
-			</LandingSection>
+			/>
 
 			<!-- 7 · Context network — reversed split, so it reads differently again -->
 			<LandingSection

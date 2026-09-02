@@ -52,7 +52,7 @@ Prompt templates can reference the current context with `{{cohub.session.id}}`, 
 
 ### Mentions
 
-Use `@space` mentions when the Agent should pull context from another Space you can access. Paste a public Work URL to create a Work mention that the Agent can resolve or download.
+Use `@space` mentions when the Agent should pull context from another Space you can access. Paste a public App URL to create an App mention that the Agent can resolve or download.
 
 Mentions are for deliberate context references, not every message.
 

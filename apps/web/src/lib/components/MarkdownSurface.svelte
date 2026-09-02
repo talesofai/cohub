@@ -25,6 +25,7 @@ type Props = {
 	streamingLive?: boolean;
 	baseFilePath?: string | null;
 	onOpenFile?: (target: WorkspaceFileLinkTarget) => void | Promise<void>;
+	onOpenUrl?: (href: string, event: MouseEvent) => void | Promise<void>;
 	resolveWorkspaceAsset?: ResolveWorkspaceAsset;
 };
 
@@ -35,6 +36,7 @@ const {
 	streamingLive = false,
 	baseFilePath = null,
 	onOpenFile,
+	onOpenUrl,
 	resolveWorkspaceAsset,
 }: Props = $props();
 
@@ -442,17 +444,27 @@ onMount(() => {
 		}
 
 		const link = target.closest<HTMLAnchorElement>("a[href]");
-		if (link && onOpenFile && e instanceof MouseEvent) {
-			const fileTarget = normalizeWorkspaceFileLinkTarget(
-				link.getAttribute("href") ?? "",
-				{
-					basePath: baseFilePath,
-				},
-			);
-			if (fileTarget && !shouldPreserveNativeLinkClick(e)) {
+		if (link && e instanceof MouseEvent) {
+			const href = link.getAttribute("href") ?? "";
+			const fileTarget = normalizeWorkspaceFileLinkTarget(href, {
+				basePath: baseFilePath,
+			});
+			if (fileTarget && onOpenFile && !shouldPreserveNativeLinkClick(e)) {
 				e.preventDefault();
 				e.stopPropagation();
 				void onOpenFile(fileTarget);
+				return;
+			}
+
+			if (
+				onOpenUrl &&
+				!e.defaultPrevented &&
+				!fileTarget &&
+				!link.hasAttribute("download") &&
+				(!link.target || link.dataset.cohubAutoTarget === "blank") &&
+				!shouldPreserveNativeLinkClick(e)
+			) {
+				void onOpenUrl(href, e);
 				return;
 			}
 		}

@@ -55,15 +55,15 @@ Depending on the flow you use, a Save can become:
 
 Treat Saves as history you can stand on, not as chat bookmarks.
 
-## Saves vs Chats vs Works
+## Saves vs Chats vs Apps
 
 | Object | Captures | Use for |
 | --- | --- | --- |
 | Chat | Conversation and turns | Reasoning and iteration |
 | Save | Workspace snapshot | Milestones and recovery |
-| Work | Published surface | Sharing output with others |
+| App | Published surface | Sharing output with others |
 
-A great demo often needs all three: the Chat that produced it, the Save that froze it, and the Work that shares it.
+A great demo often needs all three: the Chat that produced it, the Save that froze it, and the App that shares it.
 
 ## Organization
 
@@ -78,12 +78,12 @@ If your team shares a Space, write Save notes for the next reader, not only for 
 ## Practical tips
 
 - Save before letting an Agent run a broad cleanup
-- If output is publishable, Save first, then publish a Work from a stable path
+- If output is publishable, Save first, then publish an App from a stable path
 - Prefer fewer clear Saves over dozens of noisy ones
 - When something breaks, find the last green Save before improvising
 
 ## Related
 
 - [Files & Sandbox](/docs/workspace/files-and-sandbox)
-- [Works](/docs/create/works)
+- [Apps](/docs/create/apps)
 - [Quick start](/docs/learn/quick-start)

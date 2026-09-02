@@ -18,10 +18,10 @@
     "typecheck": "tsc -p tsconfig.json --noEmit"
   },
   "dependencies": {
-    "jose": "^6.2.3"
+    "jose": "^6.2.10"
   },
   "devDependencies": {
-    "@types/node": "26.1.1",
+    "@types/node": "26.4.0",
     "typescript": "^7.0.2"
   }
 }

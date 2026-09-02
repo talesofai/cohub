@@ -3,9 +3,9 @@
  *
  * The card renderers, the theme backgrounds and the text machinery that needs a
  * real canvas all live behind this entry, so `@neta-art/cohub/board` can stay a
- * pure model that runs without PixiJS. The browser editor and the headless
- * exporter both drive these renderers, which is what keeps an exported image
- * identical to what the editor draws.
+ * pure model that runs without PixiJS. The browser editor and headless exporter
+ * share the same Board geometry and semantics, while each backend uses a
+ * compatible drawing primitive.
  */
 
 export * from "./connection-layer.js";

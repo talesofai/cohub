@@ -1,11 +1,11 @@
 <script lang="ts">
 import {
+	type AppMeta,
+	type AppRecord,
+	type AppTargetType,
 	HttpError,
 	type Permission,
 	type SpaceRecord,
-	type WorkMeta,
-	type WorkRecord,
-	type WorkTargetType,
 } from "@neta-art/cohub";
 import { Check, Copy, ExternalLink, Loader2, Rocket } from "lucide-svelte";
 import Dialog from "$lib/components/Dialog.svelte";
@@ -20,9 +20,9 @@ import { sdk } from "$lib/sdk";
 import {
 	normalizePublicSlugInput,
 	normalizeUsernameInput,
+	validateAppSlugInput,
 	validateSpaceSlugInput,
 	validateUsernameInput,
-	validateWorkSlugInput,
 } from "$lib/slug-rules";
 import { authStore } from "$lib/stores/auth.svelte";
 
@@ -42,7 +42,7 @@ const {
 	spaceId: string;
 	ownerUsername: string | null;
 	spaceSlug: string | null;
-	targetType: WorkTargetType;
+	targetType: AppTargetType;
 	targetRef: string;
 	onClose: () => void;
 	onSpaceUpdated?: (space: SpaceRecord) => void;
@@ -55,7 +55,7 @@ let usernameDraft = $state("");
 let spaceSlugDraft = $state("");
 let publishing = $state(false);
 let error = $state<string | null>(null);
-let published = $state<WorkRecord | null>(null);
+let published = $state<AppRecord | null>(null);
 let copied = $state(false);
 let initializedTargetRef = $state("");
 let visibility = $state<"public" | "space">("public");
@@ -80,7 +80,7 @@ const spaceSlugValidation = $derived(
 	}),
 );
 const appSlugValidation = $derived(
-	validateWorkSlugInput(slug, { required: true, label: "App slug" }),
+	validateAppSlugInput(slug, { required: true, label: "App slug" }),
 );
 const currentUsername = $derived(
 	ownerUsername?.trim() || usernameValidation.value || "",
@@ -88,14 +88,12 @@ const currentUsername = $derived(
 const currentSpaceSlug = $derived(
 	spaceSlug?.trim() || spaceSlugValidation.value || "",
 );
-const currentWorkSlug = $derived(appSlugValidation.value || "");
+const currentAppSlug = $derived(appSlugValidation.value || "");
 const canPublish = $derived(
-	Boolean(
-		currentUsername && currentSpaceSlug && currentWorkSlug && !publishing,
-	),
+	Boolean(currentUsername && currentSpaceSlug && currentAppSlug && !publishing),
 );
 const publicPath = $derived(
-	`/${currentUsername || "username"}/${currentSpaceSlug || "space"}/w/${currentWorkSlug || "app"}`,
+	`/${currentUsername || "username"}/${currentSpaceSlug || "space"}/w/${currentAppSlug || "app"}`,
 );
 const appUrl = $derived.by(() => {
 	if (!currentUsername || !currentSpaceSlug || !published) return "";
@@ -167,7 +165,7 @@ function selectedScopes(source: Record<string, boolean>) {
 		.map(([scope]) => scope as Permission);
 }
 
-function buildWorkMeta(): WorkMeta | undefined {
+function buildAppMeta(): AppMeta | undefined {
 	if (!hideCohubBar) return undefined;
 	return { presentation: { hideCohubBar: true } };
 }
@@ -204,24 +202,24 @@ async function publish() {
 	error = null;
 	try {
 		await ensurePublicAddress();
-		if (!currentWorkSlug)
+		if (!currentAppSlug)
 			throw new Error(appSlugValidation.error ?? "App slug is required.");
 		try {
 			const result = await sdk.apps.create({
 				spaceId,
-				slug: currentWorkSlug,
+				slug: currentAppSlug,
 				status: "published",
 				visibility,
 				targetType,
 				targetRef,
 				appScopes: selectedScopes(appScopes),
-				meta: buildWorkMeta(),
+				meta: buildAppMeta(),
 			});
 			published = result.app;
 		} catch (cause) {
 			if (!(cause instanceof HttpError) || cause.status !== 409) throw cause;
 			const { apps } = await sdk.apps.listBySpace(spaceId);
-			const existingApp = apps.find((app) => app.slug === currentWorkSlug);
+			const existingApp = apps.find((app) => app.slug === currentAppSlug);
 			if (!existingApp) throw cause;
 			const { app } = await sdk.apps.update(existingApp.id, {
 				status: existingApp.status,
@@ -229,7 +227,7 @@ async function publish() {
 				targetType,
 				targetRef,
 				appScopes: selectedScopes(appScopes),
-				meta: buildWorkMeta(),
+				meta: buildAppMeta(),
 			});
 			published = (await sdk.apps.publishVersion(app.id)).app;
 		}

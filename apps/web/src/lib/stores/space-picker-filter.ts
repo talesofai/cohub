@@ -1,9 +1,16 @@
 import { getCacheUserKey } from "$lib/cache/keys";
 
-const VERSION = 1;
+const VERSION = 2;
 const PREFIX = "cohub:space-picker-filter";
 
-export type SpaceFilterPref = "all" | "mine" | "pinned";
+export type SpaceFilterPref = "recent" | "all" | "mine" | "pinned";
+
+const VALID_PREFS: ReadonlySet<string> = new Set([
+	"recent",
+	"all",
+	"mine",
+	"pinned",
+]);
 
 function isBrowser() {
 	return typeof window !== "undefined" && typeof localStorage !== "undefined";
@@ -14,16 +21,15 @@ function storageKey() {
 }
 
 export function getCachedSpaceFilterPref(): SpaceFilterPref {
-	if (!isBrowser()) return "all";
+	if (!isBrowser()) return "recent";
 	try {
 		const raw = localStorage.getItem(storageKey());
-		if (!raw) return "all";
-		if (raw === "mine" || raw === "pinned" || raw === "all") {
-			return raw;
-		}
-		return "all";
+		// v2 defaults to "recent"; unknown or missing values (including v1
+		// leftovers) fall back to it rather than the old "all" default.
+		if (raw && VALID_PREFS.has(raw)) return raw as SpaceFilterPref;
+		return "recent";
 	} catch {
-		return "all";
+		return "recent";
 	}
 }
 

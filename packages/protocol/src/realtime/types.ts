@@ -7,6 +7,8 @@ import type { TaskRunStatus } from "../task/index.js";
 import type { SpaceFsChangedPayload } from "../fs/index.js";
 import type { SpacePortsChangedPayload } from "../ports/index.js";
 import type { BoardMutationReceipt, BoardPlaybackSnapshot } from "../board.js";
+import type { BoardComposition } from "../board-composition.js";
+import type { BoardEffect } from "../board-effect.js";
 import type { RequestSource } from "../provenance.js";
 import type { DesktopCommandDispatchedPayload } from "../desktop-command.js";
 import type { AppArtifactDescriptor, AppContentKind } from "../app.js";
@@ -709,6 +711,12 @@ export type BoardChangedEvent = {
     mutationId: string;
     version: number;
     changed: BoardMutationReceipt["changed"];
+    /** Server-authored animation rows for a small, pure animation mutation. */
+    animationPatch?: {
+      effects: BoardEffect[];
+      compositions: BoardComposition[];
+      playback?: BoardPlaybackSnapshot | null;
+    };
     source?: RequestSource;
   };
 };

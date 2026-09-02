@@ -10,6 +10,14 @@
 
 import type { RequestSource } from "./provenance.js";
 import { isUuid } from "./identifiers.js";
+import {
+  NAVIGATION_LAUNCH_MAX_LENGTH,
+  NAVIGATION_METHOD_MAX_LENGTH,
+  NAVIGATION_ERROR_CODE_MAX_LENGTH,
+  NAVIGATION_ERROR_MESSAGE_MAX_LENGTH,
+  type NavigationCall,
+  type NavigationLaunch,
+} from "./navigation.js";
 
 export const DESKTOP_COMMAND_VERSION = 1;
 
@@ -17,12 +25,12 @@ export const DESKTOP_COMMAND_VERSION = 1;
 export const DESKTOP_COMMAND_PAYLOAD_MAX_BYTES = 32 * 1024;
 export const DESKTOP_COMMAND_MAX_BYTES = 40 * 1024;
 export const DESKTOP_COMMAND_LABEL_MAX_LENGTH = 200;
-export const DESKTOP_COMMAND_LAUNCH_MAX_LENGTH = 2_048;
+export const DESKTOP_COMMAND_LAUNCH_MAX_LENGTH = NAVIGATION_LAUNCH_MAX_LENGTH;
 export const DESKTOP_COMMAND_PATH_MAX_LENGTH = 2_048;
 /** Becomes part of a Redis key. */
 export const DESKTOP_COMMAND_ID_MAX_LENGTH = 64;
-export const DESKTOP_COMMAND_ERROR_CODE_MAX_LENGTH = 64;
-export const DESKTOP_COMMAND_ERROR_MESSAGE_MAX_LENGTH = 2_000;
+export const DESKTOP_COMMAND_ERROR_CODE_MAX_LENGTH = NAVIGATION_ERROR_CODE_MAX_LENGTH;
+export const DESKTOP_COMMAND_ERROR_MESSAGE_MAX_LENGTH = NAVIGATION_ERROR_MESSAGE_MAX_LENGTH;
 
 export const DESKTOP_COMMAND_DEFAULT_TIMEOUT_MS = 10 * 60 * 1_000;
 export const DESKTOP_COMMAND_MAX_TIMEOUT_MS = 12 * 60 * 60 * 1_000;
@@ -57,7 +65,7 @@ export type DesktopAppTarget = {
   kind: "app";
   appId: string;
   label?: string;
-  launch?: { search?: string; hash?: string };
+  launch?: NavigationLaunch;
 };
 
 export type DesktopFileTarget = {
@@ -67,10 +75,7 @@ export type DesktopFileTarget = {
 
 export type DesktopTarget = DesktopAppTarget | DesktopFileTarget;
 
-export type DesktopCall = {
-  method: string;
-  input?: unknown;
-};
+export type DesktopCall = NavigationCall;
 
 export type DesktopOpenCommand = {
   type: "desktop.open";
@@ -106,7 +111,7 @@ export type DesktopCommandDispatchedPayload = {
   source: RequestSource | null;
 };
 
-const METHOD_RE = /^[A-Za-z][A-Za-z0-9_.:-]{0,63}$/;
+const METHOD_RE = new RegExp(`^[A-Za-z][A-Za-z0-9_.:-]{0,${NAVIGATION_METHOD_MAX_LENGTH - 1}}$`);
 
 export const isDesktopCallMethod = (value: unknown): value is string =>
   typeof value === "string" && METHOD_RE.test(value);

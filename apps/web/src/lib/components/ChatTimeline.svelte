@@ -41,6 +41,7 @@ type Props = {
 		message: StoredIntermediateMessage;
 	}) => Promise<MessageToolCallsFile | null>;
 	onOpenFile?: (target: OpenWorkspaceFileTarget) => void;
+	onOpenUrl?: (href: string, event: MouseEvent) => void | Promise<void>;
 	onForkTurn?: (turn: SessionTurnRecord) => void;
 	forkingTurnId?: string | null;
 };
@@ -60,6 +61,7 @@ let {
 	onRequestIntermediateSync,
 	onLoadToolCalls,
 	onOpenFile,
+	onOpenUrl,
 	onForkTurn,
 	forkingTurnId = null,
 }: Props = $props();
@@ -221,12 +223,13 @@ $effect(() => {
 							{onMarkdownRenderStart}
 							{onMarkdownRendered}
 							{onOpenFile}
+							{onOpenUrl}
 							onForkTurn={onForkTurn && forkTurn ? () => onForkTurn(forkTurn) : undefined}
 							forkDisabled={Boolean(forkingTurnId)}
 							forking={forkingTurnId === forkTurn?.id}
 					/>
 				{:else if item.kind === 'process' && item.turn}
-						<ProcessCard turn={item.turn} summary={item.summary} intermediateMessages={item.intermediateMessages} streaming={item.streaming} {modelsCatalog} {onLoadIntermediate} {onRequestIntermediateSync} {onLoadToolCalls} {onOpenFile} />
+						<ProcessCard turn={item.turn} summary={item.summary} intermediateMessages={item.intermediateMessages} streaming={item.streaming} {modelsCatalog} {onLoadIntermediate} {onRequestIntermediateSync} {onLoadToolCalls} {onOpenFile} {onOpenUrl} />
 				{:else if item.kind === 'turn_footer'}
 					{@const modelName = getModelDisplayName(modelsCatalog, {
 						provider: item.runtimeProvider,

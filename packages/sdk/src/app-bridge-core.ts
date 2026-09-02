@@ -30,6 +30,8 @@ export type AppBridgeCoreApp = Pick<
 export type AppAuthorizeSpaceOption = {
 	id: string;
 	name: string | null;
+	ownerUserUuid?: string | null;
+	isPinned?: boolean;
 };
 
 /**
@@ -275,7 +277,9 @@ export function createAppBridgeCore(
 				id: app.id,
 				slug: app.slug,
 				url: typeof location !== "undefined" ? location.href : "",
+				homeSpace: { id: app.spaceId, name: app.spaceName ?? null },
 			},
+			// Kept for clients that still read context.space.
 			space: { id: app.spaceId },
 			viewer: viewerUuid ? { userUuid: viewerUuid } : null,
 			...(invocation ? { invocation: { ...invocation } } : {}),
@@ -334,7 +338,12 @@ export function createAppBridgeCore(
 				}
 			: undefined;
 		return {
-			work: context.app,
+			// Keep the legacy projection stable as App context gains fields.
+			work: {
+				id: context.app.id,
+				slug: context.app.slug,
+				url: context.app.url,
+			},
 			space: context.space,
 			...(context.viewer !== undefined ? { viewer: context.viewer } : {}),
 			...(context.invocation ? { invocation: context.invocation } : {}),
@@ -505,13 +514,23 @@ export function createAppBridgeCore(
 			// Space list without retrying genuine authorization failures forever.
 			if (response?.status === 401) response = await request(true);
 			if (!response?.ok) return null;
-			const spaces = (await response.json()) as Array<{ id?: unknown; name?: unknown }>;
+			const spaces = (await response.json()) as Array<{
+				id?: unknown;
+				name?: unknown;
+				userUuid?: unknown;
+				ownerUserUuid?: unknown;
+				isPinned?: unknown;
+			}>;
 			if (!Array.isArray(spaces)) return null;
 			return spaces.flatMap((space): AppAuthorizeSpaceOption[] => {
 				if (typeof space.id !== "string" || !space.id) return [];
 				return [{
 					id: space.id,
 					name: typeof space.name === "string" && space.name ? space.name : null,
+					...(typeof (space.ownerUserUuid ?? space.userUuid) === "string"
+						? { ownerUserUuid: (space.ownerUserUuid ?? space.userUuid) as string }
+						: {}),
+					...(typeof space.isPinned === "boolean" ? { isPinned: space.isPinned } : {}),
 				}];
 			});
 		} catch {

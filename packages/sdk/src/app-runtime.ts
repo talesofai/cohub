@@ -1,4 +1,11 @@
 import { buildAppRuntimeReady } from "@cohub/protocol/app-runtime";
+import {
+  buildAppNavigationOpenMessage,
+  type AppNavigationOpenResponse,
+  type AppNavigationTarget,
+  type AppNavigationCall,
+  parseAppNavigationOpenResponse,
+} from "@cohub/protocol/app-navigation";
 import type { Permission } from "./types.js";
 
 export type AppRuntimeInvocationContext = {
@@ -16,7 +23,14 @@ export type AppRuntimeGrantSummary = {
 };
 
 export type AppRuntimeContext = {
-  app: { id: string; slug: string; url?: string | null };
+  app: {
+    id: string;
+    slug: string;
+    url?: string | null;
+    /** The Space that owns the App. */
+    homeSpace?: { id: string; name?: string | null };
+  };
+  /** @deprecated Use `app.homeSpace` for the App's home Space. */
   space: { id: string; name?: string | null };
   viewer?: { userUuid: string } | null;
   invocation?: AppRuntimeInvocationContext;
@@ -68,6 +82,8 @@ export interface AppRuntimeTransport {
     options?: AppRuntimeRequestOptions,
   ): Promise<T | null>;
   subscribeContextChanged?: (listener: AppContextChangedListener) => () => void;
+  /** Whether this transport can address the embedding Cohub workspace. */
+  supportsNavigation?: boolean;
 }
 
 const isBrowser = () => typeof window !== "undefined" && typeof window.parent !== "undefined";
@@ -93,6 +109,7 @@ const generateRequestId = () =>
  * Behaviorally identical to the previous module-level `request()` helper.
  */
 export class ParentBridgeTransport implements AppRuntimeTransport {
+  readonly supportsNavigation = true;
   private trustedParentOrigin: string | null = null;
   private contextListeners = new Set<AppContextChangedListener>();
   private contextListener: ((event: MessageEvent) => void) | null = null;
@@ -135,7 +152,10 @@ export class ParentBridgeTransport implements AppRuntimeTransport {
     const timeoutMs = options?.timeoutMs ?? 1_200;
     const retryIntervalMs = options?.retryIntervalMs;
     if (!hasParent()) return Promise.resolve(null);
-    const requestId = generateRequestId();
+    const requestId =
+      typeof message.requestId === "string" && message.requestId
+        ? message.requestId
+        : generateRequestId();
     return new Promise((resolve, reject) => {
       let retryTimer: ReturnType<typeof setInterval> | null = null;
       const parentOrigin = this.trustedParentOrigin ?? getParentOrigin();
@@ -186,6 +206,7 @@ export class ParentBridgeTransport implements AppRuntimeTransport {
  * checkout state is not available on the app's own origin in broker mode.
  */
 export class PopupBrokerTransport implements AppRuntimeTransport {
+  readonly supportsNavigation = false;
   private readonly brokerOrigin: string;
   private readonly appId?: string;
   private readonly getAppId?: () => Promise<string | null>;
@@ -497,6 +518,43 @@ export class AppRuntimeApi {
 
   onContextChanged(listener: AppContextChangedListener) {
     return this.transport.subscribeContextChanged?.(listener) ?? (() => {});
+  }
+
+  async navigationOpen(
+    target: AppNavigationTarget,
+    call?: AppNavigationCall,
+  ): Promise<AppNavigationOpenResponse> {
+    if (this.transport.supportsNavigation === false) {
+      return {
+        protocol: "cohub.app.navigation",
+        version: 1,
+        type: "open.result",
+        requestId: "local",
+        handled: false,
+        reason: "unsupported",
+      };
+    }
+    const requestId =
+      globalThis.crypto?.randomUUID?.() ?? `${Date.now()}-${Math.random()}`;
+    const response = await this.transport.request<unknown>(
+      buildAppNavigationOpenMessage({
+        requestId,
+        target,
+        ...(call ? { call } : {}),
+      }),
+      { timeoutMs: 8_000 },
+    );
+    const parsed = parseAppNavigationOpenResponse(response);
+    return (
+      (parsed && parsed.requestId === requestId ? parsed : null) ?? {
+        protocol: "cohub.app.navigation",
+        version: 1,
+        type: "open.result",
+        requestId,
+        handled: false,
+        reason: response === null ? "timeout" : "unsupported",
+      }
+    );
   }
 
   async getAccessToken(options?: { forceRefresh?: boolean }) {

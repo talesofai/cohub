@@ -1,6 +1,6 @@
 ---
 title: 核心概念
-description: 构成 Cohub 的对象 — Space、Chat、Save、Sandbox、Work 等。
+description: 构成 Cohub 的对象 — Space、Chat、Save、Sandbox、App 等。
 ---
 
 先记住这些对象。后面的产品能力都是它们的组合。
@@ -9,7 +9,7 @@ description: 构成 Cohub 的对象 — Space、Chat、Save、Sandbox、Work 等
 
 Space 是主要创作表面。
 
-它在一个隔离环境里容纳 Chats、文件、Saves、任务、Works 和设置。人和 Agent 共享同一份 Space 上下文。
+它在一个隔离环境里容纳 Chats、文件、Saves、任务、Apps 和设置。人和 Agent 共享同一份 Space 上下文。
 
 当你需要一个可长期工作的地方，而不是一次性对话时，就创建一个 Space。
 
@@ -47,14 +47,14 @@ Sandbox 是 Space 背后的执行环境。
 
 它负责跑进程、暴露预览端口，并把运行时工作隔离在产品表层之外。你通常会把它感受成「文件可用」和「端口可预览」。
 
-## Work
+## App
 
-Work 是已发布、可分享的表面。
+App 是已发布、可分享的表面。
 
-可发布单个 HTML 文件、目录站点，或公开的 Sandbox 端口。Works 有版本、权限和公开 URL：
+可发布单个 HTML 文件、目录站点，或公开的 Sandbox 端口。App 有版本、权限和公开 URL：
 
 ```text
-/:username/:spaceSlug/w/:workSlug
+/:username/:spaceSlug/w/:appSlug
 ```
 
 ## Channel
@@ -95,6 +95,6 @@ Scheduled prompt 会在稍后发送或重复发送 prompt。
 
 ## Permission
 
-Permissions 决定成员、匿名访客和 Works 能做什么。
+Permissions 决定成员、匿名访客和 Apps 能做什么。
 
-Space 角色是 **host**、**builder**、**guest**。Works 也会声明自身 scopes，以及需要运行时访问时的 viewer-consent scopes。
+Space 角色是 **host**、**builder**、**guest**。App 也会声明自身 scopes，需要运行时访问时请求 viewer 同意。

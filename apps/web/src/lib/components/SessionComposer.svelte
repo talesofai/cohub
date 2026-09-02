@@ -40,7 +40,7 @@ import { isCreateModeCommand } from "$lib/composer-mode-command";
 import { getLocale } from "$lib/i18n/locale.svelte";
 import { isComposingKeyboardEvent } from "$lib/keyboard";
 import { getCohubAppLinkKey, parseCohubAppUrls } from "$lib/mentions/app";
-import { resolveCohubWorkLinkMentionLabels } from "$lib/mentions/app-link-resolve";
+import { resolveCohubAppLinkMentionLabels } from "$lib/mentions/app-link-resolve";
 import {
 	type ResourceMentionTextToken,
 	replaceCohubResourceUrls,
@@ -172,7 +172,7 @@ let spaceMentionLocalController: AbortController | null = null;
 let spaceMentionRemoteController: AbortController | null = null;
 let spaceMentionDebounceTimer: number | null = null;
 let pastedSpaceResolveController: AbortController | null = null;
-let pastedWorkResolveController: AbortController | null = null;
+let pastedAppResolveController: AbortController | null = null;
 let spaceMentionTrigger = $state<SpaceMentionTrigger | null>(null);
 /** Dismissed trigger key; stays closed until the active @token changes. */
 let dismissedSpaceMentionKey: string | null = null;
@@ -972,18 +972,18 @@ function handlePaste(event: ClipboardEvent) {
 	if (clipboardText) {
 		pastedSpaceResolveController?.abort();
 		pastedSpaceResolveController = null;
-		pastedWorkResolveController?.abort();
-		pastedWorkResolveController = null;
+		pastedAppResolveController?.abort();
+		pastedAppResolveController = null;
 	}
 
 	const pastedSpaceLinks = clipboardText
 		? parseCohubSpaceUrls(clipboardText)
 		: [];
-	const pastedWorkLinks = clipboardText ? parseCohubAppUrls(clipboardText) : [];
-	if (pastedSpaceLinks.length > 0 || pastedWorkLinks.length > 0) {
+	const pastedAppLinks = clipboardText ? parseCohubAppUrls(clipboardText) : [];
+	if (pastedSpaceLinks.length > 0 || pastedAppLinks.length > 0) {
 		event.preventDefault();
 		const spaceLabels = new Map<string, string>();
-		const workLabels = new Map<string, string>();
+		const appLabels = new Map<string, string>();
 		const knownSpaces = new Map<string, SpaceMentionSuggestion>();
 		for (const item of spaceMentionItems) knownSpaces.set(item.spaceId, item);
 		for (const link of pastedSpaceLinks) {
@@ -994,7 +994,7 @@ function handlePaste(event: ClipboardEvent) {
 		const renderSegment = () =>
 			replaceCohubResourceUrls(clipboardText, {
 				space: (link) => spaceLabels.get(getCohubLinkMentionKey(link)),
-				work: (link) => workLabels.get(getCohubAppLinkKey(link)),
+				app: (link) => appLabels.get(getCohubAppLinkKey(link)),
 			});
 		let renderedSegment = renderSegment();
 		const inserted = insertSnippet(renderedSegment);
@@ -1032,15 +1032,15 @@ function handlePaste(event: ClipboardEvent) {
 				});
 		}
 
-		if (pastedWorkLinks.length > 0) {
+		if (pastedAppLinks.length > 0) {
 			const controller = new AbortController();
-			pastedWorkResolveController = controller;
-			void resolveCohubWorkLinkMentionLabels(pastedWorkLinks, {
+			pastedAppResolveController = controller;
+			void resolveCohubAppLinkMentionLabels(pastedAppLinks, {
 				signal: controller.signal,
 			})
 				.then((labels) => {
 					if (controller.signal.aborted || labels.size === 0) return;
-					for (const [key, label] of labels) workLabels.set(key, label);
+					for (const [key, label] of labels) appLabels.set(key, label);
 					applyResolvedLabels();
 				})
 				.catch((error) => {
@@ -1106,7 +1106,7 @@ onMount(() => {
 		spaceMentionLocalController?.abort();
 		spaceMentionRemoteController?.abort();
 		pastedSpaceResolveController?.abort();
-		pastedWorkResolveController?.abort();
+		pastedAppResolveController?.abort();
 		closeVoiceInput();
 		cancelScheduledResize();
 		cancelScheduledCaretSync();

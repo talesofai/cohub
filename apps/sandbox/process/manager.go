@@ -54,10 +54,16 @@ type ManagedProcess struct {
 }
 
 type ExitInfo struct {
-	ExitCode    *int
-	Reason      string
-	TimeoutSecs int
+	ExitCode        *int
+	Reason          string
+	TimeoutSecs     int
+	OutputTruncated bool
 }
+
+const (
+	processTerminationGrace = 2 * time.Second
+	processWaitDelay        = processTerminationGrace + time.Second
+)
 
 type Stats struct {
 	ActiveProcesses        int   `json:"activeProcesses"`
@@ -112,13 +118,28 @@ func (m *Manager) StartWithOptions(ownerIdentity string, options StartOptions) (
 		ctx, cancel = context.WithCancel(ctx)
 	}
 
+	var started bool
+	defer func() {
+		if !started {
+			cancel()
+		}
+	}()
+
 	var cmd *exec.Cmd
 	if len(options.Argv) > 0 {
-		cmd = exec.Command(options.Argv[0], options.Argv[1:]...)
+		cmd = exec.CommandContext(ctx, options.Argv[0], options.Argv[1:]...)
 	} else {
-		cmd = exec.Command("bash", "-c", options.Command)
+		cmd = exec.CommandContext(ctx, "bash", "-c", options.Command)
 	}
+	// Context cancellation is handled below by terminating the whole process
+	// group. Keep exec's cancellation hook from killing only the leader first.
+	cmd.Cancel = func() error { return nil }
 	cmd.Dir = options.CWD
+	// The process may exit while a background descendant still owns an output
+	// descriptor. Bound the post-exit drain so inherited descriptors cannot
+	// keep the RPC pending forever; the descendant itself remains untouched
+	// unless the process is explicitly aborted or times out.
+	cmd.WaitDelay = processWaitDelay
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
 	inheritedEnv := sanitizeInheritedEnv(os.Environ())
 	// User-provided env vars are appended only if the key doesn't already
@@ -150,21 +171,28 @@ func (m *Manager) StartWithOptions(ownerIdentity string, options StartOptions) (
 		cmd.Env = inheritedEnv
 	}
 
-	stdout, err := cmd.StdoutPipe()
-	if err != nil {
-		cancel()
-		return "", nil, nil, nil, fmt.Errorf("stdout pipe: %w", err)
-	}
-	stderr, err := cmd.StderrPipe()
-	if err != nil {
-		cancel()
-		return "", nil, nil, nil, fmt.Errorf("stderr pipe: %w", err)
-	}
+	// io.Pipe (instead of StdoutPipe/StderrPipe) keeps output consumption
+	// under our control: Wait closes the StdoutPipe read end as soon as the
+	// child exits, which races with outstanding readers and can silently
+	// discard buffered output. With io.Pipe, exec's copiers are the only
+	// writers and writes are synchronous, so no delivered byte is ever lost.
+	stdoutReader, stdoutWriter := io.Pipe()
+	stderrReader, stderrWriter := io.Pipe()
+	cmd.Stdout = stdoutWriter
+	cmd.Stderr = stderrWriter
+	defer func() {
+		if !started {
+			_ = stdoutWriter.Close()
+			_ = stderrWriter.Close()
+			_ = stdoutReader.Close()
+			_ = stderrReader.Close()
+		}
+	}()
 
 	if err := cmd.Start(); err != nil {
-		cancel()
 		return "", nil, nil, nil, fmt.Errorf("start command: %w", err)
 	}
+	started = true
 
 	m.startedTotal.Add(1)
 	processID := uuid.NewString()
@@ -199,21 +227,34 @@ func (m *Manager) StartWithOptions(ownerIdentity string, options StartOptions) (
 		}
 	}()
 
+	// cmd.Stdout/cmd.Stderr are io.Pipe writers. exec pumps child output
+	// through them with copier goroutines whose lifetime is bounded by Wait,
+	// so once Wait returns no further writes happen; closing the writers here
+	// unblocks our readers. The synchronous pipes preserve every chunk that
+	// reaches the copiers, while WaitDelay bounds inherited descriptors.
+	var outputTruncated bool
 	exitCh := make(chan ExitInfo, 1)
 	go func() {
 		defer close(exitCh)
 		err := cmd.Wait()
+		_ = stdoutWriter.Close()
+		_ = stderrWriter.Close()
 		var exitCode *int
 		if cmd.ProcessState != nil {
 			code := cmd.ProcessState.ExitCode()
 			exitCode = &code
 		}
-		if err != nil && exitCode == nil {
-			m.logger.Warn("process:wait failed",
-				slog.String("processId", processID),
-				slog.String("ownerIdentity", ownerIdentity),
-				slog.String("error", err.Error()),
-			)
+		if err != nil {
+			var exitErr *exec.ExitError
+			if errors.Is(err, exec.ErrWaitDelay) {
+				outputTruncated = true
+			} else if !errors.As(err, &exitErr) {
+				m.logger.Warn("process:wait failed",
+					slog.String("processId", processID),
+					slog.String("ownerIdentity", ownerIdentity),
+					slog.String("error", err.Error()),
+				)
+			}
 		}
 
 		m.mu.Lock()
@@ -225,10 +266,10 @@ func (m *Manager) StartWithOptions(ownerIdentity string, options StartOptions) (
 		if !stopped || reason == "" {
 			reason = "exited"
 		}
-		exitCh <- ExitInfo{ExitCode: exitCode, Reason: reason, TimeoutSecs: options.TimeoutSecs}
+		exitCh <- ExitInfo{ExitCode: exitCode, Reason: reason, TimeoutSecs: options.TimeoutSecs, OutputTruncated: outputTruncated}
 	}()
 
-	return processID, stdout, stderr, exitCh, nil
+	return processID, stdoutReader, stderrReader, exitCh, nil
 }
 
 func (m *Manager) Abort(processID string) error {
@@ -322,7 +363,7 @@ func (m *Manager) terminateProcessGroup(managed *ManagedProcess, reason string) 
 		return fmt.Errorf("sigterm process group %d: %w", pgid, err)
 	}
 
-	time.Sleep(2 * time.Second)
+	time.Sleep(processTerminationGrace)
 
 	if err := syscall.Kill(-pgid, 0); err == nil {
 		m.forceKilledTotal.Add(1)
@@ -332,22 +373,6 @@ func (m *Manager) terminateProcessGroup(managed *ManagedProcess, reason string) 
 	}
 
 	return nil
-}
-
-func StreamChunks(reader io.Reader, onChunk func(string)) error {
-	buf := make([]byte, 32*1024)
-	for {
-		n, err := reader.Read(buf)
-		if n > 0 {
-			onChunk(string(buf[:n]))
-		}
-		if err != nil {
-			if errors.Is(err, io.EOF) {
-				return nil
-			}
-			return err
-		}
-	}
 }
 
 func (p *ManagedProcess) requestStop(reason string) bool {

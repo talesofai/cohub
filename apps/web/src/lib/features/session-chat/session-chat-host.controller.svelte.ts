@@ -28,6 +28,7 @@ import type { SessionListForkRecord } from "$lib/cache/db";
 import { getCacheUserKey } from "$lib/cache/keys";
 import { sessionTurnsRepo } from "$lib/cache/repositories/session-turns-repo";
 import { shouldRefreshAgentCatalogs } from "$lib/cache/space-fs-invalidation";
+import { noteViewerActivity } from "$lib/command-palette/palette-overview";
 import {
 	buildComposerTextContentBlock,
 	type ComposerFileAttachment,
@@ -2824,6 +2825,7 @@ export function createSessionChatHost(options: SessionChatHostOptions) {
 			});
 			if (result.mode !== "immediate")
 				throw new Error("Expected immediate generation response");
+			noteViewerActivity();
 			if (shouldClearComposerDraftAfterSend("create")) {
 				composer.clearDraft();
 				clearActiveComposerDraft();
@@ -3198,6 +3200,9 @@ export function createSessionChatHost(options: SessionChatHostOptions) {
 			if (sendResult.mode !== "immediate") {
 				throw new Error("Expected immediate prompt response");
 			}
+			// The server accepted the prompt even if this host moved elsewhere.
+			// Invalidate before the UI-only early return so Recent revalidates later.
+			noteViewerActivity();
 			// Prompt already accepted server-side. If we left the space, skip local
 			// adopt; other hosts / re-enter will load via WS or session fetch.
 			if (disposed || spaceId !== opSpaceId) {

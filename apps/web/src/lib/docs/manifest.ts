@@ -59,10 +59,16 @@ const NAV_ITEMS: DocsNavItem[] = [
 		file: "workspace/saves.md",
 	},
 	{
-		slug: "create/works",
+		slug: "create/apps",
 		title: "Apps",
 		section: "create",
-		file: "create/works.md",
+		file: "create/apps.md",
+	},
+	{
+		slug: "developers/apps",
+		title: "App development",
+		section: "developers",
+		file: "developers/apps.md",
 	},
 	{
 		slug: "developers/cli",
@@ -110,7 +116,8 @@ const NAV_TITLES: Record<DocsLocale, Record<string, string>> = {
 		"workspace/chats": "Chats",
 		"workspace/files-and-sandbox": "Files 与 Sandbox",
 		"workspace/saves": "Saves",
-		"create/works": "Apps",
+		"create/apps": "Apps",
+		"developers/apps": "App 开发",
 		"developers/cli": "CLI",
 		"developers/sdk": "SDK",
 	},

@@ -39,3 +39,22 @@ test("keeps sample weighting when combining heartbeats", () => {
   assert.equal(result?.length, 96);
   assert.equal(result?.[0], 75);
 });
+
+test("leaves explicit no-data heartbeats empty instead of treating them as outages", () => {
+  const windowStart = "2026-07-29T08:30:00.000Z";
+  const result = resampleModelStatusHeartbeats(
+    [
+      { start: windowStart, has_data: false, success_rate: 0 },
+      {
+        start: "2026-07-29T08:46:00.000Z",
+        has_data: true,
+        success_rate: 100,
+      },
+    ],
+    windowStart,
+    24 * 60,
+  );
+
+  assert.equal(result?.[0], null);
+  assert.equal(result?.[1], 100);
+});

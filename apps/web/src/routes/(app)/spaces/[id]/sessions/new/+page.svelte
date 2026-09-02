@@ -1,1 +1,1 @@
-<!-- UI lives in sessions/+layout.svelte so previews survive child-route navigations. -->
+<!-- Legacy route: +page.ts redirects to the Space root. -->

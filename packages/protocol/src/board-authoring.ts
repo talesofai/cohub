@@ -20,12 +20,17 @@ const extensionTypeSchema = z
 	.regex(/^[a-z][a-z0-9]*(?:[.-][a-z0-9]+)+$/)
 	.max(160);
 
-const BoardAuthoringFrameSchema = z.object({
+const BoardAuthoringPositionSchema = z.object({
 	x: finiteSchema,
 	y: finiteSchema,
+}).strict();
+const BoardAuthoringSizeSchema = z.object({
 	width: finiteSchema.positive(),
 	height: finiteSchema.positive(),
-	rotation: finiteSchema.default(0),
+}).strict();
+const BoardAuthoringPositionPatchSchema = z.object({
+	x: finiteSchema.optional(),
+	y: finiteSchema.optional(),
 }).strict();
 const pointSchema = z.object({
 	x: finiteSchema,
@@ -66,14 +71,25 @@ export type BoardItemSource = z.infer<typeof BoardItemSourceSchema>;
 
 const baseFields = {
 	id: idSchema,
-	frame: BoardAuthoringFrameSchema,
+	position: BoardAuthoringPositionSchema.default({ x: 0, y: 0 }),
+	rotation: finiteSchema.default(0),
 	parentId: idSchema.nullable().optional(),
 	locked: z.boolean().optional(),
 	metadata: jsonObjectSchema.optional(),
 };
 
-const styledBaseFields = {
+const sizedBaseFields = {
 	...baseFields,
+	size: BoardAuthoringSizeSchema.optional(),
+};
+const styledBaseFields = {
+	...sizedBaseFields,
+	style: BoardItemStyleSchema.optional(),
+};
+const { position: _positionField, size: _sizeField, ...strokeBaseFields } = sizedBaseFields;
+const strokeStyledBaseFields = {
+	...strokeBaseFields,
+	rotation: z.literal(0).default(0),
 	style: BoardItemStyleSchema.optional(),
 };
 
@@ -99,13 +115,13 @@ export const BoardGeoAuthoringItemSchema = z.object({
 }).strict();
 
 export const BoardDrawAuthoringItemSchema = z.object({
-	...styledBaseFields,
+	...strokeStyledBaseFields,
 	type: z.literal("draw"),
 	props: z.object({ points: z.array(pointSchema).min(1) }).strict(),
 }).strict();
 
 export const BoardArrowAuthoringItemSchema = z.object({
-	...styledBaseFields,
+	...strokeStyledBaseFields,
 	type: z.literal("arrow"),
 	props: z.object({
 		start: worldPointSchema,
@@ -124,7 +140,7 @@ export const BoardFrameAuthoringItemSchema = z.object({
 }).strict();
 
 const fileBackedFields = {
-	...baseFields,
+	...sizedBaseFields,
 	style: z.object({}).strict().optional(),
 	source: BoardItemSourceSchema,
 };
@@ -151,7 +167,7 @@ export const BoardFileAuthoringItemSchema = z.object({
 }).strict();
 
 export const BoardTaskAuthoringItemSchema = z.object({
-	...baseFields,
+	...sizedBaseFields,
 	type: z.literal("task"),
 	props: z.object({
 		taskRunId: z.string().min(1),
@@ -183,7 +199,7 @@ export const BoardBuiltinAuthoringItemSchema = z.discriminatedUnion(
 );
 
 export const BoardExtensionAuthoringItemSchema = z.object({
-	...baseFields,
+	...sizedBaseFields,
 	type: extensionTypeSchema,
 	kindVersion: z.number().int().positive(),
 	props: jsonObjectSchema,
@@ -201,17 +217,11 @@ export const BoardAuthoringItemSchema = z.union([
 ]);
 export type BoardAuthoringItem = z.infer<typeof BoardAuthoringItemSchema>;
 
-const framePatchSchema = z.object({
-	x: finiteSchema.optional(),
-	y: finiteSchema.optional(),
-	width: finiteSchema.positive().optional(),
-	height: finiteSchema.positive().optional(),
-	rotation: finiteSchema.optional(),
-}).strict();
-
 /** JSON Merge Patch semantics, constrained to the stable Item envelope. */
 export const BoardItemPatchSchema = z.object({
-	frame: framePatchSchema.optional(),
+	position: BoardAuthoringPositionPatchSchema.optional(),
+	size: BoardAuthoringSizeSchema.nullable().optional(),
+	rotation: finiteSchema.optional(),
 	parentId: idSchema.nullable().optional(),
 	locked: z.boolean().nullable().optional(),
 	props: jsonObjectSchema.optional(),
@@ -269,8 +279,8 @@ export const BOARD_AUTHORING_ITEM_CAPABILITIES = {
 	colors: BOARD_AUTHORING_COLOR_IDS,
 	shapes: BOARD_AUTHORING_GEO_KINDS,
 	coordinates: {
-		frame: "world" as const,
-		drawPoints: "frame-local" as const,
+		position: "world" as const,
+		drawPoints: "world" as const,
 		arrowEndpoints: "world" as const,
 	},
 };

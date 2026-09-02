@@ -24,14 +24,16 @@ import type {
   BoardComposition,
 } from "./board-composition.js";
 
-export {
-  BOARD_BUILTIN_CAPABILITIES,
-  BOARD_BUILTIN_CLIP_KINDS,
-  BOARD_BUILTIN_EFFECT_KINDS,
-  DEFAULT_BOARD_RENDER_LIMITS,
-  type BoardCapability,
-  type BoardCoordinateSpace,
-  type BoardRenderCost,
+// Note: value re-exports from board-constants are intentionally omitted here.
+// The barrel (index.ts) already re-exports them via `export * from
+// "./board-constants.js"`; re-exporting them again through board.js makes
+// import-in-the-middle (the OpenTelemetry ESM hook used at runtime) see the
+// same name arrive through two distinct star-re-export paths and drop it as
+// ambiguous, even though Node's native ResolveExport would merge them.
+export type {
+  BoardCapability,
+  BoardCoordinateSpace,
+  BoardRenderCost,
 } from "./board-constants.js";
 
 export const BOARD_EXTENSION = ".board" as const;
@@ -230,6 +232,18 @@ export type BoardMutationReceipt = {
     orderChanged: boolean;
   };
 };
+
+export function isPureBoardAnimationChange(
+  changed: BoardMutationReceipt["changed"],
+): boolean {
+  return (
+    (changed.effects.length > 0 || changed.compositions.length > 0) &&
+    changed.items.length === 0 &&
+    changed.connections.length === 0 &&
+    !changed.board &&
+    !changed.orderChanged
+  );
+}
 
 export type BoardSummary = {
   board: BoardRecord;

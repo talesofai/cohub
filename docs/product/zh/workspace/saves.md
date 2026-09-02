@@ -55,15 +55,15 @@ Cohub 可展示：
 
 把 Saves 当作可站上去的历史，而不是 Chat 书签。
 
-## Saves vs Chats vs Works
+## Saves vs Chats vs Apps
 
 | 对象 | 捕获什么 | 用于 |
 | --- | --- | --- |
 | Chat | 对话与 turns | 推理与迭代 |
 | Save | 工作区快照 | 里程碑与恢复 |
-| Work | 已发布表面 | 对外分享结果 |
+| App | 已发布表面 | 对外分享结果 |
 
-好的演示常常三者都需要：产出它的 Chat、冻结它的 Save、分享它的 Work。
+好的演示常常三者都需要：产出它的 Chat、冻结它的 Save、分享它的 App。
 
 ## 组织
 
@@ -78,12 +78,12 @@ Cohub 可展示：
 ## 实用建议
 
 - 让 Agent 做大范围清理前先 Save
-- 输出可发布时，先 Save，再从稳定路径发布 Work
+- 输出可发布时，先 Save，再从稳定路径发布 App
 - 宁可少量清晰 Saves，也不要几十个噪声 Saves
 - 出问题先找最近的 green Save，再临时发挥
 
 ## 相关
 
 - [Files 与 Sandbox](/zh/docs/workspace/files-and-sandbox)
-- [Works](/zh/docs/create/works)
+- [Apps](/zh/docs/create/apps)
 - [快速开始](/zh/docs/learn/quick-start)

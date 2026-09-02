@@ -1,6 +1,7 @@
-import type {
-	BoardAuthoringSnapshot,
-	BoardSemanticMutation,
+import {
+	type BoardAuthoringSnapshot,
+	type BoardSemanticMutation,
+	isPureBoardAnimationChange,
 } from "@cohub/protocol";
 import type {
 	BoardPlaybackSnapshot,
@@ -25,6 +26,7 @@ import {
 	boardPathMatchesTarget,
 	canAdoptBoardVersion,
 	hasBoardIdentity,
+	mergeChangedRecords,
 } from "$lib/board/board-sync-policy";
 import {
 	type BoardRuntimeData,
@@ -80,6 +82,7 @@ export function createBoardWindowController(
 	const pendingFlushRequested = new Set<string>();
 	const manifestRefreshByPath = new Map<string, Promise<void>>();
 	const manifestRefreshRequested = new Set<string>();
+	const boardRealtimeUnsubscribers = new Map<string, () => void>();
 	/** Conflict-recovery attempts per document, to bound rebase retries. */
 	let conflictAttemptsByBoardId: Record<string, number> = {};
 	/** Remote semantic changes deferred while a save is in flight. */
@@ -197,6 +200,46 @@ export function createBoardWindowController(
 			});
 	}
 
+	function subscribeBoardRealtime(boardId: string) {
+		if (boardRealtimeUnsubscribers.has(boardId)) return;
+		const boardClient = sdk.space(options.getSpaceId()).board(boardId);
+		const unsubscribe = boardClient.subscribe({
+			changed: (event) => {
+				if (isOwnTransaction(event.payload.mutationId)) return;
+				if (event.payload.changed.items.length && event.payload.actorId) {
+					noteRemoteTransaction({
+						boardId,
+						actorId: event.payload.actorId,
+						txId: event.payload.mutationId,
+						itemIds: event.payload.changed.items,
+						source: event.payload.source ?? null,
+					});
+				}
+				const pureAnimation = isPureBoardAnimationChange(event.payload.changed);
+				if (event.payload.animationPatch && pureAnimation) {
+					if (
+						applyRemoteAnimationPatch({
+							boardId,
+							version: event.payload.version,
+							changed: event.payload.changed,
+							animationPatch: event.payload.animationPatch,
+						})
+					)
+						return;
+					requestRemoteRefresh(boardId);
+					return;
+				}
+				requestRemoteChange(boardId, {
+					version: event.payload.version,
+					mutationId: event.payload.mutationId,
+					changed: event.payload.changed,
+				});
+			},
+			playback: (event) => applyPlayback(event.payload),
+		});
+		boardRealtimeUnsubscribers.set(boardId, unsubscribe);
+	}
+
 	function isCurrent(token: number, path: string, sourceKey: string) {
 		const board = boards.find((item) => item.path === path);
 		return (
@@ -260,11 +303,23 @@ export function createBoardWindowController(
 			if (!manifest) throw new Error("Board manifest is invalid.");
 			// Expose the manifest identity while the first inspect is in flight, so
 			// realtime transactions can queue by boardId instead of being dropped.
+			if (
+				existingBoard?.boardId &&
+				existingBoard.boardId !== manifest.boardId &&
+				!boards.some(
+					(item) =>
+						item.boardId === existingBoard.boardId && item.path !== path,
+				)
+			) {
+				boardRealtimeUnsubscribers.get(existingBoard.boardId)?.();
+				boardRealtimeUnsubscribers.delete(existingBoard.boardId);
+			}
 			if (showLoading) {
 				boards = boards.map((item) =>
 					item.path === path ? { ...item, boardId: manifest.boardId } : item,
 				);
 			}
+			subscribeBoardRealtime(manifest.boardId);
 			const bootstrap = await inspect(manifest.boardId);
 			if (!isCurrent(token, path, sourceKey)) return;
 			const current = boards.find((item) => item.path === path);
@@ -293,10 +348,7 @@ export function createBoardWindowController(
 			) {
 				clearActivitiesForBoard(existingBoard.boardId);
 			}
-			syncVersionByBoardId = {
-				...syncVersionByBoardId,
-				[bootstrap.board.id]: bootstrap.board.version,
-			};
+			advanceSyncVersion(bootstrap.board.id, bootstrap.board.version);
 			boards = boards.map((item) =>
 				item.path === path
 					? {
@@ -404,6 +456,8 @@ export function createBoardWindowController(
 			closing?.boardId &&
 			!nextBoards.some((item) => item.boardId === closing.boardId)
 		) {
+			boardRealtimeUnsubscribers.get(closing.boardId)?.();
+			boardRealtimeUnsubscribers.delete(closing.boardId);
 			clearActivitiesForBoard(closing.boardId);
 			pendingRemoteBootstrap.delete(closing.boardId);
 			pendingRemoteEvents = pendingRemoteEvents.filter(
@@ -416,6 +470,20 @@ export function createBoardWindowController(
 				nextBoards[Math.max(0, index - 1)]?.path ?? nextBoards[0]?.path ?? null;
 		if (nextBoards.length === 0) options.onClosePanel?.();
 		options.onBoardClosed?.(path);
+	}
+
+	function dispose() {
+		for (const unsubscribe of boardRealtimeUnsubscribers.values())
+			unsubscribe();
+		for (const timer of activityExpiryTimers.values()) clearTimeout(timer);
+		boardRealtimeUnsubscribers.clear();
+		activityExpiryTimers.clear();
+		ownTxIds.clear();
+		conflictAttemptsByBoardId = {};
+		pendingRecoveryCleanup.clear();
+		boards = [];
+		pendingRemoteEvents = [];
+		pendingRemoteBootstrap.clear();
 	}
 
 	function closeBoardsAtPath(path: string, recursive = false) {
@@ -456,10 +524,7 @@ export function createBoardWindowController(
 								.space(options.getSpaceId())
 								.board(boardId)
 								.mutateSemantic(mutation);
-							syncVersionByBoardId = {
-								...syncVersionByBoardId,
-								[boardId]: result.board.version,
-							};
+							advanceSyncVersion(boardId, result.board.version);
 							// A successful commit resets the conflict-recovery budget.
 							delete conflictAttemptsByBoardId[boardId];
 							// ownTxIds is registered when the pending tx is written; keep
@@ -511,10 +576,7 @@ export function createBoardWindowController(
 	 */
 	async function recoverFromConflict(boardId: string) {
 		const bootstrap = await inspect(boardId);
-		syncVersionByBoardId = {
-			...syncVersionByBoardId,
-			[boardId]: bootstrap.board.version,
-		};
+		advanceSyncVersion(boardId, bootstrap.board.version);
 		// Mark recovery in flight; commitBoard performs the stale-tx cleanup once
 		// the fresh rebase transaction is persisted.
 		pendingRecoveryCleanup.add(boardId);
@@ -655,6 +717,12 @@ export function createBoardWindowController(
 		return typeof txId === "string" && ownTxIds.has(txId);
 	}
 
+	function advanceSyncVersion(boardId: string, version: number) {
+		const current = syncVersionByBoardId[boardId] ?? null;
+		if (current !== null && version <= current) return;
+		syncVersionByBoardId = { ...syncVersionByBoardId, [boardId]: version };
+	}
+
 	function isBusy(boardId: string): boolean {
 		return Boolean(
 			boards.some((item) => item.boardId === boardId && item.saving) ||
@@ -743,37 +811,19 @@ export function createBoardWindowController(
 			snapshot,
 			event.changed,
 		);
-		const mergeRecords = <T extends { id: string }>(
-			existing: T[],
-			incoming: T[] | undefined,
-			changedIds: string[],
-		): T[] => {
-			if (incoming === undefined && changedIds.length === 0) return existing;
-			const received = new Map(
-				(incoming ?? []).map((record) => [record.id, record]),
-			);
-			const changed = new Set(changedIds);
-			const merged = existing
-				.filter((record) => !changed.has(record.id) || received.has(record.id))
-				.map((record) => received.get(record.id) ?? record);
-			const present = new Set(merged.map((record) => record.id));
-			return [
-				...merged,
-				...[...received.values()].filter((record) => !present.has(record.id)),
-			];
-		};
+
 		const nextRuntime =
 			event.changed.effects.length || event.changed.compositions.length
 				? boardRuntimeDataFromAuthoring({
 						...snapshot,
-						effects: mergeRecords(
+						effects: mergeChangedRecords(
 							board.runtime?.effects ?? [],
-							snapshot.effects,
+							snapshot.effects ?? [],
 							event.changed.effects,
 						),
-						compositions: mergeRecords(
+						compositions: mergeChangedRecords(
 							board.runtime?.compositions ?? [],
-							snapshot.compositions,
+							snapshot.compositions ?? [],
 							event.changed.compositions,
 						),
 						playback:
@@ -782,10 +832,7 @@ export function createBoardWindowController(
 								: (board.runtime?.playback ?? null),
 					})
 				: board.runtime;
-		syncVersionByBoardId = {
-			...syncVersionByBoardId,
-			[event.boardId]: event.version,
-		};
+		advanceSyncVersion(event.boardId, event.version);
 		boards = boards.map((item) =>
 			item.boardId === event.boardId
 				? { ...item, document: nextDocument, runtime: nextRuntime, error: null }
@@ -967,15 +1014,58 @@ export function createBoardWindowController(
 		);
 	}
 
+	function applyRemoteAnimationPatch(event: {
+		boardId: string;
+		version: number;
+		changed: PendingRemoteEvent["changed"];
+		animationPatch: {
+			effects: BoardRuntimeData["effects"];
+			compositions: BoardRuntimeData["compositions"];
+			playback?: BoardPlaybackSnapshot | null;
+		};
+	}): boolean {
+		const board = boards.find((item) => item.boardId === event.boardId);
+		const localVersion = syncVersionByBoardId[event.boardId] ?? null;
+		if (!board?.runtime || localVersion == null) return false;
+		if (event.version <= localVersion) return true;
+		if (isBusy(event.boardId) || drainingDocuments.has(event.boardId))
+			return false;
+		if (event.version !== localVersion + 1) return false;
+		const effects = mergeChangedRecords(
+			board.runtime.effects,
+			event.animationPatch.effects,
+			event.changed.effects,
+		);
+		const compositions = mergeChangedRecords(
+			board.runtime.compositions,
+			event.animationPatch.compositions,
+			event.changed.compositions,
+		);
+		advanceSyncVersion(event.boardId, event.version);
+		boards = boards.map((item) =>
+			item.boardId === event.boardId && item.runtime
+				? {
+						...item,
+						runtime: {
+							...item.runtime,
+							effects,
+							compositions,
+							...(event.animationPatch.playback !== undefined
+								? { playback: event.animationPatch.playback }
+								: {}),
+						},
+					}
+				: item,
+		);
+		return true;
+	}
+
 	function applyBootstrap(boardId: string, bootstrap: BoardAuthoringSnapshot) {
 		const board = boards.find((item) => item.boardId === boardId);
 		if (!board || board.saving) return;
 		const currentVersion = syncVersionByBoardId[boardId] ?? null;
 		if (!canAdoptBoardVersion(currentVersion, bootstrap.board.version)) return;
-		syncVersionByBoardId = {
-			...syncVersionByBoardId,
-			[boardId]: bootstrap.board.version,
-		};
+		advanceSyncVersion(boardId, bootstrap.board.version);
 		boards = boards.map((item) =>
 			item.boardId === boardId
 				? {
@@ -1007,18 +1097,10 @@ export function createBoardWindowController(
 		activateBoard,
 		commitBoard,
 		retryBoardSave,
-		flushPendingTransactions,
-		hasBoardId,
 		refreshBoardManifest,
 		reconcileOpenBoards,
-		requestRemoteRefresh,
-		requestRemoteChange,
-		noteRemoteTransaction,
-		isOwnTransaction,
 		renamePath,
 		closeBoardsAtPath,
-		setError,
-		applyPlayback,
-		applyBootstrap,
+		dispose,
 	};
 }

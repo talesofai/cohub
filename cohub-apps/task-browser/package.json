@@ -1,0 +1,37 @@
+{
+  "name": "cohub-task-browser",
+  "private": true,
+  "version": "0.1.0",
+  "description": "A standalone Cohub App for browsing multimodal generation tasks.",
+  "license": "Apache-2.0",
+  "type": "module",
+  "engines": {
+    "node": ">=22.0.0"
+  },
+  "scripts": {
+    "dev": "vite",
+    "build": "vite build",
+    "preview": "vite preview",
+    "typecheck": "svelte-check --tsconfig ./tsconfig.json",
+    "lint": "biome lint src/*.ts vite.config.ts",
+    "lint:fix": "biome lint --write src/*.ts vite.config.ts",
+    "test": "node --import tsx --test 'src/**/*.test.ts'",
+    "check": "npm run typecheck && npm run lint && npm test && npm run build"
+  },
+  "dependencies": {
+    "@fontsource/geist": "^5.2.9",
+    "@fontsource/geist-mono": "^5.2.8",
+    "@lucide/svelte": "^1.33.0",
+    "@neta-art/cohub": "^8.1.0",
+    "svelte": "^5.56.9"
+  },
+  "devDependencies": {
+    "@biomejs/biome": "^2.5.3",
+    "@sveltejs/vite-plugin-svelte": "^7.3.0",
+    "@types/node": "^26.2.0",
+    "svelte-check": "^4.7.2",
+    "tsx": "^4.23.1",
+    "typescript": "^6.0.3",
+    "vite": "^8.2.1"
+  }
+}

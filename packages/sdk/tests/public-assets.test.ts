@@ -173,6 +173,7 @@ it("forwards abort signals to upload plan requests", async () => {
   const api = new PublicAssetsApi(transport);
   await api.createUpload({
     purpose: "chat_attachment",
+    uploadProtocol: "presigned_put_v1",
     file: { size: 4, mimeType: "text/plain", filename: "file.txt" },
   }, { signal: controller.signal });
 

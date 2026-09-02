@@ -26,6 +26,7 @@ function createHarness() {
 	let activeAppId: string | null = null;
 	let boardOpenCount = 0;
 	const urls: Array<Ref | null> = [];
+	const appInvocations: Array<unknown> = [];
 
 	const drop = (list: string[], key: string) =>
 		list.filter((item) => item !== key);
@@ -80,6 +81,7 @@ function createHarness() {
 		},
 		openApp: (input) => {
 			if (!appIds.includes(input.appId)) appIds = [...appIds, input.appId];
+			appInvocations.push(input.openContext);
 			activeAppId = input.appId;
 		},
 		activateApp: (appId) => {
@@ -100,11 +102,12 @@ function createHarness() {
 	return {
 		controller,
 		urls,
+		appInvocations,
 		counts: () => ({
 			files: filePaths.length,
 			boards: boardPaths.length,
 			ports: ports.length,
-			works: appIds.length,
+			apps: appIds.length,
 		}),
 		boardOpenCount: () => boardOpenCount,
 		/** Simulate a domain closing a tab on its own schedule. */
@@ -119,7 +122,10 @@ test("closing the active preview falls back to the most recently used surface", 
 	const { controller } = createHarness();
 	await controller.openFile("docs/a.md");
 	controller.openPort("5173", "http://x");
-	controller.openApp({ appId: WORK_ID });
+	controller.openApp({
+		appId: WORK_ID,
+		openContext: { source: "user" },
+	});
 
 	controller.close("app", WORK_ID);
 
@@ -134,7 +140,10 @@ test("re-activating an older tab makes it the fallback again", async () => {
 	await controller.openFile("docs/a.md");
 	await controller.openBoard("plans/main.board");
 	controller.activate("file", "docs/a.md");
-	controller.openApp({ appId: WORK_ID });
+	controller.openApp({
+		appId: WORK_ID,
+		openContext: { source: "user" },
+	});
 
 	controller.close("app", WORK_ID);
 
@@ -192,7 +201,10 @@ test("a reopened tab does not inherit its previous access order", async () => {
 	// Reopening the port must rank it as newest, not restore the stale ordering
 	// left behind by the closed tab.
 	controller.openPort("5173", "http://x");
-	controller.openApp({ appId: WORK_ID });
+	controller.openApp({
+		appId: WORK_ID,
+		openContext: { source: "user" },
+	});
 	controller.close("app", WORK_ID);
 
 	assert.deepEqual(controller.currentRef(), { kind: "port", key: "5173" });
@@ -203,14 +215,17 @@ test("compact session navigation suspends tabs without disposing runtimes", asyn
 	await controller.openFile("docs/a.md");
 	await controller.openBoard("plans/main.board");
 	controller.openPort("5173", "http://x");
-	controller.openApp({ appId: WORK_ID });
+	controller.openApp({
+		appId: WORK_ID,
+		openContext: { source: "user" },
+	});
 	const opensBeforeSuspend = boardOpenCount();
 
 	assert.equal(controller.suspendForRoute(), true);
 	assert.equal(controller.suspended, true);
 	assert.equal(controller.currentRef(), null);
 	assert.equal(controller.activeKind, null);
-	assert.deepEqual(counts(), { files: 1, boards: 1, ports: 1, works: 1 });
+	assert.deepEqual(counts(), { files: 1, boards: 1, ports: 1, apps: 1 });
 
 	controller.applyRoute({ kind: "board", key: "plans/main.board" });
 	assert.equal(controller.suspended, false);
@@ -230,11 +245,14 @@ test("closeAll drops every domain tab and the active ref", async () => {
 	await controller.openFile("docs/a.md");
 	await controller.openBoard("plans/main.board");
 	controller.openPort("5173", "http://x");
-	controller.openApp({ appId: WORK_ID });
+	controller.openApp({
+		appId: WORK_ID,
+		openContext: { source: "user" },
+	});
 
 	controller.closeAll();
 
-	assert.deepEqual(counts(), { files: 0, boards: 0, ports: 0, works: 0 });
+	assert.deepEqual(counts(), { files: 0, boards: 0, ports: 0, apps: 0 });
 	assert.equal(controller.currentRef(), null);
 });
 
@@ -245,7 +263,7 @@ test("route hydration adopts each preview kind without writing the URL back", as
 		{ kind: "port", key: "5173" },
 		{ kind: "app", key: WORK_ID },
 	] as const) {
-		const { controller, urls } = createHarness();
+		const { controller, urls, appInvocations } = createHarness();
 		const result = controller.applyRoute(ref);
 		// File and Board open asynchronously; let their domain tab land.
 		await Promise.resolve();
@@ -253,6 +271,9 @@ test("route hydration adopts each preview kind without writing the URL back", as
 		assert.equal(result.ok, true);
 		assert.deepEqual(controller.currentRef(), ref);
 		assert.equal(urls.length, 0);
+		if (ref.kind === "app") {
+			assert.deepEqual(appInvocations, [{ source: "route" }]);
+		}
 	}
 });
 
@@ -260,7 +281,10 @@ test("a context teardown never writes the URL of the route it is leaving for", a
 	const { controller, urls } = createHarness();
 	await controller.openFile("docs/a.md");
 	controller.openPort("5173", "http://x");
-	controller.openApp({ appId: WORK_ID });
+	controller.openApp({
+		appId: WORK_ID,
+		openContext: { source: "user" },
+	});
 	const writesBefore = urls.length;
 
 	// Leaving a Space/FS context: the new route is already in the address bar, so
@@ -276,7 +300,10 @@ test("a context teardown never writes the URL of the route it is leaving for", a
 
 test("the route that follows a context teardown survives", async () => {
 	const { controller, urls } = createHarness();
-	controller.openApp({ appId: WORK_ID });
+	controller.openApp({
+		appId: WORK_ID,
+		openContext: { source: "user" },
+	});
 	const writesBefore = urls.length;
 
 	// Full sequence of a Space switch: tear the old context down, then hydrate the
@@ -345,7 +372,7 @@ test("panels open only once their tab is the committed active surface", () => {
 		new URL("port-window-controller.svelte.ts", modules),
 		"utf8",
 	);
-	const work = readFileSync(
+	const app = readFileSync(
 		new URL("app-window-controller.svelte.ts", modules),
 		"utf8",
 	);
@@ -355,7 +382,7 @@ test("panels open only once their tab is the committed active surface", () => {
 	for (const [source, activeAssignment] of [
 		[board, "activeBoardPath = path"],
 		[port, "activePort = port"],
-		[work, "activeAppId = input.appId"],
+		[app, "activeAppId = input.appId"],
 	] as const) {
 		const activeAt = source.indexOf(activeAssignment);
 		const openPanelAt = source.indexOf("options.onOpenPanel?.()");

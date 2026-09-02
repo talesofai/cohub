@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import type { ChannelEnvelope } from "@cohub/protocol/realtime";
-import type { WorkRecord, WorkVersionRecord } from "@neta-art/cohub";
+import type { AppRecord, AppVersionRecord } from "@neta-art/cohub";
 import {
 	createAppMutationBuffer,
 	parseAppVersionPublished,
@@ -9,7 +9,7 @@ import {
 	upsertAppVersion,
 } from "$lib/features/app/app-realtime";
 
-const work = (latestVersion: number, updatedAt: string): WorkRecord => ({
+const app = (latestVersion: number, updatedAt: string): AppRecord => ({
 	id: "work-1",
 	spaceId: "space-1",
 	userUuid: "user-1",
@@ -29,7 +29,7 @@ const work = (latestVersion: number, updatedAt: string): WorkRecord => ({
 	updatedAt,
 });
 
-const version = (value: number): WorkVersionRecord => ({
+const version = (value: number): AppVersionRecord => ({
 	id: `version-${value}`,
 	appId: "work-1",
 	version: value,
@@ -50,7 +50,7 @@ test("parseAppVersionPublished validates the app relationship", () => {
 		type: "app.version.published",
 		spaceId: "space-1",
 		payload: {
-			app: work(2, "2026-07-20T00:00:00.000Z"),
+			app: app(2, "2026-07-20T00:00:00.000Z"),
 			version: version(2),
 			previousVersionId: "version-1",
 		},
@@ -69,17 +69,17 @@ test("parseAppVersionPublished validates the app relationship", () => {
 });
 
 test("upsertAppSnapshot ignores older and stale same-version snapshots", () => {
-	const current = work(3, "2026-07-20T03:00:00.000Z");
+	const current = app(3, "2026-07-20T03:00:00.000Z");
 	assert.equal(
-		upsertAppSnapshot([current], work(2, "2026-07-20T04:00:00.000Z"))[0],
+		upsertAppSnapshot([current], app(2, "2026-07-20T04:00:00.000Z"))[0],
 		current,
 	);
 	assert.equal(
-		upsertAppSnapshot([current], work(3, "2026-07-20T02:00:00.000Z"))[0],
+		upsertAppSnapshot([current], app(3, "2026-07-20T02:00:00.000Z"))[0],
 		current,
 	);
 	assert.equal(
-		upsertAppSnapshot([current], work(4, "2026-07-20T01:00:00.000Z"))[0]
+		upsertAppSnapshot([current], app(4, "2026-07-20T01:00:00.000Z"))[0]
 			?.latestVersion,
 		4,
 	);
@@ -94,17 +94,17 @@ test("upsertAppVersion deduplicates and keeps newest versions first", () => {
 	);
 });
 
-test("work mutation buffer replays realtime changes onto a stale list", () => {
+test("app mutation buffer replays realtime changes onto a stale list", () => {
 	const buffer = createAppMutationBuffer();
-	const other: WorkRecord = {
-		...work(1, "2026-07-20T00:00:00.000Z"),
+	const other: AppRecord = {
+		...app(1, "2026-07-20T00:00:00.000Z"),
 		id: "work-2",
 	};
-	const published = work(5, "2026-07-20T05:00:00.000Z");
+	const published = app(5, "2026-07-20T05:00:00.000Z");
 
 	// A publish lands while the full list request is still in flight.
 	buffer.upsert(published);
-	const merged = buffer.apply([work(4, "2026-07-20T04:00:00.000Z"), other]);
+	const merged = buffer.apply([app(4, "2026-07-20T04:00:00.000Z"), other]);
 
 	// The event wins for its own Work, and the Space's other Works survive.
 	assert.deepEqual(
@@ -118,14 +118,14 @@ test("work mutation buffer replays realtime changes onto a stale list", () => {
 	assert.deepEqual(buffer.apply([other]), [other]);
 });
 
-test("work mutation buffer keeps deletes and last write per work", () => {
+test("app mutation buffer keeps deletes and last write per app", () => {
 	const buffer = createAppMutationBuffer();
-	buffer.upsert(work(2, "2026-07-20T02:00:00.000Z"));
+	buffer.upsert(app(2, "2026-07-20T02:00:00.000Z"));
 	buffer.remove("work-1");
-	assert.deepEqual(buffer.apply([work(1, "2026-07-20T01:00:00.000Z")]), []);
+	assert.deepEqual(buffer.apply([app(1, "2026-07-20T01:00:00.000Z")]), []);
 
 	buffer.remove("work-1");
-	buffer.upsert(work(3, "2026-07-20T03:00:00.000Z"));
+	buffer.upsert(app(3, "2026-07-20T03:00:00.000Z"));
 	assert.deepEqual(
 		buffer.apply([]).map((item) => item.latestVersion),
 		[3],

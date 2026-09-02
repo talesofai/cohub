@@ -9,7 +9,7 @@ description: Cohub UI 的简明地图 — 侧栏、Chat、预览与设置。
 
 登录后，Cohub 是一个工作区壳：
 
-- **左侧栏** — Space 切换、Chats、Saves、Works、任务、labels、账户入口
+- **左侧栏** — Space 切换、Chats、Saves、Apps、任务、labels、账户入口
 - **主面板** — 通常是 Chat，有时是设置或管理页
 - **预览 / 文件区** — 在对话旁打开文件、目录和端口
 - **命令面板** — `⌘K` / `Ctrl K` 全局搜索与导航
@@ -28,7 +28,7 @@ description: Cohub UI 的简明地图 — 侧栏、Chat、预览与设置。
 | Space 头部 | 当前 Space、切换器、设置入口 |
 | Chats | 对话列表，常按 labels 组织 |
 | Saves | checkpoint 历史 |
-| Works | 该 Space 已发布的表面 |
+| Apps | 该 Space 已发布的表面 |
 | Tasks / schedules | 异步运行与定时 prompt |
 | Labels | 自定义与系统组织 |
 
@@ -87,7 +87,7 @@ Space settings 管的是 Space 的长期配置：
 | --- | --- |
 | Sessions inbox | 跨 Space 的最近 Chats |
 | Trending | 发现公开动态 |
-| 公开 Work 页 | `/:username/:spaceSlug/w/:workSlug` |
+| 公开 App 页 | `/:username/:spaceSlug/w/:appSlug` |
 | 账户设置 | 资料、外观、账单、推荐、Channel 默认值 |
 
 ## 心智模型
@@ -98,7 +98,7 @@ Account
         ├── Chats + Composer
         ├── Files + Sandbox + Preview
         ├── Saves
-        ├── Works
+        ├── Apps
         ├── Tasks / Scheduled prompts
         ├── Labels
         └── Settings（成员、访问、channels、mods、env）

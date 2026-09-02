@@ -256,6 +256,7 @@ async function runCommandHook(input: {
     ) as AgentRunCommandJobResult;
     const output = clampOutput(result.output ?? "");
     const failed = (result.exitCode ?? 1) !== 0
+      || result.outputTruncated === true
       || result.termination?.reason === "timed_out"
       || result.termination?.reason === "aborted";
     return {
@@ -270,7 +271,9 @@ async function runCommandHook(input: {
       ...(failed
         ? {
             error: result.termination?.message
-              ?? (result.exitCode == null ? "hook command failed" : `exit code ${result.exitCode}`),
+              ?? (result.outputTruncated
+                ? "hook output was truncated"
+                : result.exitCode == null ? "hook command failed" : `exit code ${result.exitCode}`),
           }
         : {}),
     };

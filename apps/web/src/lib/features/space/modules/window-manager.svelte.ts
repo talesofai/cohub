@@ -1,4 +1,3 @@
-import type { AppRuntimeInvocationContext } from "@neta-art/cohub";
 import {
 	alignWindowNavigation,
 	beginWindowNavigation,
@@ -9,6 +8,7 @@ import {
 } from "./window-navigation";
 import type { WindowKind, WindowRef } from "./window-route";
 import { isValidAppKey, isValidPortKey } from "./window-route";
+import type { WorkspaceAppOpenContext } from "./workspace-app-context";
 
 type FileTabLike = {
 	path: string;
@@ -61,7 +61,7 @@ type WindowManagerOptions = {
 		appId: string;
 		label?: string;
 		launch?: { search?: string; hash?: string } | null;
-		invocation?: AppRuntimeInvocationContext | null;
+		openContext: WorkspaceAppOpenContext;
 	}) => void;
 	activateApp: (appId: string) => void;
 	closeApp: (appId?: string | null) => void;
@@ -93,7 +93,7 @@ function isDirtyFileTab(tab: FileTabLike) {
 }
 
 /**
- * Single active-tab coordinator over file/board/port/work domain controllers.
+ * Single active-tab coordinator over file/board/port/app domain controllers.
  * Owns: the active preview ref, access order, budget, URL sync, open/close.
  * Does not own: file drafts, board docs, port endpoints (domain controllers do).
  *
@@ -386,7 +386,7 @@ export function createWindowManager(options: WindowManagerOptions) {
 	}
 
 	/**
-	 * Show a Work preview. Idempotent by Work id: repeating re-activates the
+	 * Show an App preview. Idempotent by App id: repeating re-activates the
 	 * existing tab and refreshes its launch state.
 	 */
 	function openApp(
@@ -394,7 +394,7 @@ export function createWindowManager(options: WindowManagerOptions) {
 			appId: string;
 			label?: string;
 			launch?: { search?: string; hash?: string } | null;
-			invocation?: AppRuntimeInvocationContext | null;
+			openContext: WorkspaceAppOpenContext;
 		},
 		opts: { syncUrl?: boolean; source?: WindowNavigationSource } = {},
 	) {
@@ -529,7 +529,10 @@ export function createWindowManager(options: WindowManagerOptions) {
 			return { ok: true as const };
 		}
 		if (ref.kind === "app") {
-			openApp({ appId: ref.key }, { syncUrl: false, source: "route" });
+			openApp(
+				{ appId: ref.key, openContext: { source: "route" } },
+				{ syncUrl: false, source: "route" },
+			);
 			return { ok: true as const };
 		}
 		// Port routes wait for a trusted endpoint before activating a surface.

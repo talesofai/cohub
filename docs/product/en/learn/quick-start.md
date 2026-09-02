@@ -1,6 +1,6 @@
 ---
 title: Quick start
-description: Create a Space, chat with an Agent, touch files, save a checkpoint, and publish a Work.
+description: Create a Space, chat with an Agent, touch files, save a checkpoint, and publish an App.
 ---
 
 This is the shortest useful loop in Cohub. Aim for one clean pass, not perfection.
@@ -17,7 +17,7 @@ If you already have Spaces, the app returns you to recent work. Otherwise create
 2. Optionally set a public slug later in settings.
 3. Enter the Space. You land on a new Chat.
 
-A new Space is already a workspace: files, Sandbox, Saves, and Works are available even if empty.
+A new Space is already a workspace: files, Sandbox, Saves, and Apps are available even if empty.
 
 ## 3. Start a Chat
 
@@ -56,16 +56,16 @@ When the Space reaches a meaningful state:
 
 Save after a working milestone, not after every message.
 
-## 6. Publish a Work
+## 6. Publish an App
 
 If the Space has something shareable:
 
 1. Open the HTML file, site directory, or live port
-2. Publish it as a Work
-3. Choose a Work slug
+2. Publish it as an App
+3. Choose an App slug
 4. Open the public URL
 
-Work targets:
+App targets:
 
 | Target | Use when |
 | --- | --- |
@@ -87,6 +87,6 @@ You can answer yes to all four:
 1. I have a Space
 2. I have at least one Chat with useful history
 3. I created a Save I could restore or fork from
-4. I know how to publish a Work when output is ready
+4. I know how to publish an App when output is ready
 
-Next: dig into [Spaces](/docs/workspace/spaces), [Chats](/docs/workspace/chats), or [Works](/docs/create/works).
+Next: dig into [Spaces](/docs/workspace/spaces), [Chats](/docs/workspace/chats), or [Apps](/docs/create/apps).
