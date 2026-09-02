@@ -1959,7 +1959,10 @@ router.post("/:id/prompt", async (c) => {
   const clientMessageId = body.clientMessageId?.trim() || crypto.randomUUID();
   if (clientMessageId.length > 255) return c.json({ message: "clientMessageId is too long" }, 400);
 
-  const idempotencyKey = buildPromptIdempotencyKey(clientMessageId, runtimeId);
+  const idempotencyKeys = [...new Set([
+    buildPromptIdempotencyKey(clientMessageId, runtimeId),
+    buildPromptIdempotencyKey(clientMessageId, null),
+  ])];
   const [existingAttempt] = await db.select({
     turnId: workspaceExecutionAttempts.turnId,
     sessionId: workspaceExecutionAttempts.sessionId,
@@ -1973,7 +1976,7 @@ router.post("/:id/prompt", async (c) => {
     .innerJoin(sessionTurns, eq(sessionTurns.id, workspaceExecutionAttempts.turnId))
     .where(and(
       eq(workspaceExecutionAttempts.spaceId, spaceId),
-      eq(workspaceExecutionAttempts.idempotencyKey, idempotencyKey),
+      inArray(workspaceExecutionAttempts.idempotencyKey, idempotencyKeys),
     )).limit(1);
   if (existingAttempt) {
     const existingRuntimeId = existingAttempt.runtimeId ?? null;

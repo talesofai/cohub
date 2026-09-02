@@ -16,7 +16,7 @@ import type {
 } from "@cohub/core/sessions";
 import type { ContentBlock } from "@cohub/protocol/core";
 import { createHash, randomUUID } from "node:crypto";
-import { and, eq, or, sql } from "drizzle-orm";
+import { and, eq, inArray, or, sql } from "drizzle-orm";
 import { localAgentRuntimes, sessionTurns, spaceLocalAgentPolicies, spaceWorkspacePolicies, workspaceExecutionAttempts, workspaceReplicas, workspaceState } from "@cohub/db";
 import { db } from "./db/index.js";
 import { isLocalAcpProviderEnabled } from "./local-acp-runtime-service.js";
@@ -122,6 +122,20 @@ async function allocateCloudWorkspaceAttempt(input: {
     if (runtimeId && !policy) throw new LocalAgentServiceError("workspace policy is unavailable for local ACP execution", "workspace_policy_unavailable", 409);
     const attemptId = randomUUID();
     const idempotencyKey = buildPromptIdempotencyKey(input.clientMessageId, runtimeId);
+    const idempotencyKeys = [...new Set([
+      idempotencyKey,
+      buildPromptIdempotencyKey(input.clientMessageId, null),
+    ])];
+    const [existingByIdempotency] = await tx.select({ id: workspaceExecutionAttempts.id, turnId: workspaceExecutionAttempts.turnId, runtimeId: workspaceExecutionAttempts.runtimeId }).from(workspaceExecutionAttempts).where(and(
+      eq(workspaceExecutionAttempts.spaceId, input.spaceId),
+      inArray(workspaceExecutionAttempts.idempotencyKey, idempotencyKeys),
+    )).for("update").limit(1);
+    if (existingByIdempotency) {
+      if (existingByIdempotency.turnId !== input.turnId || (existingByIdempotency.runtimeId ?? null) !== runtimeId) {
+        throw new LocalAgentServiceError("client message id is already bound to another execution attempt; retry the original request", "prompt_idempotency_conflict", 409);
+      }
+      return existingByIdempotency.id;
+    }
     const [createdAttempt] = await tx.insert(workspaceExecutionAttempts).values({
       id: attemptId,
       spaceId: input.spaceId,

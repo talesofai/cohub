@@ -43,8 +43,10 @@ type AcpRuntimeOptions struct {
 }
 
 type acpRuntimeServer struct {
-	options   AcpRuntimeOptions
-	finalizer *Daemon
+	options        AcpRuntimeOptions
+	finalizer      *Daemon
+	attemptMu      sync.Mutex
+	activeAttempts map[string]struct{}
 }
 
 // RunAcpRuntime keeps a local provider ACP adapter connected to the Gateway
@@ -158,7 +160,7 @@ func RunAcpRuntime(ctx context.Context, options AcpRuntimeOptions) error {
 		options.Logger.Debug("local ACP runtime token refresh skipped", slog.String("error", err.Error()))
 	}
 	cancelRefresh()
-	server := &acpRuntimeServer{options: options, finalizer: finalizer}
+	server := &acpRuntimeServer{options: options, finalizer: finalizer, activeAttempts: make(map[string]struct{})}
 	initialRelayToken := strings.TrimSpace(options.RelayToken)
 	// Runtime mode is often launched as a separate process from the regular
 	// locald daemon. Keep the shared spool, permit heartbeat, and workspace sync
@@ -171,7 +173,7 @@ func RunAcpRuntime(ctx context.Context, options AcpRuntimeOptions) error {
 	}()
 	go func() {
 		defer maintenance.Done()
-		finalizer.heartbeatAcpPermits(ctx)
+		finalizer.heartbeatAcpPermits(ctx, server.isAttemptActive)
 	}()
 	client := relay.NewClient(relay.Options{
 		RelayURL: options.RelayURL,
@@ -391,10 +393,26 @@ func (s *acpRuntimeServer) startAttempt(ref runtimeAttemptRef) error {
 		s.options.Logger.Warn("claim ACP runtime permit failed", slog.String("attemptId", ref.attemptID), slog.String("error", err.Error()))
 		return fmt.Errorf("claim ACP runtime permit: %w", err)
 	}
+	s.attemptMu.Lock()
+	if s.activeAttempts == nil {
+		s.activeAttempts = make(map[string]struct{})
+	}
+	s.activeAttempts[ref.attemptID] = struct{}{}
+	s.attemptMu.Unlock()
 	return nil
 }
 
+func (s *acpRuntimeServer) isAttemptActive(attemptID string) bool {
+	s.attemptMu.Lock()
+	defer s.attemptMu.Unlock()
+	_, ok := s.activeAttempts[attemptID]
+	return ok
+}
+
 func (s *acpRuntimeServer) finishAttempt(ref runtimeAttemptRef) {
+	s.attemptMu.Lock()
+	delete(s.activeAttempts, ref.attemptID)
+	s.attemptMu.Unlock()
 	if s.finalizer == nil || ref.attemptID == "" || ref.spaceID == "" || ref.replicaID == "" {
 		return
 	}

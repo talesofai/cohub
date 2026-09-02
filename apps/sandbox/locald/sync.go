@@ -205,7 +205,7 @@ func (d *Daemon) syncReplicas(ctx context.Context) {
 // heartbeatAcpPermits is run only by the ACP runtime process. The ordinary
 // daemon deliberately does not renew ACP permits because it cannot prove that
 // the provider connection is still mutating the replica.
-func (d *Daemon) heartbeatAcpPermits(ctx context.Context) {
+func (d *Daemon) heartbeatAcpPermits(ctx context.Context, isAttemptActive func(string) bool) {
 	refresh := func() {
 		permits, err := d.state.ActivePermits(ctx)
 		if err != nil {
@@ -213,7 +213,7 @@ func (d *Daemon) heartbeatAcpPermits(ctx context.Context) {
 		}
 		now := time.Now().UTC()
 		for _, permit := range permits {
-			if !isAcpRuntimePermit(permit.HolderID) || permit.ExpiresAt.IsZero() || !permit.ExpiresAt.After(now) {
+			if !isAcpRuntimePermit(permit.HolderID) || !isAttemptActive(serverPermitHolderID(permit.HolderID)) || permit.ExpiresAt.IsZero() || !permit.ExpiresAt.After(now) {
 				continue
 			}
 			_ = d.state.UpdatePermitExpiry(permit.ExecutionAttemptID, now.Add(30*time.Second))

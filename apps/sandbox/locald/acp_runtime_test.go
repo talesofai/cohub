@@ -116,6 +116,29 @@ func TestAcpRuntimePermitIsOneUse(t *testing.T) {
 	}
 }
 
+func TestAcpPermitHeartbeatIsScopedToLiveAttempt(t *testing.T) {
+	state, err := OpenState(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer state.Close()
+	attemptID := "55555555-5555-4555-8555-555555555555"
+	expiresAt := time.Now().UTC().Add(time.Minute)
+	if err := state.ClaimAcpRuntimePermit(attemptID, "11111111-1111-4111-8111-111111111111", "22222222-2222-4222-8222-222222222222", "44444444-4444-4444-8444-444444444444", 1, expiresAt); err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	(&Daemon{state: state}).heartbeatAcpPermits(ctx, func(string) bool { return false })
+	permit, err := state.PermitContext(attemptID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if permit == nil || !permit.ExpiresAt.Equal(expiresAt) {
+		t.Fatalf("orphan ACP permit was renewed: %#v", permit)
+	}
+}
+
 func TestRewriteAcpPathsPreservesLogicalWorkspacePaths(t *testing.T) {
 	value := rewriteAcpPaths(map[string]any{
 		"location": map[string]any{"path": "/workspace/src/main.go"},

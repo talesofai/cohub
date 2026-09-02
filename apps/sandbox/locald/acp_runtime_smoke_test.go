@@ -31,7 +31,7 @@ while IFS= read -r line; do
       printf '%s\n' '{"jsonrpc":"2.0","id":1,"result":{"protocolVersion":1,"agentCapabilities":{"loadSession":true,"sessionCapabilities":{"resume":true}}}}'
       ;;
     *'"method":"session/new"'*)
-      if printf '%s' "$line" | grep -q 'cohubRuntimeId'; then
+      if printf '%s' "$line" | grep -Eq 'cohubRuntimeId|"mcpServers":\[[^]]|additionalDirectories'; then
         printf '%s\n' '{"jsonrpc":"2.0","id":2,"error":{"code":-32000,"message":"Cohub lifecycle metadata must not be forwarded"}}'
       else
         printf '%s\n' '{"jsonrpc":"2.0","id":2,"result":{"sessionId":"acp-session-1"}}'

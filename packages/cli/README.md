@@ -146,6 +146,9 @@ cat prompt.md | cohub -s <spaceId> spaces prompt --json
 # Send to an existing Chat
 cohub -s <spaceId> spaces prompt --session <sessionId> "message" --json
 
+# Send immediately through a registered local ACP runtime
+cohub -s <spaceId> spaces prompt --runtime-id <runtimeId> "message" --json
+
 # Create a new Chat and send
 cohub -s <spaceId> spaces prompt --title "<chat title>" "message" --json
 

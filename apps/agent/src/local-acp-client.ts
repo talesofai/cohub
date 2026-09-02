@@ -1093,10 +1093,21 @@ export async function processLocalAcpTurn(input: { attemptId: string }) {
   if (!loaded) throw new Error("local ACP execution attempt not found");
   const { attempt, runtime, turn, state, replica } = loaded;
   if (attempt.executorKind !== "local_acp" || !attempt.runtimeId || !attempt.turnId || turn.executionKind !== "agent") throw new Error("execution attempt is not a local ACP attempt");
-  if (attempt.sessionMirrorMode !== "full") throw new Error("runtime_transcript_consent_required: ACP transcript projection requires full session mirror consent");
-  if (runtime.status === "revoked") throw new Error("local ACP runtime is revoked");
-  if (runtime.spaceId !== attempt.spaceId || !replica?.id || runtime.replicaId !== replica.id || attempt.replicaId !== replica.id) throw new Error("local ACP execution workspace binding is invalid");
-  if (!turn.userUuid || runtime.userUuid !== turn.userUuid) throw new Error("local ACP runtime ownership does not match the turn actor");
+  const failPreflight = async (message: string, errorCode: string): Promise<never> => {
+    await failLocalAcpAttempt({ attemptId: attempt.id, spaceId: attempt.spaceId, turnId: turn.id, message, errorCode }).catch((cleanupError) => {
+      logger.error("[LocalACP] preflight cleanup failed", { attemptId: attempt.id, error: cleanupError });
+    });
+    throw new Error(message);
+  };
+  if (attempt.sessionMirrorMode !== "full") await failPreflight("runtime_transcript_consent_required: ACP transcript projection requires full session mirror consent", "runtime_transcript_consent_required");
+  if (runtime.status === "revoked") await failPreflight("local ACP runtime is revoked", "runtime_revoked");
+  if (runtime.spaceId !== attempt.spaceId || !replica?.id || runtime.replicaId !== replica.id || attempt.replicaId !== replica.id) await failPreflight("local ACP execution workspace binding is invalid", "attempt_identity_mismatch");
+  const boundReplica = replica;
+  if (!boundReplica) {
+    await failPreflight("local ACP execution workspace binding is invalid", "attempt_identity_mismatch");
+    throw new Error("local ACP execution workspace binding is invalid");
+  }
+  if (!turn.userUuid || runtime.userUuid !== turn.userUuid) await failPreflight("local ACP runtime ownership does not match the turn actor", "runtime_owner_mismatch");
   const meta = record(turn.meta);
   const userMessageId = typeof meta.userMessageId === "string" ? meta.userMessageId : randomUUID();
   let lease: typeof workspaceWriterLeases.$inferSelect;
@@ -1105,7 +1116,7 @@ export async function processLocalAcpTurn(input: { attemptId: string }) {
     lease = await acquireLocalAcpWorkspaceLease({
       attemptId: attempt.id,
       spaceId: attempt.spaceId,
-      replicaId: replica.id,
+      replicaId: boundReplica.id,
       deviceId: runtime.deviceId,
       userUuid: turn.userUuid ?? runtime.userUuid,
       baseSnapshotId: attempt.baseCanonicalSnapshotId,
@@ -1253,6 +1264,7 @@ export async function processLocalAcpTurn(input: { attemptId: string }) {
   heartbeatTimer.unref();
   let command: RuntimePromptCommand | null = null;
   let response: Record<string, unknown>;
+  let durableResponse: Record<string, unknown> | null = null;
   let responseCompletedAt: string | null = null;
   let completionAt = new Date().toISOString();
   const promptParams = {
@@ -1264,7 +1276,7 @@ export async function processLocalAcpTurn(input: { attemptId: string }) {
       cohubSpaceId: attempt.spaceId,
       cohubSessionId: turn.sessionId,
       cohubExecutionAttemptId: attempt.id,
-      cohubReplicaId: replica?.id ?? null,
+      cohubReplicaId: boundReplica.id,
       cohubLeaseEpoch: lease.epoch,
       cohubLeaseExpiresAt: lease.expiresAt.toISOString(),
       cohubBaseSnapshotId: state.canonicalSnapshotId,
@@ -1297,7 +1309,9 @@ export async function processLocalAcpTurn(input: { attemptId: string }) {
           const rawResponse = await connection.acp.request<unknown>("session/prompt", promptParams, async (result, responseError) => {
             if (responseError) {
               if (isAcpRpcError(responseError)) {
-                await failRuntimePromptCommand({ commandId: stateForTurn.commandId, runtimeSessionId: connection.runtimeSessionId, error: responseError });
+                await failRuntimePromptCommand({ commandId: stateForTurn.commandId, runtimeSessionId: connection.runtimeSessionId, error: responseError }).catch((ledgerError) => {
+                  logger.warn("[LocalACP] failed to record provider command error", { commandId: stateForTurn.commandId, error: ledgerError });
+                });
               }
               throw responseError;
             }
@@ -1305,13 +1319,14 @@ export async function processLocalAcpTurn(input: { attemptId: string }) {
             stateForTurn.usage = parseAcpUsage(completedResponse.usage) ?? stateForTurn.usage;
             if (stateForTurn.cancelRequested) completedResponse = { ...completedResponse, stopReason: "cancelled" };
             const completed = await completeRuntimePromptCommand({ commandId: stateForTurn.commandId, runtimeSessionId: connection.runtimeSessionId, response: completedResponse });
-            const durableResponse = completed.response ? requireAcpPromptResponse(completed.response, true) : completedResponse;
+            const persistedResponse = completed.response ? requireAcpPromptResponse(completed.response, true) : completedResponse;
             responseCompletedAt = completed.updatedAt.toISOString();
-            response = durableResponse;
+            durableResponse = persistedResponse;
+            response = persistedResponse;
           });
-          response = requireAcpPromptResponse(rawResponse);
+          response = durableResponse ?? requireAcpPromptResponse(rawResponse);
           stateForTurn.usage = parseAcpUsage(response.usage) ?? stateForTurn.usage;
-          if (stateForTurn.cancelRequested) response = { ...response, stopReason: "cancelled" };
+          if (!responseCompletedAt && stateForTurn.cancelRequested) response = { ...response, stopReason: "cancelled" };
         } catch (error) {
           if (isAcpRpcError(error)) {
             await failRuntimePromptCommand({ commandId: stateForTurn.commandId, runtimeSessionId: connection.runtimeSessionId, error }).catch((ledgerError) => {
