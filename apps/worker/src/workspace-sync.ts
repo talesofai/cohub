@@ -40,6 +40,11 @@ const logger = createLogger({ serviceName: "cohub-worker-workspace-sync" });
 
 const INLINE_MANIFEST_MAX_BYTES = 1 * 1024 * 1024;
 const isTerminal = (status: string) => ["completed", "conflicted", "failed", "cancelled"].includes(status);
+const terminalAttemptTurn = sql`exists (
+  select 1 from v2.session_turns attempt_turn
+  where attempt_turn.id = v2.workspace_execution_attempts.turn_id
+    and attempt_turn.status in ('completed', 'failed', 'interrupted', 'cancelled', 'merged')
+)`;
 const sha256Text = (value: string) => createHash("sha256").update(value, "utf8").digest("hex");
 const deterministicUuid = (domain: string, value: string) => {
   const bytes = createHash("sha256").update(`cohub-${domain}-v1\0${value}`, "utf8").digest();
@@ -703,8 +708,8 @@ async function processWorkspaceSyncJobLocked(job: Job<WorkspaceSyncJobData>) {
         if (cycle.executionAttemptId) {
           await tx.update(workspaceExecutionAttempts).set({
             resultSnapshotId: canonicalSnapshotId,
-            status: sql`case when ${workspaceExecutionAttempts.transcriptRequired} = false or ${workspaceExecutionAttempts.status} = 'transcript_sealed' then 'completed' else 'workspace_sealed' end`,
-            completedAt: sql`case when ${workspaceExecutionAttempts.transcriptRequired} = false or ${workspaceExecutionAttempts.status} = 'transcript_sealed' then now() else ${workspaceExecutionAttempts.completedAt} end`,
+            status: sql`case when ${workspaceExecutionAttempts.transcriptRequired} = false or ${workspaceExecutionAttempts.status} = 'transcript_sealed' or ${terminalAttemptTurn} then 'completed' else 'workspace_sealed' end`,
+            completedAt: sql`case when ${workspaceExecutionAttempts.transcriptRequired} = false or ${workspaceExecutionAttempts.status} = 'transcript_sealed' or ${terminalAttemptTurn} then now() else ${workspaceExecutionAttempts.completedAt} end`,
             updatedAt: new Date(),
           }).where(and(eq(workspaceExecutionAttempts.id, cycle.executionAttemptId), inArray(workspaceExecutionAttempts.status, ["running", "transcript_sealed", "awaiting_recovery"])));
         }
@@ -725,8 +730,8 @@ async function processWorkspaceSyncJobLocked(job: Job<WorkspaceSyncJobData>) {
       if (cycle.executionAttemptId) {
         await tx.update(workspaceExecutionAttempts).set({
           resultSnapshotId: cloudSnapshot.id,
-          status: sql`case when ${workspaceExecutionAttempts.transcriptRequired} = false or ${workspaceExecutionAttempts.status} = 'transcript_sealed' then 'completed' else 'workspace_sealed' end`,
-          completedAt: sql`case when ${workspaceExecutionAttempts.transcriptRequired} = false or ${workspaceExecutionAttempts.status} = 'transcript_sealed' then now() else ${workspaceExecutionAttempts.completedAt} end`,
+          status: sql`case when ${workspaceExecutionAttempts.transcriptRequired} = false or ${workspaceExecutionAttempts.status} = 'transcript_sealed' or ${terminalAttemptTurn} then 'completed' else 'workspace_sealed' end`,
+          completedAt: sql`case when ${workspaceExecutionAttempts.transcriptRequired} = false or ${workspaceExecutionAttempts.status} = 'transcript_sealed' or ${terminalAttemptTurn} then now() else ${workspaceExecutionAttempts.completedAt} end`,
           updatedAt: changedAt,
         }).where(and(eq(workspaceExecutionAttempts.id, cycle.executionAttemptId), inArray(workspaceExecutionAttempts.status, ["running", "transcript_sealed", "awaiting_recovery"])));
       }
@@ -806,8 +811,8 @@ async function processWorkspaceSyncJobLocked(job: Job<WorkspaceSyncJobData>) {
       if (cycle.executionAttemptId) {
         await tx.update(workspaceExecutionAttempts).set({
           resultSnapshotId: resultSnapshot.id,
-          status: sql`case when ${workspaceExecutionAttempts.transcriptRequired} = false or ${workspaceExecutionAttempts.status} = 'transcript_sealed' then 'completed' else 'workspace_sealed' end`,
-          completedAt: sql`case when ${workspaceExecutionAttempts.transcriptRequired} = false or ${workspaceExecutionAttempts.status} = 'transcript_sealed' then now() else ${workspaceExecutionAttempts.completedAt} end`,
+          status: sql`case when ${workspaceExecutionAttempts.transcriptRequired} = false or ${workspaceExecutionAttempts.status} = 'transcript_sealed' or ${terminalAttemptTurn} then 'completed' else 'workspace_sealed' end`,
+          completedAt: sql`case when ${workspaceExecutionAttempts.transcriptRequired} = false or ${workspaceExecutionAttempts.status} = 'transcript_sealed' or ${terminalAttemptTurn} then now() else ${workspaceExecutionAttempts.completedAt} end`,
           updatedAt: new Date(),
         }).where(and(eq(workspaceExecutionAttempts.id, cycle.executionAttemptId), inArray(workspaceExecutionAttempts.status, ["running", "transcript_sealed", "awaiting_recovery"])));
       }

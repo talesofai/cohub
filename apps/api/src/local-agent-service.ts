@@ -1457,18 +1457,34 @@ export async function registerLocalWorkspaceAttempt(input: {
   if (!policy || policy.integrationPolicyVersion !== input.integrationPolicyVersion || policy.sessionMirrorMode !== input.sessionMirrorMode) {
     throw new LocalAgentServiceError("local execution attempt uses an outdated integration policy", "policy_version_stale", 409);
   }
-  const attempt = await db.transaction((tx) => assertLocalNativeAttemptLease(tx, {
-    spaceId: input.spaceId,
-    replicaId: replica.id,
-    deviceId: input.actor.deviceId as string,
-    attemptId: input.attemptId,
-    leaseEpoch: input.leaseEpoch,
-    baseSnapshotId: input.baseSnapshotId,
-    terminalEvent: true,
-    sessionMirrorMode: input.sessionMirrorMode,
-    integrationPolicyVersion: input.integrationPolicyVersion,
-    workspacePolicyVersion: input.workspacePolicyVersion,
-  }));
+  const attempt = await db.transaction(async (tx) => {
+    let current = await assertLocalNativeAttemptLease(tx, {
+      spaceId: input.spaceId,
+      replicaId: replica.id,
+      deviceId: input.actor.deviceId as string,
+      attemptId: input.attemptId,
+      leaseEpoch: input.leaseEpoch,
+      baseSnapshotId: input.baseSnapshotId,
+      terminalEvent: true,
+      sessionMirrorMode: input.sessionMirrorMode,
+      integrationPolicyVersion: input.integrationPolicyVersion,
+      workspacePolicyVersion: input.workspacePolicyVersion,
+    });
+    if (current.executorKind === "local_acp" && current.turnId) {
+      const [turn] = await tx.select({ status: sessionTurns.status }).from(sessionTurns).where(eq(sessionTurns.id, current.turnId)).limit(1);
+      if (!turn || !["completed", "failed", "interrupted", "cancelled", "merged"].includes(turn.status)) {
+        throw new LocalAgentServiceError("local ACP transcript is not terminal yet", "transcript_pending", 409);
+      }
+      if (["queued", "prepared", "running"].includes(current.status)) {
+        const [updated] = await tx.update(workspaceExecutionAttempts).set({ status: "transcript_sealed", updatedAt: now() }).where(and(
+          eq(workspaceExecutionAttempts.id, current.id),
+          inArray(workspaceExecutionAttempts.status, ["queued", "prepared", "running"]),
+        )).returning();
+        current = updated ?? current;
+      }
+    }
+    return current;
+  });
   return {
     attemptId: attempt.id,
     status: attempt.status,

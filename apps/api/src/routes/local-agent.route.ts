@@ -2,8 +2,8 @@ import { Hono, type Context } from "hono";
 import { bodyLimit } from "hono/body-limit";
 import { ZodError } from "zod";
 import { LocalAgentPolicySchema } from "@cohub/protocol";
-import { and, eq, ne, sql } from "drizzle-orm";
-import { localAgentDevices, localAgentRuntimes, spaceLocalAgentPolicies } from "@cohub/db";
+import { eq } from "drizzle-orm";
+import { localAgentDevices, spaceLocalAgentPolicies } from "@cohub/db";
 import { useAccountPrincipal, getLocalAgentPrincipal, authzDenied, requireValidId, useAuth } from "../lib/middleware.js";
 import { hasPermission } from "../permissions.js";
 import { db } from "../db/index.js";
@@ -37,6 +37,7 @@ import {
   type LocalAgentActor,
 } from "../local-agent-service.js";
 import {
+  fenceLocalAcpRuntimesForPolicy,
   getLocalAcpRuntime,
   listLocalAcpRuntimes,
   registerLocalAcpRuntime,
@@ -590,6 +591,14 @@ router.patch("/spaces/:spaceId/devices/:deviceId/policy", async (c) => {
     if (!candidate.success) return c.json({ code: "invalid_policy", message: "policy values are invalid" }, 400);
     if (candidate.data.maxBundleBytes < 1 || candidate.data.maxBundleBytes > 256 * 1024 * 1024) return c.json({ code: "invalid_policy", message: "maxBundleBytes must be between 1 and 268435456" }, 400);
     if (candidate.data.maxArtifactBytes < 1 || candidate.data.maxArtifactBytes > 5 * 1024 * 1024 * 1024) return c.json({ code: "invalid_policy", message: "maxArtifactBytes is outside the allowed range" }, 400);
+    // Fence existing ACP connections before committing a new policy. If the
+    // policy write then fails, the safer state is a disconnected runtime rather
+    // than an active provider using stale consent.
+    await fenceLocalAcpRuntimesForPolicy({
+      spaceId,
+      deviceId,
+      errorMessage: candidate.data.sessionMirrorMode === "full" ? "policy changed; runtime must reconnect" : "full session mirror consent was revoked",
+    });
     const updatedAt = new Date();
     const [updated] = await db.update(spaceLocalAgentPolicies).set({
       sessionMirrorMode: candidate.data.sessionMirrorMode,
@@ -602,15 +611,6 @@ router.patch("/spaces/:spaceId/devices/:deviceId/policy", async (c) => {
       updatedBy: user.uuid,
       updatedAt,
     }).where(eq(spaceLocalAgentPolicies.id, row.id)).returning();
-    // A policy change invalidates any existing ACP connection's content
-    // contract. It must reconnect before another transcript-bearing turn.
-    await db.update(localAgentRuntimes).set({
-      status: "offline",
-      connectionEpoch: sql`${localAgentRuntimes.connectionEpoch} + 1`,
-      disconnectedAt: updatedAt,
-      lastError: candidate.data.sessionMirrorMode === "full" ? "policy changed; runtime must reconnect" : "full session mirror consent was revoked",
-      updatedAt,
-    }).where(and(eq(localAgentRuntimes.spaceId, spaceId), eq(localAgentRuntimes.deviceId, deviceId), ne(localAgentRuntimes.status, "revoked")));
     return c.json({ policy: updated ?? row });
   } catch (error) {
     return errorResponse(c, error);

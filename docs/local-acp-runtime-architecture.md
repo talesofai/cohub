@@ -195,8 +195,11 @@ newer canonical tree.
 
 The workspace lease is not released until the candidate has been durably
 prepared/committed or a recoverable finalization spool record has been written.
-A runtime process runs the same retry loop as locald, while SQLite spool
-records make finalization retryable after a crash or network outage.
+ACP permits are marked separately in local state so the ordinary daemon never
+extends an ACP lease after the runtime process has crashed; the Agent owns the
+live lease heartbeat. A runtime process runs the same retry loop as locald,
+while SQLite spool records make finalization retryable after a crash or network
+outage.
 
 ## Reconnect and Failure Semantics
 
@@ -212,9 +215,9 @@ records make finalization retryable after a crash or network outage.
 - Session load/resume failure with prior events: return
   `runtime_reconnect_required`; never create a new ACP session that would hide
   the continuity break.
-- Device revoke: runtime rows are fenced/revoked, active attempts are aborted,
-  and leases expire immediately. Existing channels cannot authorize a new
-  command with the revoked epoch.
+- Device revoke or consent/policy change: runtime rows are fenced/revoked or
+  disconnected, active attempts are aborted, and leases expire immediately.
+  Existing channels cannot authorize a new command with the revoked epoch.
 - Workspace takeover: an expired local writer with an unresolved attempt
   requires explicit confirmation and records the takeover boundary.
 - Unknown provider update: store the receipt, skip semantic projection, and do

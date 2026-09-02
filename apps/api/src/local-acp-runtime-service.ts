@@ -11,6 +11,7 @@ import { config } from "./config.js";
 import { LocalAgentServiceError, notifyWorkspaceState, type LocalAgentActor } from "./local-agent-service.js";
 import { hasPermission } from "./permissions.js";
 import { requestAgentTurnAbort } from "./agent-turn-abort.js";
+import { isPostgresUniqueViolation } from "./db/postgres-error.js";
 
 const assertUuid = (value: string, field: string) => {
   if (!isUuid(value)) {
@@ -25,6 +26,8 @@ const bounded = (value: unknown, field: string, max: number) => {
   if (!result || result.length > max) throw new LocalAgentServiceError(`${field} is invalid`, "invalid_input", 400);
   return result;
 };
+
+const RUNTIME_REGISTRATION_UNIQUE_CONSTRAINT = "v2_uq_local_agent_runtimes_space_device_provider";
 
 const providerEnabled = (provider: LocalAcpProvider) => {
   if (!config.localAcpRuntimeEnabled) return false;
@@ -115,7 +118,7 @@ export async function registerLocalAcpRuntime(input: {
   }
 
   const capabilities = LocalAcpRuntimeCapabilitiesSchema.parse(input.capabilities ?? {});
-  const result = await db.transaction(async (tx) => {
+  const persistRegistration = () => db.transaction(async (tx) => {
     const [existing] = await tx.select().from(localAgentRuntimes).where(and(
       eq(localAgentRuntimes.spaceId, input.spaceId),
       eq(localAgentRuntimes.deviceId, deviceId),
@@ -155,6 +158,15 @@ export async function registerLocalAcpRuntime(input: {
     if (!created) throw new LocalAgentServiceError("failed to register local ACP runtime", "runtime_registration_failed", 500);
     return created;
   });
+  let result: typeof localAgentRuntimes.$inferSelect;
+  try {
+    result = await persistRegistration();
+  } catch (error) {
+    if (!isPostgresUniqueViolation(error, RUNTIME_REGISTRATION_UNIQUE_CONSTRAINT)) throw error;
+    // A concurrent registration won the partial unique index; reread it under
+    // the transaction lock and apply the same idempotent registration update.
+    result = await persistRegistration();
+  }
   return serialize(result);
 }
 
@@ -273,6 +285,113 @@ export async function revokeLocalAcpRuntime(input: { actor: LocalAgentActor; spa
   return serialize(result);
 }
 
+export async function fenceLocalAcpRuntimesForPolicy(input: {
+  spaceId: string;
+  deviceId: string;
+  errorMessage: string;
+}) {
+  assertUuid(input.spaceId, "spaceId");
+  assertUuid(input.deviceId, "deviceId");
+  const errorMessage = bounded(input.errorMessage, "errorMessage", 2000);
+  let abortRequests: Array<{ sessionId: string; turnId: string }> = [];
+  await db.transaction(async (tx) => {
+    const runtimes = await tx.select({ id: localAgentRuntimes.id }).from(localAgentRuntimes).where(and(
+      eq(localAgentRuntimes.spaceId, input.spaceId),
+      eq(localAgentRuntimes.deviceId, input.deviceId),
+      ne(localAgentRuntimes.status, "revoked"),
+    )).for("update");
+    const runtimeIds = runtimes.map((runtime) => runtime.id);
+    if (runtimeIds.length === 0) return;
+    const fencedAt = new Date();
+    await tx.update(localAgentRuntimes).set({
+      status: "offline",
+      connectionEpoch: sql`${localAgentRuntimes.connectionEpoch} + 1`,
+      disconnectedAt: fencedAt,
+      lastError: errorMessage,
+      updatedAt: fencedAt,
+    }).where(inArray(localAgentRuntimes.id, runtimeIds));
+    const attempts = await tx.select({
+      id: workspaceExecutionAttempts.id,
+      sessionId: workspaceExecutionAttempts.sessionId,
+      turnId: workspaceExecutionAttempts.turnId,
+      status: workspaceExecutionAttempts.status,
+    }).from(workspaceExecutionAttempts).where(and(
+      eq(workspaceExecutionAttempts.spaceId, input.spaceId),
+      inArray(workspaceExecutionAttempts.runtimeId, runtimeIds),
+      inArray(workspaceExecutionAttempts.status, ["queued", "prepared", "running", "workspace_sealed", "transcript_sealed", "awaiting_recovery"]),
+    )).for("update");
+    const attemptIds = attempts.map((attempt) => attempt.id);
+    const turnIds = attempts.map((attempt) => attempt.turnId).filter((turnId): turnId is string => typeof turnId === "string");
+    abortRequests = attempts
+      .filter((attempt) => ["running", "workspace_sealed", "transcript_sealed", "awaiting_recovery"].includes(attempt.status) && typeof attempt.sessionId === "string" && typeof attempt.turnId === "string")
+      .map((attempt) => ({ sessionId: attempt.sessionId as string, turnId: attempt.turnId as string }));
+    await tx.update(localAgentRuntimeSessions).set({ status: "error", updatedAt: fencedAt }).where(and(
+      inArray(localAgentRuntimeSessions.runtimeId, runtimeIds),
+      ne(localAgentRuntimeSessions.status, "revoked"),
+    ));
+    await tx.update(localAgentRuntimeCommands).set({
+      status: "unknown",
+      errorMessage,
+      updatedAt: fencedAt,
+    }).where(and(
+      inArray(localAgentRuntimeCommands.runtimeId, runtimeIds),
+      eq(localAgentRuntimeCommands.status, "sent"),
+    ));
+    await tx.update(localAgentRuntimeCommands).set({
+      status: "failed",
+      errorCode: -32005,
+      errorMessage,
+      updatedAt: fencedAt,
+    }).where(and(
+      inArray(localAgentRuntimeCommands.runtimeId, runtimeIds),
+      eq(localAgentRuntimeCommands.status, "prepared"),
+    ));
+    if (attemptIds.length === 0) return;
+    await tx.update(workspaceExecutionAttempts).set({
+      status: "aborted",
+      errorCode: "runtime_policy_changed",
+      errorMessage,
+      completedAt: fencedAt,
+      updatedAt: fencedAt,
+    }).where(inArray(workspaceExecutionAttempts.id, attemptIds));
+    await tx.update(workspaceWriterLeases).set({ expiresAt: fencedAt, lastHeartbeatAt: fencedAt, updatedAt: fencedAt }).where(and(
+      eq(workspaceWriterLeases.spaceId, input.spaceId),
+      eq(workspaceWriterLeases.holderKind, "local_agent"),
+      inArray(workspaceWriterLeases.holderId, attemptIds),
+    ));
+    await tx.update(workspaceState).set({ activeExecutionAttemptId: null, updatedAt: fencedAt }).where(and(
+      eq(workspaceState.spaceId, input.spaceId),
+      inArray(workspaceState.activeExecutionAttemptId, attemptIds),
+    ));
+    await tx.update(workspaceReplicas).set({ activeExecutionAttemptId: null, updatedAt: fencedAt }).where(and(
+      eq(workspaceReplicas.spaceId, input.spaceId),
+      eq(workspaceReplicas.kind, "local"),
+      inArray(workspaceReplicas.activeExecutionAttemptId, attemptIds),
+    ));
+    if (turnIds.length > 0) {
+      await tx.update(sessionTurns).set({
+        status: "failed",
+        errorMessage,
+        summary: { finishReason: "failed", reason: "runtime_policy_changed" },
+        completedAt: fencedAt,
+        updatedAt: fencedAt,
+      }).where(and(
+        inArray(sessionTurns.id, turnIds),
+        inArray(sessionTurns.status, ["queued", "running", "abort_requested"]),
+      ));
+    }
+  });
+  for (const request of abortRequests) {
+    void requestAgentTurnAbort({
+      spaceId: input.spaceId,
+      sessionId: request.sessionId,
+      turnId: request.turnId,
+      reason: "abort",
+    }).catch(() => undefined);
+  }
+  void notifyWorkspaceState({ spaceId: input.spaceId, reason: "runtime_policy_changed" }).catch(() => undefined);
+}
+
 export async function authorizeLocalAcpRuntime(input: {
   runtimeId: string;
   spaceId: string;
@@ -317,8 +436,8 @@ export async function authorizeLocalAcpRuntime(input: {
     }
     const [updated] = await tx.update(localAgentRuntimes).set({
       status: "ready",
-      ...(gatewayNodeId ? { gatewayNodeId } : {}),
-      ...(gatewayWsEndpoint ? { gatewayWsEndpoint } : {}),
+      gatewayNodeId,
+      gatewayWsEndpoint,
       connectionEpoch: row.connectionEpoch + 1,
       connectedAt: now,
       disconnectedAt: null,

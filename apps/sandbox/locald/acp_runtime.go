@@ -369,13 +369,9 @@ func (s *acpRuntimeServer) startAttempt(ref runtimeAttemptRef) error {
 	if !ref.expiresAt.After(time.Now().UTC()) {
 		return errors.New("ACP prompt workspace lease has expired")
 	}
-	if err := s.finalizer.state.PutPermit(ref.attemptID, ref.spaceID, ref.replicaID, ref.baseSnapshotID, ref.leaseEpoch, ref.expiresAt, "local_agent", ref.attemptID); err != nil {
-		s.options.Logger.Warn("persist ACP runtime permit failed", slog.String("attemptId", ref.attemptID), slog.String("error", err.Error()))
-		return fmt.Errorf("persist ACP runtime permit: %w", err)
-	}
-	if err := s.finalizer.state.ConsumePermit(ref.attemptID); err != nil {
-		s.options.Logger.Warn("activate ACP runtime permit failed", slog.String("attemptId", ref.attemptID), slog.String("error", err.Error()))
-		return fmt.Errorf("activate ACP runtime permit: %w", err)
+	if err := s.finalizer.state.ClaimAcpRuntimePermit(ref.attemptID, ref.spaceID, ref.replicaID, ref.baseSnapshotID, ref.leaseEpoch, ref.expiresAt); err != nil {
+		s.options.Logger.Warn("claim ACP runtime permit failed", slog.String("attemptId", ref.attemptID), slog.String("error", err.Error()))
+		return fmt.Errorf("claim ACP runtime permit: %w", err)
 	}
 	return nil
 }

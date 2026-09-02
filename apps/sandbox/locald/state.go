@@ -17,6 +17,19 @@ import (
 )
 
 const stateSchemaVersion = 3
+const acpRuntimePermitHolderPrefix = "acp:"
+
+func acpRuntimePermitHolderID(executionAttemptID string) string {
+	return acpRuntimePermitHolderPrefix + executionAttemptID
+}
+
+func isAcpRuntimePermit(holderID string) bool {
+	return strings.HasPrefix(holderID, acpRuntimePermitHolderPrefix)
+}
+
+func serverPermitHolderID(holderID string) string {
+	return strings.TrimPrefix(holderID, acpRuntimePermitHolderPrefix)
+}
 
 // StateStore contains only local daemon state. It is deliberately not a
 // substitute for server authority; spool rows are replayable evidence and
@@ -610,6 +623,35 @@ func (s *StateStore) PutPermit(executionAttemptID, spaceID, replicaID, baseSnaps
 	}
 	_, err := s.db.Exec(`INSERT INTO permits(execution_attempt_id, space_id, replica_id, base_snapshot_id, lease_epoch, expires_at, holder_kind, holder_id, status, created_at) VALUES(?, ?, ?, ?, ?, ?, ?, ?, 'prepared', ?) ON CONFLICT(execution_attempt_id) DO UPDATE SET expires_at=excluded.expires_at, lease_epoch=excluded.lease_epoch, holder_kind=excluded.holder_kind, holder_id=excluded.holder_id, status='prepared'`, executionAttemptID, spaceID, replicaID, nullString(baseSnapshotID), leaseEpoch, expiresAt.UTC().Format(time.RFC3339Nano), holderKind, holderID, time.Now().UTC().Format(time.RFC3339Nano))
 	return err
+}
+
+func (s *StateStore) ClaimAcpRuntimePermit(executionAttemptID, spaceID, replicaID, baseSnapshotID string, leaseEpoch int64, expiresAt time.Time) error {
+	if executionAttemptID == "" || spaceID == "" || replicaID == "" || leaseEpoch < 1 || !expiresAt.After(time.Now().UTC()) {
+		return errors.New("ACP execution permit input is invalid or expired")
+	}
+	tx, err := s.db.Begin()
+	if err != nil {
+		return err
+	}
+	rollback := func(cause error) error {
+		_ = tx.Rollback()
+		return cause
+	}
+	result, err := tx.Exec(`INSERT INTO permits(execution_attempt_id, space_id, replica_id, base_snapshot_id, lease_epoch, expires_at, holder_kind, holder_id, status, created_at) VALUES(?, ?, ?, ?, ?, ?, 'local_agent', ?, 'active', ?) ON CONFLICT(execution_attempt_id) DO NOTHING`, executionAttemptID, spaceID, replicaID, nullString(baseSnapshotID), leaseEpoch, expiresAt.UTC().Format(time.RFC3339Nano), acpRuntimePermitHolderID(executionAttemptID), time.Now().UTC().Format(time.RFC3339Nano))
+	if err != nil {
+		return rollback(err)
+	}
+	affected, err := result.RowsAffected()
+	if err != nil {
+		return rollback(err)
+	}
+	if affected != 1 {
+		return rollback(errors.New("ACP execution permit was already consumed"))
+	}
+	if err := tx.Commit(); err != nil {
+		return err
+	}
+	return nil
 }
 
 func (s *StateStore) LatestPermitForReplica(spaceID, replicaID string) (executionAttemptID string, valid bool, err error) {

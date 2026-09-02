@@ -299,6 +299,16 @@ function mapStopReason(value: unknown): "aborted" | "error" | string | null {
   return typeof value === "string" ? value : null;
 }
 
+function requireAcpPromptResponse(value: unknown, persisted = false): Record<string, unknown> {
+  const response = record(value);
+  if (typeof response.stopReason !== "string" || !response.stopReason.trim()) {
+    throw new Error(persisted
+      ? "runtime_reconnect_required: persisted ACP command response is invalid"
+      : "ACP provider returned an invalid session/prompt response");
+  }
+  return response;
+}
+
 function getUpdate(params: Record<string, unknown>) {
   const update = params.update;
   return update && typeof update === "object" && !Array.isArray(update) ? update as Record<string, unknown> : null;
@@ -659,9 +669,11 @@ async function handleSessionUpdate(connection: RuntimeConnection, params: Record
     }
     if (tool) {
       if (update.rawInput && typeof update.rawInput === "object") tool.input = record(update.rawInput);
+      if (typeof update.title === "string" && update.title.trim()) tool.name = update.title;
+      if (typeof update.kind === "string" && update.kind.trim() && tool.name === "tool") tool.name = update.kind;
       if (update.content !== undefined) tool.result = toolResultContent(update.content);
-      if (update.rawOutput !== undefined && tool.result === undefined) tool.result = toolResultContent(update.rawOutput);
-      tool.isError = update.status === "failed";
+      if (update.rawOutput !== undefined) tool.result = toolResultContent(update.rawOutput);
+      if (update.status !== undefined && update.status !== null) tool.isError = update.status === "failed";
       changed = true;
     }
   } else if (kind === "usage_update") {
@@ -836,7 +848,7 @@ async function ensureRuntimeSession(runtime: typeof localAgentRuntimes.$inferSel
     // Continue the ingress component after durable events so an Agent restart
     // cannot reuse fallback identities while the Gateway connection epoch is
     // still valid.
-    nextInboundEventSequence: (existingSession?.lastEventSequence ?? 0) + 1,
+    nextInboundEventSequence: runtimeSession.lastEventSequence + 1,
     unsubscribeClose: () => {},
   };
   connection = establishedConnection;
@@ -1085,7 +1097,7 @@ export async function processLocalAcpTurn(input: { attemptId: string }) {
     usage: null,
     patchSeq: 0,
     assistantMessageId: deterministicUuid(`cohub-local-acp-assistant-v1:${connection.runtimeSessionId}:${turn.id}`),
-    startedAt: new Date().toISOString(),
+    startedAt: turn.startedAt?.toISOString() ?? new Date().toISOString(),
   };
   connection.activeTurn = stateForTurn;
   try {
@@ -1144,6 +1156,7 @@ export async function processLocalAcpTurn(input: { attemptId: string }) {
   heartbeatTimer.unref();
   let command: RuntimePromptCommand | null = null;
   let response: Record<string, unknown>;
+  let completionAt = new Date().toISOString();
   const promptParams = {
     sessionId: connection.acpSessionId,
     prompt: acpPromptContent(turn.userContent),
@@ -1164,7 +1177,8 @@ export async function processLocalAcpTurn(input: { attemptId: string }) {
     if (command.row.status === "completed") {
       if (!command.row.response) throw new Error("runtime_reconnect_required: completed ACP command has no response");
       await replayRuntimePromptEvents(connection, stateForTurn);
-      response = command.row.response;
+      response = requireAcpPromptResponse(command.row.response, true);
+      completionAt = command.row.updatedAt.toISOString();
     } else if (command.row.status === "sent" || command.row.status === "unknown") {
       const message = "runtime_reconnect_required: ACP prompt outcome is unknown; reconnect the local runtime before retrying";
       await markRuntimeReconnectRequired(connection, message, stateForTurn.commandId).catch(() => undefined);
@@ -1176,10 +1190,12 @@ export async function processLocalAcpTurn(input: { attemptId: string }) {
       if (sent.status === "completed") {
         if (!sent.response) throw new Error("runtime_reconnect_required: completed ACP command has no response");
         await replayRuntimePromptEvents(connection, stateForTurn);
-        response = sent.response;
+        response = requireAcpPromptResponse(sent.response, true);
+        completionAt = sent.updatedAt.toISOString();
       } else {
         try {
-          response = await connection.acp.request<Record<string, unknown>>("session/prompt", promptParams);
+          const rawResponse = await connection.acp.request<unknown>("session/prompt", promptParams);
+          response = requireAcpPromptResponse(rawResponse);
         } catch (error) {
           if (isAcpRpcError(error)) {
             await failRuntimePromptCommand({ commandId: stateForTurn.commandId, runtimeSessionId: connection.runtimeSessionId, error }).catch((ledgerError) => {
@@ -1188,7 +1204,8 @@ export async function processLocalAcpTurn(input: { attemptId: string }) {
           }
           throw error;
         }
-        await completeRuntimePromptCommand({ commandId: stateForTurn.commandId, runtimeSessionId: connection.runtimeSessionId, response });
+        const completed = await completeRuntimePromptCommand({ commandId: stateForTurn.commandId, runtimeSessionId: connection.runtimeSessionId, response });
+        completionAt = completed.updatedAt.toISOString();
         await connection.acp.drainNotifications();
       }
     }
@@ -1201,7 +1218,7 @@ export async function processLocalAcpTurn(input: { attemptId: string }) {
       turnId: turn.id,
       userId: turn.userUuid,
       startedAt: stateForTurn.startedAt,
-      completedAt: new Date().toISOString(),
+      completedAt: completionAt,
       messageOrdinal: 0,
       event: {
         type: "turn_end",

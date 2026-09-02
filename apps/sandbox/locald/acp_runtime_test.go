@@ -1,6 +1,8 @@
 package locald
 
 import (
+	"io"
+	"log/slog"
 	"testing"
 	"time"
 )
@@ -66,6 +68,39 @@ func TestRuntimeAttemptRefFromMetadataRejectsStaleOrMismatchedBinding(t *testing
 	missingBase["cohubBaseSnapshotId"] = ""
 	if _, err := runtimeAttemptRefFromMetadata(missingBase, "runtime", base["cohubSpaceId"].(string), base["cohubReplicaId"].(string)); err == nil {
 		t.Fatal("expected missing base snapshot to be rejected")
+	}
+}
+
+func TestAcpRuntimePermitIsOneUse(t *testing.T) {
+	state, err := OpenState(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer state.Close()
+	server := &acpRuntimeServer{
+		options:   AcpRuntimeOptions{Logger: slog.New(slog.NewTextHandler(io.Discard, nil))},
+		finalizer: &Daemon{state: state},
+	}
+	ref := runtimeAttemptRef{
+		attemptID:      "33333333-3333-4333-8333-333333333333",
+		spaceID:        "11111111-1111-4111-8111-111111111111",
+		replicaID:      "22222222-2222-4222-8222-222222222222",
+		baseSnapshotID: "44444444-4444-4444-8444-444444444444",
+		leaseEpoch:     1,
+		expiresAt:      time.Now().UTC().Add(time.Minute),
+	}
+	if err := server.startAttempt(ref); err != nil {
+		t.Fatal(err)
+	}
+	if err := server.startAttempt(ref); err == nil {
+		t.Fatal("expected a consumed ACP permit to reject a duplicate prompt")
+	}
+	permit, err := state.PermitContext(ref.attemptID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if permit == nil || !isAcpRuntimePermit(permit.HolderID) || serverPermitHolderID(permit.HolderID) != ref.attemptID {
+		t.Fatalf("unexpected ACP permit holder identity: %#v", permit)
 	}
 }
 

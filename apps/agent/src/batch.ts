@@ -415,10 +415,13 @@ export async function claimNextTurnBatch(input: Pick<AgentTurnJobData, "sessionI
     const blockingSequence = Number.isFinite(parsedBlockingSequence) ? parsedBlockingSequence : null;
     const beforeGeneration = blockingSequence === null ? sql`true` : sql`sequence < ${blockingSequence}`;
 
+    const steerExecutorFilter = gate?.has_local_authoritative_policy === true
+      ? sql`meta->>'executorKind' in ('local_native', 'local_acp')`
+      : sql`true`;
     const steerRows = await tx.execute(sql`
       select id, session_id, user_uuid, sequence, status, intent, user_content, user_text, meta, updated_at
       from v2.session_turns
-      where session_id = ${input.sessionId} and execution_kind = 'agent' and status = 'queued' and intent = 'steer' and ${beforeGeneration}
+      where session_id = ${input.sessionId} and execution_kind = 'agent' and status = 'queued' and intent = 'steer' and ${beforeGeneration} and ${steerExecutorFilter}
       order by case when meta->>'executorKind' in ('local_native', 'local_acp') then 0 else 1 end, updated_at asc, sequence asc
       limit 1
     `);

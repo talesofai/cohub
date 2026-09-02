@@ -806,7 +806,7 @@ func (d *Daemon) releaseExecutionPermit(ctx context.Context, spaceID, executionA
 		}
 		payload := mustJSON(map[string]any{
 			"holderKind": permit.HolderKind,
-			"holderId":   permit.HolderID,
+			"holderId":   serverPermitHolderID(permit.HolderID),
 			"epoch":      permit.LeaseEpoch,
 		})
 		if _, err := d.request(ctx, http.MethodPost, fmt.Sprintf("%s/api/local-agent/spaces/%s/leases/release", d.apiBaseURL(), spaceID), payload, 2*1024*1024); err != nil {

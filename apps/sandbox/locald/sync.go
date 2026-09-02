@@ -204,12 +204,12 @@ func (d *Daemon) heartbeatActivePermits(ctx context.Context) {
 		return
 	}
 	for _, permit := range permits {
-		if permit.LeaseEpoch <= 0 || permit.ExpiresAt.Before(time.Now().UTC()) || permit.HolderKind == "local_offline_reservation" {
+		if permit.LeaseEpoch <= 0 || permit.ExpiresAt.Before(time.Now().UTC()) || permit.HolderKind == "local_offline_reservation" || isAcpRuntimePermit(permit.HolderID) {
 			continue
 		}
 		payload := mustJSON(map[string]any{
 			"holderKind":      permit.HolderKind,
-			"holderId":        permit.HolderID,
+			"holderId":        serverPermitHolderID(permit.HolderID),
 			"epoch":           permit.LeaseEpoch,
 			"durationSeconds": 30,
 		})
