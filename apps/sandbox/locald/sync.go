@@ -960,6 +960,25 @@ func (d *Daemon) download(ctx context.Context, url string, maxBytes int64, expec
 	return result, nil
 }
 
+func (d *Daemon) remoteWriterLeaseActive(ctx context.Context, spaceID, replicaID string) (bool, error) {
+	body, err := d.getJSON(ctx, fmt.Sprintf("%s/api/local-agent/spaces/%s/replicas/%s/state", d.apiBaseURL(), spaceID, replicaID))
+	if err != nil {
+		return false, err
+	}
+	var state remoteReplicaState
+	if err := json.Unmarshal(body, &state); err != nil {
+		return false, err
+	}
+	if state.Lease == nil {
+		return false, nil
+	}
+	expiresAt, err := time.Parse(time.RFC3339Nano, state.Lease.ExpiresAt)
+	if err != nil {
+		return false, fmt.Errorf("workspace writer lease expiry is invalid: %w", err)
+	}
+	return expiresAt.After(time.Now().UTC()), nil
+}
+
 func (d *Daemon) applyRemoteSnapshot(ctx context.Context, replica *ReplicaState, manifest remoteManifest, blobs map[string]struct {
 	sha256 string
 	size   int64
@@ -1041,6 +1060,11 @@ func (d *Daemon) applyRemoteSnapshot(ctx context.Context, replica *ReplicaState,
 	// before the first mutation.
 	d.mu.Lock()
 	defer d.mu.Unlock()
+	if active, err := d.remoteWriterLeaseActive(ctx, replica.SpaceID, replica.ReplicaID); err != nil {
+		return err
+	} else if active {
+		return errors.New("workspace has an active server writer lease")
+	}
 	if _, _, valid, err := d.activePermit(replica.SpaceID); err != nil {
 		return err
 	} else if valid {

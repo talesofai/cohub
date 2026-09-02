@@ -22,8 +22,11 @@ export async function sweepWorkspaceSyncWork() {
         error_code = case when attempt.status = 'prepared' then 'permit_expired_before_start' else 'local_lease_expired' end,
         completed_at = case when attempt.status = 'prepared' then now() else attempt.completed_at end,
         updated_at = now()
-    where attempt.executor_kind = 'local_native'
-      and attempt.status in ('prepared', 'running')
+    where attempt.executor_kind in ('local_native', 'local_acp')
+      and (
+        (attempt.executor_kind = 'local_native' and attempt.status in ('prepared', 'running'))
+        or (attempt.executor_kind = 'local_acp' and attempt.status in ('prepared', 'running', 'workspace_sealed', 'transcript_sealed'))
+      )
       and attempt.updated_at < now() - interval '60 seconds'
       and not exists (
         select 1 from v2.workspace_writer_leases lease

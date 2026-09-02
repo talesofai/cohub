@@ -598,7 +598,11 @@ export function registerAgentHooks(program: Command): void {
         const dataDir = localdDataDir(opts.dataDir);
         const client = createClient();
         const runtimes = (await client.localAgent.listRuntimes(spaceId)).runtimes;
-        let runtime = opts.runtimeId?.trim() ? runtimes.find((item) => item.id === opts.runtimeId?.trim()) : runtimes.find((item) => item.provider === provider && item.replicaId === replicaId);
+        const requestedRuntimeId = opts.runtimeId?.trim() || null;
+        let runtime = requestedRuntimeId
+          ? runtimes.find((item) => item.id === requestedRuntimeId)
+          : runtimes.find((item) => item.provider === provider && item.replicaId === replicaId);
+        if (requestedRuntimeId && !runtime) return error("Runtime not found", "The requested runtime is not registered for this device and Space.");
         if (!runtime) {
           const devices = (await client.localAgent.listDevices()).devices.filter((device) => device.status === "active");
           const deviceId = devices[0]?.id;

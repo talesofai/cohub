@@ -156,6 +156,7 @@ router.post("/spaces/:spaceId/runtimes", async (c) => {
     return c.json(await registerLocalAcpRuntime({
       actor,
       spaceId,
+      deviceId: typeof body.deviceId === "string" ? body.deviceId : undefined,
       replicaId: body.replicaId,
       provider: body.provider,
       displayName: body.displayName as string,
