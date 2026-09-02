@@ -3,4 +3,4 @@
 "@neta-art/cohub-cli": minor
 ---
 
-Add local Agent device APIs, workspace replica synchronization commands, conflict resolution, provider hook installation, and verified `cohub-locald` runtime installation.
+Add local Agent device APIs, ACP runtime registration and selection, workspace replica synchronization commands, conflict resolution, provider adapter lifecycle, and verified `cohub-locald` runtime installation.

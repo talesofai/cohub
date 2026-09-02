@@ -38,6 +38,7 @@ import { getPromptAuthScopes, parsePromptEnv, type PromptAccessMode } from "@coh
 import { createAgentExecutionToken } from "./execution-grants.js";
 import { sealCloudWorkspaceAttempt, startWorkspaceAttemptHeartbeat, workspaceAttemptFromMeta } from "./workspace-attempt.js";
 import { acquireWorkspacePhysicalLock, type WorkspacePhysicalLock } from "./workspace-physical-lock.js";
+import { runSerializedLocalAcpTurn } from "./local-acp-client.js";
 
 
 const sessionHandles = new Map<string, SessionHandle>();
@@ -868,6 +869,19 @@ export async function processAgentTurnJob(job: Job<AgentTurnJobData>) {
       lock.assertHealthy();
       const { batch } = claim;
       claimedBatch = batch;
+      const claimedMeta = batch.ownerTurn.meta && typeof batch.ownerTurn.meta === "object" && !Array.isArray(batch.ownerTurn.meta)
+        ? batch.ownerTurn.meta as Record<string, unknown>
+        : {};
+      const localAcpAttemptId = typeof claimedMeta.executionAttemptId === "string" && claimedMeta.executorKind === "local_acp"
+        ? claimedMeta.executionAttemptId
+        : null;
+      if (localAcpAttemptId) {
+        lock.assertHealthy();
+        const localResult = await runSerializedLocalAcpTurn(localAcpAttemptId);
+        terminalHandled = true;
+        drainAfterRelease = { spaceId: data.spaceId, sessionId: data.sessionId, reason: "turn_complete" };
+        return localResult;
+      }
       const workspaceAttempt = workspaceAttemptFromMeta(batch.ownerTurn.meta);
       if (workspaceAttempt) {
         stopWorkspaceHeartbeat = await startWorkspaceAttemptHeartbeat({
@@ -1269,7 +1283,11 @@ export async function processAgentTurnJob(job: Job<AgentTurnJobData>) {
         }
       }
       await stopWorkspaceHeartbeat?.();
-      const workspaceAttempt = claimedBatch ? workspaceAttemptFromMeta(claimedBatch.ownerTurn.meta) : null;
+      const claimedOwnerMeta = claimedBatch?.ownerTurn.meta && typeof claimedBatch.ownerTurn.meta === "object" && !Array.isArray(claimedBatch.ownerTurn.meta)
+        ? claimedBatch.ownerTurn.meta as Record<string, unknown>
+        : {};
+      const isLocalAcpAttempt = claimedOwnerMeta.executorKind === "local_acp";
+      const workspaceAttempt = !isLocalAcpAttempt && claimedBatch ? workspaceAttemptFromMeta(claimedBatch.ownerTurn.meta) : null;
       if (workspaceAttempt && claimedBatch) {
         await sealCloudWorkspaceAttempt({
           spaceId: data.spaceId,

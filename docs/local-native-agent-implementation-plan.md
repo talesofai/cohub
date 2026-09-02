@@ -1,6 +1,8 @@
 # Local Native Agent and Workspace Replica Implementation Plan
 
-Status: implemented behind rollout flags; production integration validation pending
+Status: legacy native-ingest reference; ACP runtime architecture is normative
+
+> The current execution contract is [Local ACP Runtime Architecture](./local-acp-runtime-architecture.md). This document's workspace replication sections remain useful, but native hook/ingest sections describe a compatibility path only and must not be treated as the default local executor.
 
 Related design: [Workspace Replication Design](./workspace-replication-design.md)
 

@@ -20,6 +20,28 @@ export type LocalAgentDevice = {
   updatedAt: string;
 };
 
+export type LocalAcpRuntimeRecord = {
+  id: string;
+  spaceId: string;
+  deviceId: string;
+  replicaId: string;
+  userUuid: string;
+  provider: "pi" | "codex" | "claude_code";
+  displayName: string;
+  providerVersion: string;
+  adapterVersion: string;
+  protocolVersion: number;
+  capabilities: Record<string, unknown>;
+  status: "offline" | "connecting" | "ready" | "busy" | "error" | "revoked";
+  connectionEpoch: number;
+  lastSeenAt: string | null;
+  connectedAt: string | null;
+  disconnectedAt: string | null;
+  lastError: string | null;
+  createdAt: string;
+  updatedAt: string;
+};
+
 export type LocalAgentAttachResponse = {
   replica: Record<string, unknown>;
   cloudReplica: Record<string, unknown>;
@@ -66,6 +88,7 @@ export type WorkspaceReplicaStateResponse = {
 
 export type WorkspaceReplicaOverviewResponse = {
   replicas: Array<Record<string, unknown>>;
+  runtimes?: LocalAcpRuntimeRecord[];
   workspace: Record<string, unknown> | null;
   workspacePolicy: Record<string, unknown> | null;
   lease: Record<string, unknown> | null;
@@ -125,6 +148,36 @@ export class LocalAgentApi {
 
   revokeDevice(deviceId: string, customFetch?: Fetch) {
     return this.transport.request<{ device: LocalAgentDevice }>(`/api/local-agent/devices/${deviceId}`, { method: "DELETE", fetch: customFetch });
+  }
+
+  registerRuntime(spaceId: string, input: {
+    deviceId?: string;
+    replicaId: string;
+    provider: "pi" | "codex" | "claude_code";
+    displayName: string;
+    providerVersion?: string;
+    adapterVersion?: string;
+    capabilities?: Record<string, unknown>;
+    protocolVersion?: number;
+  }, customFetch?: Fetch) {
+    return this.transport.request<LocalAcpRuntimeRecord>(`/api/local-agent/spaces/${spaceId}/runtimes`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(input),
+      fetch: customFetch,
+    });
+  }
+
+  listRuntimes(spaceId: string, customFetch?: Fetch) {
+    return this.transport.request<{ runtimes: LocalAcpRuntimeRecord[] }>(`/api/local-agent/spaces/${spaceId}/runtimes`, { fetch: customFetch });
+  }
+
+  getRuntime(spaceId: string, runtimeId: string, customFetch?: Fetch) {
+    return this.transport.request<LocalAcpRuntimeRecord>(`/api/local-agent/spaces/${spaceId}/runtimes/${runtimeId}`, { fetch: customFetch });
+  }
+
+  revokeRuntime(spaceId: string, runtimeId: string, customFetch?: Fetch) {
+    return this.transport.request<{ runtime: LocalAcpRuntimeRecord }>(`/api/local-agent/spaces/${spaceId}/runtimes/${runtimeId}`, { method: "DELETE", fetch: customFetch });
   }
 
   attach(spaceId: string, input: { deviceId?: string; rootFingerprint: string; displayName: string; capabilities?: Record<string, unknown>; protocolVersion?: number }, customFetch?: Fetch) {

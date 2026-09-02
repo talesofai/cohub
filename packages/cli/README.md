@@ -85,14 +85,15 @@ Install the pinned, checksummed local runtime, attach a folder, then install onl
 
 ```bash
 cohub agent runtime install
-cohub workspace attach <spaceId> ./project --merge --mirror metadata_only
-cohub agent hooks install pi
+cohub workspace attach <spaceId> ./project --merge --mirror full
+cohub agent runtime register <spaceId> <replicaId> pi
+cohub agent runtime start <spaceId> <replicaId> pi --root ./project
 cohub agent doctor
 ```
 
-A non-empty folder requires exactly one initial strategy: `--merge`, `--use-cloud`, or `--use-local`. `--use-cloud` creates a verified local recovery backup before replacing managed content. Empty folders default to `--use-cloud`.
+`cohub agent doctor` reports the installed ACP adapter separately from the optional legacy hook integration. A non-empty folder requires exactly one initial strategy: `--merge`, `--use-cloud`, or `--use-local`. `--use-cloud` creates a verified local recovery backup before replacing managed content. Empty folders default to `--use-cloud`.
 
-Prepare a bounded writer handoff before a native turn:
+Prepare a bounded writer handoff before a legacy native-hook turn. ACP runtime prompts acquire their lease through the Agent worker:
 
 ```bash
 cohub workspace handoff local --space <spaceId> --replica-id <replicaId> --wait
@@ -112,7 +113,22 @@ cohub workspace conflicts --space <spaceId>
 cohub workspace resolve <conflictId> --space <spaceId> --use-local
 ```
 
-`COHUB_LOCALD_BIN` overrides the runtime path for development. `COHUB_LOCALD_VERSION` and `COHUB_LOCALD_CDN_BASE_URL` select a released version and mirror. Hooks use local IPC only; network transfer and retries happen in the daemon.
+`COHUB_LOCALD_BIN` overrides the runtime path for development. `COHUB_LOCALD_VERSION` and `COHUB_LOCALD_CDN_BASE_URL` select a released version and mirror. ACP runtime control uses locald and the Gateway relay; network transfer and retries happen in the daemon.
+
+For ACP execution, install the official adapter for the provider separately so it can keep using its own configuration and credentials, then register and start a runtime:
+
+```bash
+npm install -g pi-acp
+# Or install the adapter matching the selected provider:
+# npm install -g @agentclientprotocol/codex-acp
+# npm install -g @agentclientprotocol/claude-agent-acp
+cohub agent runtime register <spaceId> <replicaId> pi
+cohub agent runtime start <spaceId> <replicaId> pi --root ./project
+cohub agent runtime list <spaceId>
+cohub agent runtime revoke <spaceId> <runtimeId>
+```
+
+The official adapter commands are `pi-acp`, `codex-acp`, and `claude-agent-acp`. Runtime prompts are selected in the Web composer or sent by SDK callers with `runtimeId`; they run immediately and do not accept a Cohub model override. Provider MCP configuration remains provider-owned and is not registered by Cohub.
 
 ## Chats and prompts
 

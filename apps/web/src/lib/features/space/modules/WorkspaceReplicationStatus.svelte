@@ -104,6 +104,21 @@ function mirrorLabel(replica: WorkspaceReplicationReplica) {
 	return "Mirror: active";
 }
 
+function runtimeProviderLabel(provider: string) {
+	if (provider === "claude_code") return "Claude Code";
+	if (provider === "codex") return "Codex";
+	return "Pi";
+}
+
+function runtimeStatusLabel(status: string) {
+	if (status === "ready") return "Ready";
+	if (status === "busy") return "Busy";
+	if (status === "connecting") return "Connecting";
+	if (status === "error") return "Error";
+	if (status === "revoked") return "Revoked";
+	return "Offline";
+}
+
 async function refresh() {
 	if (refreshing) return;
 	refreshing = true;
@@ -231,6 +246,21 @@ $effect(() => {
 					{/each}
 				</div>
 
+				{#if replicationState.runtimes.length > 0}
+					<div class="runtime-heading">ACP runtimes</div>
+					<div class="replica-list" role="list" aria-label="Local ACP runtimes">
+						{#each replicationState.runtimes as runtime (runtime.id)}
+							<div class="replica-row" role="listitem">
+								<div class="replica-icon" aria-hidden="true"><Laptop class="h-4 w-4" /></div>
+								<div class="replica-copy">
+									<strong>{runtime.displayName || `${runtimeProviderLabel(runtime.provider)} runtime`}</strong>
+									<span>{runtimeProviderLabel(runtime.provider)} · {runtimeStatusLabel(runtime.status)}</span>
+								</div>
+							</div>
+						{/each}
+					</div>
+				{/if}
+
 				{#if replicationState.error}
 					<div class="error-row">{replicationState.error}</div>
 				{/if}
@@ -337,6 +367,7 @@ $effect(() => {
 	.detail-row { display: flex; align-items: baseline; justify-content: space-between; gap: 16px; min-height: 25px; color: var(--text-secondary); font-size: 12px; }
 	.detail-row strong { color: var(--text-primary); font-weight: 600; }
 	.detail-row code { max-width: 210px; overflow: hidden; color: var(--text-tertiary); font-family: var(--font-mono, ui-monospace, monospace); font-size: 11px; text-overflow: ellipsis; white-space: nowrap; }
+	.runtime-heading { padding: 8px 14px 3px; color: var(--text-tertiary); font-size: 10px; font-weight: 650; letter-spacing: 0.04em; text-transform: uppercase; }
 	.replica-list { padding: 5px 8px; }
 	.replica-row { display: flex; align-items: center; gap: 9px; min-height: 48px; padding: 6px; border-radius: 6px; }
 	.replica-row:hover { background: var(--bg-hover); }

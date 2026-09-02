@@ -8,6 +8,7 @@ import type {
 import type {
 	AppRecord,
 	AppRuntimeInvocationContext,
+	LocalAcpRuntimeRecord,
 	Permission,
 	SpaceRecord,
 	TaskRunRecord,
@@ -312,6 +313,9 @@ const spaceSlug = $derived(space?.slug ?? null);
 let connectionStateBox: {
 	current: "idle" | "connecting" | "reconnecting" | "open" | "closed" | "error";
 } = { current: "idle" };
+// The replication controller is initialized below the chat host, so keep a
+// small reactive bridge for the host's runtime picker.
+let localRuntimeOptions = $state<LocalAcpRuntimeRecord[]>([]);
 
 const sessionChat = createSessionChatHost({
 	openPath: (target) => openLinkedInlineFile(target),
@@ -355,6 +359,7 @@ const sessionChat = createSessionChatHost({
 	getConnectionState: () => connectionStateBox.current,
 	canManageSessionAccess: () => canManageSessionAccess,
 	hasSpace: () => Boolean(space),
+	getLocalRuntimes: () => localRuntimeOptions,
 });
 
 // Host is the unique owner of chat controllers and session records.
@@ -952,6 +957,9 @@ const workspaceReplication = createWorkspaceReplicationController({
 	getPageVisible: () => pageVisible,
 	getPageOnline: () => pageOnline,
 	getPageMounted: () => pageMounted,
+});
+$effect(() => {
+	localRuntimeOptions = workspaceReplication.snapshot.runtimes;
 });
 const onlineUsers = $derived(
 	spacePresence.users.filter((user) => user.userId !== authStore.userUuid),

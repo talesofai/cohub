@@ -91,6 +91,7 @@ import { featureGateResponse } from "../../lib/feature-gate.js";
 import { billingBlockedResponse } from "../../lib/billing-blocked.js";
 import { applyRequestSourceToMeta, getRequestSource, resolveSessionSourceFromRequest } from "../../lib/request-source.js";
 import { validatePromptModel } from "../../llm/models.js";
+import { LocalAgentServiceError } from "../../local-agent-service.js";
 
 
 const logger = createLogger({ serviceName: "cohub-api" });
@@ -314,6 +315,7 @@ type SpacePromptInput = {
   content?: ContentBlock[];
   model?: string | null;
   provider?: string | null;
+  runtimeId?: string | null;
   thinkingLevel?: string | null;
   clientMessageId?: string | null;
   generationPolicy?: unknown;
@@ -1821,6 +1823,7 @@ router.post("/:id/prompt", async (c) => {
 
   const body = await c.req.json<SpacePromptInput>().catch(() => null);
   if (body?.mode === "create") {
+    if (body.runtimeId) return c.json({ code: "runtime_mode_invalid", message: "local ACP runtime is only available for agent prompts" }, 400);
     const generation = body.generation;
     if (!generation?.model || !Array.isArray(generation.content) || generation.content.length === 0) {
       return c.json({ message: "generation.model and generation.content are required" }, 400);
@@ -1899,9 +1902,30 @@ router.post("/:id/prompt", async (c) => {
     return c.json({ message: "generationPolicy is invalid" }, 400);
   }
 
+  if (body.runtimeId != null && typeof body.runtimeId !== "string") {
+    return c.json({ message: "runtimeId must be a string" }, 400);
+  }
+  const runtimeId = body.runtimeId?.trim() || null;
+  if (runtimeId && !requireValidId(runtimeId)) return c.json({ message: "invalid runtimeId" }, 400);
   const requestedModel = body.model?.trim() || null;
   const requestedProvider = body.provider?.trim() || (requestedModel ? "cohub" : null);
+  if (runtimeId && (requestedModel || requestedProvider)) {
+    return c.json({ code: "runtime_model_invalid", message: "local ACP runtime uses its own provider configuration" }, 400);
+  }
+  if (runtimeId && promptThinkingLevel !== null && promptThinkingLevel !== undefined) {
+    return c.json({ code: "runtime_thinking_invalid", message: "local ACP runtime uses its provider's own thinking configuration" }, 400);
+  }
+  if (runtimeId && generationPolicy) {
+    return c.json({ code: "runtime_generation_invalid", message: "local ACP runtime uses its provider's own generation configuration" }, 400);
+  }
+  if (runtimeId && mode !== "immediate") {
+    return c.json({ code: "runtime_schedule_invalid", message: "local ACP runtime prompts must run immediately" }, 400);
+  }
+  if (runtimeId && !(await hasPermission(user, "file.edit", { spaceId }))) {
+    return authzDenied(c);
+  }
   if (
+    !runtimeId &&
     requestedModel &&
     requestedProvider &&
     !(await validatePromptModel({ userId: user.uuid, provider: requestedProvider, model: requestedModel }))
@@ -1930,6 +1954,9 @@ router.post("/:id/prompt", async (c) => {
     if (error instanceof PromptEnvValidationError) return c.json({ message: error.message }, 400);
     throw error;
   }
+  if (runtimeId && promptEnv && Object.keys(promptEnv).length > 0) {
+    return c.json({ code: "runtime_env_invalid", message: "local ACP runtime does not accept Cohub environment overrides" }, 400);
+  }
 
   const content = body.content;
   const clientMessageId = body.clientMessageId?.trim() || crypto.randomUUID();
@@ -1948,6 +1975,7 @@ router.post("/:id/prompt", async (c) => {
     ...(body.title ? { title: body.title } : {}),
     ...(body.model ? { model: body.model } : {}),
     ...(body.provider ? { provider: body.provider } : {}),
+    ...(runtimeId ? { runtimeId } : {}),
     ...(promptThinkingLevel ? { thinkingLevel: promptThinkingLevel } : {}),
     ...(promptLabelIds.length > 0 ? { labelIds: promptLabelIds } : {}),
     ...(scheduledAuth ? { auth: scheduledAuth } : {}),
@@ -1990,6 +2018,7 @@ router.post("/:id/prompt", async (c) => {
         sourceClientId: getRequestSource(c)?.clientId ?? null,
         model: requestedModel,
         provider: requestedProvider,
+        runtimeId,
         thinkingLevel: promptThinkingLevel ?? null,
         generationPolicy,
         intent: promptIntent,
@@ -2014,6 +2043,12 @@ router.post("/:id/prompt", async (c) => {
           return c.json({ ...body, sessionId: createdSessionId }, res.status as never);
         }
         return res;
+      }
+      if (error instanceof LocalAgentServiceError) {
+        return c.json(
+          { code: error.code, message: error.message, ...(createdSessionId ? { sessionId: createdSessionId } : {}) },
+          error.status as never,
+        );
       }
       if (error instanceof ModelUnavailableError) {
         return c.json(

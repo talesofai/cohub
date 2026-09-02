@@ -1,5 +1,5 @@
 import type { WorkspaceStateUpdatedEvent } from "@cohub/protocol/realtime";
-import { HttpError } from "@neta-art/cohub";
+import { HttpError, type LocalAcpRuntimeRecord } from "@neta-art/cohub";
 import { sdk } from "$lib/sdk";
 
 export type WorkspaceReplicationReplica = {
@@ -45,6 +45,7 @@ export type WorkspaceReplicationLease = {
 
 export type WorkspaceReplicationSnapshot = {
 	replicas: WorkspaceReplicationReplica[];
+	runtimes: LocalAcpRuntimeRecord[];
 	workspace: WorkspaceReplicationWorkspace | null;
 	lease: WorkspaceReplicationLease | null;
 	openConflictCount: number;
@@ -55,6 +56,7 @@ export type WorkspaceReplicationSnapshot = {
 
 type OverviewResponse = {
 	replicas: Array<Record<string, unknown>>;
+	runtimes?: LocalAcpRuntimeRecord[];
 	workspace: Record<string, unknown> | null;
 	lease: Record<string, unknown> | null;
 	openConflictCount: number;
@@ -147,6 +149,26 @@ function parseLease(
 	};
 }
 
+function parseRuntime(value: unknown): LocalAcpRuntimeRecord | null {
+	if (!value || typeof value !== "object" || Array.isArray(value)) return null;
+	const runtime = value as Partial<LocalAcpRuntimeRecord>;
+	if (
+		typeof runtime.id !== "string" ||
+		typeof runtime.spaceId !== "string" ||
+		typeof runtime.deviceId !== "string" ||
+		typeof runtime.replicaId !== "string" ||
+		typeof runtime.displayName !== "string" ||
+		!(["pi", "codex", "claude_code"] as string[]).includes(
+			runtime.provider ?? "",
+		) ||
+		!(
+			["offline", "connecting", "ready", "busy", "error", "revoked"] as string[]
+		).includes(runtime.status ?? "")
+	)
+		return null;
+	return runtime as LocalAcpRuntimeRecord;
+}
+
 function parseOverview(
 	value: OverviewResponse,
 	spaceId: string,
@@ -157,6 +179,9 @@ function parseOverview(
 			.filter(
 				(replica): replica is WorkspaceReplicationReplica => replica !== null,
 			),
+		runtimes: (value.runtimes ?? [])
+			.map(parseRuntime)
+			.filter((runtime): runtime is LocalAcpRuntimeRecord => runtime !== null),
 		workspace: parseWorkspace(value.workspace),
 		lease: parseLease(value.lease),
 		openConflictCount: Number.isSafeInteger(value.openConflictCount)
@@ -176,6 +201,7 @@ export function createWorkspaceReplicationController(options: {
 }) {
 	let snapshot = $state<WorkspaceReplicationSnapshot>({
 		replicas: [],
+		runtimes: [],
 		workspace: null,
 		lease: null,
 		openConflictCount: 0,
@@ -220,6 +246,7 @@ export function createWorkspaceReplicationController(options: {
 			snapshot = {
 				...snapshot,
 				replicas: status === 403 || status === 404 ? [] : snapshot.replicas,
+				runtimes: status === 403 || status === 404 ? [] : snapshot.runtimes,
 				loadedFor: spaceId,
 				loading: false,
 				error:
@@ -315,6 +342,7 @@ export function createWorkspaceReplicationController(options: {
 		clearRefreshTimer();
 		snapshot = {
 			replicas: [],
+			runtimes: [],
 			workspace: null,
 			lease: null,
 			openConflictCount: 0,

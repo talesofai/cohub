@@ -73,6 +73,10 @@ export const EnvSchema = z.object({
   AGENT_VERSION: z.string().optional(),
   NATIVE_AGENT_MIRROR_ENABLED: booleanEnv("NATIVE_AGENT_MIRROR_ENABLED", process.env.ENV !== "prod"),
   WORKER_SECRET: z.string().optional(),
+  LOCAL_ACP_RUNTIME_RELAY_URL: z.string().url().refine((value) => {
+    const url = new URL(value);
+    return url.protocol === "ws:" || url.protocol === "wss:";
+  }, "LOCAL_ACP_RUNTIME_RELAY_URL must use ws:// or wss://").default("ws://localhost:8788/internal/runtime-relay"),
   APP_ENCRYPTION_KEY: z.string().min(1),
   SESSIONS_NAMESPACE: z.string().min(1),
   TURN_OBJECT_S3_ENDPOINT: z.string().min(1).default("https://oss-us-west-1-internal.aliyuncs.com"),

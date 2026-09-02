@@ -47,6 +47,7 @@ AGENT_WORKER_CONCURRENCY=$(get_value "agentWorkerConcurrency")
 AGENT_LOCK_DB_POOL_MAX=$(get_value "agentLockDbPoolMax")
 AGENT_SHUTDOWN_DRAIN_TIMEOUT_MS=$(get_value "agentShutdownDrainTimeoutMs")
 NATIVE_AGENT_MIRROR_ENABLED=$(get_value "nativeAgentMirrorEnabled")
+LOCAL_ACP_RUNTIME_RELAY_URL=$(get_value "localAcpRuntimeRelayUrl")
 TURN_OBJECT_S3_ENDPOINT=$(get_value "TURN_OBJECT_S3_ENDPOINT")
 TURN_OBJECT_S3_REGION=$(get_value "TURN_OBJECT_S3_REGION")
 TURN_OBJECT_S3_BUCKET=$(get_value "TURN_OBJECT_S3_BUCKET")
@@ -102,6 +103,7 @@ require_value "agentWorkerConcurrency" "$AGENT_WORKER_CONCURRENCY"
 require_value "agentLockDbPoolMax" "$AGENT_LOCK_DB_POOL_MAX"
 require_value "agentShutdownDrainTimeoutMs" "$AGENT_SHUTDOWN_DRAIN_TIMEOUT_MS"
 require_value "nativeAgentMirrorEnabled" "$NATIVE_AGENT_MIRROR_ENABLED"
+require_value "localAcpRuntimeRelayUrl" "$LOCAL_ACP_RUNTIME_RELAY_URL"
 require_value "TURN_OBJECT_S3_ENDPOINT" "$TURN_OBJECT_S3_ENDPOINT"
 require_value "TURN_OBJECT_S3_REGION" "$TURN_OBJECT_S3_REGION"
 require_value "TURN_OBJECT_S3_BUCKET" "$TURN_OBJECT_S3_BUCKET"
@@ -164,6 +166,7 @@ sed -i.bak \
   -e "s|{{AGENT_LOCK_DB_POOL_MAX}}|${AGENT_LOCK_DB_POOL_MAX}|g" \
   -e "s|{{AGENT_SHUTDOWN_DRAIN_TIMEOUT_MS}}|${AGENT_SHUTDOWN_DRAIN_TIMEOUT_MS}|g" \
   -e "s|{{NATIVE_AGENT_MIRROR_ENABLED}}|${NATIVE_AGENT_MIRROR_ENABLED}|g" \
+  -e "s|{{LOCAL_ACP_RUNTIME_RELAY_URL}}|${LOCAL_ACP_RUNTIME_RELAY_URL}|g" \
   -e "s|{{PLATFORM_CONFIG_ROOT}}|${PLATFORM_CONFIG_ROOT}|g" \
   -e "s|{{TURN_OBJECT_S3_ENDPOINT}}|${TURN_OBJECT_S3_ENDPOINT}|g" \
   -e "s|{{TURN_OBJECT_S3_REGION}}|${TURN_OBJECT_S3_REGION}|g" \

@@ -104,6 +104,16 @@ Release artifacts are built by `.github/workflows/locald-binaries-build.yml` for
 
 Before moving the CLI pin, publish the runtime tag and verify every CDN checksum. Then update `LOCALD_VERSION` in `packages/cli/src/commands/locald-binary.ts`.
 
+### Local ACP runtime
+
+`cohub-locald runtime` is the ACP host for an enrolled local provider. It
+connects outbound to the Gateway runtime relay, starts the official provider
+adapter with the attached replica as its working directory, and forwards ACP
+JSON-RPC over stdio. It does not expose a Cohub tool server or register MCP
+servers. Supported default adapter binaries are `pi-acp`, `codex-acp`, and
+`claude-agent-acp`; provider credentials and native session files stay in the
+provider's normal user profile.
+
 ## Docker 构建
 
 在项目根目录执行：

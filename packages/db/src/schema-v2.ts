@@ -33,6 +33,8 @@ import type {
   NativeIngestStatus,
   NativeProvider,
   SessionMirrorMode,
+  LocalAcpProvider,
+  LocalAcpRuntimeStatus,
 } from "@cohub/protocol";
 import type {
   WorkspaceConflictKind,
@@ -1621,6 +1623,7 @@ export const workspaceExecutionAttempts = v2.table(
     id: uuid("id").primaryKey().defaultRandom(),
     spaceId: uuid("space_id").notNull().references(() => spaces.id, { onDelete: "restrict" }),
     replicaId: uuid("replica_id").references(() => workspaceReplicas.id, { onDelete: "restrict" }),
+    runtimeId: uuid("runtime_id").references((): AnyPgColumn => localAgentRuntimes.id, { onDelete: "restrict" }),
     idempotencyKey: varchar("idempotency_key", { length: 255 }).notNull(),
     executorKind: varchar("executor_kind", { length: 40 }).notNull(),
     provider: varchar("provider", { length: 40 }),
@@ -1653,6 +1656,7 @@ export const workspaceExecutionAttempts = v2.table(
     activeSpaceIdx: uniqueIndex("v2_uq_workspace_execution_attempts_active_space").on(table.spaceId).where(sql`${table.status} in ('prepared', 'running', 'workspace_sealed', 'transcript_sealed', 'awaiting_recovery')`),
     spaceStatusIdx: index("v2_idx_workspace_execution_attempts_space_status").on(table.spaceId, table.status, table.updatedAt),
     replicaIdx: index("v2_idx_workspace_execution_attempts_replica").on(table.replicaId, table.createdAt),
+    runtimeIdx: index("v2_idx_workspace_execution_attempts_runtime").on(table.runtimeId, table.createdAt),
   }),
 );
 
@@ -1806,6 +1810,111 @@ export const workspaceWriterLeases = v2.table(
   (table) => ({
     expiryIdx: index("v2_idx_workspace_writer_leases_expiry").on(table.expiresAt),
     holderIdx: index("v2_idx_workspace_writer_leases_holder").on(table.holderKind, table.holderId),
+  }),
+);
+
+export const localAgentRuntimes = v2.table(
+  "local_agent_runtimes",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    spaceId: uuid("space_id").notNull().references(() => spaces.id, { onDelete: "restrict" }),
+    deviceId: uuid("device_id").notNull().references(() => localAgentDevices.id, { onDelete: "restrict" }),
+    replicaId: uuid("replica_id").notNull().references(() => workspaceReplicas.id, { onDelete: "restrict" }),
+    userUuid: varchar("user_uuid", { length: 255 }).notNull(),
+    provider: varchar("provider", { length: 40 }).$type<LocalAcpProvider>().notNull(),
+    displayName: varchar("display_name", { length: 255 }).notNull(),
+    providerVersion: varchar("provider_version", { length: 120 }).notNull().default("unknown"),
+    adapterVersion: varchar("adapter_version", { length: 120 }).notNull().default("unknown"),
+    protocolVersion: integer("protocol_version").notNull().default(1),
+    capabilities: jsonb("capabilities").$type<Record<string, unknown>>().notNull().default(sql`'{}'::jsonb`),
+    status: varchar("status", { length: 30 }).$type<LocalAcpRuntimeStatus>().notNull().default("offline"),
+    connectionEpoch: bigint("connection_epoch", { mode: "number" }).notNull().default(0),
+    gatewayNodeId: varchar("gateway_node_id", { length: 255 }),
+    gatewayWsEndpoint: text("gateway_ws_endpoint"),
+    lastSeenAt: timestamp("last_seen_at", { withTimezone: true }),
+    connectedAt: timestamp("connected_at", { withTimezone: true }),
+    disconnectedAt: timestamp("disconnected_at", { withTimezone: true }),
+    lastError: text("last_error"),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+    updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (table) => ({
+    spaceDeviceProviderUniqueIdx: uniqueIndex("v2_uq_local_agent_runtimes_space_device_provider").on(table.spaceId, table.deviceId, table.provider).where(sql`${table.status} <> 'revoked'`),
+    spaceStatusIdx: index("v2_idx_local_agent_runtimes_space_status").on(table.spaceId, table.status, table.updatedAt),
+    deviceIdx: index("v2_idx_local_agent_runtimes_device").on(table.deviceId, table.status),
+  }),
+);
+
+export const localAgentRuntimeSessions = v2.table(
+  "local_agent_runtime_sessions",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    runtimeId: uuid("runtime_id").notNull().references(() => localAgentRuntimes.id, { onDelete: "restrict" }),
+    spaceId: uuid("space_id").notNull().references(() => spaces.id, { onDelete: "restrict" }),
+    cohubSessionId: uuid("cohub_session_id").notNull().references(() => spaceSessions.id, { onDelete: "restrict" }),
+    acpSessionId: varchar("acp_session_id", { length: 255 }).notNull(),
+    connectionEpoch: bigint("connection_epoch", { mode: "number" }).notNull(),
+    status: varchar("status", { length: 30 }).notNull().default("active"),
+    lastEventSequence: bigint("last_event_sequence", { mode: "number" }).notNull().default(0),
+    lastEventHash: varchar("last_event_hash", { length: 64 }),
+    lastSeenAt: timestamp("last_seen_at", { withTimezone: true }),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+    updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (table) => ({
+    runtimeAcpSessionUniqueIdx: uniqueIndex("v2_uq_local_agent_runtime_sessions_runtime_acp").on(table.runtimeId, table.acpSessionId),
+    runtimeCohubSessionUniqueIdx: uniqueIndex("v2_uq_local_agent_runtime_sessions_runtime_cohub").on(table.runtimeId, table.cohubSessionId),
+    spaceStatusIdx: index("v2_idx_local_agent_runtime_sessions_space_status").on(table.spaceId, table.status, table.updatedAt),
+  }),
+);
+
+export const localAgentRuntimeCommands = v2.table(
+  "local_agent_runtime_commands",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    runtimeId: uuid("runtime_id").notNull().references(() => localAgentRuntimes.id, { onDelete: "restrict" }),
+    runtimeSessionId: uuid("runtime_session_id").notNull().references(() => localAgentRuntimeSessions.id, { onDelete: "restrict" }),
+    executionAttemptId: uuid("execution_attempt_id").references((): AnyPgColumn => workspaceExecutionAttempts.id, { onDelete: "restrict" }),
+    cohubSessionId: uuid("cohub_session_id").notNull().references(() => spaceSessions.id, { onDelete: "restrict" }),
+    commandId: varchar("command_id", { length: 255 }).notNull(),
+    sequence: bigint("sequence", { mode: "number" }).notNull(),
+    method: varchar("method", { length: 120 }).notNull(),
+    params: jsonb("params").notNull().$type<Record<string, unknown>>(),
+    paramsHash: varchar("params_hash", { length: 64 }).notNull(),
+    status: varchar("status", { length: 30 }).notNull().default("prepared"),
+    response: jsonb("response").$type<Record<string, unknown> | null>(),
+    errorCode: integer("error_code"),
+    errorMessage: text("error_message"),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+    updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (table) => ({
+    runtimeCommandUniqueIdx: uniqueIndex("v2_uq_local_agent_runtime_commands_session_command").on(table.runtimeSessionId, table.commandId),
+    runtimeSequenceUniqueIdx: uniqueIndex("v2_uq_local_agent_runtime_commands_session_sequence").on(table.runtimeSessionId, table.sequence),
+    runtimeAttemptIdx: index("v2_idx_local_agent_runtime_commands_attempt").on(table.executionAttemptId, table.createdAt),
+    runtimeStatusIdx: index("v2_idx_local_agent_runtime_commands_runtime_status").on(table.runtimeId, table.status, table.updatedAt),
+  }),
+);
+
+export const localAgentRuntimeEvents = v2.table(
+  "local_agent_runtime_events",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    runtimeSessionId: uuid("runtime_session_id").notNull().references(() => localAgentRuntimeSessions.id, { onDelete: "restrict" }),
+    eventId: varchar("event_id", { length: 255 }).notNull(),
+    sequence: bigint("sequence", { mode: "number" }).notNull(),
+    direction: varchar("direction", { length: 20 }).notNull(),
+    method: varchar("method", { length: 120 }).notNull(),
+    commandId: varchar("command_id", { length: 255 }),
+    payload: jsonb("payload").notNull().$type<Record<string, unknown>>(),
+    payloadHash: varchar("payload_hash", { length: 64 }).notNull(),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (table) => ({
+    runtimeEventUniqueIdx: uniqueIndex("v2_uq_local_agent_runtime_events_session_event").on(table.runtimeSessionId, table.eventId),
+    runtimeSequenceUniqueIdx: uniqueIndex("v2_uq_local_agent_runtime_events_session_sequence").on(table.runtimeSessionId, table.sequence),
+    sessionCreatedIdx: index("v2_idx_local_agent_runtime_events_session_created").on(table.runtimeSessionId, table.createdAt),
+    commandIdx: index("v2_idx_local_agent_runtime_events_command").on(table.runtimeSessionId, table.commandId, table.sequence),
   }),
 );
 

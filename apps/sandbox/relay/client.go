@@ -15,6 +15,7 @@ import (
 	"math/rand"
 	"net/http"
 	"net/url"
+	"strings"
 	"sync"
 	"time"
 
@@ -28,20 +29,37 @@ type SessionServer interface {
 	ServeDialedConn(ctx context.Context, conn *websocket.Conn, remote string)
 }
 
+// TokenProvider supplies a current bearer token for a control or data dial.
+// It is useful for long-lived local runtimes whose short-lived access token can
+// rotate while the relay connection remains alive.
+type TokenProvider func(context.Context) (string, error)
+
 // Options configures the relay client.
 type Options struct {
 	// RelayURL is the gateway control endpoint, e.g.
-	// wss://gateway.cohub.live/sandbox/relay.
+	// wss://gateway.cohub.live/sandbox/relay or wss://gateway.cohub.live/runtime/relay.
 	RelayURL string
-	// Token is the user's access token, used by the gateway to authorize the
-	// caller against the target space.
+	// Token is the user's/device access token, used by the gateway to authorize
+	// the caller against the target space or registered runtime.
 	Token string
-	// SpaceID identifies the space this sandbox serves.
+	// SpaceID identifies the space this sandbox serves. Runtime mode also uses
+	// this for routing and authorization.
 	SpaceID string
-	// Server serves each opened data channel.
-	Server       SessionServer
-	OnRegistered func()
-	Logger       *slog.Logger
+	// Kind selects the registration namespace. The default is sandbox.
+	Kind string
+	// RuntimeID identifies a registered local ACP runtime when Kind is runtime.
+	RuntimeID string
+	// Provider is recorded by the gateway for runtime registrations.
+	Provider string
+	// Server serves each opened legacy sandbox data channel.
+	Server SessionServer
+	// RuntimeServer serves each opened ACP data channel.
+	RuntimeServer SessionServer
+	// TokenProvider refreshes or loads a current token before each dial. When
+	// absent, Token is used as-is for backwards compatibility with sandboxes.
+	TokenProvider TokenProvider
+	OnRegistered  func()
+	Logger        *slog.Logger
 }
 
 // control frames exchanged on the control channel. Kept intentionally small and
@@ -50,13 +68,16 @@ type Options struct {
 // gateway republishes to space subscribers, so the web file tree stays live
 // even when no agent is attached.
 type controlFrame struct {
-	Type    string          `json:"type"`
-	SpaceID string          `json:"spaceId,omitempty"`
-	Token   string          `json:"token,omitempty"`
-	Channel string          `json:"channel,omitempty"`
-	Message string          `json:"message,omitempty"`
-	Status  int             `json:"status,omitempty"`
-	Payload json.RawMessage `json:"payload,omitempty"`
+	Type      string          `json:"type"`
+	Kind      string          `json:"kind,omitempty"`
+	SpaceID   string          `json:"spaceId,omitempty"`
+	RuntimeID string          `json:"runtimeId,omitempty"`
+	Provider  string          `json:"provider,omitempty"`
+	Channel   string          `json:"channel,omitempty"`
+	Protocol  string          `json:"protocol,omitempty"`
+	Message   string          `json:"message,omitempty"`
+	Status    int             `json:"status,omitempty"`
+	Payload   json.RawMessage `json:"payload,omitempty"`
 }
 
 const (
@@ -182,8 +203,12 @@ func (c *Client) connectControl(ctx context.Context) error {
 	dialCtx, cancel := context.WithTimeout(ctx, dialTimeout)
 	defer cancel()
 
+	token, err := c.currentToken(dialCtx)
+	if err != nil {
+		return err
+	}
 	conn, response, err := websocket.Dial(dialCtx, controlURL(opts.RelayURL), &websocket.DialOptions{
-		HTTPHeader: http.Header{"Authorization": {"Bearer " + opts.Token}},
+		HTTPHeader: http.Header{"Authorization": {"Bearer " + token}},
 	})
 	if err != nil {
 		if response != nil && (response.StatusCode == http.StatusUnauthorized || response.StatusCode == http.StatusForbidden) {
@@ -196,7 +221,17 @@ func (c *Client) connectControl(ctx context.Context) error {
 	// caps this side too). Data channels keep their own larger limit.
 	conn.SetReadLimit(1024 * 1024)
 
-	if err := wsjson.Write(ctx, conn, controlFrame{Type: "register", SpaceID: opts.SpaceID, Token: opts.Token}); err != nil {
+	kind := opts.Kind
+	if kind == "" {
+		kind = "sandbox"
+	}
+	if err := wsjson.Write(ctx, conn, controlFrame{
+		Type:      "register",
+		Kind:      kind,
+		SpaceID:   opts.SpaceID,
+		RuntimeID: opts.RuntimeID,
+		Provider:  opts.Provider,
+	}); err != nil {
 		return fmt.Errorf("send register: %w", err)
 	}
 
@@ -228,7 +263,7 @@ func (c *Client) connectControl(ctx context.Context) error {
 				opts.Logger.Warn("relay open without channel id")
 				continue
 			}
-			go openDataChannel(ctx, opts, frame.Channel)
+			go c.openDataChannel(ctx, opts, frame.Channel, frame.Protocol, token)
 		case "error":
 			err := fmt.Errorf("relay rejected connection: %s", frame.Message)
 			if frame.Status == 0 || (frame.Status >= 400 && frame.Status < 500) {
@@ -268,18 +303,48 @@ func controlPingLoop(ctx context.Context, conn *websocket.Conn, cancel context.C
 // openDataChannel dials a fresh data connection for the given channel id and
 // serves it with the standard protocol. Each channel is independent; the
 // gateway pipes it transparently to one waiting cloud peer (agent, worker…).
-func openDataChannel(ctx context.Context, opts Options, channel string) {
+func (c *Client) openDataChannel(ctx context.Context, opts Options, channel, protocol, token string) {
 	dialCtx, cancel := context.WithTimeout(ctx, dialTimeout)
+	defer cancel()
+	if strings.TrimSpace(token) == "" {
+		opts.Logger.Warn("relay data channel token unavailable", slog.String("channel", channel))
+		return
+	}
 	conn, _, err := websocket.Dial(dialCtx, dataURL(opts.RelayURL, channel), &websocket.DialOptions{
-		HTTPHeader: http.Header{"Authorization": {"Bearer " + opts.Token}},
+		HTTPHeader: http.Header{"Authorization": {"Bearer " + token}},
 	})
 	cancel()
 	if err != nil {
 		opts.Logger.Warn("relay data channel dial failed", slog.String("channel", channel), slog.String("error", err.Error()))
 		return
 	}
-	opts.Logger.Info("relay data channel opened", slog.String("channel", channel))
-	opts.Server.ServeDialedConn(ctx, conn, "relay:"+channel)
+	opts.Logger.Info("relay data channel opened", slog.String("channel", channel), slog.String("protocol", protocol))
+	server := opts.Server
+	if protocol == "acp" {
+		server = opts.RuntimeServer
+	}
+	if server == nil {
+		_ = conn.Close(websocket.StatusPolicyViolation, "runtime server is unavailable")
+		return
+	}
+	server.ServeDialedConn(ctx, conn, "relay:"+channel)
+}
+
+func (c *Client) currentToken(ctx context.Context) (string, error) {
+	if c.opts.TokenProvider != nil {
+		token, err := c.opts.TokenProvider(ctx)
+		if err != nil {
+			return "", err
+		}
+		if strings.TrimSpace(token) == "" {
+			return "", errors.New("relay token provider returned an empty token")
+		}
+		return strings.TrimSpace(token), nil
+	}
+	if strings.TrimSpace(c.opts.Token) == "" {
+		return "", errors.New("relay token is required")
+	}
+	return strings.TrimSpace(c.opts.Token), nil
 }
 
 func controlURL(base string) string {

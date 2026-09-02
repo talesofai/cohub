@@ -2,8 +2,8 @@ import { Hono, type Context } from "hono";
 import { bodyLimit } from "hono/body-limit";
 import { ZodError } from "zod";
 import { LocalAgentPolicySchema } from "@cohub/protocol";
-import { eq } from "drizzle-orm";
-import { localAgentDevices, spaceLocalAgentPolicies } from "@cohub/db";
+import { and, eq, ne, sql } from "drizzle-orm";
+import { localAgentDevices, localAgentRuntimes, spaceLocalAgentPolicies } from "@cohub/db";
 import { useAccountPrincipal, getLocalAgentPrincipal, authzDenied, requireValidId, useAuth } from "../lib/middleware.js";
 import { hasPermission } from "../permissions.js";
 import { db } from "../db/index.js";
@@ -36,6 +36,12 @@ import {
   ensureWorkspaceReplica,
   type LocalAgentActor,
 } from "../local-agent-service.js";
+import {
+  getLocalAcpRuntime,
+  listLocalAcpRuntimes,
+  registerLocalAcpRuntime,
+  revokeLocalAcpRuntime,
+} from "../local-acp-runtime-service.js";
 
 const router = new Hono();
 
@@ -136,6 +142,70 @@ router.delete("/devices/:deviceId", async (c) => {
   }
 });
 
+router.post("/spaces/:spaceId/runtimes", async (c) => {
+  const actor = await actorFromContext(c);
+  if (actor instanceof Response) return actor;
+  const spaceId = c.req.param("spaceId");
+  if (!requireValidId(spaceId)) return c.json({ code: "space_not_found", message: "space not found" }, 404);
+  try {
+    const body = await c.req.json<JsonRecord>().catch(() => ({} as JsonRecord));
+    if (typeof body.replicaId !== "string" || typeof body.provider !== "string") {
+      return c.json({ code: "invalid_request", message: "replicaId and provider are required" }, 400);
+    }
+    return c.json(await registerLocalAcpRuntime({
+      actor,
+      spaceId,
+      replicaId: body.replicaId,
+      provider: body.provider,
+      displayName: body.displayName as string,
+      providerVersion: body.providerVersion as string | undefined,
+      adapterVersion: body.adapterVersion as string | undefined,
+      capabilities: body.capabilities as Record<string, unknown> | undefined,
+      protocolVersion: typeof body.protocolVersion === "number" ? body.protocolVersion : undefined,
+    }), 201);
+  } catch (error) {
+    return errorResponse(c, error);
+  }
+});
+
+router.get("/spaces/:spaceId/runtimes", async (c) => {
+  const actor = await actorFromContext(c);
+  if (actor instanceof Response) return actor;
+  const spaceId = c.req.param("spaceId");
+  if (!requireValidId(spaceId)) return c.json({ code: "space_not_found", message: "space not found" }, 404);
+  try {
+    return c.json(await listLocalAcpRuntimes({ actor, spaceId }));
+  } catch (error) {
+    return errorResponse(c, error);
+  }
+});
+
+router.get("/spaces/:spaceId/runtimes/:runtimeId", async (c) => {
+  const actor = await actorFromContext(c);
+  if (actor instanceof Response) return actor;
+  const spaceId = c.req.param("spaceId");
+  const runtimeId = c.req.param("runtimeId");
+  if (!requireValidId(spaceId) || !requireValidId(runtimeId)) return c.json({ code: "runtime_not_found", message: "runtime not found" }, 404);
+  try {
+    return c.json(await getLocalAcpRuntime({ actor, spaceId, runtimeId }));
+  } catch (error) {
+    return errorResponse(c, error);
+  }
+});
+
+router.delete("/spaces/:spaceId/runtimes/:runtimeId", async (c) => {
+  const actor = await actorFromContext(c);
+  if (actor instanceof Response) return actor;
+  const spaceId = c.req.param("spaceId");
+  const runtimeId = c.req.param("runtimeId");
+  if (!requireValidId(spaceId) || !requireValidId(runtimeId)) return c.json({ code: "runtime_not_found", message: "runtime not found" }, 404);
+  try {
+    return c.json({ runtime: await revokeLocalAcpRuntime({ actor, spaceId, runtimeId }) });
+  } catch (error) {
+    return errorResponse(c, error);
+  }
+});
+
 router.post("/spaces/:spaceId/replicas/attach", async (c) => {
   const actor = await actorFromContext(c);
   if (actor instanceof Response) return actor;
@@ -174,7 +244,11 @@ router.get("/spaces/:spaceId/replicas", async (c) => {
   const permissionError = await requireSpacePermission(c, actor, spaceId, "file.view");
   if (permissionError) return permissionError;
   try {
-    return c.json(await listWorkspaceReplicaStates({ actor, spaceId }));
+    const [replication, runtimes] = await Promise.all([
+      listWorkspaceReplicaStates({ actor, spaceId }),
+      listLocalAcpRuntimes({ actor, spaceId }),
+    ]);
+    return c.json({ ...replication, runtimes: runtimes.runtimes });
   } catch (error) {
     return errorResponse(c, error);
   }
@@ -516,6 +590,7 @@ router.patch("/spaces/:spaceId/devices/:deviceId/policy", async (c) => {
     if (!candidate.success) return c.json({ code: "invalid_policy", message: "policy values are invalid" }, 400);
     if (candidate.data.maxBundleBytes < 1 || candidate.data.maxBundleBytes > 256 * 1024 * 1024) return c.json({ code: "invalid_policy", message: "maxBundleBytes must be between 1 and 268435456" }, 400);
     if (candidate.data.maxArtifactBytes < 1 || candidate.data.maxArtifactBytes > 5 * 1024 * 1024 * 1024) return c.json({ code: "invalid_policy", message: "maxArtifactBytes is outside the allowed range" }, 400);
+    const updatedAt = new Date();
     const [updated] = await db.update(spaceLocalAgentPolicies).set({
       sessionMirrorMode: candidate.data.sessionMirrorMode,
       workspaceMode: candidate.data.workspaceMode,
@@ -525,8 +600,17 @@ router.patch("/spaces/:spaceId/devices/:deviceId/policy", async (c) => {
       maxArtifactBytes: candidate.data.maxArtifactBytes,
       integrationPolicyVersion: row.integrationPolicyVersion + 1,
       updatedBy: user.uuid,
-      updatedAt: new Date(),
+      updatedAt,
     }).where(eq(spaceLocalAgentPolicies.id, row.id)).returning();
+    // A policy change invalidates any existing ACP connection's content
+    // contract. It must reconnect before another transcript-bearing turn.
+    await db.update(localAgentRuntimes).set({
+      status: "offline",
+      connectionEpoch: sql`${localAgentRuntimes.connectionEpoch} + 1`,
+      disconnectedAt: updatedAt,
+      lastError: candidate.data.sessionMirrorMode === "full" ? "policy changed; runtime must reconnect" : "full session mirror consent was revoked",
+      updatedAt,
+    }).where(and(eq(localAgentRuntimes.spaceId, spaceId), eq(localAgentRuntimes.deviceId, deviceId), ne(localAgentRuntimes.status, "revoked")));
     return c.json({ policy: updated ?? row });
   } catch (error) {
     return errorResponse(c, error);

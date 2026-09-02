@@ -142,6 +142,8 @@ export type SubmitSessionPromptInput = {
   sourceClientId?: string | null;
   model?: string | null;
   provider?: string | null;
+  /** Optional registered local ACP runtime for this turn. */
+  runtimeId?: string | null;
   /** Optional thinking level override for this turn. Omit to inherit session default. */
   thinkingLevel?: string | null;
   generationPolicy?: GenerationPolicy | null;
@@ -355,6 +357,25 @@ export const submitSessionPrompt = async (
   const clientMessageId = input.clientMessageId.trim();
   if (!clientMessageId) throw new Error("clientMessageId is required");
   if (!Array.isArray(input.content) || input.content.length === 0) throw new Error("content is required");
+  if (input.runtimeId != null && typeof input.runtimeId !== "string") {
+    throw new Error("runtimeId must be a string");
+  }
+  const runtimeId = input.runtimeId?.trim() || null;
+  if (runtimeId && (input.model?.trim() || input.provider?.trim())) {
+    throw new Error("local ACP runtime uses its own provider configuration");
+  }
+  if (runtimeId && input.thinkingLevel != null) {
+    throw new Error("local ACP runtime uses its provider's own thinking configuration");
+  }
+  if (runtimeId && input.generationPolicy != null) {
+    throw new Error("local ACP runtime uses its provider's own generation configuration");
+  }
+  if (runtimeId && input.env != null && Object.keys(input.env).length > 0) {
+    throw new Error("local ACP runtime does not accept Cohub environment overrides");
+  }
+  if (runtimeId && (input.source === "scheduled_task" || input.context?.kind === "scheduled_task")) {
+    throw new Error("local ACP runtime prompts must run immediately");
+  }
 
   const modelProvider = normalizePromptModelProvider(input);
   const modelPrevalidated = Boolean(
@@ -364,6 +385,7 @@ export const submitSessionPrompt = async (
     options.prevalidatedModel.provider === modelProvider.provider,
   );
   if (
+    !runtimeId &&
     modelProvider.model &&
     modelProvider.provider &&
     !modelPrevalidated &&
@@ -406,7 +428,7 @@ export const submitSessionPrompt = async (
   const turnIntent: SessionTurnIntent = isDirectShellCommand ? "steer" : (input.intent ?? "followup");
   const userMessageId = deps.randomUUID();
   const requestedThinkingLevel = typeof input.thinkingLevel === "string" && VALID_THINKING_LEVELS.has(input.thinkingLevel.trim()) ? input.thinkingLevel.trim() : undefined;
-  const billingDecision: BillingAccessDecision | null = isDirectShellCommand
+  const billingDecision: BillingAccessDecision | null = isDirectShellCommand || runtimeId
     ? null
     : (await deps.billingUsageGate?.evaluate({
       userId,
@@ -431,6 +453,7 @@ export const submitSessionPrompt = async (
     llm: isDirectShellCommand ? false : undefined,
     model: modelProvider.model,
     provider: modelProvider.provider,
+    runtimeId,
     requestedThinkingLevel,
     promptTemplate,
     skillUsage,

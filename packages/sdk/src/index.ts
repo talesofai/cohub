@@ -22,6 +22,7 @@ export { AppRealtimeApi, AppRoom } from "./apis/app-realtime.js";
 export { LocalAgentApi } from "./apis/local-agent.js";
 export type {
   LocalAgentDevice,
+  LocalAcpRuntimeRecord,
   LocalAgentAttachResponse,
   WorkspaceSnapshotPrepareInput,
   WorkspaceSnapshotPrepareResponse,

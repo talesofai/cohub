@@ -48,6 +48,7 @@ import {
 import { markChannelDegraded, touchChannelOutbound } from "./channel-health.js";
 import { handleAsrWebSocketConnection } from "./asr/session.js";
 import { handleRelayControlConnection, handleRelayDataConnection, handleRelayPeerConnection } from "./relay/index.js";
+import { handleRuntimeControlConnection, handleRuntimeDataConnection, handleRuntimePeerConnection } from "./runtime-relay.js";
 import {
   createPubSubRedisClient,
   redisCommandClient,
@@ -954,16 +955,22 @@ async function main() {
   const relayControlWss = new WebSocketServer({ noServer: true, maxPayload: 1024 * 1024 });
   const relayDataWss = new WebSocketServer({ noServer: true, maxPayload: 50 * 1024 * 1024 });
   const relayPeerWss = new WebSocketServer({ noServer: true, maxPayload: 50 * 1024 * 1024 });
+  const runtimeControlWss = new WebSocketServer({ noServer: true, maxPayload: 4 * 1024 * 1024 });
+  const runtimeDataWss = new WebSocketServer({ noServer: true, maxPayload: 32 * 1024 * 1024 });
+  const runtimePeerWss = new WebSocketServer({ noServer: true, maxPayload: 32 * 1024 * 1024 });
 
   const websocketRoutes = new Map<string, WebSocketServer>([
     ["/ws", wss],
     ["/asr/ws", asrWss],
     ["/sandbox/relay", relayControlWss],
     ["/sandbox/relay/data", relayDataWss],
+    ["/runtime/relay", runtimeControlWss],
+    ["/runtime/relay/data", runtimeDataWss],
   ]);
 
   // Match /internal/sandbox-relay/:spaceId for cloud peers.
   const RELAY_PEER_PREFIX = "/internal/sandbox-relay/";
+  const RUNTIME_PEER_PREFIX = "/internal/runtime-relay/";
 
   server.on("upgrade", (request, socket, head) => {
     const pathname = request.url ? new URL(request.url, "http://localhost").pathname : "";
@@ -977,6 +984,19 @@ async function main() {
       }
       relayPeerWss.handleUpgrade(request, socket, head, (websocket) => {
         handleRelayPeerConnection(websocket, request, spaceId);
+      });
+      return;
+    }
+
+    if (pathname.startsWith(RUNTIME_PEER_PREFIX)) {
+      const runtimeId = decodeURIComponent(pathname.slice(RUNTIME_PEER_PREFIX.length)).trim();
+      if (!runtimeId) {
+        socket.write("HTTP/1.1 400 Bad Request\r\nConnection: close\r\n\r\n");
+        socket.destroy();
+        return;
+      }
+      runtimePeerWss.handleUpgrade(request, socket, head, (websocket) => {
+        handleRuntimePeerConnection(websocket, request, runtimeId);
       });
       return;
     }
@@ -996,6 +1016,8 @@ async function main() {
   asrWss.on("connection", handleAsrWebSocketConnection);
   relayControlWss.on("connection", (socket, request) => void handleRelayControlConnection(socket, request));
   relayDataWss.on("connection", (socket, request) => handleRelayDataConnection(socket, request));
+  runtimeControlWss.on("connection", (socket, request) => void handleRuntimeControlConnection(socket, request));
+  runtimeDataWss.on("connection", (socket, request) => handleRuntimeDataConnection(socket, request));
 
   wss.on("connection", (socket: WebSocket) => {
     const connectionId = randomUUID();

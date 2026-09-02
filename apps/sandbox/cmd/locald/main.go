@@ -7,6 +7,7 @@ import (
 	"flag"
 	"fmt"
 	"io"
+	"log/slog"
 	"os"
 	"os/signal"
 	"runtime"
@@ -66,6 +67,11 @@ func main() {
 		}
 	case "permit":
 		if err := runPermit(os.Args[2:]); err != nil {
+			fmt.Fprintln(os.Stderr, err)
+			os.Exit(1)
+		}
+	case "runtime":
+		if err := runRuntime(os.Args[2:]); err != nil {
 			fmt.Fprintln(os.Stderr, err)
 			os.Exit(1)
 		}
@@ -373,6 +379,46 @@ func runPermit(args []string) error {
 	return json.NewEncoder(os.Stdout).Encode(response)
 }
 
+func runRuntime(args []string) error {
+	flags := flag.NewFlagSet("runtime", flag.ContinueOnError)
+	flags.SetOutput(io.Discard)
+	dataDir := flags.String("data-dir", "", "locald data directory")
+	spaceID := flags.String("space-id", "", "Space id")
+	runtimeID := flags.String("runtime-id", "", "registered local ACP runtime id")
+	replicaID := flags.String("replica-id", "", "attached workspace replica id")
+	provider := flags.String("provider", "", "provider name")
+	root := flags.String("root", "", "local workspace root")
+	relayURL := flags.String("relay", "", "Gateway runtime relay control url")
+	providerCommand := flags.String("provider-command", "", "ACP provider adapter command")
+	if err := flags.Parse(args); err != nil {
+		return err
+	}
+	token, err := locald.LoadCredential("access-token")
+	if err != nil || strings.TrimSpace(token) == "" {
+		token = strings.TrimSpace(os.Getenv("COHUB_RUNTIME_TOKEN"))
+	}
+	if strings.TrimSpace(token) == "" {
+		return errors.New("local ACP runtime access token is unavailable; refresh device credentials first")
+	}
+	_ = os.Unsetenv("COHUB_RUNTIME_TOKEN")
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stop()
+	return locald.RunAcpRuntime(ctx, locald.AcpRuntimeOptions{
+		RelayURL:        strings.TrimSpace(*relayURL),
+		RelayToken:      strings.TrimSpace(token),
+		DeviceID:        strings.TrimSpace(os.Getenv("COHUB_LOCAL_AGENT_DEVICE_ID")),
+		RuntimeID:       strings.TrimSpace(*runtimeID),
+		SpaceID:         strings.TrimSpace(*spaceID),
+		ReplicaID:       strings.TrimSpace(*replicaID),
+		Provider:        strings.TrimSpace(*provider),
+		ProviderCommand: strings.TrimSpace(*providerCommand),
+		WorkspaceDir:    strings.TrimSpace(*root),
+		DataDir:         strings.TrimSpace(*dataDir),
+		APIBaseURL:      strings.TrimSpace(os.Getenv("COHUB_API_URL")),
+		Logger:          slog.Default(),
+	})
+}
+
 func runSimpleIPC(kind string, args []string) error {
 	flags := flag.NewFlagSet(kind, flag.ContinueOnError)
 	flags.SetOutput(io.Discard)
@@ -399,5 +445,5 @@ func runSimpleIPC(kind string, args []string) error {
 
 func usage() {
 	fmt.Fprintf(os.Stderr, "cohub-locald %s (%s/%s)\n", buildVersion, runtime.GOOS, runtime.GOARCH)
-	fmt.Fprintln(os.Stderr, "usage: cohub-locald daemon|hook|collect-pi|configure|credentials|credentials-status|permit|preflight|status|refresh|flush")
+	fmt.Fprintln(os.Stderr, "usage: cohub-locald daemon|hook|collect-pi|configure|credentials|credentials-status|fingerprint|permit|runtime|preflight|status|refresh|flush")
 }

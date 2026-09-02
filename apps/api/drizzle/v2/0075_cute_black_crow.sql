@@ -1,0 +1,2 @@
+DROP INDEX "v2"."v2_uq_local_agent_runtimes_space_device_provider";--> statement-breakpoint
+CREATE UNIQUE INDEX "v2_uq_local_agent_runtimes_space_device_provider" ON "v2"."local_agent_runtimes" USING btree ("space_id","device_id","provider") WHERE "v2"."local_agent_runtimes"."status" <> 'revoked';

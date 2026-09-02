@@ -2,10 +2,14 @@ import { createHash } from "node:crypto";
 import { and, asc, count, desc, eq, gt, inArray, isNull, ne, or, sql } from "drizzle-orm";
 import {
   localAgentDevices,
+  localAgentRuntimes,
+  localAgentRuntimeCommands,
+  localAgentRuntimeSessions,
   nativeAgentEventReceipts,
   nativeAgentIngests,
   nativeAgentSessions,
   nativeAgentTurns,
+  sessionTurns,
   spaceLocalAgentPolicies,
   spaceWorkspacePolicies,
   spaceSandboxes,
@@ -49,6 +53,7 @@ import { dispatchWorkspaceStateUpdated } from "./workspace-realtime.js";
 import { enqueueWorkspaceSyncJob } from "./workspace-sync-queue.js";
 import { config } from "./config.js";
 import { db } from "./db/index.js";
+import { requestAgentTurnAbort } from "./agent-turn-abort.js";
 
 export const LOCAL_AGENT_MAX_MANIFEST_INLINE_BYTES = 1024 * 1024;
 export const LOCAL_AGENT_MAX_SNAPSHOT_ENTRIES = 2_000_000;
@@ -176,6 +181,7 @@ export async function issueLocalAgentToken(input: { deviceId: string; userUuid?:
 
 export async function revokeLocalAgentDevice(input: { userUuid: string; deviceId: string }) {
   assertUuid(input.deviceId, "deviceId");
+  let abortRequests: Array<{ spaceId: string; sessionId: string; turnId: string }> = [];
   const result = await db.transaction(async (tx) => {
     const revokedAt = now();
     const [device] = await tx.update(localAgentDevices).set({
@@ -185,28 +191,66 @@ export async function revokeLocalAgentDevice(input: { userUuid: string; deviceId
       updatedAt: revokedAt,
     }).where(and(eq(localAgentDevices.id, input.deviceId), eq(localAgentDevices.userUuid, input.userUuid), eq(localAgentDevices.status, "active"))).returning();
     if (!device) throw new LocalAgentServiceError("device not found", "device_not_found", 404);
+    const revokedRuntimes = await tx.update(localAgentRuntimes).set({
+      status: "revoked",
+      connectionEpoch: sql`${localAgentRuntimes.connectionEpoch} + 1`,
+      disconnectedAt: revokedAt,
+      lastError: "device revoked",
+      updatedAt: revokedAt,
+    }).where(and(eq(localAgentRuntimes.deviceId, input.deviceId), ne(localAgentRuntimes.status, "revoked"))).returning({ id: localAgentRuntimes.id });
+    const runtimeIds = revokedRuntimes.map((runtime) => runtime.id);
+    if (runtimeIds.length > 0) {
+      await tx.update(localAgentRuntimeSessions).set({ status: "revoked", updatedAt: revokedAt }).where(inArray(localAgentRuntimeSessions.runtimeId, runtimeIds));
+      await tx.update(localAgentRuntimeCommands).set({ status: "failed", errorCode: -32004, errorMessage: "local device was revoked", updatedAt: revokedAt }).where(and(
+        inArray(localAgentRuntimeCommands.runtimeId, runtimeIds),
+        inArray(localAgentRuntimeCommands.status, ["prepared", "sent"]),
+      ));
+    }
     const replicas = await tx.select({ id: workspaceReplicas.id, spaceId: workspaceReplicas.spaceId }).from(workspaceReplicas).where(eq(workspaceReplicas.deviceId, input.deviceId));
     const replicaIds = replicas.map((replica) => replica.id);
     const activeAttempts = replicaIds.length > 0
-      ? await tx.select({ id: workspaceExecutionAttempts.id, spaceId: workspaceExecutionAttempts.spaceId }).from(workspaceExecutionAttempts).where(and(
+      ? await tx.select({ id: workspaceExecutionAttempts.id, spaceId: workspaceExecutionAttempts.spaceId, sessionId: workspaceExecutionAttempts.sessionId, turnId: workspaceExecutionAttempts.turnId, status: workspaceExecutionAttempts.status }).from(workspaceExecutionAttempts).where(and(
           inArray(workspaceExecutionAttempts.replicaId, replicaIds),
+          inArray(workspaceExecutionAttempts.executorKind, ["local_native", "local_acp"]),
           inArray(workspaceExecutionAttempts.status, ["prepared", "running", "workspace_sealed", "transcript_sealed", "awaiting_recovery"]),
         ))
       : [];
     const attemptIds = activeAttempts.map((attempt) => attempt.id);
+    abortRequests = activeAttempts
+      .filter((attempt) => ["running", "workspace_sealed", "transcript_sealed", "awaiting_recovery"].includes(attempt.status) && typeof attempt.spaceId === "string" && typeof attempt.sessionId === "string" && typeof attempt.turnId === "string")
+      .map((attempt) => ({ spaceId: attempt.spaceId, sessionId: attempt.sessionId as string, turnId: attempt.turnId as string }));
     if (attemptIds.length > 0) {
-      await tx.update(workspaceExecutionAttempts).set({ status: "aborted", errorCode: "device_revoked", completedAt: revokedAt, updatedAt: revokedAt }).where(inArray(workspaceExecutionAttempts.id, attemptIds));
+      await tx.update(workspaceExecutionAttempts).set({ status: "aborted", errorCode: "device_revoked", errorMessage: "local device was revoked", completedAt: revokedAt, updatedAt: revokedAt }).where(inArray(workspaceExecutionAttempts.id, attemptIds));
       await tx.update(workspaceState).set({ activeExecutionAttemptId: null, updatedAt: revokedAt }).where(inArray(workspaceState.activeExecutionAttemptId, attemptIds));
+      const turnIds = activeAttempts.map((attempt) => attempt.turnId).filter((turnId): turnId is string => typeof turnId === "string");
+      if (turnIds.length > 0) {
+        await tx.update(sessionTurns).set({ status: "failed", errorMessage: "local device was revoked", summary: { finishReason: "failed", reason: "device_revoked" }, completedAt: revokedAt, updatedAt: revokedAt }).where(and(
+          inArray(sessionTurns.id, turnIds),
+          inArray(sessionTurns.status, ["queued", "running", "abort_requested"]),
+        ));
+      }
     }
     if (replicaIds.length > 0) {
       await tx.update(workspaceReplicas).set({ status: "offline", activeExecutionAttemptId: null, updatedAt: revokedAt }).where(inArray(workspaceReplicas.id, replicaIds));
     }
-    await tx.update(workspaceWriterLeases).set({ expiresAt: revokedAt, lastHeartbeatAt: revokedAt, updatedAt: revokedAt }).where(or(
-      eq(workspaceWriterLeases.holderId, `device:${input.deviceId}`),
-      attemptIds.length > 0 ? inArray(workspaceWriterLeases.holderId, attemptIds) : undefined,
+    await tx.update(workspaceWriterLeases).set({ expiresAt: revokedAt, lastHeartbeatAt: revokedAt, updatedAt: revokedAt }).where(and(
+      or(eq(workspaceWriterLeases.holderKind, "local_agent"), eq(workspaceWriterLeases.holderKind, "local_offline_reservation")),
+      or(
+        eq(workspaceWriterLeases.holderId, `device:${input.deviceId}`),
+        attemptIds.length > 0 ? inArray(workspaceWriterLeases.holderId, attemptIds) : undefined,
+      ),
     ));
     return { device, spaceIds: [...new Set(replicas.map((replica) => replica.spaceId))] };
   });
+  for (const request of abortRequests) {
+    void requestAgentTurnAbort({
+      spaceId: request.spaceId,
+      sessionId: request.sessionId,
+      turnId: request.turnId,
+      reason: "abort",
+      actorUserId: input.userUuid,
+    }).catch(() => undefined);
+  }
   for (const spaceId of result.spaceIds) {
     void notifyWorkspaceState({ spaceId, reason: "device_revoked" }).catch(() => undefined);
   }
@@ -458,7 +502,7 @@ const serializeWorkspacePolicy = (row: typeof spaceWorkspacePolicies.$inferSelec
   updatedAt: row.updatedAt.toISOString(),
 });
 
-const notifyWorkspaceState = async (input: { spaceId: string; replica?: typeof workspaceReplicas.$inferSelect | null; reason?: string | null }) => {
+export const notifyWorkspaceState = async (input: { spaceId: string; replica?: typeof workspaceReplicas.$inferSelect | null; reason?: string | null }) => {
   const [state] = await db.select().from(workspaceState).where(eq(workspaceState.spaceId, input.spaceId)).limit(1);
   if (!state) return;
   const [conflictCount] = await db.select({ count: count() }).from(workspaceSyncConflicts).where(and(eq(workspaceSyncConflicts.spaceId, input.spaceId), eq(workspaceSyncConflicts.status, "open")));
@@ -1338,7 +1382,7 @@ async function assertLocalNativeAttemptLease(tx: LocalAgentTransaction, input: {
     }).onConflictDoNothing().returning();
     if (!attempt) throw new LocalAgentServiceError("another execution attempt is still active for this workspace", "workspace_attempt_active", 409);
   }
-  if (attempt.executorKind !== "local_native") throw new LocalAgentServiceError("execution attempt is not a local native attempt", "attempt_identity_mismatch", 409);
+  if (attempt.executorKind !== "local_native" && attempt.executorKind !== "local_acp") throw new LocalAgentServiceError("execution attempt is not a supported local attempt", "attempt_identity_mismatch", 409);
   if (input.baseSnapshotId !== undefined && (attempt.baseCanonicalSnapshotId ?? null) !== (input.baseSnapshotId ?? null)) {
     throw new LocalAgentServiceError("execution attempt base snapshot does not match the workspace lease", "attempt_base_stale", 409);
   }

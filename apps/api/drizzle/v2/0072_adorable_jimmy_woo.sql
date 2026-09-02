@@ -1,0 +1,2 @@
+ALTER TABLE "v2"."local_agent_runtime_events" ADD COLUMN "command_id" varchar(255);--> statement-breakpoint
+CREATE INDEX "v2_idx_local_agent_runtime_events_command" ON "v2"."local_agent_runtime_events" USING btree ("runtime_session_id","command_id","sequence");

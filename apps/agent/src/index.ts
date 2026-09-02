@@ -27,6 +27,7 @@ import { closeSandboxLifecycleEventSubscriber, subscribeSandboxLifecycleEvents }
 import { SandboxRpcError } from "@cohub/sandbox-client";
 import { sweepNativeAgentIngests } from "./native-ingest-sweeper.js";
 import { cleanupPublishedSessionRealtimeOutbox, dispatchSessionRealtimeOutbox, recoverStaleSessionRealtimeOutbox } from "./realtime-outbox.js";
+import { closeLocalAcpConnections } from "./local-acp-client.js";
 
 export const __test = {
   runInSessionOperation: async <T>(_handle: unknown, fn: () => Promise<T>) => fn(),
@@ -197,6 +198,7 @@ async function shutdown(signal: string, options?: { exitCode?: number }) {
     pauseBeforeClose: true,
   });
   await disposeAllSessionHandles();
+  await closeLocalAcpConnections().catch(() => undefined);
   closeSandboxPool();
   await closeAbortSubscriber().catch(() => undefined);
   await closeSandboxLifecycleEventSubscriber().catch(() => undefined);

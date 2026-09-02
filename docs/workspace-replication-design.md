@@ -3,6 +3,8 @@
 Status: implemented behind rollout flags; production integration validation pending
 Date: 2026-08-26
 
+> For local provider session execution, [Local ACP Runtime Architecture](./local-acp-runtime-architecture.md) is normative. Native hook/ingest mirroring described in older sections is legacy compatibility; ACP `session/update` is the primary session mirror path.
+
 The normative implementation contract, migrations, APIs, provider adapters, rollout order, and acceptance gates are defined in [Local Native Agent and Workspace Replica Implementation Plan](./local-native-agent-implementation-plan.md). Where this architecture document is less specific, the implementation plan governs.
 
 ## Decision Summary

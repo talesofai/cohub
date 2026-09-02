@@ -82,6 +82,10 @@ export type AppConfig = {
   nativeAgentPiEnabled: boolean;
   nativeAgentClaudeEnabled: boolean;
   nativeAgentCodexEnabled: boolean;
+  localAcpRuntimeEnabled: boolean;
+  localAcpPiEnabled: boolean;
+  localAcpClaudeEnabled: boolean;
+  localAcpCodexEnabled: boolean;
 };
 
 export type SandboxToleration = {
@@ -269,6 +273,10 @@ export const config: AppConfig = {
   nativeAgentPiEnabled: parseBoolean(process.env.NATIVE_AGENT_PI_ENABLED, env === "dev", "NATIVE_AGENT_PI_ENABLED"),
   nativeAgentClaudeEnabled: parseBoolean(process.env.NATIVE_AGENT_CLAUDE_ENABLED, false, "NATIVE_AGENT_CLAUDE_ENABLED"),
   nativeAgentCodexEnabled: parseBoolean(process.env.NATIVE_AGENT_CODEX_ENABLED, false, "NATIVE_AGENT_CODEX_ENABLED"),
+  localAcpRuntimeEnabled: parseBoolean(process.env.LOCAL_ACP_RUNTIME_ENABLED, env === "dev", "LOCAL_ACP_RUNTIME_ENABLED"),
+  localAcpPiEnabled: parseBoolean(process.env.LOCAL_ACP_PI_ENABLED, env === "dev", "LOCAL_ACP_PI_ENABLED"),
+  localAcpClaudeEnabled: parseBoolean(process.env.LOCAL_ACP_CLAUDE_ENABLED, false, "LOCAL_ACP_CLAUDE_ENABLED"),
+  localAcpCodexEnabled: parseBoolean(process.env.LOCAL_ACP_CODEX_ENABLED, false, "LOCAL_ACP_CODEX_ENABLED"),
 };
 
 export const sessionsNamespace = getSessionsNamespace(config.env);
@@ -291,5 +299,8 @@ export const assertRequiredConfig = () => {
     if (!config.workspaceObjectBucket) throw new Error("Missing required env: WORKSPACE_OBJECT_BUCKET");
     if (!config.workspaceObjectAccessKeyId) throw new Error("Missing required env: WORKSPACE_OBJECT_ACCESS_KEY_ID");
     if (!config.workspaceObjectSecretAccessKey) throw new Error("Missing required env: WORKSPACE_OBJECT_SECRET_ACCESS_KEY");
+  }
+  if (config.localAcpRuntimeEnabled && !config.workspaceReplicationEnabled) {
+    throw new Error("LOCAL_ACP_RUNTIME_ENABLED requires WORKSPACE_REPLICATION_ENABLED");
   }
 };

@@ -3,8 +3,8 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <meta name="description" content="CoHub Local Native Agent and Workspace Replica - final implementation proposal">
-  <title>CoHub / Local Native Agent - Final Plan</title>
+  <meta name="description" content="CoHub Local ACP Runtime and Workspace Replica - implementation plan">
+  <title>CoHub / Local ACP Runtime - Final Plan</title>
   <style>
     :root {
       color-scheme: light;
@@ -575,7 +575,7 @@
         <a href="#system">System map</a>
         <a href="#flows">Flows</a>
         <a href="#workspace">Workspace</a>
-        <a href="#mirror">Native mirror</a>
+        <a href="#mirror">ACP / legacy mirror</a>
         <a href="#coordination">Coordination</a>
         <a href="#delivery">Delivery</a>
         <a href="#gates">Gates</a>
@@ -591,20 +591,21 @@
   <main class="page" id="top">
     <section class="hero" aria-labelledby="page-title">
       <div>
-        <p class="eyebrow">Implementation-ready proposal / v1</p>
-        <h1 id="page-title">Local Native Agent<br><span>&amp; Workspace Replica</span></h1>
-        <p class="lede">A single approval can authorize a staged implementation that keeps native providers native, keeps Web cloud-first, and makes workspace and transcript recovery explicit.</p>
+        <p class="eyebrow">Implementation-ready proposal / ACP revision</p>
+        <h1 id="page-title">Local ACP Runtime<br><span>&amp; Workspace Replica</span></h1>
+        <p class="lede">Cohub keeps provider execution native while ACP carries local session control and events. The local replica remains fenced, synchronized, and recoverable.</p>
         <div class="hero-meta">
           <span>Owner: <strong>CoHub platform</strong></span>
-          <span>Review baseline: <strong>2026-08-27</strong></span>
-          <span>Runtime change in this page: <strong>none</strong></span>
+          <span>Architecture revision: <strong>2026-09-02</strong></span>
+          <span>Normative source: <strong>local-acp-runtime-architecture.md</strong></span>
         </div>
+        <div class="panel pad blue"><strong>Current architecture:</strong> ACP-only local runtime control plane. Provider-native hooks and ingest sections below are retained for legacy compatibility and are not the default execution path.</div>
       </div>
       <aside class="hero-side" aria-label="Release posture">
         <div class="stamp">
           <span class="stamp-label">Release posture</span>
           <strong>Pi -> Claude -> Codex</strong>
-          <p>Turn-boundary mirroring first. Provider fidelity is declared per tested version, never inferred.</p>
+          <p>ACP session projection first. Provider fidelity is declared per tested adapter version, never inferred.</p>
         </div>
         <div class="hero-facts">
           <div class="fact"><b>Cloud first</b><span>Web and mobile use the existing cloud Agent path.</span></div>
@@ -622,7 +623,7 @@
         <a href="#system">02 / System map</a>
         <a href="#flows">03 / User flows</a>
         <a href="#workspace">04 / Workspace</a>
-        <a href="#mirror">05 / Native mirror</a>
+        <a href="#mirror">05 / ACP runtime</a>
         <a href="#coordination">06 / Coordination</a>
         <a href="#security">07 / Security</a>
         <a href="#delivery">08 / Delivery</a>
@@ -635,15 +636,16 @@
         <section class="section" id="decision">
           <div class="section-head">
             <div class="section-kicker">01 / Decision</div>
-            <h2>Two planes, one execution anchor.</h2>
-            <p>Workspace bytes and provider history have different ownership, consistency, and privacy requirements. They share an execution attempt, but never share a storage format.</p>
+            <h2>ACP control, native execution, one workspace anchor.</h2>
+            <p>ACP carries session control and portable updates while the provider keeps its native tools, configuration, credentials, model settings, and session files. Workspace bytes and transcript projections share an execution attempt, but never share a storage format.</p>
           </div>
           <div class="table-wrap">
             <table class="decision-table">
               <thead><tr><th>Plane</th><th>Source</th><th>Destination</th><th>Authority</th><th>Hard boundary</th></tr></thead>
               <tbody>
                 <tr><td>Workspace replication</td><td>Real local folder or cloud PVC</td><td>Real cloud <code>/workspace</code> or local replica</td><td>Canonical server snapshot plus three-way reconcile</td><td>Never sync provider homes, credentials, native session files, or <code>.git</code> internals.</td></tr>
-                <tr><td>Native session mirror</td><td>Pi, Claude Code, or Codex native session</td><td>CoHub JSONL v3, Postgres projection, realtime</td><td>Server ingest journal plus transcript commit marker</td><td>One way only: local native -> CoHub. No cloud prompt is injected into native history.</td></tr>
+                <tr><td>ACP session projection</td><td>Official provider ACP adapter over local stdio</td><td>CoHub JSONL v3, Postgres projection, Redis/realtime</td><td>ACP command ledger plus ordered event receipts</td><td>ACP carries control/events only; provider-native tools and settings remain local.</td></tr>
+                <tr><td>Legacy native mirror</td><td>Provider hooks and native ingest</td><td>Compatibility projection</td><td>Legacy ingest journal</td><td>Optional during rollout; never the default local ACP executor.</td></tr>
                 <tr><td>Execution coordination</td><td>Local or cloud attempt</td><td>Workspace and transcript barriers</td><td><code>executionAttemptId</code>, lease epoch, session writer lock</td><td>Cloud execution is ineligible while workspace or transcript state is unsafe.</td></tr>
               </tbody>
             </table>
@@ -652,7 +654,8 @@
           <ul class="rule-list">
             <li><strong>Native providers stay native.</strong> Their prompts, tools, plugins, credentials, model settings, and native sessions are untouched.</li>
             <li><strong>Web stays cloud-first.</strong> Web and mobile continue through the existing <code>apps/agent</code> execution path.</li>
-            <li><strong>Hooks never wait for network.</strong> They perform local IPC and durable spooling only.</li>
+            <li><strong>ACP owns local session control.</strong> The Agent opens a fenced runtime peer; locald forwards official ACP stdio without provider-specific Cohub tools.</li>
+            <li><strong>Legacy hooks never wait for network.</strong> They remain local IPC and durable spooling compatibility only.</li>
             <li><strong>Cloud state remains server-owned.</strong> Locald never writes Postgres, Redis, <code>/sessions</code>, or an internal worker API.</li>
             <li><strong>Incomplete data fails closed.</strong> An unstable scan, unknown provider schema, or unverified object cannot become a successful result.</li>
             <li><strong>Offline is explicit.</strong> An intentional offline run requires a bounded reservation; accidental offline changes are stale candidates.</li>
@@ -665,7 +668,7 @@
           <div class="section-head">
             <div class="section-kicker">02 / System map</div>
             <h2>The cloud remains the product authority.</h2>
-            <p>Locald is a replica and hook-ingest daemon. It does not become a second sandbox control plane and it does not turn a local folder into a remote mount.</p>
+            <p>Locald materializes the replica and hosts the ACP adapter boundary. It does not become a second cloud control plane and it does not turn a local folder into a remote mount.</p>
           </div>
           <div class="architecture-stack" aria-label="Architecture flow">
             <div class="architecture-line">
@@ -685,7 +688,7 @@
             </div>
           </div>
           <div class="grid-2" style="margin-top: 18px">
-            <div class="panel pad blue"><h3>Local boundary</h3><p class="small">The hook process can see raw provider identifiers only over owner-local IPC. Locald replaces them with scoped HMAC identities before upload. Absolute roots and provider home paths never cross the API.</p></div>
+            <div class="panel pad blue"><h3>Local boundary</h3><p class="small">The ACP adapter sees the provider's native process and local replica only. Runtime and lease metadata are consumed by locald, then removed before provider forwarding. Absolute roots and provider home paths never cross the API.</p></div>
             <div class="panel pad green"><h3>Cloud boundary</h3><p class="small">The API authenticates the device and Space membership. Workers verify bytes and schemas. Agent code reads only committed, visible transcript entries and a verified cloud workspace.</p></div>
           </div>
         </section>
@@ -698,10 +701,10 @@
           </div>
           <div class="numbered-flow">
             <div class="numbered-step"><div class="num">01</div><div><h3>Attach a cloud Space</h3><p><code>cohub workspace attach &lt;space&gt; --root &lt;dir&gt;</code> enrolls the device, records separate workspace and session consent, compares the tree, and refuses a divergent non-empty root without an explicit choice.</p></div><div class="step-tag"><span class="status blue">No destructive default</span></div></div>
-            <div class="numbered-step"><div class="num">02</div><div><h3>Start a native local Agent</h3><p>Pi, Claude, or Codex starts normally. SessionStart prepares state asynchronously. Prompt preflight checks only a local permit; if the canonical snapshot is not applied or another writer is active, the provider receives a blocking decision within 100 ms.</p></div><div class="step-tag"><span class="status green">No network in hook</span></div></div>
-            <div class="numbered-step"><div class="num">03</div><div><h3>Seal one execution attempt</h3><p>The accepted prompt allocates an <code>executionAttemptId</code> and records the workspace base. At the turn boundary, locald seals a workspace candidate and a native turn bundle independently with the same attempt ID.</p></div><div class="step-tag"><span class="status blue">Shared correlation</span></div></div>
-            <div class="numbered-step"><div class="num">04</div><div><h3>Continue from Web or mobile</h3><p>Web creates a normal cloud <code>agent</code> turn. It waits for the cloud workspace to be current and for the native transcript visibility barrier to finish. No prompt is sent back to the native provider.</p></div><div class="step-tag"><span class="status green">Cloud-first</span></div></div>
-            <div class="numbered-step"><div class="num">05</div><div><h3>Resume the old native session</h3><p>If CoHub advanced past the native binding's last common completed turn, the next native bundle provisions a deterministic child session. The parent keeps the Web branch; the child keeps the native branch.</p></div><div class="step-tag"><span class="status amber">Automatic fork</span></div></div>
+            <div class="numbered-step"><div class="num">02</div><div><h3>Start a local ACP runtime</h3><p>locald connects the registered runtime to Gateway and launches the official Pi, Claude, or Codex ACP adapter only for an authorized peer. The provider receives the attached replica as its working directory.</p></div><div class="step-tag"><span class="status green">Fenced ACP peer</span></div></div>
+            <div class="numbered-step"><div class="num">03</div><div><h3>Seal one execution attempt</h3><p>The accepted prompt allocates an <code>executionAttemptId</code> and records the workspace base. The ACP command ledger, ordered event receipts, and local workspace candidate share the same attempt ID.</p></div><div class="step-tag"><span class="status blue">Shared correlation</span></div></div>
+            <div class="numbered-step"><div class="num">04</div><div><h3>Continue from Web or mobile</h3><p>Web creates a normal cloud <code>agent</code> turn. It waits for the cloud workspace to be current and for the local ACP transcript visibility barrier to finish. Cloud execution never injects a prompt into a provider-owned local session.</p></div><div class="step-tag"><span class="status green">Cloud-first</span></div></div>
+            <div class="numbered-step"><div class="num">05</div><div><h3>Resume the ACP session</h3><p>The Agent asks the adapter to resume or load its provider-owned session. If continuity cannot be established after durable events exist, the turn stops with an explicit reconnect requirement.</p></div><div class="step-tag"><span class="status amber">No silent fork</span></div></div>
             <div class="numbered-step"><div class="num">06</div><div><h3>Use offline mode deliberately</h3><p><code>cohub workspace offline enable --max-duration &lt;duration&gt;</code> obtains a bounded reservation while connected. On reconnect, the candidate reconciles from its recorded base. Without a reservation, local work has no ownership claim.</p></div><div class="step-tag"><span class="status red">Explicit reservation</span></div></div>
           </div>
         </section>
@@ -776,9 +779,9 @@
 
         <section class="section" id="mirror">
           <div class="section-head">
-            <div class="section-kicker">05 / Native session mirror</div>
-            <h2>Observe native history. Commit portable history.</h2>
-            <p>CoHub receives an allowlisted logical turn bundle, not a provider transcript file. The bundle is private until its database projection and visibility marker agree.</p>
+            <div class="section-kicker">05 / ACP runtime and legacy mirror</div>
+            <h2>ACP projection first; native mirror remains compatibility.</h2>
+            <p>The current path receives ordered ACP session updates, not a provider transcript file. The legacy hook bundle remains private until its database projection and visibility marker agree.</p>
           </div>
           <div class="table-wrap">
             <table class="data-table">
@@ -786,13 +789,13 @@
               <tbody>
                 <tr><td><span class="status green">full</span></td><td>Portable user, assistant, tool, approved attachment, usage, and explicit compaction facts after local sanitization.</td><td>Creates or updates a CoHub session and turn.</td></tr>
                 <tr><td><span class="status amber">metadata_only</span></td><td>Provider/version, lifecycle, timing, hashes, terminal status, and diagnostics. No content.</td><td>No <code>space_sessions</code>, <code>session_turns</code>, JSONL entries, or cloud continuation claim.</td></tr>
-                <tr><td><span class="status red">disabled</span></td><td>Nothing. Hooks are not installed or accepted.</td><td>Workspace replication can remain enabled independently.</td></tr>
+                <tr><td><span class="status red">disabled</span></td><td>No transcript projection. Legacy hooks are not installed or accepted.</td><td>Workspace replication can remain enabled independently.</td></tr>
               </tbody>
             </table>
           </div>
           <div class="grid-2" style="margin-top: 20px">
             <div class="panel pad blue">
-              <h3>Local hook envelope</h3>
+              <h3>Legacy hook envelope</h3>
               <p class="small">The raw provider ID is accepted only over local IPC. Locald persists the event before returning and emits a scoped HMAC identity for upload.</p>
               <div class="code-wrap"><button class="copy-button" type="button" data-copy-target="hook-code">Copy</button><pre id="hook-code">version: 1
 executionAttemptId: local UUID or null
@@ -807,14 +810,14 @@ workspace.relativeCwd: validated relative path
 payload: allowlisted fields only</pre></div>
             </div>
             <div class="panel pad green">
-              <h3>Native turn bundle</h3>
+              <h3>Legacy native turn bundle</h3>
               <p class="small">The bundle carries the previous and next native cursor, CoHub transcript base, workspace execution base, lifecycle events, sanitized history delta, and fidelity/completeness hints.</p>
               <div class="state-strip"><span class="state">prepared</span><span class="state-arrow">-></span><span class="state">uploaded</span><span class="state-arrow">-></span><span class="state">verifying</span><span class="state-arrow">-></span><span class="state done">applied</span></div>
               <p class="tiny" style="margin-top: 14px">Reusing a bundle ID with different canonical bytes is an idempotency violation and is quarantined.</p>
             </div>
           </div>
           <hr class="split-rule">
-          <h3>Provider capability matrix</h3>
+          <h3>Legacy provider hook capability matrix</h3>
           <div class="table-wrap">
             <table class="data-table">
               <thead><tr><th>Provider</th><th>Correlation</th><th>Terminal signal</th><th>History posture</th><th>Declared fidelity</th></tr></thead>
