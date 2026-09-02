@@ -666,12 +666,21 @@ func sanitizedRuntimeEnvironment(input []string) []string {
 		if strings.HasPrefix(upperKey, "COHUB_") ||
 			strings.HasPrefix(upperKey, "WORKER_") ||
 			strings.HasPrefix(upperKey, "GATEWAY_") ||
+			strings.HasPrefix(upperKey, "AGENT_") ||
+			strings.HasPrefix(upperKey, "LOCAL_ACP_") ||
+			strings.HasPrefix(upperKey, "LOCAL_SANDBOX_") ||
+			strings.HasPrefix(upperKey, "LOCAL_AGENT_") ||
 			strings.HasPrefix(upperKey, "INTERNAL_API_") ||
 			strings.HasPrefix(upperKey, "SANDBOX_") ||
 			upperKey == "API_BASE_URL" ||
 			upperKey == "DATABASE_URL" ||
 			upperKey == "REDIS_URL" ||
 			upperKey == "BULLMQ_REDIS_URL" ||
+			upperKey == "WORKSPACE_ROOT" ||
+			upperKey == "CHECKPOINT_CACHE_ROOT" ||
+			upperKey == "SESSIONS_DIR" ||
+			upperKey == "PLATFORM_CONFIG_ROOT" ||
+			upperKey == "SESSIONS_NAMESPACE" ||
 			upperKey == "APP_ENCRYPTION_KEY" ||
 			upperKey == "LITELLM_API_KEY" {
 			continue

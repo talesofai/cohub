@@ -166,6 +166,10 @@ func TestSanitizedRuntimeEnvironmentRemovesCohubCredentials(t *testing.T) {
 		"COHUB_LOCAL_AGENT_ACCESS_TOKEN=secret",
 		"COHUB_UNLISTED_INTERNAL_VALUE=secret",
 		"WORKER_SECRET=secret",
+		"AGENT_WORKER_CONCURRENCY=8",
+		"LOCAL_ACP_RUNTIME_RELAY_URL=ws://internal",
+		"LOCAL_SANDBOX_SPACE_ID=space",
+		"WORKSPACE_ROOT=/space-storage",
 		"DATABASE_URL=postgres://internal",
 		"PROVIDER_SETTING=kept",
 	}

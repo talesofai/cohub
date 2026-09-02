@@ -263,7 +263,7 @@ func (c *Client) connectControl(ctx context.Context) error {
 				opts.Logger.Warn("relay open without channel id")
 				continue
 			}
-			go c.openDataChannel(ctx, opts, frame.Channel, frame.Protocol, token)
+			go c.openDataChannel(ctx, opts, frame.Channel, frame.Protocol)
 		case "error":
 			err := fmt.Errorf("relay rejected connection: %s", frame.Message)
 			if frame.Status == 0 || (frame.Status >= 400 && frame.Status < 500) {
@@ -303,11 +303,12 @@ func controlPingLoop(ctx context.Context, conn *websocket.Conn, cancel context.C
 // openDataChannel dials a fresh data connection for the given channel id and
 // serves it with the standard protocol. Each channel is independent; the
 // gateway pipes it transparently to one waiting cloud peer (agent, worker…).
-func (c *Client) openDataChannel(ctx context.Context, opts Options, channel, protocol, token string) {
+func (c *Client) openDataChannel(ctx context.Context, opts Options, channel, protocol string) {
 	dialCtx, cancel := context.WithTimeout(ctx, dialTimeout)
 	defer cancel()
-	if strings.TrimSpace(token) == "" {
-		opts.Logger.Warn("relay data channel token unavailable", slog.String("channel", channel))
+	token, err := c.currentToken(dialCtx)
+	if err != nil {
+		opts.Logger.Warn("relay data channel token unavailable", slog.String("channel", channel), slog.String("error", err.Error()))
 		return
 	}
 	conn, _, err := websocket.Dial(dialCtx, dataURL(opts.RelayURL, channel), &websocket.DialOptions{
