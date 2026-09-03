@@ -1,9 +1,11 @@
 import type { GenerationPolicy } from "@cohub/protocol/generation";
+import type { SpaceFsUploadTargetVersion } from "@cohub/protocol/fs";
 import { createHash } from "node:crypto";
 import type { Queue, JobsOptions, QueueOptions } from "bullmq";
 import { COHUB_AGENT_TURNS_QUEUE, createBullmqConnectionOptions, createBullmqQueue, defaultJobRetention } from "../bullmq/index.js";
 
 export const AGENT_SANDBOX_BASH_JOB_NAME = "sandbox_bash" as const;
+export const AGENT_SANDBOX_BASH_ATOMIC_JOB_NAME = "sandbox_bash_atomic" as const;
 export const AGENT_RUN_COMMAND_JOB_NAME = "run_command" as const;
 export const AGENT_SANDBOX_FS_MUTATION_JOB_NAME = "sandbox_fs_mutation" as const;
 
@@ -12,6 +14,7 @@ export type AgentSandboxBashUploadJobData = {
   sessionId: string;
   uploadId: string;
   destinationRoot: string;
+  materialize?: "atomic";
   downloadHost: string;
   files: Array<{
     relativePath: string;
@@ -19,6 +22,7 @@ export type AgentSandboxBashUploadJobData = {
     size: number;
     mimeType: string | null;
     downloadUrl: string;
+    targetVersion?: SpaceFsUploadTargetVersion;
   }>;
   requestId?: string | null;
   trace?: Record<string, unknown>;

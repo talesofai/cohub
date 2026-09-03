@@ -5,6 +5,7 @@ import { injectTrace } from "@cohub/infra/tracing/propagator";
 import {
   createAgentTurnsQueue,
   AGENT_SANDBOX_BASH_JOB_NAME,
+  AGENT_SANDBOX_BASH_ATOMIC_JOB_NAME,
   AGENT_RUN_COMMAND_JOB_NAME,
   AGENT_SANDBOX_FS_MUTATION_JOB_NAME,
   buildAgentSandboxBashJobId,
@@ -24,6 +25,7 @@ export const AGENT_TURN_JOB_NAME = "agent_turns";
 export const AGENT_SESSION_FORK_JOB_NAME = "agent_session_fork";
 export {
   AGENT_SANDBOX_BASH_JOB_NAME,
+  AGENT_SANDBOX_BASH_ATOMIC_JOB_NAME,
   AGENT_RUN_COMMAND_JOB_NAME,
   AGENT_SANDBOX_FS_MUTATION_JOB_NAME,
 };

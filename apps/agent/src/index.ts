@@ -9,7 +9,7 @@ import {
   createQueueTelemetry,
 } from "@cohub/infra/bullmq";
 import { env } from "./env.js";
-import { AGENT_SANDBOX_BASH_JOB_NAME, AGENT_RUN_COMMAND_JOB_NAME, AGENT_SESSION_FORK_JOB_NAME, AGENT_TURN_JOB_NAME, AGENT_TURN_QUEUE_NAME, AGENT_SANDBOX_FS_MUTATION_JOB_NAME, type AgentJobData, type AgentTurnJobData, type AgentSessionForkJobData, type AgentSandboxBashUploadJobData, type AgentRunCommandJobData, type AgentSandboxFsMutationJobData } from "./queue.js";
+import { AGENT_SANDBOX_BASH_JOB_NAME, AGENT_SANDBOX_BASH_ATOMIC_JOB_NAME, AGENT_RUN_COMMAND_JOB_NAME, AGENT_SESSION_FORK_JOB_NAME, AGENT_TURN_JOB_NAME, AGENT_TURN_QUEUE_NAME, AGENT_SANDBOX_FS_MUTATION_JOB_NAME, type AgentJobData, type AgentTurnJobData, type AgentSessionForkJobData, type AgentSandboxBashUploadJobData, type AgentRunCommandJobData, type AgentSandboxFsMutationJobData } from "./queue.js";
 import { processAgentTurnJob, disposeAllSessionHandles } from "./processor.js";
 import { processSessionForkJob } from "./fork.js";
 import { processSandboxBashJob } from "./sandbox-bash.js";
@@ -38,7 +38,7 @@ const processor: Processor<AgentJobData> = async (job) => {
   if (job.name === AGENT_TURN_JOB_NAME) {
     return processAgentTurnJob(job as Job<AgentTurnJobData>);
   }
-  if (job.name === AGENT_SANDBOX_BASH_JOB_NAME) {
+  if (job.name === AGENT_SANDBOX_BASH_JOB_NAME || job.name === AGENT_SANDBOX_BASH_ATOMIC_JOB_NAME) {
     return processSandboxBashJob(job as Job<AgentSandboxBashUploadJobData>);
   }
   if (job.name === AGENT_SANDBOX_FS_MUTATION_JOB_NAME) {

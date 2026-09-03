@@ -1,4 +1,5 @@
 import { randomUUID } from "node:crypto";
+import type { SpaceFsUploadTargetVersion } from "@cohub/protocol/fs";
 import { config } from "./config.js";
 import { redisCommandClient } from "./redis.js";
 import { createUserUploadGetUrl, createUserUploadPutUrl } from "./user-upload-storage.js";
@@ -72,6 +73,8 @@ export type SpaceUploadManifestEntry = {
   objectKey?: string;
   /** Durable public URL already uploaded elsewhere; complete pulls from this. */
   downloadUrl?: string;
+  /** Target version captured before the client began uploading. */
+  targetVersion?: SpaceFsUploadTargetVersion;
 };
 
 export type SpaceUploadDestination =

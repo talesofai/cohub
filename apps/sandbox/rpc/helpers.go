@@ -173,6 +173,18 @@ func osWriteFileExclusive(path string, content []byte) error {
 	return writeAndClose(f, content)
 }
 
+// installFileExclusive atomically claims a missing destination with a hard
+// link. Source and target are validated to share a directory, so they are on
+// the same filesystem. Removing the staging name is cleanup only; once the
+// link succeeds the uploaded data is already installed safely.
+func installFileExclusive(source, target string) error {
+	if err := os.Link(source, target); err != nil {
+		return err
+	}
+	_ = os.Remove(source)
+	return nil
+}
+
 func osReadFile(path string) (string, error) {
 	bytes, err := os.ReadFile(path)
 	if err != nil {

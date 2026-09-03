@@ -209,6 +209,7 @@ func (s *Server) sendHeartbeat(session *connectionSession, includeSnapshot bool)
 			FSWrite:            true,
 			FSWriteDisposition: true,
 			FSWriteExpected:    true,
+			FSWriteSource:      true,
 			FSEdit:             true,
 			FSMkdir:            true,
 			FSStat:             true,

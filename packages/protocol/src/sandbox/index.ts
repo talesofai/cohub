@@ -117,6 +117,8 @@ export type SandboxCapabilities = {
   fsWriteDisposition?: boolean;
   /** fs.write honors the expected version baseline (atomic check-and-write). */
   fsWriteExpected?: boolean;
+  /** fs.write can atomically install a sandbox-local staging file. */
+  fsWriteSource?: boolean;
   /** Supports the atomic fs.edit read-apply-write method. */
   fsEdit?: boolean;
   fsMkdir?: boolean;
@@ -207,6 +209,8 @@ export type FsWriteParams = {
   path: string;
   cwd?: string;
   content: string;
+  /** Internal upload path: atomically install this staged file at path. */
+  sourcePath?: string;
   /** Content encoding; base64 enables binary-safe writes. Defaults to utf-8. */
   encoding?: "utf-8" | "base64";
   /** Fail with ALREADY_EXISTS instead of overwriting when the path exists (O_EXCL). */

@@ -133,6 +133,12 @@ export async function readSpaceFile(spaceId: string, path: string, options?: Vis
     : direct.readSpaceFile(spaceId, path, options);
 }
 
+export async function statSpaceFileVersion(spaceId: string, path: string) {
+  return (await isLocal(spaceId))
+    ? remote.statSpaceFileVersion(spaceId, path)
+    : direct.statSpaceFileVersion(spaceId, path);
+}
+
 export async function readSpaceFiles(spaceId: string, paths: string[], options?: Visibility) {
   return (await isLocal(spaceId))
     ? remote.readSpaceFiles(spaceId, paths, options)
