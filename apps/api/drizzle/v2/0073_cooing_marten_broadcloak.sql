@@ -1,1 +1,0 @@
-ALTER TABLE "v2"."local_agent_runtimes" ALTER COLUMN "replica_id" SET NOT NULL;
