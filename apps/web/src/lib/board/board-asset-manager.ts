@@ -34,9 +34,17 @@ export function boardAssetKey(item: BoardItem): string | null {
 		const previewUrl = taskArtifactPreviewUrl(artifact);
 		return previewUrl ? `url:${previewUrl}` : null;
 	}
+	if (item.type === "image" && item.snapshot?.mtimeMs !== undefined) {
+		const path = encodeURIComponent(item.ref.path);
+		return `image:${path}:${Math.trunc(item.snapshot.mtimeMs)}`;
+	}
 	if (item.type === "video") {
 		const path = encodeURIComponent(item.ref.path);
-		return `video:${path}:${item.snapshot?.mtimeMs ?? "unknown"}`;
+		const version =
+			item.snapshot?.mtimeMs === undefined
+				? "unknown"
+				: Math.trunc(item.snapshot.mtimeMs);
+		return `video:${path}:${version}`;
 	}
 	return imageAssetKey(item);
 }
@@ -54,6 +62,19 @@ function keySource(key: string): BoardAssetSource | null {
 				kind: "url",
 				media: "video",
 				value: decodeURIComponent(baseKey.slice(10)),
+			};
+		} catch {
+			return null;
+		}
+	}
+	if (baseKey.startsWith("image:")) {
+		const separator = baseKey.lastIndexOf(":");
+		if (separator <= 6) return null;
+		try {
+			return {
+				kind: "file",
+				media: "image",
+				value: decodeURIComponent(baseKey.slice(6, separator)),
 			};
 		} catch {
 			return null;

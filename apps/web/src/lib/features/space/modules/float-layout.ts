@@ -74,3 +74,20 @@ export function resolveFilesChromeToggle(
 	if (state.isCompact) return "toggle-mobile";
 	return filesChromeEffectivelyHidden(state) ? "reveal" : "hide";
 }
+
+/**
+ * Chat visibility after leaving focus / float / full-canvas.
+ *
+ * Regular focus/float never recorded a prior chat flag, so exit always
+ * shows chat (legacy). Full-canvas remembers the pre-entry value and
+ * restores it, except when the user already re-showed chat — never hide
+ * it again.
+ */
+export function restoreImmersiveChatOnExit(input: {
+	rememberedBeforeFullCanvas: boolean | null;
+	currentlyVisible: boolean;
+}): boolean {
+	if (input.rememberedBeforeFullCanvas === null) return true;
+	if (input.currentlyVisible) return true;
+	return input.rememberedBeforeFullCanvas;
+}

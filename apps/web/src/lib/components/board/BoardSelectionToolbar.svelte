@@ -19,6 +19,7 @@ import {
 	Sparkles,
 	Trash2,
 } from "lucide-svelte";
+import { canAddBoardItemToGeneration } from "$lib/board/board-generation";
 import { canTapSelectWithHand } from "$lib/board/board-tool";
 import type { BoardEditor } from "$lib/board/editor.svelte";
 import { getLocale } from "$lib/i18n/locale.svelte";
@@ -58,10 +59,7 @@ const visible = $derived(
 const canAlign = $derived(editor.selection.length >= 2);
 const canDistribute = $derived(editor.selection.length >= 3);
 const canGenerate = $derived(
-	editor.selectedItems.some(
-		(item) =>
-			item.type === "image" || item.type === "video" || item.type === "audio",
-	),
+	editor.selectedItems.some(canAddBoardItemToGeneration),
 );
 const generationTask = $derived.by(() => {
 	if (editor.selectedItems.length !== 1) return null;

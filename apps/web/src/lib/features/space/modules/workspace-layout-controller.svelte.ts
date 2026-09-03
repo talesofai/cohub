@@ -11,6 +11,7 @@ import {
 	filesChromeEffectivelyHidden,
 	nextTreeSnapshot,
 	resolveFilesChromeToggle,
+	restoreImmersiveChatOnExit,
 } from "./float-layout";
 
 const MAIN_PANEL_MIN_WIDTH = 320;
@@ -36,6 +37,8 @@ export function createWorkspaceLayoutController(options: {
 	let previewWidth = $state(PREVIEW_PANEL_DEFAULT_WIDTH);
 	let mobileSurface = $state<MobileSurface>("main");
 	let immersiveMainVisible = $state(true);
+	/** Pre-entry chat visibility when the user chose one-step full canvas. */
+	let chatVisibleBeforeFullCanvas: boolean | null = null;
 	let resizeCleanup: (() => void) | null = null;
 	/** Last space id applied via syncFromPrefs (detect space switches). */
 	let syncedSpaceId: string | null = null;
@@ -151,13 +154,22 @@ export function createWorkspaceLayoutController(options: {
 		uiState.setWorkspacePresentation(next);
 	}
 
+	function restoreChatAfterExit() {
+		const nextVisible = restoreImmersiveChatOnExit({
+			rememberedBeforeFullCanvas: chatVisibleBeforeFullCanvas,
+			currentlyVisible: immersiveMainVisible,
+		});
+		chatVisibleBeforeFullCanvas = null;
+		immersiveMainVisible = nextVisible;
+	}
+
 	function exitPresentation() {
 		if (presentation === "default" && !uiState.workspaceLayoutSnapshot) {
-			immersiveMainVisible = true;
+			restoreChatAfterExit();
 			return;
 		}
 		setPresentation("default");
-		immersiveMainVisible = true;
+		restoreChatAfterExit();
 		restoreSnapshot();
 	}
 
@@ -168,6 +180,7 @@ export function createWorkspaceLayoutController(options: {
 			return;
 		}
 		// Switching from immersive: keep the original restore snapshot.
+		chatVisibleBeforeFullCanvas = null;
 		captureSnapshot();
 		setPresentation("focus");
 		immersiveMainVisible = true;
@@ -178,7 +191,7 @@ export function createWorkspaceLayoutController(options: {
 		setPreviewWidth(getMaxPreviewWidth());
 	}
 
-	async function enterImmersive() {
+	async function enterImmersive(chatVisible = true) {
 		if (options.getIsCompact()) return;
 		if (presentation === "immersive") {
 			exitPresentation();
@@ -187,7 +200,7 @@ export function createWorkspaceLayoutController(options: {
 		// Switching from focus: keep the original restore snapshot.
 		captureSnapshot();
 		setPresentation("immersive");
-		immersiveMainVisible = true;
+		immersiveMainVisible = chatVisible;
 		uiState.setFilesColumnHidden(false);
 		uiState.setLeftSidebarCollapsed(true);
 		uiState.setRightSidebarCollapsed(true);
@@ -199,7 +212,20 @@ export function createWorkspaceLayoutController(options: {
 	}
 
 	async function toggleImmersive() {
+		if (presentation !== "immersive") {
+			chatVisibleBeforeFullCanvas = null;
+		}
 		await enterImmersive();
+	}
+
+	async function toggleFullCanvas() {
+		if (options.getIsCompact()) return;
+		if (presentation === "immersive") {
+			await enterImmersive();
+			return;
+		}
+		chatVisibleBeforeFullCanvas = immersiveMainVisible;
+		await enterImmersive(false);
 	}
 
 	/**
@@ -499,6 +525,7 @@ export function createWorkspaceLayoutController(options: {
 		syncFromPrefs,
 		toggleFocus,
 		toggleImmersive,
+		toggleFullCanvas,
 		exitPresentation,
 		handleWindowResize,
 		handleCompactChange,

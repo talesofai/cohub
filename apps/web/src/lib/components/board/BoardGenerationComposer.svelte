@@ -1,7 +1,7 @@
 <script lang="ts">
 import type { PublicGenerationDeclaration } from "@cohub/protocol/generation";
 import type { BoardItem } from "@neta-art/cohub/board";
-import { featuredTaskArtifact, worldPoint } from "@neta-art/cohub/board";
+import { worldPoint } from "@neta-art/cohub/board";
 import {
 	AudioLines,
 	Image,
@@ -20,6 +20,8 @@ import {
 	buildBoardGenerationContent,
 	defaultGenerationReferenceRole,
 	generationInputSpec,
+	generationReferenceSourceItemId,
+	generationReferencesFromTaskItem,
 	modelAcceptsGenerationReferences,
 	normalizeGenerationReferenceUrl,
 	parseBoardGenerationReferences,
@@ -28,6 +30,7 @@ import {
 	validateBoardGeneration,
 	validateBoardGenerationParameters,
 } from "$lib/board/board-generation";
+import { formatBoardGenerationValidationError } from "$lib/board/board-generation-validation-message";
 import type { BoardEditor } from "$lib/board/editor.svelte";
 import { canUseUserScopedCache, getCacheUserKey } from "$lib/cache/keys";
 import ComposerModelTrigger from "$lib/components/composer/ComposerModelTrigger.svelte";
@@ -131,9 +134,14 @@ const visibleModels = $derived(
 		selectedModelIds: selectedModelId ? [selectedModelId] : [],
 	}),
 );
-const validationError = $derived(
+const validationIssue = $derived(
 	validateBoardGeneration({ model: selectedModel, prompt, references }) ??
 		validateBoardGenerationParameters(selectedModel, parameters),
+);
+const validationError = $derived(
+	validationIssue
+		? formatBoardGenerationValidationError(validationIssue, locale)
+		: null,
 );
 const parameterEntries = $derived(
 	Object.entries(selectedModel?.parameters ?? {}),
@@ -153,12 +161,6 @@ function itemMediaType(item: BoardItem): BoardGenerationMediaType | null {
 		if (mimeType.startsWith("image/")) return "image";
 		if (mimeType.startsWith("video/")) return "video";
 		if (mimeType.startsWith("audio/")) return "audio";
-	}
-	if (item.type === "task") {
-		const type = featuredTaskArtifact(item.snapshot.artifacts)?.type;
-		return type === "image" || type === "video" || type === "audio"
-			? type
-			: null;
 	}
 	return null;
 }
@@ -191,9 +193,6 @@ async function resolveItemReference(
 		item.type === "file"
 	) {
 		rawUrl = await assetSource.resolveFileUrl(item.ref.path);
-	} else if (item.type === "task") {
-		const artifact = featuredTaskArtifact(item.snapshot.artifacts);
-		rawUrl = artifact?.type === "text" ? null : artifact?.url;
 	}
 	const url = rawUrl ? normalizeGenerationReferenceUrl(rawUrl) : null;
 	if (!url) return null;
@@ -222,25 +221,31 @@ function normalizeReferenceRoles(
 }
 
 async function addSelectedReferences() {
-	const candidates = editor.selectedItems.filter((item) => itemMediaType(item));
-	if (candidates.length === 0) return;
+	const mediaCandidates = editor.selectedItems.filter((item) =>
+		itemMediaType(item),
+	);
+	const taskReferences = editor.selectedItems.flatMap(
+		generationReferencesFromTaskItem,
+	);
+	if (mediaCandidates.length === 0 && taskReferences.length === 0) return;
 	resolvingSelection = true;
 	try {
 		const results = await Promise.allSettled(
-			candidates.map(resolveItemReference),
+			mediaCandidates.map(resolveItemReference),
 		);
 		if (disposed) return;
-		const resolved = results
+		const mediaResolved = results
 			.filter(
 				(result): result is PromiseFulfilledResult<BoardGenerationReference> =>
 					result.status === "fulfilled" && result.value !== null,
 			)
 			.map((result) => result.value);
+		const resolved = [...mediaResolved, ...taskReferences];
 		const known = new Set(references.map((reference) => reference.url));
 		const added = resolved.filter((reference) => !known.has(reference.url));
 		references = normalizeReferenceRoles([...references, ...added]);
 		const failed = results.filter((result) => result.status === "rejected");
-		if (failed.length > 0 || added.length < candidates.length) {
+		if (failed.length > 0 || mediaResolved.length < mediaCandidates.length) {
 			error =
 				failed.length > 0
 					? m.board_load_media_failed({}, { locale })
@@ -299,7 +304,8 @@ function restoreDraft() {
 		if (typeof parsed.prompt === "string") prompt = parsed.prompt;
 		if (typeof parsed.model === "string") selectedModelId = parsed.model;
 		references = parseBoardGenerationReferences(parsed.references).filter(
-			(reference) => editor.itemById(reference.id) !== null,
+			(reference) =>
+				editor.itemById(generationReferenceSourceItemId(reference.id)) !== null,
 		);
 		if (
 			parsed.parametersByModel &&
@@ -381,7 +387,7 @@ async function submit() {
 		snapshotReferences,
 	);
 	const sources = snapshotReferences.flatMap((reference) => {
-		const item = editor.itemById(reference.id);
+		const item = editor.itemById(generationReferenceSourceItemId(reference.id));
 		if (!item) return [];
 		const sourcePort = referencePortForKind(reference.type);
 		return [

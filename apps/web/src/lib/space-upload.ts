@@ -24,6 +24,7 @@ export type SpaceUploadedFile = {
 	name: string;
 	size: number;
 	mimeType: string | null;
+	mtimeMs: number;
 };
 
 export type UploadSpaceEntriesOptions = {
@@ -183,6 +184,7 @@ export async function materializeSpaceEntries({
 		name: file.name,
 		size: file.size,
 		mimeType: file.mimeType,
+		mtimeMs: file.mtimeMs,
 	}));
 }
 
@@ -314,5 +316,6 @@ export async function uploadSpaceEntries({
 		name: file.name,
 		size: file.size,
 		mimeType: file.mimeType,
+		mtimeMs: file.mtimeMs,
 	}));
 }

@@ -15,6 +15,7 @@ import {
 } from "lucide-svelte";
 import { onDestroy, onMount, untrack } from "svelte";
 import { portal } from "$lib/actions/portal";
+import { canAddBoardItemToGeneration } from "$lib/board/board-generation";
 import type { BoardEditor } from "$lib/board/editor.svelte";
 import { getLocale } from "$lib/i18n/locale.svelte";
 import { m } from "$lib/paraglide/messages.js";
@@ -51,10 +52,7 @@ let top = $state(untrack(() => position.y));
 
 const hasSelection = $derived(editor.selection.length > 0);
 const canGenerate = $derived(
-	editor.selectedItems.some(
-		(item) =>
-			item.type === "image" || item.type === "video" || item.type === "audio",
-	),
+	editor.selectedItems.some(canAddBoardItemToGeneration),
 );
 const singleText = $derived(
 	editor.selectedItems.length === 1 && editor.selectedItems[0]?.type === "text",

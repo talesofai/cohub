@@ -8,12 +8,12 @@ import {
 
 type FakeTexture = { width: number; height: number; destroyed: boolean };
 
-function imageItem(id: string, path: string): BoardItem {
+function imageItem(id: string, path: string, mtimeMs?: number): BoardItem {
 	return {
 		id,
 		type: "image",
 		ref: { kind: "space-file", path },
-		snapshot: { mimeType: "image/png" },
+		snapshot: { mimeType: "image/png", mtimeMs },
 		frame: { x: 0, y: 0, width: 100, height: 100, rotation: 0 },
 	};
 }
@@ -72,6 +72,35 @@ test("video preview keys are shared by path and invalidated by file version", ()
 
 	assert.equal(first, same);
 	assert.notEqual(first, changed);
+});
+
+test("image preview keys are invalidated by the snapshot version", () => {
+	const first = boardAssetKey(imageItem("a", "images/cover.png", 100));
+	const same = boardAssetKey(imageItem("b", "images/cover.png", 100));
+	const fractional = boardAssetKey(imageItem("b2", "images/cover.png", 100.75));
+	const changed = boardAssetKey(imageItem("c", "images/cover.png", 101));
+
+	assert.equal(first, same);
+	assert.equal(first, fractional);
+	assert.notEqual(first, changed);
+});
+
+test("a versioned image key still resolves the authoritative file path", async () => {
+	const { manager, loaded } = harness({
+		maxCount: 8,
+		maxBytes: Number.POSITIVE_INFINITY,
+	});
+	const item = imageItem("image", "images/cover: final.png", 100);
+	const key = manager.assetKey(item);
+	assert.ok(key);
+
+	manager.acquire(key);
+	manager.requestItem(item);
+	await flush();
+
+	assert.deepEqual(loaded, ["images/cover: final.png"]);
+	assert.ok(manager.getTexture(key));
+	manager.destroy();
 });
 
 test("path invalidation forces a fresh preview without relying on mtime", async () => {

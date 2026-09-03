@@ -22,6 +22,11 @@ import {
 	tryResolveTextFileResponse,
 } from "$lib/space-file-text";
 import type { SpaceFsNode } from "$lib/space-fs";
+import type { SpaceUploadedFile } from "$lib/space-upload";
+import {
+	reconcileUploadedFiles,
+	uploadParentDir,
+} from "$lib/space-upload-cache";
 
 import {
 	clearCachedSpaceFsSubtree,
@@ -1468,8 +1473,22 @@ export function createFileWorkspaceController(
 		uploadPaneVisible = true;
 	}
 
-	async function handleUploadComplete() {
+	async function handleUploadComplete(uploaded: SpaceUploadedFile[]) {
 		await refreshFileTree();
+		const byDirectory = new Map<string, SpaceUploadedFile[]>();
+		for (const file of uploaded) {
+			const dirPath = uploadParentDir(file.path);
+			const files = byDirectory.get(dirPath) ?? [];
+			files.push(file);
+			byDirectory.set(dirPath, files);
+		}
+		await Promise.all(
+			[...byDirectory].map(([dirPath, files]) =>
+				patchFsDirectory(dirPath, (entries) =>
+					reconcileUploadedFiles(entries, files),
+				),
+			),
+		);
 	}
 
 	async function handleCreateFile(parentPath: string) {

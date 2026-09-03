@@ -4,7 +4,7 @@ import { onDestroy } from "svelte";
 import UploadProgress from "$lib/components/UploadProgress.svelte";
 import { getLocale } from "$lib/i18n/locale.svelte";
 import { m } from "$lib/paraglide/messages.js";
-import { uploadSpaceEntries } from "$lib/space-upload";
+import { type SpaceUploadedFile, uploadSpaceEntries } from "$lib/space-upload";
 import type { LocalUploadEntry } from "$lib/upload-entries";
 
 type UploadItem = {
@@ -37,7 +37,7 @@ const {
 	entries?: LocalUploadEntry[];
 	open?: boolean;
 	onClose?: () => void;
-	onComplete?: () => void;
+	onComplete?: (uploaded: SpaceUploadedFile[]) => void | Promise<void>;
 } = $props();
 
 const locale = $derived(getLocale());
@@ -144,7 +144,7 @@ async function uploadAll(batchId: string, uploadTargetDir: string) {
 	try {
 		stage = "preparing";
 		uploadedBytes = 0;
-		await uploadSpaceEntries({
+		const uploaded = await uploadSpaceEntries({
 			spaceId,
 			targetDir: uploadTargetDir,
 			entries: batchEntries,
@@ -178,7 +178,7 @@ async function uploadAll(batchId: string, uploadTargetDir: string) {
 		if (activeBatchId !== batchId) return;
 		stage = "done";
 		items = items.map((item) => ({ ...item, status: "done" }));
-		onComplete?.();
+		await onComplete?.(uploaded);
 		const [nextBatch, ...remainingBatches] = queuedBatches;
 		if (nextBatch) {
 			queuedBatches = remainingBatches;

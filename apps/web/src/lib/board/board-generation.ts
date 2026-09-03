@@ -4,7 +4,12 @@ import type {
 	PublicGenerationDeclaration,
 } from "@cohub/protocol/generation";
 import type { TaskRunRecord } from "@neta-art/cohub";
-import type { BoardFrame, BoardTaskSnapshot } from "@neta-art/cohub/board";
+import type {
+	BoardFrame,
+	BoardItem,
+	BoardTaskArtifact,
+	BoardTaskSnapshot,
+} from "@neta-art/cohub/board";
 
 export type BoardGenerationMediaType = "image" | "video" | "audio";
 
@@ -15,6 +20,65 @@ export type BoardGenerationReference = {
 	label: string;
 	role?: string;
 };
+
+export type BoardGenerationValidationInputType =
+	| "text"
+	| BoardGenerationMediaType;
+
+export type BoardGenerationValidationError =
+	| { code: "model_required" }
+	| { code: "audio_reference_required"; model: string }
+	| { code: "metadata_required"; model: string }
+	| { code: "references_unsupported"; model: string }
+	| { code: "text_unsupported"; model: string }
+	| {
+			code: "input_required";
+			inputType: BoardGenerationValidationInputType;
+			model: string;
+	  }
+	| {
+			code: "input_minimum";
+			inputType: BoardGenerationValidationInputType;
+			min: number;
+			model: string;
+	  }
+	| {
+			code: "input_maximum";
+			inputType: BoardGenerationValidationInputType;
+			max: number;
+			model: string;
+	  }
+	| {
+			code: "reference_role_required";
+			inputType: BoardGenerationMediaType;
+	  }
+	| {
+			code: "reference_role_invalid";
+			inputType: BoardGenerationMediaType;
+	  }
+	| { code: "prompt_minimum_characters"; min: number; model: string }
+	| { code: "input_missing" }
+	| { code: "parameter_required"; parameter: string }
+	| { code: "parameter_text_required"; parameter: string }
+	| { code: "parameter_option_invalid"; parameter: string }
+	| {
+			code: "parameter_dimensions_format";
+			parameter: string;
+			separator: string;
+	  }
+	| { code: "parameter_minimum"; parameter: string; min: number }
+	| { code: "parameter_maximum"; parameter: string; max: number }
+	| {
+			code: "parameter_multiple";
+			parameter: string;
+			multipleOf: number;
+	  }
+	| { code: "parameter_boolean_required"; parameter: string }
+	| {
+			code: "parameter_number_invalid";
+			parameter: string;
+			valueType: "number" | "integer";
+	  };
 
 const REGENERATED_TASK_GAP = 48;
 const PENDING_TASK_WIDTH = 300;
@@ -119,6 +183,118 @@ export function normalizeGenerationReferenceUrl(value: string): string | null {
 	}
 }
 
+const TASK_ARTIFACT_REFERENCE_SEP = "::artifact:";
+
+function isGenerationMediaArtifact(
+	artifact: BoardTaskArtifact,
+): artifact is Extract<BoardTaskArtifact, { type: BoardGenerationMediaType }> {
+	return (
+		artifact.type === "image" ||
+		artifact.type === "video" ||
+		artifact.type === "audio"
+	);
+}
+
+/** Recover the board node id from a generation-reference id. */
+export function generationReferenceSourceItemId(referenceId: string): string {
+	const index = referenceId.indexOf(TASK_ARTIFACT_REFERENCE_SEP);
+	return index === -1 ? referenceId : referenceId.slice(0, index);
+}
+
+function mediaItemGenerationLabel(item: BoardItem): string | null {
+	if (
+		item.type !== "image" &&
+		item.type !== "video" &&
+		item.type !== "audio" &&
+		item.type !== "file"
+	) {
+		return null;
+	}
+	return (
+		item.snapshot?.title ?? item.ref.path.split("/").pop() ?? item.ref.path
+	);
+}
+
+function taskItemGenerationLabel(
+	item: Extract<BoardItem, { type: "task" }>,
+	artifact: Extract<BoardTaskArtifact, { type: BoardGenerationMediaType }>,
+): string {
+	const artifactTitle = artifact.title?.replace(/\s+/g, " ").trim();
+	if (artifactTitle) return artifactTitle;
+	const title = item.snapshot.title.replace(/\s+/g, " ").trim();
+	if (title) return title;
+	const excerpt = item.snapshot.promptExcerpt?.replace(/\s+/g, " ").trim();
+	if (excerpt) return excerpt;
+	return item.snapshot.model?.trim() || item.id;
+}
+
+/**
+ * Map a completed generation task's image/video/audio artifacts to composer
+ * references. Pending, failed, non-generation, and unusable URLs are skipped.
+ */
+export function generationReferencesFromTaskItem(
+	item: BoardItem,
+): BoardGenerationReference[] {
+	if (item.type !== "task") return [];
+	const { snapshot } = item;
+	if (snapshot.taskType !== "generation" || snapshot.status !== "completed") {
+		return [];
+	}
+	return snapshot.artifacts.flatMap((artifact) => {
+		if (!isGenerationMediaArtifact(artifact)) return [];
+		const url = normalizeGenerationReferenceUrl(artifact.url);
+		if (!url) return [];
+		return [
+			{
+				id: `${item.id}${TASK_ARTIFACT_REFERENCE_SEP}${artifact.id}`,
+				type: artifact.type,
+				url,
+				label: taskItemGenerationLabel(item, artifact),
+			},
+		];
+	});
+}
+
+/** True when the selection toolbar/menu should offer "Add to generation". */
+export function canAddBoardItemToGeneration(item: BoardItem): boolean {
+	if (item.type === "image" || item.type === "video" || item.type === "audio") {
+		return true;
+	}
+	return generationReferencesFromTaskItem(item).length > 0;
+}
+
+/**
+ * Sync artifact/media mapping used by tests and the composer. Plain media
+ * nodes need a resolved http(s) URL; task artifacts use their snapshot URL.
+ */
+export function collectBoardGenerationReferences(
+	items: readonly BoardItem[],
+	resolvedMediaUrls: Readonly<Record<string, string>> = {},
+): BoardGenerationReference[] {
+	return items.flatMap((item) => {
+		if (item.type === "task") return generationReferencesFromTaskItem(item);
+		if (
+			item.type !== "image" &&
+			item.type !== "video" &&
+			item.type !== "audio"
+		) {
+			return [];
+		}
+		const raw = resolvedMediaUrls[item.id];
+		if (!raw) return [];
+		const url = normalizeGenerationReferenceUrl(raw);
+		if (!url) return [];
+		return [
+			{
+				id: item.id,
+				type: item.type,
+				url,
+				label: mediaItemGenerationLabel(item) ?? item.id,
+			},
+		];
+	});
+}
+
 export function parseBoardGenerationReferences(
 	value: unknown,
 ): BoardGenerationReference[] {
@@ -205,25 +381,30 @@ export function defaultGenerationReferenceRole(
 	return spec?.roleRequired ? spec.roles?.[0] : undefined;
 }
 
+function generationModelName(model: PublicGenerationDeclaration): string {
+	return model.title?.trim() || model.model;
+}
+
 export function validateBoardGeneration(input: {
 	model: PublicGenerationDeclaration | null;
 	prompt: string;
 	references: readonly BoardGenerationReference[];
-}): string | null {
+}): BoardGenerationValidationError | null {
 	const { model, references } = input;
-	if (!model) return "Select a model.";
+	if (!model) return { code: "model_required" };
+	const modelName = generationModelName(model);
 	if (!supportsBoardGenerationComposer(model, references)) {
 		return QWEN_REFERENCE_VOICE_MODELS.has(model.model)
-			? "Add an audio reference for this model."
-			: "This model requires additional metadata.";
+			? { code: "audio_reference_required", model: modelName }
+			: { code: "metadata_required", model: modelName };
 	}
 	if (!modelAcceptsGenerationReferences(model, references)) {
-		return "The selected model does not support these references.";
+		return { code: "references_unsupported", model: modelName };
 	}
 
 	const textCount = input.prompt.trim() ? 1 : 0;
 	if (textCount > 0 && !generationInputSpec(model, "text")) {
-		return "The selected model does not support text input.";
+		return { code: "text_unsupported", model: modelName };
 	}
 	for (const spec of model.content.input) {
 		const count =
@@ -231,13 +412,27 @@ export function validateBoardGeneration(input: {
 				? textCount
 				: references.filter((reference) => reference.type === spec.type).length;
 		if (spec.required === true && count === 0) {
-			return `Add ${spec.type} input.`;
+			return {
+				code: "input_required",
+				inputType: spec.type,
+				model: modelName,
+			};
 		}
 		if (typeof spec.min === "number" && count < spec.min) {
-			return `Add at least ${spec.min} ${spec.type} inputs.`;
+			return {
+				code: "input_minimum",
+				inputType: spec.type,
+				min: spec.min,
+				model: modelName,
+			};
 		}
 		if (typeof spec.max === "number" && count > spec.max) {
-			return `Use at most ${spec.max} ${spec.type} inputs.`;
+			return {
+				code: "input_maximum",
+				inputType: spec.type,
+				max: spec.max,
+				model: modelName,
+			};
 		}
 		if (
 			spec.roleRequired &&
@@ -246,7 +441,10 @@ export function validateBoardGeneration(input: {
 				(reference) => reference.type === spec.type && !reference.role,
 			)
 		) {
-			return `Choose a role for each ${spec.type} reference.`;
+			return {
+				code: "reference_role_required",
+				inputType: spec.type,
+			};
 		}
 		if (
 			spec.type !== "text" &&
@@ -258,7 +456,10 @@ export function validateBoardGeneration(input: {
 					!spec.roles?.includes(reference.role),
 			)
 		) {
-			return `Choose a valid role for each ${spec.type} reference.`;
+			return {
+				code: "reference_role_invalid",
+				inputType: spec.type,
+			};
 		}
 	}
 
@@ -266,60 +467,76 @@ export function validateBoardGeneration(input: {
 		QWEN_AUDIO_3_MODELS.has(model.model) &&
 		Array.from(input.prompt.trim()).length < 15
 	) {
-		return "Enter at least 15 characters for this model.";
+		return {
+			code: "prompt_minimum_characters",
+			min: 15,
+			model: modelName,
+		};
 	}
-	if (textCount === 0 && references.length === 0) return "Add an input.";
+	if (textCount === 0 && references.length === 0)
+		return { code: "input_missing" };
 	return null;
 }
 
 export function validateBoardGenerationParameters(
 	model: PublicGenerationDeclaration | null,
 	parameters: Readonly<Record<string, unknown>>,
-): string | null {
+): BoardGenerationValidationError | null {
 	if (!model) return null;
 	for (const [name, spec] of Object.entries(model.parameters ?? {})) {
+		const parameter = name.replaceAll("_", " ");
 		const value = parameters[name];
 		if (value === undefined) {
 			if (spec.default === undefined && spec.optional !== true) {
-				return `Set ${name.replaceAll("_", " ")}.`;
+				return { code: "parameter_required", parameter };
 			}
 			continue;
 		}
 		if (spec.type === "string") {
-			if (typeof value !== "string") return `${name} must be text.`;
+			if (typeof value !== "string")
+				return { code: "parameter_text_required", parameter };
 			if (spec.enum && !spec.enum.includes(value)) {
-				return `Choose a valid ${name.replaceAll("_", " ")}.`;
+				return { code: "parameter_option_invalid", parameter };
 			}
 			if (spec.dimensions) {
 				const { min, max, multipleOf, separator = "x" } = spec.dimensions;
 				const parts = value.split(separator);
 				if (parts.length !== 2 || parts.some((part) => !/^\d+$/.test(part))) {
-					return `Use WIDTH${separator}HEIGHT for ${name}.`;
+					return {
+						code: "parameter_dimensions_format",
+						parameter,
+						separator,
+					};
 				}
 				const dimensions = parts.map(Number);
 				if (
 					min !== undefined &&
 					dimensions.some((dimension) => dimension < min)
 				) {
-					return `${name} must be at least ${min}.`;
+					return { code: "parameter_minimum", parameter, min };
 				}
 				if (
 					max !== undefined &&
 					dimensions.some((dimension) => dimension > max)
 				) {
-					return `${name} must be at most ${max}.`;
+					return { code: "parameter_maximum", parameter, max };
 				}
 				if (
 					multipleOf !== undefined &&
 					dimensions.some((dimension) => dimension % multipleOf !== 0)
 				) {
-					return `${name} must use multiples of ${multipleOf}.`;
+					return {
+						code: "parameter_multiple",
+						parameter,
+						multipleOf,
+					};
 				}
 			}
 			continue;
 		}
 		if (spec.type === "boolean") {
-			if (typeof value !== "boolean") return `${name} must be true or false.`;
+			if (typeof value !== "boolean")
+				return { code: "parameter_boolean_required", parameter };
 			continue;
 		}
 		if (
@@ -327,13 +544,25 @@ export function validateBoardGenerationParameters(
 			!Number.isFinite(value) ||
 			(spec.type === "integer" && !Number.isInteger(value))
 		) {
-			return `${name} must be a valid ${spec.type}.`;
+			return {
+				code: "parameter_number_invalid",
+				parameter,
+				valueType: spec.type,
+			};
 		}
 		if (spec.min !== undefined && value < spec.min) {
-			return `${name} must be at least ${spec.min}.`;
+			return {
+				code: "parameter_minimum",
+				parameter,
+				min: spec.min,
+			};
 		}
 		if (spec.max !== undefined && value > spec.max) {
-			return `${name} must be at most ${spec.max}.`;
+			return {
+				code: "parameter_maximum",
+				parameter,
+				max: spec.max,
+			};
 		}
 	}
 	return null;

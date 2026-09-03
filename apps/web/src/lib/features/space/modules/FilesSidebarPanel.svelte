@@ -10,6 +10,7 @@ import { getLocale } from "$lib/i18n/locale.svelte";
 import { DURATION_PANEL } from "$lib/motion.svelte";
 import { m } from "$lib/paraglide/messages.js";
 import type { SpaceFsNode } from "$lib/space-fs";
+import type { SpaceUploadedFile } from "$lib/space-upload";
 import { uiState } from "$lib/stores/ui.svelte";
 import type { LocalUploadEntry } from "$lib/upload-entries";
 import AppsSidebarPanel from "./AppsSidebarPanel.svelte";
@@ -51,7 +52,7 @@ type Props = {
 	onPublishDirectory: (path: string, options: { mobile: boolean }) => void;
 	onOpenPort: (port: string, url: string, options: { mobile: boolean }) => void;
 	onUploadPaneClose: () => void;
-	onUploadComplete: () => void | Promise<void>;
+	onUploadComplete: (uploaded: SpaceUploadedFile[]) => void | Promise<void>;
 	onResizeStart: (event: PointerEvent) => void;
 	onOpenMarketplace: () => void;
 	onOpenInstalledApp: (app: import("@cohub/protocol").InstalledApp) => void;

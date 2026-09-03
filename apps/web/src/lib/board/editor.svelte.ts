@@ -1497,7 +1497,12 @@ export function createBoardEditor(options: BoardEditorOptions) {
 	/** Invalidate synced display facts after the authoritative media file changes. */
 	function applyMediaFileChange(
 		path: string,
-		change: { size?: number; mtimeMs?: number; removed?: boolean },
+		change: {
+			mimeType?: string | null;
+			size?: number;
+			mtimeMs?: number;
+			removed?: boolean;
+		},
 	) {
 		if (change.removed) return;
 		const targetIds = mediaIdsForPath(path);
@@ -1514,6 +1519,8 @@ export function createBoardEditor(options: BoardEditorOptions) {
 			const snapshot: BoardMediaSnapshot & { durationMs?: number } = {
 				...item.snapshot,
 			};
+			if (change.mimeType !== undefined)
+				snapshot.mimeType = change.mimeType ?? undefined;
 			if (change.size !== undefined) snapshot.size = change.size;
 			if (change.mtimeMs !== undefined) snapshot.mtimeMs = change.mtimeMs;
 			delete snapshot.naturalWidth;

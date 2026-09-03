@@ -2,6 +2,7 @@
 import type {
 	BoardFileSnapshot,
 	BoardItem,
+	BoardMediaSnapshot,
 	BoardTaskSnapshot,
 	DrawPoint,
 } from "@neta-art/cohub/board";
@@ -48,6 +49,10 @@ import {
 	collaborationColor,
 } from "$lib/board/board-awareness";
 import {
+	boardNativeDropKind,
+	uploadBoardDataTransfer,
+} from "$lib/board/board-file-drop";
+import {
 	fileAvailability,
 	filePreviewVersion,
 	isFilePreviewStale,
@@ -55,6 +60,7 @@ import {
 	subscribeFilePreviews,
 } from "$lib/board/board-file-preview-source";
 import type { BoardStageExportBridge } from "$lib/board/board-image-export";
+import { resolveBoardMediaFile } from "$lib/board/board-media-file-source";
 import {
 	boardMediaActionAt,
 	playableBoardMedia,
@@ -72,6 +78,7 @@ import { resizeCursorForHandle } from "$lib/board/core/selection-transform";
 import type { BoardEditor } from "$lib/board/editor.svelte";
 import type { BoardRuntimeData } from "$lib/board/runtime/board-runtime";
 import { createBoardAnimationRuntime } from "$lib/board/runtime/pixi-animation";
+import UploadProgress from "$lib/components/UploadProgress.svelte";
 import { pointerDropZone } from "$lib/drag/pointer-drag.svelte";
 import {
 	type BoardDropItem,
@@ -82,6 +89,10 @@ import { m } from "$lib/paraglide/messages.js";
 import { sdk } from "$lib/sdk";
 import { buildSpaceTaskRoute } from "$lib/space-routes";
 import { SPACE_STYLE_CHANGED_EVENT } from "$lib/space-style";
+import {
+	type SpaceUploadProgress,
+	uploadSpaceEntries,
+} from "$lib/space-upload";
 import {
 	getCachedTaskRuns,
 	mergeCachedTaskRun,
@@ -183,6 +194,11 @@ let cullCache: {
 	visibleIds: Set<string>;
 } | null = null;
 let dropActive = $state(false);
+let activeFileUploads = $state(0);
+let fileUploadProgress: SpaceUploadProgress | null = $state(null);
+let fileUploadError = $state<string | null>(null);
+let fileUploadErrorTimer: ReturnType<typeof setTimeout> | null = null;
+const fileUploadControllers = new Set<AbortController>();
 let surface = $state<{ width: number; height: number }>({
 	width: 0,
 	height: 0,
@@ -212,6 +228,7 @@ const assets = createBoardAssetManager({
 const unsubscribeAssets = assets.subscribe(() => {
 	assetVersion += 1;
 });
+const verifiedMediaItems = new Map<string, string>();
 
 // Bumped when a workspace file change invalidates a cached preview, so visible
 // file cards can refresh their snapshot.
@@ -298,6 +315,101 @@ $effect(() => {
 	if (width === 0 || height === 0) return;
 	for (const item of itemsNearViewport(camera, width, height)) {
 		if (assets.assetKey(item)) assets.requestItem(item);
+	}
+});
+
+function mediaVerificationKey(
+	item: Extract<BoardItem, { type: "image" | "video" | "audio" }>,
+) {
+	return [
+		item.ref.path,
+		item.snapshot?.size ?? "unknown",
+		item.snapshot?.mtimeMs === undefined
+			? "unknown"
+			: Math.trunc(item.snapshot.mtimeMs),
+		item.snapshot?.mimeType ?? "unknown",
+	].join(":");
+}
+
+async function verifyMediaItem(
+	item: Extract<BoardItem, { type: "image" | "video" | "audio" }>,
+	key: string,
+) {
+	try {
+		const result = await resolveBoardMediaFile(
+			item.ref.path,
+			item.snapshot,
+			(path) => sdk.space(spaceId).files.read(path),
+		);
+		if (!result) {
+			if (verifiedMediaItems.get(item.id) === key)
+				verifiedMediaItems.delete(item.id);
+			return;
+		}
+		const current = editor.itemById(item.id);
+		if (
+			current?.type !== "image" &&
+			current?.type !== "video" &&
+			current?.type !== "audio"
+		)
+			return;
+		if (current.ref.path !== item.ref.path) return;
+		if (!result.changed) return;
+
+		const nextSnapshot: BoardMediaSnapshot = {
+			...current.snapshot,
+			...result.metadata,
+			mimeType: result.metadata.mimeType ?? undefined,
+		};
+		verifiedMediaItems.set(
+			item.id,
+			mediaVerificationKey({ ...current, snapshot: nextSnapshot }),
+		);
+		assets.invalidatePath(item.ref.path);
+		editor.applyMediaFileChange(item.ref.path, result.metadata);
+		// The snapshot repair changes the versioned key. Request the authoritative
+		// path immediately rather than waiting for another structural effect.
+		queueMicrotask(() => {
+			const updated = editor.itemById(item.id);
+			if (
+				updated?.type === "image" ||
+				updated?.type === "video" ||
+				updated?.type === "audio"
+			)
+				assets.requestItem(updated);
+		});
+	} catch {
+		// A transient read failure says nothing about file availability. Leave the
+		// snapshot intact and permit a later asset-state change to retry.
+		if (verifiedMediaItems.get(item.id) === key)
+			verifiedMediaItems.delete(item.id);
+	}
+}
+
+// Validate visible media snapshots by authoritative workspace path. Live change
+// events cover an already-open Board, but after reload there is no event to mark
+// a persisted stale snapshot. This bounded pass closes that gap.
+$effect(() => {
+	if (readonly) return;
+	editor.structureVersion;
+	editor.geometryVersion;
+	assetVersion;
+	const camera = editor.camera;
+	const width = surface.width;
+	const height = surface.height;
+	if (width === 0 || height === 0) return;
+
+	const liveIds = new Set(editor.items.map((item) => item.id));
+	for (const id of verifiedMediaItems.keys()) {
+		if (!liveIds.has(id)) verifiedMediaItems.delete(id);
+	}
+	for (const item of itemsNearViewport(camera, width, height)) {
+		if (item.type !== "image" && item.type !== "video" && item.type !== "audio")
+			continue;
+		const key = mediaVerificationKey(item);
+		if (verifiedMediaItems.get(item.id) === key) continue;
+		verifiedMediaItems.set(item.id, key);
+		void verifyMediaItem(item, key);
 	}
 });
 
@@ -1124,10 +1236,70 @@ type BoardTaskDropItem = {
 	snapshot: BoardTaskSnapshot;
 };
 
+function uploadProgressPercent(progress: SpaceUploadProgress | null) {
+	if (!progress || progress.totalBytes === 0) return null;
+	return Math.round((progress.uploadedBytes / progress.totalBytes) * 100);
+}
+
+async function handleLocalFileDrop(
+	dataTransfer: DataTransfer,
+	clientX: number,
+	clientY: number,
+) {
+	const controller = new AbortController();
+	fileUploadControllers.add(controller);
+	activeFileUploads += 1;
+	fileUploadError = null;
+	if (fileUploadErrorTimer) {
+		clearTimeout(fileUploadErrorTimer);
+		fileUploadErrorTimer = null;
+	}
+	try {
+		const items = await uploadBoardDataTransfer({
+			spaceId,
+			dataTransfer,
+			readonly,
+			signal: controller.signal,
+			upload: uploadSpaceEntries,
+			onProgress: (progress) => {
+				if (!disposed) fileUploadProgress = progress;
+			},
+		});
+		if (!disposed && items.length > 0) {
+			dropBoardItems(clientX, clientY, items);
+		}
+	} catch (error) {
+		if (disposed || (error instanceof Error && error.name === "AbortError")) {
+			return;
+		}
+		console.error("[board] Local file upload failed", error);
+		fileUploadError = m.board_upload_failed({}, { locale });
+		fileUploadErrorTimer = setTimeout(() => {
+			fileUploadError = null;
+			fileUploadErrorTimer = null;
+		}, 6000);
+	} finally {
+		fileUploadControllers.delete(controller);
+		activeFileUploads = Math.max(0, activeFileUploads - 1);
+		if (activeFileUploads === 0) fileUploadProgress = null;
+	}
+}
+
 function handleDrop(event: DragEvent) {
+	const kind = boardNativeDropKind(event.dataTransfer?.types, readonly);
+	if (!kind) return;
 	event.preventDefault();
 	dropActive = false;
-	if (readonly) return;
+	if (kind === "local-files") {
+		if (event.dataTransfer) {
+			void handleLocalFileDrop(
+				event.dataTransfer,
+				event.clientX,
+				event.clientY,
+			);
+		}
+		return;
+	}
 
 	const items: BoardDropItem[] = [];
 	const taskItems: BoardTaskDropItem[] = [];
@@ -1461,6 +1633,9 @@ $effect(() => {
 
 onDestroy(() => {
 	disposed = true;
+	if (fileUploadErrorTimer) clearTimeout(fileUploadErrorTimer);
+	for (const controller of fileUploadControllers) controller.abort();
+	fileUploadControllers.clear();
 	window.removeEventListener(
 		SPACE_STYLE_CHANGED_EVENT,
 		handleSpaceStyleChanged,
@@ -1529,19 +1704,43 @@ onDestroy(() => {
 		},
 	}}
 	ondragover={(event) => {
-		if (readonly) return;
-		const types = event.dataTransfer?.types;
-		if (!types) return;
-		// Accept both the rich resource payload and the bare path, so a drag from
-		// anywhere in the workspace (file tree, task tray) lands.
-		if (types.includes("text/cohub-path") || types.includes("application/x-cohub-resource")) {
-			event.preventDefault();
-			dropActive = true;
-		}
+		const kind = boardNativeDropKind(event.dataTransfer?.types, readonly);
+		if (!kind) return;
+		event.preventDefault();
+		if (event.dataTransfer) event.dataTransfer.dropEffect = "copy";
+		dropActive = true;
 	}}
 	ondragleave={() => { dropActive = false; }}
 	ondrop={handleDrop}
 >
+	{#if activeFileUploads > 0}
+		{@const percent = uploadProgressPercent(fileUploadProgress)}
+		<div class="board-upload-notice" role="status" aria-live="polite">
+			<span>
+				{#if !fileUploadProgress || fileUploadProgress.stage === "preparing"}
+					{m.upload_preparing({}, { locale })}
+				{:else if fileUploadProgress.stage === "importing"}
+					{m.upload_finalizing({}, { locale })}
+				{:else}
+					{m.upload_uploading({ percent: percent ?? 100 }, { locale })}
+				{/if}
+			</span>
+			<UploadProgress
+				value={fileUploadProgress?.stage === "uploading" ? percent : null}
+				label={fileUploadProgress?.stage === "importing"
+					? m.upload_finalizing_label({}, { locale })
+					: m.upload_progress_label({}, { locale })}
+			/>
+		</div>
+	{/if}
+	{#if fileUploadError}
+		<div
+			class="board-upload-notice board-upload-notice--error"
+			role="alert"
+		>
+			{fileUploadError}
+		</div>
+	{/if}
 	{#if boardBackdrop && backdropLoadState?.url === boardBackdrop.url && backdropLoadState.status === "ready"}
 		<div
 			aria-hidden="true"
@@ -1571,5 +1770,35 @@ onDestroy(() => {
 		border: 1px solid var(--brand-border);
 		border-radius: 0.75rem;
 		background: color-mix(in srgb, var(--brand-bg) 40%, transparent);
+	}
+
+	.board-upload-notice {
+		position: absolute;
+		top: 0.75rem;
+		left: 50%;
+		z-index: 3;
+		width: min(18rem, calc(100% - 1.5rem));
+		transform: translateX(-50%);
+		overflow: hidden;
+		border: 1px solid var(--border-subtle);
+		border-radius: 0.5rem;
+		background: var(--bg-primary);
+		box-shadow: 0 8px 24px rgb(0 0 0 / 15%);
+		color: var(--text-secondary);
+		font-size: 0.75rem;
+		pointer-events: none;
+	}
+
+	.board-upload-notice > span {
+		display: block;
+		padding: 0.5rem 0.75rem;
+	}
+
+	.board-upload-notice--error {
+		top: 3.5rem;
+		padding: 0.5rem 0.75rem;
+		border-color: color-mix(in srgb, var(--error-soft) 30%, transparent);
+		background: var(--error-bg);
+		color: var(--error-soft);
 	}
 </style>

@@ -1,5 +1,5 @@
 <script lang="ts">
-import { Layers2, Maximize2, Minimize2 } from "lucide-svelte";
+import { Expand, Layers2, Maximize2, Minimize2 } from "lucide-svelte";
 import { onDestroy } from "svelte";
 import { floatNear } from "$lib/actions/portal";
 import { getLocale } from "$lib/i18n/locale.svelte";
@@ -11,6 +11,7 @@ const {
 	size = "md",
 	onToggleFocus,
 	onToggleImmersive,
+	onToggleFullCanvas,
 }: {
 	focused?: boolean;
 	immersive?: boolean;
@@ -18,6 +19,7 @@ const {
 	size?: "md" | "sm";
 	onToggleFocus: () => void | Promise<void>;
 	onToggleImmersive: () => void | Promise<void>;
+	onToggleFullCanvas: () => void | Promise<void>;
 } = $props();
 
 const locale = $derived(getLocale());
@@ -120,11 +122,15 @@ onDestroy(() => {
 				getAnchor: () => rootEl,
 				placement: "bottom-end",
 				gap: 6,
-				width: 132,
+				width: 168,
 				zIndex: 120,
 			}}
 			onpointerdown={(event) => event.stopPropagation()}
 		>
+			<button type="button" class="preview-expand-item" onclick={() => choose(onToggleFullCanvas)} role="menuitem">
+				<Expand class="h-3.5 w-3.5" />
+				<span>{m.preview_full_canvas({}, { locale })}</span>
+			</button>
 			<button type="button" class="preview-expand-item" onclick={() => choose(onToggleFocus)} role="menuitem">
 				<Maximize2 class="h-3.5 w-3.5" />
 				<span>{m.preview_focus({}, { locale })}</span>
@@ -170,7 +176,7 @@ onDestroy(() => {
 	}
 
 	.preview-expand-popover {
-		width: 132px;
+		width: 168px;
 		overflow: hidden;
 		border-radius: 8px;
 		border: 1px solid var(--border-subtle);
