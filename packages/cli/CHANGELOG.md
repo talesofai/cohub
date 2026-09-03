@@ -1,5 +1,20 @@
 # @neta-art/cohub-cli
 
+## 6.5.0
+
+### Minor Changes
+
+- 0cd4d32: Turn browsing now matches the Web session view:
+  
+  - `spaces turns ls --session <sessionId>` lists full turns from one session (the same endpoint the Web session view uses), with `--cursor <sequence>` and `--direction older|newer` pagination.
+  - New `spaces turns intermediate <sessionId> <turnId>` command reads a turn's persisted intermediate messages from its CDN archive; `--json` returns the raw archive without reducing its content blocks.
+
+### Patch Changes
+
+- Updated dependencies [9275e77]
+- Updated dependencies [0cd4d32]
+  - @neta-art/cohub@8.8.0
+
 ## 6.4.0
 
 ### Minor Changes

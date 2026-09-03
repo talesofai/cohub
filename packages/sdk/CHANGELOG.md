@@ -1,5 +1,18 @@
 # @neta-art/cohub
 
+## 8.8.0
+
+### Minor Changes
+
+- 0cd4d32: Turn browsing and intermediate archives in the SDK:
+  
+  - `session.turns.intermediate.get(turnId)` reads a turn's persisted intermediate messages straight from its CDN archive — resolving the messages object key and signed URLs automatically — and `intermediate.getToolCalls(turnId, message)` returns the matching tool calls, extracting them from message content when no archive object exists.
+  - Export the archive shapes `TurnIntermediateMessagesFile`, `MessageToolCallsFile`, `StoredIntermediateMessage`, and `StoredToolCall` for typing archive reads.
+
+### Patch Changes
+
+- 9275e77: Expose the current Cohub shell Space, Session, and viewed Turn through App runtime context and live context change events.
+
 ## 8.7.0
 
 ### Minor Changes
