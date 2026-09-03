@@ -48,6 +48,10 @@ export class SandboxUploadConflictError extends Error {
   override name = "SandboxUploadConflictError";
 }
 
+export class SandboxUploadUnsupportedError extends Error {
+  override name = "SandboxUploadUnsupportedError";
+}
+
 export const sandboxBashQueue = createBullmqQueue<SandboxBashUploadJobData, SandboxBashUploadJobResult>(COHUB_AGENT_TURNS_QUEUE, {
   redisUrl: config.bullmqRedisUrl,
   telemetryServiceName: "cohub-api-sandbox-bash",
@@ -69,8 +73,11 @@ export async function enqueueSandboxUploadFilesJob(input: Omit<SandboxBashUpload
     jobId: input.materialize === "atomic"
       ? `${jobName}-${input.uploadId}`
       : `sandbox-bash-${input.uploadId}`,
-    attempts: input.materialize === "atomic" ? 12 : 2,
-    backoff: { type: "fixed", delay: input.materialize === "atomic" ? 5000 : 1000 },
+    // Capability mismatches are permanent for a running sandbox. The agent
+    // attempts one in-place upgrade; keep queue retries short for old workers
+    // that do not know the atomic job name yet.
+    attempts: 2,
+    backoff: { type: "fixed", delay: 1000 },
     ...defaultJobRetention,
   });
 
@@ -83,6 +90,9 @@ export async function enqueueSandboxUploadFilesJob(input: Omit<SandboxBashUpload
     }
     if (message.startsWith("upload_conflict:")) {
       throw new SandboxUploadConflictError(message.slice("upload_conflict:".length).trim());
+    }
+    if (message.startsWith("sandbox_unsupported:")) {
+      throw new SandboxUploadUnsupportedError(message.slice("sandbox_unsupported:".length).trim());
     }
     throw error;
   }

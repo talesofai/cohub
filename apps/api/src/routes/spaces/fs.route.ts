@@ -51,6 +51,7 @@ import {
   enqueueSandboxUploadFilesJob,
   SandboxUploadConflictError,
   SandboxUploadSizeMismatchError,
+  SandboxUploadUnsupportedError,
 } from "../../sandbox-bash-queue.js";
 import { isAllowedPublicAssetDownloadUrl } from "../../public-asset-storage.js";
 import type {
@@ -603,6 +604,9 @@ router.post("/uploads/:uploadId/complete", async (c) => {
     }
     if (error instanceof SandboxUploadConflictError) {
       return c.json({ code: "upload_conflict", message: "upload target changed while uploading" }, 409);
+    }
+    if (error instanceof SandboxUploadUnsupportedError) {
+      return c.json({ code: "sandbox_unsupported", message: "sandbox must be upgraded before this upload can be completed" }, 503);
     }
     logger.error("[space-fs] failed to complete upload", error, {
       spaceId,

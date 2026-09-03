@@ -5,11 +5,16 @@ import { recordJobFailure } from "@cohub/infra/bullmq";
 import { getAgentTracer, wrapToolCall } from "@cohub/infra/tracing/agent";
 import { SandboxRpcError, type SandboxConnection } from "@cohub/sandbox-client";
 import { createSandboxCodingTools, tracedRpc } from "./sandbox/tools.js";
+import {
+  SANDBOX_UPLOAD_UNSUPPORTED_MESSAGE,
+  sandboxUploadUnsupportedErrorMessage,
+  supportsAtomicUpload,
+} from "./sandbox-upload-capabilities.js";
 import { runWithToolExecutionContext } from "./tool-context.js";
 import { logger } from "./logger.js";
 import { AGENT_SANDBOX_BASH_ATOMIC_JOB_NAME, type AgentSandboxBashUploadJobData } from "./queue.js";
 import { loadSpaceEnvSnapshot } from "./runtime/env-cache.js";
-import { ensureSandboxConnection } from "./sandbox-pool.js";
+import { ensureSandboxConnection, recoverSandboxForUpgrade } from "./sandbox-pool.js";
 
 const SCRIPT_PATH = new URL("./jobs/sandbox-bash/upload-files.sh", import.meta.url);
 const tools = createSandboxCodingTools();
@@ -198,25 +203,40 @@ async function cleanupStagedFiles(spaceId: string, paths: string[]) {
   }
 }
 
-function supportsAtomicMaterialization(connection: SandboxConnection) {
-  return connection.capabilities?.fsWriteSource === true &&
-    connection.capabilities?.fsWriteExpected === true &&
-    connection.capabilities?.fsWriteDisposition === true;
+function throwSandboxUploadUnsupported(): never {
+  throw new UnrecoverableError(sandboxUploadUnsupportedErrorMessage());
 }
 
-async function assertAtomicMaterializationSupport(spaceId: string) {
-  const connection = await ensureSandboxConnection(spaceId);
-  if (!supportsAtomicMaterialization(connection)) {
-    throw new Error("sandbox does not support atomic upload materialization");
+async function ensureAtomicUploadConnection(spaceId: string) {
+  let connection = await ensureSandboxConnection(spaceId);
+  if (supportsAtomicUpload(connection.capabilities)) return connection;
+
+  logger.warn("[SandboxBash] sandbox lacks atomic upload capabilities; requesting upgrade", { spaceId });
+  const recovery = await recoverSandboxForUpgrade(
+    spaceId,
+    "upload_requires_atomic_materialization",
+  );
+  if ((recovery.throttled && !recovery.recovering) || (!recovery.ok && !recovery.recovering)) {
+    throwSandboxUploadUnsupported();
   }
+
+  connection = await ensureSandboxConnection(spaceId, { timeoutMs: 180_000 });
+  if (!supportsAtomicUpload(connection.capabilities)) {
+    logger.error("[SandboxBash] sandbox upgrade did not provide atomic upload capabilities", {
+      spaceId,
+      message: SANDBOX_UPLOAD_UNSUPPORTED_MESSAGE,
+    });
+    throwSandboxUploadUnsupported();
+  }
+  return connection;
 }
 
 async function materializeAtomicUpload(data: AgentSandboxBashUploadJobData, output: string): Promise<UploadedFile[]> {
   const staged = parseStagedLines(output, data);
   const sources = staged.map((item) => item.sourcePath);
   const connection = await ensureSandboxConnection(data.spaceId);
-  if (!supportsAtomicMaterialization(connection)) {
-    throw new Error("sandbox does not support atomic upload materialization");
+  if (!supportsAtomicUpload(connection.capabilities)) {
+    throwSandboxUploadUnsupported();
   }
 
   const uploaded: UploadedFile[] = [];
@@ -265,7 +285,7 @@ export async function processSandboxBashJob(job: Job<AgentSandboxBashUploadJobDa
     throw new UnrecoverableError("upload_conflict: upload target version is unavailable");
   }
   if (data.materialize === "atomic") {
-    await assertAtomicMaterializationSupport(data.spaceId);
+    await ensureAtomicUploadConnection(data.spaceId);
   }
 
   const bashTool = tools.find((tool) => tool.name === "bash");
