@@ -1,5 +1,11 @@
 # @neta-art/cohub
 
+## 8.9.0
+
+### Minor Changes
+
+- c59bc31: Add published App Actions backed by existing Run Command Task Runs, with owner-funded execution, viewer-scoped App Commerce access, and private owner diagnostics.
+
 ## 8.8.0
 
 ### Minor Changes

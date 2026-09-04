@@ -1,5 +1,16 @@
 # @neta-art/cohub-cli
 
+## 6.6.0
+
+### Minor Changes
+
+- c59bc31: Add published App Actions backed by existing Run Command Task Runs, with owner-funded execution, viewer-scoped App Commerce access, and private owner diagnostics.
+
+### Patch Changes
+
+- Updated dependencies [c59bc31]
+  - @neta-art/cohub@8.9.0
+
 ## 6.5.0
 
 ### Minor Changes
