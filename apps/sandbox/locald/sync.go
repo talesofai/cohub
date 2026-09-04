@@ -425,13 +425,7 @@ func (d *Daemon) syncReplica(ctx context.Context, replica *ReplicaState) error {
 	if manifest.Version != 1 || manifest.PolicyVersion < 1 {
 		return errors.New("remote workspace manifest version is unsupported")
 	}
-	manifestTreeRaw := mustJSON(map[string]any{
-		"scanPolicyHash":   manifest.ScanPolicyHash,
-		"entries":          manifest.Entries,
-		"boundaries":       manifest.Boundaries,
-		"portableGitState": manifest.PortableGitState,
-	})
-	manifestTreeHash, _, err := CanonicalHash(manifestTreeRaw)
+	manifestTreeHash, err := remoteManifestTreeHash(manifestRaw)
 	if err != nil {
 		return fmt.Errorf("hash remote workspace tree: %w", err)
 	}
@@ -941,6 +935,39 @@ func (d *Daemon) resolveManifest(ctx context.Context, snapshot remoteSnapshot) (
 		return nil, errors.New("remote workspace snapshot has no manifest")
 	}
 	return d.download(ctx, snapshot.ManifestDownload.DownloadURL, syncManifestMaxBytes, "", 0)
+}
+
+// Preserve manifest field presence while hashing. Re-encoding remoteEntry would
+// drop semantically meaningful false values such as executable=false.
+func remoteManifestTreeHash(raw []byte) (string, error) {
+	var fields map[string]json.RawMessage
+	if err := json.Unmarshal(raw, &fields); err != nil {
+		return "", err
+	}
+	for _, key := range []string{"scanPolicyHash", "entries"} {
+		if len(fields[key]) == 0 {
+			return "", fmt.Errorf("remote manifest is missing %s", key)
+		}
+	}
+	boundaries := fields["boundaries"]
+	if len(boundaries) == 0 {
+		boundaries = json.RawMessage(`[]`)
+	}
+	portableGitState := fields["portableGitState"]
+	if len(portableGitState) == 0 {
+		portableGitState = json.RawMessage(`null`)
+	}
+	treeRaw, err := json.Marshal(map[string]json.RawMessage{
+		"scanPolicyHash":   fields["scanPolicyHash"],
+		"entries":          fields["entries"],
+		"boundaries":       boundaries,
+		"portableGitState": portableGitState,
+	})
+	if err != nil {
+		return "", err
+	}
+	hash, _, err := CanonicalHash(treeRaw)
+	return hash, err
 }
 
 func (d *Daemon) refreshAccessToken(ctx context.Context) error {

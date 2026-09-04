@@ -26,8 +26,10 @@ import { db } from "./db.js";
 import { env, isLocalAcpProviderRolloutEnabled } from "./env.js";
 import { logger } from "./logger.js";
 import { persistAssistantMessage, persistUserMessage, failSessionTurn } from "./persistence.js";
+import { appendLocalAcpAssistantMessages, appendLocalAcpUserMessage, openLocalAcpSession, type LocalAcpAssistantTranscriptInput, type LocalAcpTranscriptInput } from "./local-acp-transcript.js";
 import { registerActiveAbortHandle } from "./active-turns.js";
 import { sendOutput } from "./redis.js";
+import type { SessionManager } from "./runtime/local-session-manager.js";
 
 const ACP_PROTOCOL_VERSION = 1;
 const CONNECT_TIMEOUT_MS = 15_000;
@@ -1132,8 +1134,13 @@ export async function processLocalAcpTurn(input: { attemptId: string }) {
     throw error;
   }
   let establishedConnection: RuntimeConnection | null = null;
+  let sessionManager: SessionManager | null = null;
   try {
     establishedConnection = await ensureRuntimeSession(runtime, runtime.connectionEpoch, turn.sessionId);
+    if (establishedConnection.activeTurn) {
+      await failLocalAcpAttempt({ attemptId: attempt.id, spaceId: attempt.spaceId, turnId: turn.id, message: "local ACP runtime already has an active turn", errorCode: "local_acp_concurrency" });
+      throw new Error("local ACP runtime already has an active turn");
+    }
     await db.transaction(async (tx) => {
       const [existing] = await tx.select().from(localAgentRuntimeSessions).where(eq(localAgentRuntimeSessions.id, establishedConnection?.runtimeSessionId ?? "")).for("update").limit(1);
       if (!existing) throw new Error("local ACP runtime session disappeared");
@@ -1143,11 +1150,28 @@ export async function processLocalAcpTurn(input: { attemptId: string }) {
         await tx.update(localAgentRuntimeSessions).set({ cohubSessionId: turn.sessionId, updatedAt: new Date() }).where(eq(localAgentRuntimeSessions.id, existing.id));
       }
     });
+    sessionManager = await openLocalAcpSession(attempt.spaceId, turn.sessionId);
+    const transcriptBase: LocalAcpTranscriptInput = {
+      spaceId: attempt.spaceId,
+      sessionId: turn.sessionId,
+      turnId: turn.id,
+      executionAttemptId: attempt.id,
+      userMessageId,
+      startedAt: turn.startedAt?.toISOString() ?? new Date().toISOString(),
+    };
+    const userEntryId = appendLocalAcpUserMessage(
+      sessionManager,
+      transcriptBase,
+      turn.userContent,
+      { ...meta, runtimeId: runtime.id, executorKind: "local_acp" },
+    );
+    await sessionManager.flush();
     await persistUserMessage({
       spaceId: attempt.spaceId,
       sessionId: turn.sessionId,
       userMessageId,
       turnId: turn.id,
+      agentSessionEntryId: userEntryId,
       content: turn.userContent,
       meta: { ...meta, runtimeId: runtime.id, executorKind: "local_acp" },
     });
@@ -1163,15 +1187,17 @@ export async function processLocalAcpTurn(input: { attemptId: string }) {
       eq(localAgentRuntimeSessions.status, "active"),
     )).catch(() => undefined);
     await setLocalAcpRuntimeStatus({ runtimeId: runtime.id, connectionEpoch: runtime.connectionEpoch, status: "error", error: message }).catch(() => undefined);
+    await sessionManager?.close().catch(() => undefined);
+    sessionManager = null;
     establishedConnection?.acp.close();
     throw error;
   }
-  if (!establishedConnection) throw new Error("local ACP runtime connection was not established");
-  const connection = establishedConnection;
-  if (connection.activeTurn) {
-    await failLocalAcpAttempt({ attemptId: attempt.id, spaceId: attempt.spaceId, turnId: turn.id, message: "local ACP runtime already has an active turn", errorCode: "local_acp_concurrency" });
-    throw new Error("local ACP runtime already has an active turn");
+  if (!establishedConnection) {
+    await sessionManager?.close().catch(() => undefined);
+    sessionManager = null;
+    throw new Error("local ACP runtime connection was not established");
   }
+  const connection = establishedConnection;
   const stateForTurn: LocalAcpTurnState = {
     runtimeId: runtime.id,
     spaceId: attempt.spaceId,
@@ -1354,6 +1380,47 @@ export async function processLocalAcpTurn(input: { attemptId: string }) {
     syncToolBlocks(stateForTurn);
     const responseIsAborted = mapStopReason(response.stopReason) === "aborted";
     const responseIsError = response.stopReason === "error" || (!responseIsAborted && stateForTurn.content.length === 0);
+    if (!sessionManager) throw new Error("local ACP session JSONL manager is unavailable");
+    const assistantMessage = {
+      id: stateForTurn.assistantMessageId,
+      role: "assistant",
+      content: stateForTurn.content,
+      provider: runtime.provider,
+      model: stateForTurn.model,
+      stopReason: mapStopReason(response.stopReason),
+      errorMessage: responseIsError
+        ? typeof response.message === "string" && response.message.trim()
+          ? response.message
+          : "The local ACP provider returned no assistant content."
+        : null,
+      usage: stateForTurn.usage,
+      meta: {
+        messageKind: responseIsError ? "assistant_error" : "assistant_final",
+        runtimeId: runtime.id,
+        acpSessionId: connection.acpSessionId,
+        executionAttemptId: attempt.id,
+        commandId: stateForTurn.commandId,
+      },
+    } as Record<string, unknown> & { sessionEntryId?: string };
+    const assistantTranscript: LocalAcpAssistantTranscriptInput = {
+      spaceId: attempt.spaceId,
+      sessionId: turn.sessionId,
+      turnId: turn.id,
+      executionAttemptId: attempt.id,
+      userMessageId,
+      startedAt: stateForTurn.startedAt,
+      assistantMessageId: stateForTurn.assistantMessageId,
+      content: stateForTurn.content,
+      provider: runtime.provider,
+      model: stateForTurn.model,
+      stopReason: mapStopReason(response.stopReason),
+      usage: stateForTurn.usage,
+      messageKind: responseIsError ? "assistant_error" : "assistant_final",
+      errorMessage: typeof assistantMessage.errorMessage === "string" ? assistantMessage.errorMessage : null,
+      completedAt: completionAt,
+    };
+    assistantMessage.sessionEntryId = appendLocalAcpAssistantMessages(sessionManager, assistantTranscript);
+    await sessionManager.flush();
     await persistAssistantMessage({
       spaceId: attempt.spaceId,
       spaceSessionId: turn.sessionId,
@@ -1363,31 +1430,7 @@ export async function processLocalAcpTurn(input: { attemptId: string }) {
       startedAt: stateForTurn.startedAt,
       completedAt: completionAt,
       messageOrdinal: 0,
-      event: {
-        type: "turn_end",
-        message: {
-          id: stateForTurn.assistantMessageId,
-          role: "assistant",
-          content: stateForTurn.content,
-          provider: runtime.provider,
-          model: stateForTurn.model,
-          stopReason: mapStopReason(response.stopReason),
-          errorMessage: responseIsError
-            ? typeof response.message === "string" && response.message.trim()
-              ? response.message
-              : "The local ACP provider returned no assistant content."
-            : null,
-          usage: stateForTurn.usage,
-          meta: {
-            messageKind: responseIsError ? "assistant_error" : "assistant_final",
-            runtimeId: runtime.id,
-            acpSessionId: connection.acpSessionId,
-            executionAttemptId: attempt.id,
-            commandId: stateForTurn.commandId,
-          },
-        },
-        toolResults: [],
-      },
+      event: { type: "turn_end", message: assistantMessage, toolResults: [] },
     });
     if (leaseLost) throw leaseLost;
     await markLocalAcpTranscriptSealed(attempt.id);
@@ -1426,6 +1469,9 @@ export async function processLocalAcpTurn(input: { attemptId: string }) {
     if (cancelTimer) clearTimeout(cancelTimer);
     await Promise.resolve(heartbeatInFlight).catch(() => undefined);
     unregisterAbortHandle();
+    await sessionManager?.close().catch((closeError) => {
+      logger.warn("[LocalACP] session JSONL close failed", { sessionId: turn.sessionId, error: closeError });
+    });
   }
 }
 
