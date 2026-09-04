@@ -182,8 +182,8 @@ importers:
         specifier: ^2.0.0
         version: 2.0.0
       '@neta-art/generation':
-        specifier: ^0.1.24
-        version: 0.1.24
+        specifier: ^0.1.25
+        version: 0.1.25
       '@opentelemetry/api':
         specifier: ^1.9.1
         version: 1.9.1
@@ -549,8 +549,8 @@ importers:
         specifier: ^2.0.0
         version: 2.0.0
       '@neta-art/generation':
-        specifier: ^0.1.24
-        version: 0.1.24
+        specifier: ^0.1.25
+        version: 0.1.25
       '@opentelemetry/api':
         specifier: ^1.9.1
         version: 1.9.1
@@ -639,8 +639,8 @@ importers:
         specifier: workspace:*
         version: link:../sdk
       '@neta-art/generation':
-        specifier: ^0.1.24
-        version: 0.1.24
+        specifier: ^0.1.25
+        version: 0.1.25
       commander:
         specifier: ^15.0.0
         version: 15.0.0
@@ -728,8 +728,8 @@ importers:
         specifier: ^2.1.0
         version: 2.1.0(@opentelemetry/api@1.9.1)(drizzle-orm@0.45.2(@cloudflare/workers-types@4.20260702.1)(@opentelemetry/api@1.9.1)(kysely@0.28.17)(postgres@3.4.9))
       '@neta-art/generation':
-        specifier: ^0.1.24
-        version: 0.1.24
+        specifier: ^0.1.25
+        version: 0.1.25
       '@opentelemetry/api':
         specifier: ^1.9.1
         version: 1.9.1
@@ -799,8 +799,8 @@ importers:
   packages/protocol:
     dependencies:
       '@neta-art/generation':
-        specifier: ^0.1.24
-        version: 0.1.24
+        specifier: ^0.1.25
+        version: 0.1.25
       zod:
         specifier: ^4.5.4
         version: 4.5.4
@@ -3149,8 +3149,8 @@ packages:
     os: [linux]
     libc: [glibc]
 
-  '@neta-art/generation@0.1.24':
-    resolution: {integrity: sha512-hIvmfyrQwk8tzHdF5p56F9E5AQfIdE+s2r3+olOtmruNboggqctT/FtEfvC1XP4p2XqEdYqW5wwtR4c5CwHoJw==}
+  '@neta-art/generation@0.1.25':
+    resolution: {integrity: sha512-ndtQEuUis8E6UHjxx55r8n3+YWHTFKoyOc2nkk60zajdO3mmFujLDaAp+XEkAoZnD77616CvwJq1CzMR2QzhRw==}
     engines: {node: '>=20.0.0'}
     hasBin: true
 
@@ -8325,7 +8325,7 @@ snapshots:
     dependencies:
       '@cohub/protocol': file:packages/protocol
       '@kubiks/otel-drizzle': 2.1.0(@opentelemetry/api@1.9.1)(drizzle-orm@0.45.2(@cloudflare/workers-types@4.20260702.1)(@opentelemetry/api@1.9.1)(kysely@0.28.17)(postgres@3.4.9))
-      '@neta-art/generation': 0.1.24
+      '@neta-art/generation': 0.1.25
       '@opentelemetry/api': 1.9.1
       '@opentelemetry/exporter-trace-otlp-proto': 0.222.0(@opentelemetry/api@1.9.1)
       '@opentelemetry/instrumentation': 0.222.0(@opentelemetry/api@1.9.1)
@@ -8348,7 +8348,7 @@ snapshots:
 
   '@cohub/protocol@file:packages/protocol':
     dependencies:
-      '@neta-art/generation': 0.1.24
+      '@neta-art/generation': 0.1.25
       zod: 4.5.4
 
   '@cspotcode/source-map-support@0.8.1':
@@ -9337,7 +9337,7 @@ snapshots:
   '@napi-rs/lzma-linux-x64-gnu@1.5.1':
     optional: true
 
-  '@neta-art/generation@0.1.24':
+  '@neta-art/generation@0.1.25':
     dependencies:
       yaml: 2.9.0
 
