@@ -267,7 +267,10 @@ func (s *acpRuntimeServer) ServeDialedConn(parent context.Context, conn *websock
 	command := strings.TrimSpace(s.options.ProviderCommand)
 	cmd := exec.CommandContext(ctx, command, s.options.ProviderArgs...)
 	cmd.Dir = s.options.WorkspaceDir
-	cmd.Env = sanitizedRuntimeEnvironment(os.Environ())
+	// The provider is the user's own agent. It inherits the shell environment
+	// unchanged; protecting local secrets is the user's responsibility, as it is
+	// when they run the provider directly.
+	cmd.Env = os.Environ()
 	configureAcpProviderProcess(cmd)
 	stdin, err := cmd.StdinPipe()
 	if err != nil {
@@ -697,46 +700,6 @@ func copyRuntimeStderr(logger *slog.Logger, input io.Reader, remote string) {
 			logger.Debug("ACP provider stderr", slog.String("remote", remote), slog.String("line", line))
 		}
 	}
-}
-
-// Environment prefixes and names that belong to Cohub services or their
-// integrations. A provider adapter runs as the user's own agent and must not
-// inherit any of them, even from a developer shell that happens to export them.
-var cohubEnvPrefixes = []string{
-	"COHUB_", "WORKER_", "GATEWAY_", "AGENT_", "LOCAL_ACP_", "LOCAL_SANDBOX_", "LOCAL_AGENT_",
-	"INTERNAL_API_", "SANDBOX_", "LOGTO_", "TALESOFAI_", "GITEA_", "GENERATION_",
-	"TURN_OBJECT_", "WORKSPACE_OBJECT_", "PUBLIC_ASSET_", "USER_UPLOAD_", "CHAT_ATTACHMENT_",
-	"SPACE_UPLOAD_", "VOLC_", "DEBUG_DISCORD_", "DEBUG_TELEGRAM_", "DEBUG_FEISHU_",
-}
-
-var cohubEnvNames = map[string]struct{}{
-	"API_BASE_URL": {}, "DATABASE_URL": {}, "REDIS_URL": {}, "BULLMQ_REDIS_URL": {},
-	"WORKSPACE_ROOT": {}, "CHECKPOINT_CACHE_ROOT": {}, "SESSIONS_DIR": {}, "PLATFORM_CONFIG_ROOT": {},
-	"SESSIONS_NAMESPACE": {}, "APP_ENCRYPTION_KEY": {}, "LITELLM_API_KEY": {}, "AUTH_BASE_URL": {},
-	"AUTH_RESOURCE": {}, "WEB_ORIGIN": {}, "ROUTER_STATUS_URL": {}, "KUBECONFIG": {},
-}
-
-func sanitizedRuntimeEnvironment(input []string) []string {
-	result := make([]string, 0, len(input))
-	for _, entry := range input {
-		key, _, _ := strings.Cut(entry, "=")
-		upperKey := strings.ToUpper(key)
-		if _, denied := cohubEnvNames[upperKey]; denied {
-			continue
-		}
-		denied := false
-		for _, prefix := range cohubEnvPrefixes {
-			if strings.HasPrefix(upperKey, prefix) {
-				denied = true
-				break
-			}
-		}
-		if denied {
-			continue
-		}
-		result = append(result, entry)
-	}
-	return result
 }
 
 func rewriteAcpPaths(value map[string]any, workspaceDir string) map[string]any {

@@ -158,34 +158,6 @@ func TestRewriteAcpPathsPreservesLogicalWorkspacePaths(t *testing.T) {
 	}
 }
 
-func TestSanitizedRuntimeEnvironmentRemovesCohubCredentials(t *testing.T) {
-	input := []string{
-		"PATH=/usr/bin",
-		"COHUB_API_URL=https://api.example.test",
-		"COHUB_RUNTIME_TOKEN=secret",
-		"COHUB_LOCAL_AGENT_ACCESS_TOKEN=secret",
-		"COHUB_UNLISTED_INTERNAL_VALUE=secret",
-		"WORKER_SECRET=secret",
-		"AGENT_WORKER_CONCURRENCY=8",
-		"LOCAL_ACP_RUNTIME_RELAY_URL=ws://internal",
-		"LOCAL_SANDBOX_SPACE_ID=space",
-		"WORKSPACE_ROOT=/space-storage",
-		"DATABASE_URL=postgres://internal",
-		"GITEA_TOKEN=secret",
-		"GENERATION_API_KEY=secret",
-		"LOGTO_M2M_APP_SECRET=secret",
-		"TALESOFAI_BILLING_ADMIN_API_KEY=secret",
-		"WORKSPACE_OBJECT_SECRET_ACCESS_KEY=secret",
-		"USER_UPLOAD_S3_SECRET_ACCESS_KEY=secret",
-		"OPENAI_API_KEY=kept-for-provider",
-		"PROVIDER_SETTING=kept",
-	}
-	filtered := sanitizedRuntimeEnvironment(input)
-	if len(filtered) != 3 || filtered[0] != "PATH=/usr/bin" || filtered[1] != "OPENAI_API_KEY=kept-for-provider" || filtered[2] != "PROVIDER_SETTING=kept" {
-		t.Fatalf("unexpected provider environment: %#v", filtered)
-	}
-}
-
 func TestAcpRequestIDsKeepJSONTypesDistinct(t *testing.T) {
 	if acpRequestIDKey(float64(1)) == acpRequestIDKey("1") {
 		t.Fatal("numeric and string ACP request ids must not collide")
