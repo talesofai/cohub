@@ -38,7 +38,7 @@ while IFS= read -r line; do
       fi
       ;;
     *'"method":"session/prompt"'*)
-      if printf '%s' "$line" | grep -q 'cohubExecutionAttemptId'; then
+      if printf '%s' "$line" | grep -Eq 'cohubExecutionAttemptId|mcpServers|additionalDirectories'; then
         printf '%s\n' '{"jsonrpc":"2.0","id":3,"error":{"code":-32000,"message":"Cohub metadata leaked to provider"}}'
       else
         printf '%s\n' '{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"acp-session-1","update":{"sessionUpdate":"agent_message_chunk","messageId":"message-1","content":{"type":"text","text":"fixture response"}}}}'
@@ -131,8 +131,10 @@ done
 		"id":      3,
 		"method":  "session/prompt",
 		"params": map[string]any{
-			"sessionId": "acp-session-1",
-			"prompt":    []any{map[string]any{"type": "text", "text": "hello"}},
+			"sessionId":             "acp-session-1",
+			"prompt":                []any{map[string]any{"type": "text", "text": "hello"}},
+			"mcpServers":            []any{map[string]any{"name": "leak"}},
+			"additionalDirectories": []any{"/tmp"},
 			"_meta": map[string]any{
 				"cohubRuntimeId":          serverRuntimeID,
 				"cohubSpaceId":            spaceID,

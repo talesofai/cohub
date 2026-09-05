@@ -278,6 +278,16 @@ export function handleRuntimePeerConnection(socket: WebSocket, request: Incoming
     closeSocket(socket, 4404, "local ACP runtime is not connected");
     return;
   }
+  // One runtime drives one provider process over one channel. A second peer
+  // (a retrying worker, or a second worker racing for the same runtime) must
+  // not open a parallel provider against the same local replica; refuse it so
+  // the Agent side fails fast instead of the provider running twice.
+  const activePairs = dataPairsByRuntime.get(runtimeId);
+  const hasPendingPeer = [...pendingPeers.values()].some((pending) => pending.runtimeId === runtimeId);
+  if ((activePairs && activePairs.size > 0) || hasPendingPeer) {
+    closeSocket(socket, 4409, "local ACP runtime already has an active channel");
+    return;
+  }
 
   const channelId = globalThis.crypto.randomUUID();
   const timer = setTimeout(() => {

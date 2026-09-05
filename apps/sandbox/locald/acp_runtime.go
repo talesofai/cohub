@@ -47,6 +47,10 @@ type acpRuntimeServer struct {
 	finalizer      *Daemon
 	attemptMu      sync.Mutex
 	activeAttempts map[string]struct{}
+	// channelMu serializes provider channels. One runtime owns one local
+	// replica and one native session journal, so a second data channel must
+	// wait for the first provider process to exit rather than run beside it.
+	channelMu sync.Mutex
 }
 
 // RunAcpRuntime keeps a local provider ACP adapter connected to the Gateway
@@ -212,6 +216,31 @@ func RunAcpRuntime(ctx context.Context, options AcpRuntimeOptions) error {
 	return nil
 }
 
+// acquireChannel takes the provider channel lock, giving up when the parent
+// context ends so a shutdown never blocks behind a stuck channel.
+func (s *acpRuntimeServer) acquireChannel(ctx context.Context) bool {
+	acquired := make(chan struct{})
+	go func() {
+		s.channelMu.Lock()
+		close(acquired)
+	}()
+	select {
+	case <-acquired:
+		if ctx.Err() != nil {
+			s.channelMu.Unlock()
+			return false
+		}
+		return true
+	case <-ctx.Done():
+		// Release the lock whenever the goroutine eventually obtains it.
+		go func() {
+			<-acquired
+			s.channelMu.Unlock()
+		}()
+		return false
+	}
+}
+
 func defaultAcpProviderCommand(provider string) string {
 	switch strings.ToLower(strings.TrimSpace(provider)) {
 	case "pi":
@@ -226,6 +255,11 @@ func defaultAcpProviderCommand(provider string) string {
 }
 
 func (s *acpRuntimeServer) ServeDialedConn(parent context.Context, conn *websocket.Conn, remote string) {
+	if !s.acquireChannel(parent) {
+		_ = conn.Close(websocket.StatusTryAgainLater, "runtime already has an active provider channel")
+		return
+	}
+	defer s.channelMu.Unlock()
 	ctx, cancel := context.WithCancel(parent)
 	defer cancel()
 	defer conn.Close(websocket.StatusNormalClosure, "runtime session closed")
@@ -597,7 +631,11 @@ func forwardAcpStdin(ctx context.Context, conn *websocket.Conn, input io.Writer,
 			}
 			// The binding metadata is for locald's fencing decision only. Never
 			// expose Cohub identifiers to the provider or its native journal.
+			// Cohub does not register MCP servers or widen the provider's
+			// filesystem scope on any method, including the prompt.
 			delete(params, "_meta")
+			delete(params, "mcpServers")
+			delete(params, "additionalDirectories")
 			value["params"] = params
 			promptMu.Lock()
 			pending[acpRequestIDKey(id)] = ref

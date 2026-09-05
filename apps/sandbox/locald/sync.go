@@ -390,6 +390,14 @@ func (d *Daemon) syncReplica(ctx context.Context, replica *ReplicaState) error {
 	if state.Workspace.Status != "ready" && state.Workspace.Status != "syncing" {
 		return fmt.Errorf("workspace is not ready: %s", state.Workspace.Status)
 	}
+	// Under one_way_to_cloud the local tree is authoritative: cloud snapshots
+	// are never applied to disk. A canonical pointer that moved past the local
+	// applied snapshot means a cloud-side writer changed the tree; surface the
+	// local tree as the next candidate instead of pulling the cloud version
+	// over local edits.
+	if state.IntegrationPolicy.WorkspaceMode == "one_way_to_cloud" && replica.AppliedSnapshotID != "" {
+		return d.uploadLocalCandidate(ctx, replica, state, "")
+	}
 	snapshotBody, err := d.getJSON(ctx, fmt.Sprintf("%s/api/local-agent/spaces/%s/replicas/%s/snapshots/%s", d.apiBaseURL(), replica.SpaceID, replica.ReplicaID, canonicalID))
 	if err != nil {
 		return err
