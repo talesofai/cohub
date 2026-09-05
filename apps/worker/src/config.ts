@@ -114,7 +114,14 @@ export const config: WorkerConfig = {
   workspaceObjectBucket: process.env.WORKSPACE_OBJECT_BUCKET ?? process.env.SPACE_UPLOAD_S3_BUCKET,
   workspaceObjectAccessKeyId: process.env.WORKSPACE_OBJECT_ACCESS_KEY_ID ?? process.env.USER_UPLOAD_S3_ACCESS_KEY_ID,
   workspaceObjectSecretAccessKey: process.env.WORKSPACE_OBJECT_SECRET_ACCESS_KEY ?? process.env.USER_UPLOAD_S3_SECRET_ACCESS_KEY,
-  workspaceReplicationEnabled: parseBoolean(process.env.WORKSPACE_REPLICATION_ENABLED, env === "dev", "WORKSPACE_REPLICATION_ENABLED"),
+  // Replication needs private object storage. In dev it turns on by itself
+  // only when that storage is configured, so a checkout that follows
+  // .env.example still starts. Setting the flag explicitly is always honored.
+  workspaceReplicationEnabled: parseBoolean(
+    process.env.WORKSPACE_REPLICATION_ENABLED,
+    env === "dev" && Boolean((process.env.WORKSPACE_OBJECT_ENDPOINT ?? process.env.USER_UPLOAD_S3_ENDPOINT) && (process.env.WORKSPACE_OBJECT_BUCKET ?? process.env.SPACE_UPLOAD_S3_BUCKET) && (process.env.WORKSPACE_OBJECT_ACCESS_KEY_ID ?? process.env.USER_UPLOAD_S3_ACCESS_KEY_ID) && (process.env.WORKSPACE_OBJECT_SECRET_ACCESS_KEY ?? process.env.USER_UPLOAD_S3_SECRET_ACCESS_KEY)),
+    "WORKSPACE_REPLICATION_ENABLED",
+  ),
 };
 
 export const assertRequiredConfig = () => {

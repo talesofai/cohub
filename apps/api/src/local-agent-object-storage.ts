@@ -1,4 +1,5 @@
-import { HeadObjectCommand, S3Client } from "@aws-sdk/client-s3";
+import { createHash } from "node:crypto";
+import { GetObjectCommand, HeadObjectCommand, S3Client } from "@aws-sdk/client-s3";
 import { createPresignedGetObjectUrl, createPresignedPutObjectUrl, type PresignStorageConfig } from "./object-presign.js";
 import { config } from "./config.js";
 
@@ -106,4 +107,38 @@ export async function headLocalAgentObject(objectKey: string): Promise<{
     etag: result.ETag?.replace(/^"|"$/g, "") ?? null,
     contentType: result.ContentType ?? null,
   };
+}
+
+/**
+ * Verify that an uploaded object has exactly the declared size and SHA-256.
+ * Prefer the checksum the store recorded at upload time (the presigned PUT
+ * pinned `x-amz-checksum-sha256`); fall back to streaming the bytes when the
+ * store does not return one. Never trust size alone: a wrong-content object of
+ * the right length would otherwise become a permanently reusable blob.
+ */
+export async function verifyLocalAgentObject(input: { objectKey: string; expectedSize: number; expectedSha256: string }): Promise<void> {
+  const { client: s3, storage } = getClient();
+  const key = assertObjectKey(input.objectKey);
+  const head = await s3.send(new HeadObjectCommand({ Bucket: storage.bucket, Key: key, ChecksumMode: "ENABLED" }));
+  if (head.ContentLength !== input.expectedSize) {
+    throw new LocalAgentObjectStorageError(`object size ${head.ContentLength ?? "unknown"} does not match ${input.expectedSize}`);
+  }
+  const recorded = head.ChecksumSHA256?.trim();
+  if (recorded) {
+    const expectedBase64 = Buffer.from(input.expectedSha256, "hex").toString("base64");
+    if (recorded === expectedBase64) return;
+    throw new LocalAgentObjectStorageError("object checksum does not match the declared sha256");
+  }
+  const response = await s3.send(new GetObjectCommand({ Bucket: storage.bucket, Key: key }));
+  if (!response.Body) throw new LocalAgentObjectStorageError("object has no body");
+  const hash = createHash("sha256");
+  let size = 0;
+  for await (const chunk of response.Body as unknown as AsyncIterable<Uint8Array>) {
+    size += chunk.byteLength;
+    if (size > input.expectedSize) throw new LocalAgentObjectStorageError("object exceeds its declared size");
+    hash.update(chunk);
+  }
+  if (size !== input.expectedSize || hash.digest("hex") !== input.expectedSha256) {
+    throw new LocalAgentObjectStorageError("object content does not match the declared sha256");
+  }
 }

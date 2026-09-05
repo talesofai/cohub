@@ -139,16 +139,24 @@ export async function scanWorkspaceReplica(rootInput: string, policy: WorkspaceS
   const entries: Array<WorkspaceManifestEntry & { absPath?: string }> = [];
   const files: Array<{ entryIndex: number; absPath: string }> = [];
   const warnings: WorkspaceScanWarning[] = [];
+  const omitted: string[] = [];
+  const listings = new Map<string, string>();
   let ignoredCount = 0;
   let totalBytes = 0;
   let mutationGeneration = 0;
   const readGeneration = () => mutationGeneration;
   const startGeneration = readGeneration();
 
-  const walk = async (directory: string): Promise<void> => {
+  const listDirectory = async (directory: string) => {
     const names = await readdir(directory).catch((error) => {
       throw new WorkspaceScanError(`Unable to enumerate managed directory ${normalizeSlash(relative(root, directory)) || "."}: ${error instanceof Error ? error.message : String(error)}`, "scan_incomplete", [normalizeSlash(relative(root, directory)) || "."]);
     });
+    return names.sort();
+  };
+
+  const walk = async (directory: string): Promise<void> => {
+    const names = await listDirectory(directory);
+    listings.set(directory, names.join("\0"));
     for (const name of names) {
       const absPath = join(directory, name);
       const relRaw = normalizeSlash(relative(root, absPath));
@@ -168,6 +176,7 @@ export async function scanWorkspaceReplica(rootInput: string, policy: WorkspaceS
       }
       if (sensitivePath(rel) && (policy.sensitiveContentMode ?? "exclude_with_warning") === "exclude_with_warning") {
         warnings.push({ path: rel, type: "sensitive", reason: "sensitive_content_policy" });
+        omitted.push(rel);
         ignoredCount += 1;
         continue;
       }
@@ -193,16 +202,27 @@ export async function scanWorkspaceReplica(rootInput: string, policy: WorkspaceS
         const resolvedTarget = resolve(dirname(absPath), target);
         if (!target || isAbsolute(target) || !isInside(root, resolvedTarget)) {
           warnings.push({ path: rel, type: "unsupported", reason: "unsafe_symlink_target" });
+          omitted.push(rel);
           continue;
         }
         entries.push({ path: rel, type: "symlink", symlinkTarget: normalizeSlash(target) });
         continue;
       }
       warnings.push({ path: rel, type: "unsupported", reason: "unsupported_file_type" });
+      omitted.push(rel);
     }
   };
 
   await walk(root);
+  // Re-list every directory after the walk. A file created or removed while
+  // the tree was being enumerated would otherwise be silently missing from
+  // the manifest and later read as a deletion by the planner.
+  for (const [directory, before] of listings) {
+    const after = (await listDirectory(directory)).join("\0");
+    if (after !== before) {
+      throw new WorkspaceScanError(`Directory changed during scan: ${normalizeSlash(relative(root, directory)) || "."}`, "workspace_busy", [normalizeSlash(relative(root, directory)) || "."]);
+    }
+  }
   const workers = Math.min(hashWorkers, files.length);
   let nextFile = 0;
   await Promise.all(Array.from({ length: workers }, async () => {
@@ -236,6 +256,7 @@ export async function scanWorkspaceReplica(rootInput: string, policy: WorkspaceS
     entries: cleanEntries.sort(compareManifestEntries),
     boundaries: [],
     portableGitState: null,
+    omitted,
   });
   const canonicalManifest = canonicalizeJson(manifest);
   const manifestSha256 = sha256Text(canonicalManifest);

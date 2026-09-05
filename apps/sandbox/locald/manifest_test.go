@@ -43,6 +43,10 @@ func TestScanWorkspaceIncludesDirectoriesAndRedactsSensitiveFiles(t *testing.T) 
 	if len(result.Warnings) != 1 || result.Warnings[0].Path != ".env" {
 		t.Fatalf("unexpected warnings: %#v", result.Warnings)
 	}
+	omitted, _ := result.Manifest["omitted"].([]string)
+	if len(omitted) != 1 || omitted[0] != ".env" {
+		t.Fatalf("omitted paths were not recorded: %#v", result.Manifest["omitted"])
+	}
 }
 
 func TestScanWorkspaceRejectsWindowsReservedName(t *testing.T) {

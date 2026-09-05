@@ -699,31 +699,39 @@ func copyRuntimeStderr(logger *slog.Logger, input io.Reader, remote string) {
 	}
 }
 
+// Environment prefixes and names that belong to Cohub services or their
+// integrations. A provider adapter runs as the user's own agent and must not
+// inherit any of them, even from a developer shell that happens to export them.
+var cohubEnvPrefixes = []string{
+	"COHUB_", "WORKER_", "GATEWAY_", "AGENT_", "LOCAL_ACP_", "LOCAL_SANDBOX_", "LOCAL_AGENT_",
+	"INTERNAL_API_", "SANDBOX_", "LOGTO_", "TALESOFAI_", "GITEA_", "GENERATION_",
+	"TURN_OBJECT_", "WORKSPACE_OBJECT_", "PUBLIC_ASSET_", "USER_UPLOAD_", "CHAT_ATTACHMENT_",
+	"SPACE_UPLOAD_", "VOLC_", "DEBUG_DISCORD_", "DEBUG_TELEGRAM_", "DEBUG_FEISHU_",
+}
+
+var cohubEnvNames = map[string]struct{}{
+	"API_BASE_URL": {}, "DATABASE_URL": {}, "REDIS_URL": {}, "BULLMQ_REDIS_URL": {},
+	"WORKSPACE_ROOT": {}, "CHECKPOINT_CACHE_ROOT": {}, "SESSIONS_DIR": {}, "PLATFORM_CONFIG_ROOT": {},
+	"SESSIONS_NAMESPACE": {}, "APP_ENCRYPTION_KEY": {}, "LITELLM_API_KEY": {}, "AUTH_BASE_URL": {},
+	"AUTH_RESOURCE": {}, "WEB_ORIGIN": {}, "ROUTER_STATUS_URL": {}, "KUBECONFIG": {},
+}
+
 func sanitizedRuntimeEnvironment(input []string) []string {
 	result := make([]string, 0, len(input))
 	for _, entry := range input {
 		key, _, _ := strings.Cut(entry, "=")
 		upperKey := strings.ToUpper(key)
-		if strings.HasPrefix(upperKey, "COHUB_") ||
-			strings.HasPrefix(upperKey, "WORKER_") ||
-			strings.HasPrefix(upperKey, "GATEWAY_") ||
-			strings.HasPrefix(upperKey, "AGENT_") ||
-			strings.HasPrefix(upperKey, "LOCAL_ACP_") ||
-			strings.HasPrefix(upperKey, "LOCAL_SANDBOX_") ||
-			strings.HasPrefix(upperKey, "LOCAL_AGENT_") ||
-			strings.HasPrefix(upperKey, "INTERNAL_API_") ||
-			strings.HasPrefix(upperKey, "SANDBOX_") ||
-			upperKey == "API_BASE_URL" ||
-			upperKey == "DATABASE_URL" ||
-			upperKey == "REDIS_URL" ||
-			upperKey == "BULLMQ_REDIS_URL" ||
-			upperKey == "WORKSPACE_ROOT" ||
-			upperKey == "CHECKPOINT_CACHE_ROOT" ||
-			upperKey == "SESSIONS_DIR" ||
-			upperKey == "PLATFORM_CONFIG_ROOT" ||
-			upperKey == "SESSIONS_NAMESPACE" ||
-			upperKey == "APP_ENCRYPTION_KEY" ||
-			upperKey == "LITELLM_API_KEY" {
+		if _, denied := cohubEnvNames[upperKey]; denied {
+			continue
+		}
+		denied := false
+		for _, prefix := range cohubEnvPrefixes {
+			if strings.HasPrefix(upperKey, prefix) {
+				denied = true
+				break
+			}
+		}
+		if denied {
 			continue
 		}
 		result = append(result, entry)

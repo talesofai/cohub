@@ -91,6 +91,13 @@ export const WorkspaceManifestSchema = z.object({
   entries: z.array(WorkspaceManifestEntrySchema),
   boundaries: z.array(WorkspaceManifestBoundarySchema).default([]),
   portableGitState: z.record(z.string(), z.unknown()).nullable().default(null),
+  /**
+   * Paths the scanner saw but deliberately did not manage (sensitive content,
+   * sockets, unsafe symlinks). They are excluded from the tree hash. The
+   * planner treats an omitted path as unobserved rather than deleted, so a
+   * replica that cannot see a file never removes it from the other side.
+   */
+  omitted: z.array(z.string().min(1)).default([]),
 }).strict();
 
 export type WorkspaceManifestV1 = z.infer<typeof WorkspaceManifestSchema>;
@@ -239,7 +246,8 @@ export function validateManifest(manifest: WorkspaceManifestV1): WorkspaceManife
   const collisions = detectManifestPathCollisions(normalized);
   if (collisions.length > 0) throw new Error(`path_collision:${collisions[0]?.paths.join(",") ?? "unknown"}`);
   const sorted = [...normalized].sort(compareManifestEntries);
-  return { ...parsed, entries: sorted, boundaries: [...parsed.boundaries].sort((a, b) => compareUtf8Bytes(a.path, b.path)) };
+  const omitted = [...new Set(parsed.omitted.map((path) => normalizedPath(path)))].sort(compareUtf8Bytes);
+  return { ...parsed, entries: sorted, boundaries: [...parsed.boundaries].sort((a, b) => compareUtf8Bytes(a.path, b.path)), omitted };
 }
 
 export function detectManifestPathCollisions(
@@ -277,6 +285,8 @@ export function reconcileWorkspaceManifests(input: {
   const base = manifestMap(input.base);
   const local = manifestMap(input.local);
   const cloud = manifestMap(input.cloud);
+  const localOmitted = new Set(input.local.omitted ?? []);
+  const cloudOmitted = new Set(input.cloud.omitted ?? []);
   const paths = [...new Set([...base.keys(), ...local.keys(), ...cloud.keys()])].sort(compareUtf8Bytes);
   const operations: WorkspaceReconcileOperation[] = [];
   const conflicts: WorkspaceReconcileConflict[] = [];
@@ -286,6 +296,12 @@ export function reconcileWorkspaceManifests(input: {
     const b = base.get(path) ?? null;
     const l = local.get(path) ?? null;
     const c = cloud.get(path) ?? null;
+    // A side that omitted the path did not observe it. Its absence is not a
+    // deletion; leave whatever the other side has in place.
+    if ((l === null && localOmitted.has(path)) || (c === null && cloudOmitted.has(path))) {
+      unchangedPaths.push(path);
+      continue;
+    }
     if (entryEqual(l, c)) {
       unchangedPaths.push(path);
       continue;

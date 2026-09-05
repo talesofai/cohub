@@ -265,12 +265,25 @@ export const config: AppConfig = {
   metaPromotionApiVersion: process.env.COHUB_META_API_VERSION?.trim() || "v21.0",
   metaPromotionClientIpHeader: process.env.COHUB_META_CLIENT_IP_HEADER?.trim().toLowerCase() || undefined,
   metaPromotionTestEventCode: process.env.COHUB_META_TEST_EVENT_CODE?.trim() || undefined,
-  workspaceReplicationEnabled: parseBoolean(process.env.WORKSPACE_REPLICATION_ENABLED, env === "dev", "WORKSPACE_REPLICATION_ENABLED"),
-  localAcpRuntimeEnabled: parseBoolean(process.env.LOCAL_ACP_RUNTIME_ENABLED, env === "dev", "LOCAL_ACP_RUNTIME_ENABLED"),
+  // Replication needs private object storage. In dev it turns on by itself
+  // only when that storage is configured, so a checkout that follows
+  // .env.example still starts. Setting the flag explicitly is always honored.
+  workspaceReplicationEnabled: parseBoolean(
+    process.env.WORKSPACE_REPLICATION_ENABLED,
+    env === "dev" && Boolean((process.env.WORKSPACE_OBJECT_ENDPOINT ?? process.env.USER_UPLOAD_S3_ENDPOINT) && (process.env.WORKSPACE_OBJECT_BUCKET ?? process.env.SPACE_UPLOAD_S3_BUCKET) && (process.env.WORKSPACE_OBJECT_ACCESS_KEY_ID ?? process.env.USER_UPLOAD_S3_ACCESS_KEY_ID) && (process.env.WORKSPACE_OBJECT_SECRET_ACCESS_KEY ?? process.env.USER_UPLOAD_S3_SECRET_ACCESS_KEY)),
+    "WORKSPACE_REPLICATION_ENABLED",
+  ),
+  localAcpRuntimeEnabled: parseBoolean(process.env.LOCAL_ACP_RUNTIME_ENABLED, false, "LOCAL_ACP_RUNTIME_ENABLED"),
   localAcpPiEnabled: parseBoolean(process.env.LOCAL_ACP_PI_ENABLED, env === "dev", "LOCAL_ACP_PI_ENABLED"),
   localAcpClaudeEnabled: parseBoolean(process.env.LOCAL_ACP_CLAUDE_ENABLED, false, "LOCAL_ACP_CLAUDE_ENABLED"),
   localAcpCodexEnabled: parseBoolean(process.env.LOCAL_ACP_CODEX_ENABLED, false, "LOCAL_ACP_CODEX_ENABLED"),
 };
+
+// Local ACP runtimes require replication; default the flag to follow it in dev
+// so an explicit `false` still wins but an unset flag never contradicts it.
+if (process.env.LOCAL_ACP_RUNTIME_ENABLED == null || process.env.LOCAL_ACP_RUNTIME_ENABLED.trim() === "") {
+  config.localAcpRuntimeEnabled = config.env === "dev" && config.workspaceReplicationEnabled;
+}
 
 export const sessionsNamespace = getSessionsNamespace(config.env);
 

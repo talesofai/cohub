@@ -84,6 +84,7 @@ type remoteManifest struct {
 	Entries          []remoteEntry `json:"entries"`
 	Boundaries       []any         `json:"boundaries"`
 	PortableGitState any           `json:"portableGitState"`
+	Omitted          []string      `json:"omitted"`
 }
 
 type remoteEntry struct {
@@ -374,6 +375,11 @@ func (d *Daemon) syncReplica(ctx context.Context, replica *ReplicaState) error {
 				return d.ackApplied(ctx, replica, canonicalID, state.Workspace.Generation)
 			}
 			return nil
+		}
+		// The cloud is authoritative under one_way_to_local, but local edits are
+		// still user data. Keep a recoverable copy before they are replaced.
+		if _, err := d.createInitialRecoveryBackup(replica, current); err != nil {
+			return fmt.Errorf("create one-way-to-local recovery backup: %w", err)
 		}
 		replica.Manifest = current.ManifestBytes
 		forceCloudAuthoritative = true
@@ -1100,6 +1106,55 @@ func (d *Daemon) download(ctx context.Context, url string, maxBytes int64, expec
 	return result, nil
 }
 
+// downloadToFile streams an object to path, verifying size and SHA-256 as the
+// bytes arrive. The file is fsynced and left in place only when verification
+// succeeds; any failure removes the partial file.
+func (d *Daemon) downloadToFile(ctx context.Context, url, path string, expectedSize int64, expectedHash string, mode os.FileMode) (returnErr error) {
+	if url == "" {
+		return errors.New("download URL is empty")
+	}
+	request, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
+	if err != nil {
+		return err
+	}
+	response, err := d.client.Do(request)
+	if err != nil {
+		return err
+	}
+	defer response.Body.Close()
+	if response.StatusCode < 200 || response.StatusCode >= 300 {
+		return fmt.Errorf("object download returned HTTP %d", response.StatusCode)
+	}
+	file, err := os.OpenFile(path, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, mode)
+	if err != nil {
+		return err
+	}
+	defer func() {
+		if returnErr != nil {
+			_ = file.Close()
+			_ = os.Remove(path)
+		}
+	}()
+	hash := sha256.New()
+	written, err := io.Copy(io.MultiWriter(file, hash), io.LimitReader(response.Body, expectedSize+1))
+	if err != nil {
+		return err
+	}
+	if written != expectedSize {
+		return errors.New("download size does not match the manifest")
+	}
+	if hex.EncodeToString(hash.Sum(nil)) != expectedHash {
+		return errors.New("download hash does not match the manifest")
+	}
+	if err := file.Chmod(mode); err != nil {
+		return err
+	}
+	if err := file.Sync(); err != nil {
+		return err
+	}
+	return file.Close()
+}
+
 func (d *Daemon) remoteWriterLeaseActive(ctx context.Context, spaceID, replicaID string) (bool, error) {
 	body, err := d.getJSON(ctx, fmt.Sprintf("%s/api/local-agent/spaces/%s/replicas/%s/state", d.apiBaseURL(), spaceID, replicaID))
 	if err != nil {
@@ -1132,11 +1187,20 @@ func (d *Daemon) applyRemoteSnapshot(ctx context.Context, replica *ReplicaState,
 	if err != nil {
 		return err
 	}
+	// Resolve and validate every destination, old and new, before any byte on
+	// disk changes. A malformed path anywhere in the manifest aborts the apply
+	// as a whole instead of after some removals already happened.
 	newByPath := make(map[string]remoteEntry, len(manifest.Entries))
+	destinations := make(map[string]string, len(manifest.Entries)+len(old))
 	for _, entry := range manifest.Entries {
-		if entry.Path == "" || strings.HasPrefix(entry.Path, "/") || strings.Contains(entry.Path, "\\") || strings.Contains(entry.Path, "\x00") {
-			return fmt.Errorf("remote manifest contains an unsafe path: %s", entry.Path)
+		destination, err := targetPathForReplicaChecked(replica.Root, entry.Path)
+		if err != nil {
+			return fmt.Errorf("remote manifest contains an unsafe path %q: %w", entry.Path, err)
 		}
+		if entry.Type == "symlink" && !safeRelativeSymlink(replica.Root, destination, entry.SymlinkTarget) {
+			return fmt.Errorf("unsafe remote symlink: %s", entry.Path)
+		}
+		destinations[entry.Path] = destination
 		newByPath[entry.Path] = entry
 		if entry.Type == "file" {
 			blob, ok := blobs[entry.Path]
@@ -1147,6 +1211,13 @@ func (d *Daemon) applyRemoteSnapshot(ctx context.Context, replica *ReplicaState,
 	}
 	oldByPath := make(map[string]remoteEntry, len(old))
 	for _, entry := range old {
+		if _, known := destinations[entry.Path]; !known {
+			destination, err := targetPathForReplicaChecked(replica.Root, entry.Path)
+			if err != nil {
+				return fmt.Errorf("local manifest cache contains an unsafe path %q: %w", entry.Path, err)
+			}
+			destinations[entry.Path] = destination
+		}
 		oldByPath[entry.Path] = entry
 	}
 	deletions := 0
@@ -1175,9 +1246,11 @@ func (d *Daemon) applyRemoteSnapshot(ctx context.Context, replica *ReplicaState,
 		return err
 	}
 	defer os.RemoveAll(staging)
-	// Download every new/changed file before mutating the workspace. This keeps
-	// network failures from leaving a half-applied tree.
-	fileData := make(map[string][]byte)
+	// Download every new/changed file into staging before mutating the
+	// workspace. Files stream to disk and are hashed on the way, so a large
+	// blob never has to fit in memory and a network failure leaves the tree
+	// untouched.
+	stagedFiles := make(map[string]string)
 	for _, entry := range manifest.Entries {
 		if entry.Type != "file" {
 			continue
@@ -1186,11 +1259,18 @@ func (d *Daemon) applyRemoteSnapshot(ctx context.Context, replica *ReplicaState,
 			continue
 		}
 		blob := blobs[entry.Path]
-		data, err := d.download(ctx, blob.url, maxInt64(entry.Size, 1), entry.SHA256, entry.Size)
-		if err != nil {
+		temporary := filepath.Join(staging, "files", filepath.FromSlash(entry.Path))
+		if err := os.MkdirAll(filepath.Dir(temporary), 0o700); err != nil {
+			return err
+		}
+		mode := os.FileMode(0o664)
+		if entry.Executable {
+			mode = 0o775
+		}
+		if err := d.downloadToFile(ctx, blob.url, temporary, entry.Size, entry.SHA256, mode); err != nil {
 			return fmt.Errorf("download %s: %w", entry.Path, err)
 		}
-		fileData[entry.Path] = data
+		stagedFiles[entry.Path] = temporary
 	}
 	if _, err := os.Stat(filepath.Join(replica.Root, ".cohub", "system")); err != nil && !errors.Is(err, os.ErrNotExist) {
 		return err
@@ -1229,66 +1309,44 @@ func (d *Daemon) applyRemoteSnapshot(ctx context.Context, replica *ReplicaState,
 			returnErr = fmt.Errorf("cleanup local workspace apply journal: %w", err)
 		}
 	}()
+	// Clear every path whose entry changed, including type changes such as a
+	// file becoming a directory, so the create pass below starts from a clean
+	// slot. Unchanged directories are left alone to preserve their children.
 	for _, entry := range sortedEntries(manifest.Entries, true) {
-		if entry.Type == "directory" {
+		prior, existed := oldByPath[entry.Path]
+		if !existed || sameEntry(prior, entry) {
 			continue
 		}
-		if prior, ok := oldByPath[entry.Path]; ok && sameEntry(prior, entry) {
+		if entry.Type == "directory" && prior.Type == "directory" {
 			continue
 		}
-		if err := removePath(targetPathForReplica(replica.Root, entry.Path)); err != nil {
+		if err := removePath(destinations[entry.Path]); err != nil {
 			return err
 		}
 	}
 	for _, entry := range sortedEntries(manifest.Entries, false) {
-		destination, err := targetPathForReplicaChecked(replica.Root, entry.Path)
-		if err != nil {
-			return err
-		}
+		destination := destinations[entry.Path]
 		switch entry.Type {
 		case "directory":
 			if err := os.MkdirAll(destination, 0o775); err != nil {
 				return err
 			}
 		case "symlink":
-			if err := os.MkdirAll(filepath.Dir(destination), 0o775); err != nil {
-				return err
-			}
-			if err := os.RemoveAll(destination); err != nil {
-				return err
-			}
-			if !safeRelativeSymlink(replica.Root, destination, entry.SymlinkTarget) {
-				return fmt.Errorf("unsafe remote symlink: %s", entry.Path)
-			}
-			if err := os.Symlink(entry.SymlinkTarget, destination); err != nil {
-				return err
-			}
-		case "file":
-			data, changed := fileData[entry.Path]
-			if !changed {
+			if prior, ok := oldByPath[entry.Path]; ok && sameEntry(prior, entry) {
 				continue
 			}
 			if err := os.MkdirAll(filepath.Dir(destination), 0o775); err != nil {
 				return err
 			}
-			temporary := filepath.Join(staging, "files", filepath.FromSlash(entry.Path))
-			if err := os.MkdirAll(filepath.Dir(temporary), 0o700); err != nil {
+			if err := os.Symlink(entry.SymlinkTarget, destination); err != nil {
 				return err
 			}
-			if err := os.WriteFile(temporary, data, 0o664); err != nil {
-				return err
+		case "file":
+			temporary, changed := stagedFiles[entry.Path]
+			if !changed {
+				continue
 			}
-			mode := os.FileMode(0o664)
-			if entry.Executable {
-				mode = 0o775
-			}
-			if err := os.Chmod(temporary, mode); err != nil {
-				return err
-			}
-			if err := syncFilePath(temporary); err != nil {
-				return err
-			}
-			if err := os.RemoveAll(destination); err != nil {
+			if err := os.MkdirAll(filepath.Dir(destination), 0o775); err != nil {
 				return err
 			}
 			if err := os.Rename(temporary, destination); err != nil {
@@ -1304,7 +1362,7 @@ func (d *Daemon) applyRemoteSnapshot(ctx context.Context, replica *ReplicaState,
 	}
 	sort.Slice(deletePaths, func(i, j int) bool { return len(deletePaths[i]) > len(deletePaths[j]) })
 	for _, path := range deletePaths {
-		if err := removePath(targetPathForReplica(replica.Root, path)); err != nil {
+		if err := removePath(destinations[path]); err != nil {
 			return err
 		}
 	}

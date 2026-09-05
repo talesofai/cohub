@@ -171,10 +171,17 @@ func TestSanitizedRuntimeEnvironmentRemovesCohubCredentials(t *testing.T) {
 		"LOCAL_SANDBOX_SPACE_ID=space",
 		"WORKSPACE_ROOT=/space-storage",
 		"DATABASE_URL=postgres://internal",
+		"GITEA_TOKEN=secret",
+		"GENERATION_API_KEY=secret",
+		"LOGTO_M2M_APP_SECRET=secret",
+		"TALESOFAI_BILLING_ADMIN_API_KEY=secret",
+		"WORKSPACE_OBJECT_SECRET_ACCESS_KEY=secret",
+		"USER_UPLOAD_S3_SECRET_ACCESS_KEY=secret",
+		"OPENAI_API_KEY=kept-for-provider",
 		"PROVIDER_SETTING=kept",
 	}
 	filtered := sanitizedRuntimeEnvironment(input)
-	if len(filtered) != 2 || filtered[0] != "PATH=/usr/bin" || filtered[1] != "PROVIDER_SETTING=kept" {
+	if len(filtered) != 3 || filtered[0] != "PATH=/usr/bin" || filtered[1] != "OPENAI_API_KEY=kept-for-provider" || filtered[2] != "PROVIDER_SETTING=kept" {
 		t.Fatalf("unexpected provider environment: %#v", filtered)
 	}
 }

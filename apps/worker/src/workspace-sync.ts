@@ -1,6 +1,8 @@
 import { createHash } from "node:crypto";
 import { chmod, cp, lstat, mkdir, open, readFile, readdir, readlink, rename, rm, symlink, writeFile } from "node:fs/promises";
-import { createReadStream } from "node:fs";
+import { createReadStream, createWriteStream } from "node:fs";
+import { pipeline } from "node:stream/promises";
+import { type Readable, Transform } from "node:stream";
 import { dirname, join, resolve } from "node:path";
 import type { Job } from "bullmq";
 import { GetObjectCommand, HeadObjectCommand, PutObjectCommand, S3Client } from "@aws-sdk/client-s3";
@@ -88,14 +90,35 @@ const getObjectClient = () => {
   return objectClient;
 };
 
-async function readWorkspaceBlob(objectKey: string, expectedSize: number, expectedSha256: string): Promise<Buffer> {
-  const response = await getObjectClient().send(new GetObjectCommand({ Bucket: config.workspaceObjectBucket, Key: objectKey }));
+/**
+ * Stream a workspace blob from object storage to a local file, hashing on the
+ * way. The blob never has to fit in memory. The destination is removed when
+ * size or hash does not match so a truncated download is never applied.
+ */
+async function streamWorkspaceBlobToFile(input: { objectKey: string; expectedSize: number; expectedSha256: string; destination: string; mode: number }) {
+  const response = await getObjectClient().send(new GetObjectCommand({ Bucket: config.workspaceObjectBucket, Key: input.objectKey }));
   if (!response.Body) throw new Error("workspace blob has no body");
-  const bytes = Buffer.from(await response.Body.transformToByteArray());
-  if (bytes.length !== expectedSize) throw new Error(`workspace blob size mismatch for ${expectedSha256}`);
-  const actualHash = createHash("sha256").update(bytes).digest("hex");
-  if (actualHash !== expectedSha256) throw new Error(`workspace blob hash mismatch for ${expectedSha256}`);
-  return bytes;
+  const hash = createHash("sha256");
+  let size = 0;
+  const counter = new Transform({
+    transform(chunk: Buffer, _encoding, callback) {
+      size += chunk.byteLength;
+      if (size > input.expectedSize) {
+        callback(new Error(`workspace blob exceeds its declared size for ${input.expectedSha256}`));
+        return;
+      }
+      hash.update(chunk);
+      callback(null, chunk);
+    },
+  });
+  try {
+    await pipeline(response.Body as unknown as Readable, counter, createWriteStream(input.destination, { mode: input.mode, flags: "w" }));
+    if (size !== input.expectedSize) throw new Error(`workspace blob size mismatch for ${input.expectedSha256}`);
+    if (hash.digest("hex") !== input.expectedSha256) throw new Error(`workspace blob hash mismatch for ${input.expectedSha256}`);
+  } catch (error) {
+    await rm(input.destination, { force: true }).catch(() => undefined);
+    throw error;
+  }
 }
 
 function targetPath(root: string, path: string) {
@@ -139,15 +162,12 @@ async function applyEntry(input: {
   }
   const blob = input.blobByPath.get(input.entry.path);
   if (!blob) throw new Error(`workspace blob mapping is missing for ${input.entry.path}`);
-  const bytes = await readWorkspaceBlob(blob.objectKey, blob.size, blob.sha256);
   const fileEntry = input.entry;
   if (fileEntry.type !== "file") throw new Error(`workspace entry changed type for ${input.entry.path}`);
+  const mode = fileEntry.executable ? 0o775 : 0o664;
   const temporary = `${destination}.cohub-${input.cycleId}.tmp`;
-  await writeFile(temporary, bytes, { mode: fileEntry.executable ? 0o775 : 0o664, flag: "wx" }).catch(async (error) => {
-    if ((error as { code?: string }).code !== "EEXIST") throw error;
-    await writeFile(temporary, bytes, { mode: fileEntry.executable ? 0o775 : 0o664, flag: "w" });
-  });
-  await chmod(temporary, fileEntry.executable ? 0o775 : 0o664);
+  await streamWorkspaceBlobToFile({ objectKey: blob.objectKey, expectedSize: blob.size, expectedSha256: blob.sha256, destination: temporary, mode });
+  await chmod(temporary, mode);
   await syncFile(temporary);
   await rename(temporary, destination);
 }
@@ -770,11 +790,16 @@ async function processWorkspaceSyncJobLocked(job: Job<WorkspaceSyncJobData>) {
   const [localSnapshotMeta] = await db.select({ source: workspaceSnapshots.source }).from(workspaceSnapshots).where(and(eq(workspaceSnapshots.id, localSnapshotId), eq(workspaceSnapshots.spaceId, spaceId))).limit(1);
   if (!localSnapshotMeta) throw new Error("local snapshot metadata is unavailable");
   const localManifest = await loadSnapshotManifest(localSnapshotId);
-  const effectiveBaseSnapshotId = localSnapshotMeta.source === "initial_merge"
-    ? null
-    : cycle.baseSnapshotId ?? state.canonicalSnapshotId;
-  const baseManifest = await loadSnapshotManifest(effectiveBaseSnapshotId);
   if (!localManifest) throw new Error("local snapshot manifest is unavailable");
+  // initial_use_local means the local tree is authoritative for the first
+  // reconcile. Using the freshly scanned cloud tree as the base makes every
+  // cloud-only path a local deletion instead of a cloud addition, which is
+  // what "use local" promises even when no canonical snapshot exists yet.
+  const baseManifest = localSnapshotMeta.source === "initial_merge"
+    ? null
+    : localSnapshotMeta.source === "initial_use_local"
+      ? scan.manifest
+      : await loadSnapshotManifest(cycle.baseSnapshotId ?? state.canonicalSnapshotId);
   const initialPlan = reconcileWorkspaceManifests({ base: baseManifest, local: localManifest, cloud: scan.manifest });
   const plan = await applyPersistedConflictResolutions({ cycleId, plan: initialPlan });
   if (plan.conflicts.length > 0) {

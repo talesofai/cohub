@@ -119,13 +119,35 @@ func ScanWorkspace(root string, policy ScanPolicy) (ScanResult, error) {
 	entries := make([]map[string]any, 0, 1024)
 	blobs := make([]ScanBlob, 0, 1024)
 	warnings := make([]ScanWarning, 0)
+	omitted := make([]string, 0)
+	listings := make(map[string]string)
 	ignoredCount := 0
 	var totalBytes int64
+	listDirectory := func(directory string) (string, error) {
+		names, err := os.ReadDir(directory)
+		if err != nil {
+			return "", err
+		}
+		parts := make([]string, 0, len(names))
+		for _, name := range names {
+			parts = append(parts, name.Name())
+		}
+		sort.Strings(parts)
+		return strings.Join(parts, "\x00"), nil
+	}
 
 	walkErr := filepath.WalkDir(root, func(path string, dirEntry fs.DirEntry, walkErr error) error {
 		if walkErr != nil {
 			rel, _ := filepath.Rel(root, path)
 			return &ScanError{Code: "scan_incomplete", Paths: []string{slashPath(rel)}, Err: walkErr}
+		}
+		if path == root || dirEntry.IsDir() {
+			listing, listErr := listDirectory(path)
+			if listErr != nil {
+				rel, _ := filepath.Rel(root, path)
+				return &ScanError{Code: "scan_incomplete", Paths: []string{slashPath(rel)}, Err: listErr}
+			}
+			listings[path] = listing
 		}
 		if path == root {
 			return nil
@@ -148,6 +170,7 @@ func ScanWorkspace(root string, policy ScanPolicy) (ScanResult, error) {
 		}
 		if (policy.SensitiveMode != "include_with_consent") && isSensitive(rel) {
 			warnings = append(warnings, ScanWarning{Path: rel, Type: "sensitive", Reason: "sensitive_content_policy"})
+			omitted = append(omitted, rel)
 			ignoredCount++
 			if isDir {
 				return filepath.SkipDir
@@ -172,6 +195,7 @@ func ScanWorkspace(root string, policy ScanPolicy) (ScanResult, error) {
 			}
 			if !safeSymlink(root, path, target) {
 				warnings = append(warnings, ScanWarning{Path: rel, Type: "unsupported", Reason: "unsafe_symlink_target"})
+				omitted = append(omitted, rel)
 				return nil
 			}
 			entries = append(entries, map[string]any{"path": rel, "type": "symlink", "symlinkTarget": slashPath(target)})
@@ -179,6 +203,7 @@ func ScanWorkspace(root string, policy ScanPolicy) (ScanResult, error) {
 		}
 		if !info.Mode().IsRegular() {
 			warnings = append(warnings, ScanWarning{Path: rel, Type: "unsupported", Reason: "unsupported_file_type"})
+			omitted = append(omitted, rel)
 			return nil
 		}
 		if info.Size() < 0 || info.Size() > policy.MaxFileBytes {
@@ -208,6 +233,19 @@ func ScanWorkspace(root string, policy ScanPolicy) (ScanResult, error) {
 		}
 		return ScanResult{}, &ScanError{Code: "scan_incomplete", Err: walkErr}
 	}
+	// Re-list every directory after the walk so a concurrent create or delete
+	// fails the scan instead of being misread as a deletion by the planner.
+	for directory, before := range listings {
+		after, listErr := listDirectory(directory)
+		rel, _ := filepath.Rel(root, directory)
+		if listErr != nil {
+			return ScanResult{}, &ScanError{Code: "scan_incomplete", Paths: []string{slashPath(rel)}, Err: listErr}
+		}
+		if after != before {
+			return ScanResult{}, &ScanError{Code: "workspace_busy", Paths: []string{slashPath(rel)}, Err: errors.New("directory changed during scan")}
+		}
+	}
+	sort.Strings(omitted)
 
 	sort.Slice(entries, func(i, j int) bool {
 		left := entries[i]["path"].(string)
@@ -255,6 +293,7 @@ func ScanWorkspace(root string, policy ScanPolicy) (ScanResult, error) {
 		"entries":          entries,
 		"boundaries":       []any{},
 		"portableGitState": nil,
+		"omitted":          omitted,
 	}
 	manifestRaw, err := EncodeJSON(manifest)
 	if err != nil {

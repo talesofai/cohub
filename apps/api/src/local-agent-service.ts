@@ -28,7 +28,8 @@ import {
   type LocalAgentPolicyV1,
   type WorkspaceManifestV1,
 } from "@cohub/protocol";
-import { createLocalAgentObjectGetUrl, createLocalAgentObjectPutUrl, headLocalAgentObject, buildLocalAgentObjectKey } from "./local-agent-object-storage.js";
+import { LocalAgentObjectStorageError } from "./local-agent-object-storage.js";
+import { createLocalAgentObjectGetUrl, createLocalAgentObjectPutUrl, headLocalAgentObject, buildLocalAgentObjectKey, verifyLocalAgentObject } from "./local-agent-object-storage.js";
 import { createLocalAgentRefreshToken, createLocalAgentToken, hashLocalAgentRefreshToken, refreshTokenMatches } from "./local-agent-auth.js";
 import { dispatchWorkspaceStateUpdated } from "./workspace-realtime.js";
 import { enqueueWorkspaceSyncJob } from "./workspace-sync-queue.js";
@@ -924,21 +925,32 @@ export async function commitWorkspaceSnapshot(input: { actor: LocalAgentActor; s
   }
   if (snapshot.manifestInline == null) {
     try {
-      const head = await headLocalAgentObject(snapshot.manifestObjectKey);
-      if (head.size !== snapshot.manifestTransportBytes && snapshot.manifestTransportBytes != null) throw new LocalAgentServiceError("manifest transport size mismatch", "manifest_transport_mismatch", 422);
+      if (snapshot.manifestTransportBytes != null && snapshot.manifestTransportSha256) {
+        await verifyLocalAgentObject({ objectKey: snapshot.manifestObjectKey, expectedSize: snapshot.manifestTransportBytes, expectedSha256: snapshot.manifestTransportSha256 });
+      } else {
+        const head = await headLocalAgentObject(snapshot.manifestObjectKey);
+        if (snapshot.manifestTransportBytes != null && head.size !== snapshot.manifestTransportBytes) throw new LocalAgentServiceError("manifest transport size mismatch", "manifest_transport_mismatch", 422);
+      }
     } catch (error) {
       if (error instanceof LocalAgentServiceError) throw error;
+      if (error instanceof LocalAgentObjectStorageError && !/not available|no body/.test(error.message)) {
+        throw new LocalAgentServiceError(`manifest object verification failed: ${error.message}`, "manifest_transport_mismatch", 422);
+      }
       throw new LocalAgentServiceError("manifest object is not available", "manifest_object_missing", 409);
     }
   }
   const blobRows = await db.select({ blob: workspaceBlobs }).from(workspaceSnapshotBlobs).innerJoin(workspaceBlobs, eq(workspaceBlobs.id, workspaceSnapshotBlobs.blobId)).where(eq(workspaceSnapshotBlobs.snapshotId, snapshot.id));
+  // Every blob that is not already verified must match its declared bytes
+  // before it becomes `ready`; a ready blob is reused by later snapshots
+  // without another upload, so this is the only point that guards it.
   for (const { blob } of blobRows) {
     if (blob.status === "ready") continue;
     try {
-      const head = await headLocalAgentObject(blob.objectKey);
-      if (head.size !== blob.size) throw new LocalAgentServiceError(`blob size mismatch for ${blob.sha256}`, "blob_size_mismatch", 422);
+      await verifyLocalAgentObject({ objectKey: blob.objectKey, expectedSize: blob.size, expectedSha256: blob.sha256 });
     } catch (error) {
-      if (error instanceof LocalAgentServiceError) throw error;
+      if (error instanceof LocalAgentObjectStorageError && /does not match|exceeds/.test(error.message)) {
+        throw new LocalAgentServiceError(`blob content mismatch for ${blob.sha256}: ${error.message}`, "blob_hash_mismatch", 422);
+      }
       throw new LocalAgentServiceError(`blob object is not available for ${blob.sha256}`, "blob_object_missing", 409);
     }
   }

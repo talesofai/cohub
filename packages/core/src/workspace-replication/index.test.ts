@@ -30,6 +30,7 @@ test("workspace scanner includes directories, hashes files, and applies policy e
     assert.deepEqual(result.manifest.entries.map((entry) => entry.path), ["src", "src/main.ts"]);
     assert.equal(result.blobs.length, 1);
     assert.ok(result.warnings.some((warning) => warning.path === ".env" && warning.type === "sensitive"));
+    assert.deepEqual(result.manifest.omitted, [".env"]);
     assert.equal(result.manifestSha256.length, 64);
     assert.equal(result.treeHash.length, 64);
   });

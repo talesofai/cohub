@@ -104,6 +104,23 @@ test("builds a deterministic three-way plan and preserves conflicts", () => {
   ]);
 });
 
+test("omitted paths are not treated as deletions", () => {
+  const secret = { path: ".env", type: "file", size: 1, sha256: hashA, executable: false } as const;
+  const base = manifest([secret]);
+  const cloud = manifest([secret]);
+  const local = WorkspaceManifestSchema.parse({ ...manifest([]), omitted: [".env"] });
+  const result = reconcileWorkspaceManifests({ base, local, cloud });
+  assert.deepEqual(result.operations, []);
+  assert.deepEqual(result.conflicts, []);
+  assert.deepEqual(result.unchangedPaths, [".env"]);
+});
+
+test("omitted paths do not change the tree hash", async () => {
+  const plain = manifest([{ path: "a", type: "directory" }]);
+  const withOmission = WorkspaceManifestSchema.parse({ ...plain, omitted: ["secret.pem"] });
+  assert.equal(await manifestTreeHash(plain), await manifestTreeHash(withOmission));
+});
+
 test("produces stable tree hashes independent of input entry order", async () => {
   const first = manifest([
     { path: "b", type: "directory" },
