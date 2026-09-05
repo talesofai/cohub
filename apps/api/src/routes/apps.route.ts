@@ -1,4 +1,5 @@
 import { Hono, type Context } from "hono";
+import { bodyLimit } from "hono/body-limit";
 import { and, desc, eq, inArray, ne, sql } from "drizzle-orm";
 import { spaces, apps, appPromotions, appPromotionStatsHourly, appVersions, appViewerGrants, appViewStatsHourly, userProfiles } from "@cohub/db";
 import { createAppAssetPublicUrl, deleteAppAssetsByObjectKey, isConfiguredAppAssetPublicUrl } from "../app-asset-storage.js";
@@ -9,6 +10,7 @@ import { db } from "../db/index.js";
 import { isPostgresUniqueViolation } from "../db/postgres-error.js";
 import {
   authzDenied,
+  getExecutionPrincipal,
   getOptionalAuth,
   getSpacePublicProfile,
   getAppSessionPrincipal,
@@ -21,6 +23,7 @@ import { hasPermission, resolveUserSpacePermissions } from "../permissions.js";
 import { createAppSessionToken, APP_SESSION_TTL_SECONDS, APP_VIEWER_GRANT_TTL_SECONDS } from "../app-sessions.js";
 import { getSandboxPublicEndpoints } from "../sandbox-public-network.js";
 import type { AppArtifactDescriptor } from "@cohub/protocol";
+import { APP_ACTION_EXECUTION_SOURCE } from "@cohub/protocol/task";
 import { SANDBOX_PUBLIC_PORTS } from "@cohub/protocol/ports";
 import { config, isHostAllowedBySuffix } from "../config.js";
 import {
@@ -52,6 +55,13 @@ import {
   getAppRoomByCode,
   AppRoomError,
 } from "../app-realtime-rooms.js";
+import { enqueueTask } from "../tasks.js";
+import { RUN_COMMAND_TASK_TYPE } from "@cohub/core/commands";
+import {
+  APP_ACTION_INPUT_MAX_BYTES,
+  buildAppActionCommand,
+  isAppActionKey,
+} from "../lib/app-action-command.js";
 
 const logger = createLogger({ serviceName: "cohub-api" });
 /**
@@ -70,6 +80,10 @@ const SLUG_RE = /^[a-z0-9](?:[a-z0-9_-]{0,78}[a-z0-9])?$/;
 const PUBLIC_APP_HTTP_CACHE = "public, max-age=60, stale-while-revalidate=300";
 const PRIVATE_APP_HTTP_CACHE = "private, no-store";
 const SANDBOX_PUBLIC_PORT_SET = new Set<number>(SANDBOX_PUBLIC_PORTS as readonly number[]);
+const appActionBodyLimit = bodyLimit({
+  maxSize: APP_ACTION_INPUT_MAX_BYTES * 2,
+  onError: (c) => c.json({ message: "action request is too large" }, 413),
+});
 /** Direct publisher grants stay deliberately small in v1. */
 const ALLOWED_APP_SCOPES = new Set<Permission>(APP_PUBLISHER_SCOPES);
 /** Viewer grants: any permission the viewer can currently use themselves. */
@@ -569,7 +583,8 @@ router.get("/:id", async (c) => {
   if (!row) return c.json({ message: "app not found" }, 404);
   if (!row.owner.username || !row.space.slug) return c.json({ message: "app public identity is incomplete" }, 409);
   const space = { id: row.space.id, slug: row.space.slug, name: row.space.name, userUuid: row.space.userUuid, publicProfile: getSpacePublicProfile(row.space) };
-  const shouldRecordCliView = getRequestSource(c)?.via === "cli";
+  const shouldRecordCliView = getRequestSource(c)?.via === "cli"
+    && getExecutionPrincipal(c)?.source !== APP_ACTION_EXECUTION_SOURCE;
   if (shouldRecordCliView) recordResolvedAppView(c, app, "cli");
   const content = await getPublishedAppContent(app);
   return c.json({
@@ -989,7 +1004,72 @@ router.post("/:id/realtime/rooms/join", async (c) => {
   }
 });
 
+router.post("/:id/actions/:action/run", appActionBodyLimit, async (c) => {
+  const user = useAuth(c);
+  if (user instanceof Response) return user;
+  const id = c.req.param("id");
+  const action = c.req.param("action");
+  if (!requireValidId(id)) return c.json({ message: "app not found" }, 404);
+  if (!isAppActionKey(action)) return c.json({ message: "invalid app action" }, 400);
+
+  if (getExecutionPrincipal(c)?.source === APP_ACTION_EXECUTION_SOURCE) return authzDenied(c);
+  const appSession = getAppSessionPrincipal(c);
+  if (!appSession || appSession.appId !== id) return authzDenied(c);
+  const app = await getAppById(id);
+  if (app?.status !== "published" || !app.currentVersionId) {
+    return c.json({ message: "app not found" }, 404);
+  }
+  if (app.spaceId !== appSession.spaceId) return authzDenied(c);
+  if (app.targetType !== "directory") {
+    return c.json({ message: "app actions require a directory app" }, 409);
+  }
+  const [version] = await db
+    .select({ id: appVersions.id, artifact: appVersions.artifact })
+    .from(appVersions)
+    .where(and(eq(appVersions.id, app.currentVersionId), eq(appVersions.appId, app.id)))
+    .limit(1);
+  const artifact = isRecord(version?.artifact) ? version.artifact : null;
+  if (!version || !isRecord(artifact?.download)) {
+    return c.json({ message: "app version is not downloadable" }, 409);
+  }
+
+  const body = await c.req.json().catch(() => undefined);
+  if (!isRecord(body)) return c.json({ message: "action request must be a JSON object" }, 400);
+  const inputBytes = Buffer.byteLength(JSON.stringify(body.input ?? null));
+  if (inputBytes > APP_ACTION_INPUT_MAX_BYTES) {
+    return c.json({ message: `action input exceeds ${APP_ACTION_INPUT_MAX_BYTES} bytes` }, 413);
+  }
+
+  const executionScopes = await resolveUserSpacePermissions({ uuid: app.userUuid }, app.spaceId);
+  const sourceClientId = getRequestSource(c)?.clientId;
+  const { taskRunId } = await enqueueTask({
+    type: RUN_COMMAND_TASK_TYPE,
+    spaceId: app.spaceId,
+    userId: user.uuid,
+    data: {
+      actorUserId: app.userUuid,
+      command: buildAppActionCommand({
+        appId: app.id,
+        appVersionId: version.id,
+        action,
+        actionInput: body.input,
+      }),
+      cwd: "/workspace",
+      source: APP_ACTION_EXECUTION_SOURCE,
+      viewerUserId: user.uuid,
+      appId: app.id,
+      appVersionId: version.id,
+      action,
+      executionScopes,
+      ...(sourceClientId ? { sourceClientId } : {}),
+    },
+  });
+
+  return c.json({ taskRunId, action, status: "pending" }, 202);
+});
+
 router.post("/:id/session", async (c) => {
+  if (getExecutionPrincipal(c)?.source === APP_ACTION_EXECUTION_SOURCE) return authzDenied(c);
   const user = useAccountPrincipal(c);
   if (user instanceof Response) return user;
   const id = c.req.param("id");
@@ -1007,6 +1087,7 @@ router.post("/:id/session", async (c) => {
 });
 
 router.post("/:id/authorize", async (c) => {
+  if (getExecutionPrincipal(c)?.source === APP_ACTION_EXECUTION_SOURCE) return authzDenied(c);
   const user = useAccountPrincipal(c);
   if (user instanceof Response) return user;
   const id = c.req.param("id");

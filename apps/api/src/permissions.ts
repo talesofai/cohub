@@ -58,6 +58,13 @@ export function asAccountIdentity(user: { uuid?: string | null } | null | undefi
   return uuid ? { uuid } : null;
 }
 
+export function isTaskRunOwner(
+  user: { uuid?: string | null } | null | undefined,
+  run: { userUuid: string | null },
+): boolean {
+  return Boolean(user?.uuid && run.userUuid === user.uuid);
+}
+
 /**
  * Spaces whose Task Runs an app session may list: spaces with a live
  * `taskrun.view` viewer grant, re-validated against the viewer's current

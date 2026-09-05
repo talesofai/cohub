@@ -2,6 +2,8 @@
 import type { InstalledApp, SpaceInstalledApps } from "@cohub/protocol";
 import { AlertCircle, Box, Loader2, PackageOpen, Trash2 } from "lucide-svelte";
 import { onMount } from "svelte";
+import { setCohubResourceDragData } from "$lib/drag/cohub-resource-drag";
+import { pointerDrag, pointerDragSource } from "$lib/drag/pointer-drag.svelte";
 import {
 	cacheInstalledApps,
 	type InstalledAppsFile,
@@ -164,7 +166,29 @@ onMount(() => {
 				</button>
 
 				{#each installed as app (app.id)}
-					<div class="group flex min-w-0 items-center gap-2.5 px-2 py-2.5" class:opacity-60={!app.enabled}>
+					<div
+						class="group flex min-w-0 items-center gap-2.5 rounded-[5px] px-2 py-2.5 transition-colors hover:bg-bg-hover"
+						class:opacity-60={!app.enabled}
+						class:bg-bg-hover={pointerDrag.payload?.items.some((item) => item.appId === app.id)}
+						draggable={app.enabled}
+						role="button"
+						tabindex="-1"
+						use:pointerDragSource={{
+							enabled: app.enabled,
+							getPayload: () => ({
+								origin: "apps-sidebar",
+								items: [{ type: "app", path: "", name: app.snapshot.name, appId: app.id, appRef: app.ref, appUrl: app.url, icon: app.snapshot.icon ?? undefined }],
+							}),
+						}}
+						ondragstart={(event) => {
+							if (!app.enabled) { event.preventDefault(); return; }
+							setCohubResourceDragData(event.dataTransfer, {
+								version: 1,
+								resources: [{ type: "app", ref: app.ref, title: app.snapshot.name, href: app.url, appId: app.id, ...(app.snapshot.icon ? { icon: app.snapshot.icon } : {}) }],
+								origin: { kind: "sidebar-session-list" },
+							});
+						}}
+					>
 						{#if app.snapshot.icon}<img src={app.snapshot.icon} alt="" class="h-8 w-8 shrink-0 rounded-[6px] object-cover ring-1 ring-border-subtle" />{:else}<div class="flex h-8 w-8 shrink-0 items-center justify-center rounded-[6px] bg-bg-elevated text-text-tertiary"><Box class="h-4 w-4" /></div>{/if}
 						<button type="button" class="min-w-0 flex-1 text-left" disabled={!app.enabled} onclick={() => onOpenInstalled(app)}>
 							<div class="truncate text-[12px] font-medium text-text-primary">{app.snapshot.name}</div>

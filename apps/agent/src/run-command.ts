@@ -147,10 +147,15 @@ export async function processRunCommandJob(job: Job<AgentRunCommandJobData>): Pr
   const executionToken = actorUserId
     ? await createAgentExecutionToken({
         actorUserId,
+        viewerUserId: data.viewerUserId ?? null,
+        appId: data.appId ?? null,
+        appVersionId: data.appVersionId ?? null,
+        action: data.action ?? null,
+        taskRunId: data.taskRunId,
         spaceId: data.spaceId,
         sessionId: contextSessionId || null,
         turnId: data.origin?.turnId ?? null,
-        source: "run_command",
+        source: data.source?.trim() || "run_command",
         scopes: executionScopes,
       })
     : null;

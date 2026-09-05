@@ -6,6 +6,12 @@ const EXECUTION_GRANT_HEADER = { alg: "HS256", typ: "JWT" } as const;
 
 export type ExecutionGrantPayload = {
   actorUserId: string | null;
+  /** The end user on whose behalf an App Action is running. */
+  viewerUserId?: string | null;
+  appId?: string | null;
+  appVersionId?: string | null;
+  action?: string | null;
+  taskRunId?: string | null;
   spaceId: string;
   sessionId: string | null;
   turnId: string | null;
@@ -23,6 +29,11 @@ export type SessionExecutionGrant = {
 export type ExecutionGrantService = {
   createExecutionGrant(input: {
     actorUserId: string | null;
+    viewerUserId?: string | null;
+    appId?: string | null;
+    appVersionId?: string | null;
+    action?: string | null;
+    taskRunId?: string | null;
     spaceId: string;
     sessionId: string | null;
     turnId: string | null;
@@ -56,6 +67,11 @@ export function createExecutionGrantService(input: {
       const nowSeconds = Math.floor(now().getTime() / 1000);
       const payload: ExecutionGrantPayload = {
         actorUserId: grantInput.actorUserId?.trim() || null,
+        ...(grantInput.viewerUserId?.trim() ? { viewerUserId: grantInput.viewerUserId.trim() } : {}),
+        ...(grantInput.appId?.trim() ? { appId: grantInput.appId.trim() } : {}),
+        ...(grantInput.appVersionId?.trim() ? { appVersionId: grantInput.appVersionId.trim() } : {}),
+        ...(grantInput.action?.trim() ? { action: grantInput.action.trim() } : {}),
+        ...(grantInput.taskRunId?.trim() ? { taskRunId: grantInput.taskRunId.trim() } : {}),
         spaceId,
         sessionId: grantInput.sessionId?.trim() || null,
         turnId: grantInput.turnId?.trim() || null,
@@ -103,6 +119,11 @@ export function createExecutionGrantService(input: {
 
       return {
         actorUserId: typeof parsedPayload.actorUserId === "string" && parsedPayload.actorUserId.trim() ? parsedPayload.actorUserId.trim() : null,
+        ...(typeof parsedPayload.viewerUserId === "string" && parsedPayload.viewerUserId.trim() ? { viewerUserId: parsedPayload.viewerUserId.trim() } : {}),
+        ...(typeof parsedPayload.appId === "string" && parsedPayload.appId.trim() ? { appId: parsedPayload.appId.trim() } : {}),
+        ...(typeof parsedPayload.appVersionId === "string" && parsedPayload.appVersionId.trim() ? { appVersionId: parsedPayload.appVersionId.trim() } : {}),
+        ...(typeof parsedPayload.action === "string" && parsedPayload.action.trim() ? { action: parsedPayload.action.trim() } : {}),
+        ...(typeof parsedPayload.taskRunId === "string" && parsedPayload.taskRunId.trim() ? { taskRunId: parsedPayload.taskRunId.trim() } : {}),
         spaceId: parsedPayload.spaceId.trim(),
         sessionId: typeof parsedPayload.sessionId === "string" && parsedPayload.sessionId.trim() ? parsedPayload.sessionId.trim() : null,
         turnId: typeof parsedPayload.turnId === "string" && parsedPayload.turnId.trim() ? parsedPayload.turnId.trim() : null,

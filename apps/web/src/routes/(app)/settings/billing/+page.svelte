@@ -2,9 +2,7 @@
 import type {
 	BillingBalanceActivityList,
 	BillingCatalog,
-	BillingCatalogProduct,
 	BillingCreditStatus,
-	BillingProductBillingInterval,
 	BillingSubscriptionHistoryList,
 	BillingSubscriptionHistoryStatus,
 } from "@neta-art/cohub";
@@ -22,7 +20,9 @@ import { goto } from "$app/navigation";
 import { page } from "$app/state";
 import { ensureAuth } from "$lib/auth";
 import { handleUnauthorizedError } from "$lib/auth-redirect";
-import BillingCheckoutSheet from "$lib/components/BillingCheckoutSheet.svelte";
+import { trackPurchase } from "$lib/features/billing/funnel";
+import PurchasePanel from "$lib/features/billing/PurchasePanel.svelte";
+import { PurchaseFlow } from "$lib/features/billing/purchase.svelte";
 import { formatCurrency, formatDateTime } from "$lib/i18n/format";
 import { getLocale } from "$lib/i18n/locale.svelte";
 import { m } from "$lib/paraglide/messages.js";
@@ -33,6 +33,14 @@ const locale = $derived(getLocale());
 const currentPath = $derived(page.url.pathname);
 const currentSearch = $derived(page.url.search);
 type BillingTab = "balance" | "plans" | "redeem";
+
+const purchase = new PurchaseFlow("settings");
+
+function buyFromSettings() {
+	void purchase.checkout({
+		returnTo: new URL("/settings/billing?tab=plans", window.location.origin),
+	});
+}
 
 let balanceCredit = $state<BillingCreditStatus | null>(null);
 let balanceActivities = $state<BillingBalanceActivityList | null>(null);
@@ -53,11 +61,6 @@ let activityPage = $state(1);
 let subscriptionsPage = $state(1);
 let activeBillingTab = $state<BillingTab>("balance");
 let redemptionCode = $state("");
-let selectedPlanInterval =
-	$state<Extract<BillingProductBillingInterval, "monthly" | "yearly">>(
-		"monthly",
-	);
-let checkoutProduct = $state<BillingCatalogProduct | null>(null);
 let billingActionBusyKey = $state<string | null>(null);
 let redemptionLoading = $state(false);
 let checkoutNow = $state(Date.now());
@@ -76,12 +79,6 @@ const subscriptionsHasMore = $derived(
 );
 const routeBillingTab = $derived(
 	parseBillingTab(page.url.searchParams.get("tab")),
-);
-const selectedPlanProducts = $derived.by(() =>
-	getPlanProductsForInterval(selectedPlanInterval),
-);
-const addonProducts = $derived.by(() =>
-	sortProductsByPrice(billingCatalog?.addons ?? []),
 );
 const currentSubscription = $derived(
 	billingCatalog?.currentSubscriptions.find(
@@ -140,6 +137,13 @@ function setBillingTab(tab: BillingTab) {
 
 $effect(() => {
 	activeBillingTab = routeBillingTab;
+	if (routeBillingTab === "plans") {
+		trackPurchase({
+			name: "purchase_open",
+			source: "settings",
+			focus: purchase.focus(),
+		});
+	}
 });
 
 function formatProductPrice(value: number): string {
@@ -148,10 +152,6 @@ function formatProductPrice(value: number): string {
 		minimumFractionDigits: 2,
 		maximumFractionDigits: 2,
 	});
-}
-
-function formatCreditAmount(value: number): string {
-	return formatUsdAmount(value * 0.00000001);
 }
 
 function getExpiryGroupLabel(
@@ -171,86 +171,6 @@ function getExpiryGroupLabel(
 	}
 }
 
-function getDiscountText(product: BillingCatalogProduct): string {
-	const discountLabel = product.pricing.discountLabel?.trim();
-	if (
-		discountLabel &&
-		!["none", "no discount", "null"].includes(discountLabel.toLowerCase())
-	) {
-		return discountLabel;
-	}
-	if (
-		typeof product.pricing.discountRate === "number" &&
-		product.pricing.discountRate > 0
-	) {
-		return m.billing_discount_rate(
-			{ rate: Math.round(product.pricing.discountRate * 100) },
-			{ locale },
-		);
-	}
-	return "";
-}
-
-function getProductBalanceText(product: BillingCatalogProduct): string {
-	if (product.display.creditBenefits.length > 0) {
-		return product.display.creditBenefits
-			.map((benefit) => {
-				if (
-					benefit.grantKind === "plan_period" &&
-					benefit.periodAmount !== benefit.cycleAmount
-				) {
-					return m.billing_credits_body(
-						{
-							amount: formatUsdAmount(benefit.periodAmountUsd),
-							cycle: formatUsdAmount(benefit.cycleAmountUsd),
-						},
-						{ locale },
-					);
-				}
-				return formatUsdAmount(benefit.periodAmountUsd);
-			})
-			.join(", ");
-	}
-	if (
-		typeof product.display.creditsAmount === "number" &&
-		Number.isFinite(product.display.creditsAmount) &&
-		product.display.creditsAmount > 0
-	) {
-		return formatCreditAmount(product.display.creditsAmount);
-	}
-	return "";
-}
-
-function sortProductsByPrice(products: BillingCatalogProduct[]) {
-	return [...products].sort(
-		(left, right) => left.pricing.amountMinor - right.pricing.amountMinor,
-	);
-}
-
-function getPlanProductsForInterval(
-	interval: Extract<BillingProductBillingInterval, "monthly" | "yearly">,
-) {
-	if (!billingCatalog) return [];
-	const defaultPlan = billingCatalog.defaultPlanProductKey
-		? billingCatalog.plans.find(
-				(product) => product.key === billingCatalog?.defaultPlanProductKey,
-			)
-		: null;
-	const intervalPlans = sortProductsByPrice(
-		billingCatalog.plans.filter((product) => product.interval === interval),
-	).filter((product) => product.key !== defaultPlan?.key);
-	return defaultPlan ? [defaultPlan, ...intervalPlans] : intervalPlans;
-}
-
-function productDescription(product: BillingCatalogProduct): string {
-	return product.display.description ?? product.description ?? "";
-}
-
-function isCurrentPlanProduct(product: BillingCatalogProduct): boolean {
-	if (currentSubscription?.productKey === product.key) return true;
-	return !currentSubscription && defaultPlanProduct?.key === product.key;
-}
-
 function currentSubscriptionLine(): string {
 	if (!currentSubscription) return "";
 	const parts = [formatHistoryStatus(currentSubscription.status)];
@@ -267,11 +187,6 @@ function currentSubscriptionLine(): string {
 				),
 	);
 	return parts.join(" - ");
-}
-
-function returnUrl() {
-	if (typeof window === "undefined") return undefined;
-	return new URL("/settings/billing", window.location.origin).toString();
 }
 
 function formatBillingDate(value: string | null | undefined): string {
@@ -507,6 +422,8 @@ async function loadCatalog(options: { force?: boolean } = {}) {
 		}
 		try {
 			billingCatalog = await billingCatalogStore.load({ force: options.force });
+			purchase.catalog = billingCatalog;
+			purchase.ensureSelection();
 		} catch (error) {
 			if (
 				await handleUnauthorizedError(error, `${currentPath}${currentSearch}`)
@@ -617,19 +534,6 @@ async function createRedemption(event: SubmitEvent) {
 	} finally {
 		redemptionLoading = false;
 	}
-}
-
-function startCheckout(product: BillingCatalogProduct) {
-	if (
-		(product.kind === "plan" &&
-			(isCurrentPlanProduct(product) ||
-				billingCatalog?.hasActiveSubscription)) ||
-		billingCatalog?.payment.available === false
-	) {
-		return;
-	}
-	checkoutError = "";
-	checkoutProduct = product;
 }
 
 function payCheckout(item: BillingSubscriptionHistoryStatus) {
@@ -830,101 +734,13 @@ $effect(() => {
 
 			{#if activeBillingTab === "plans"}
 			<section class="py-5">
-				<div class="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
-					<div>
-						<h2 class="text-[14px] font-medium text-text-primary">{m.billing_plans_heading({}, { locale })}</h2>
-					</div>
-					<div class="inline-flex w-fit rounded-[6px] border border-border-subtle bg-bg-subtle p-0.5 text-[12px]">
-						<button type="button" onclick={() => (selectedPlanInterval = "monthly")} class="rounded-[5px] px-2.5 py-1.5 transition-colors {selectedPlanInterval === 'monthly' ? 'bg-bg-input text-text-primary shadow-sm' : 'text-text-tertiary hover:text-text-secondary'}">{m.billing_monthly({}, { locale })}</button>
-						<button type="button" onclick={() => (selectedPlanInterval = "yearly")} class="rounded-[5px] px-2.5 py-1.5 transition-colors {selectedPlanInterval === 'yearly' ? 'bg-bg-input text-text-primary shadow-sm' : 'text-text-tertiary hover:text-text-secondary'}">{m.billing_yearly({}, { locale })}</button>
-					</div>
-				</div>
-
-				{#if catalogLoading && !billingCatalog}
-					<div class="mt-3 grid gap-3 md:grid-cols-3">
-						<div class="h-48 rounded-[6px] bg-bg-hover-strong" aria-hidden="true"></div>
-						<div class="h-48 rounded-[6px] bg-bg-hover-strong" aria-hidden="true"></div>
-						<div class="h-48 rounded-[6px] bg-bg-hover-strong" aria-hidden="true"></div>
-					</div>
-				{:else if billingCatalog && billingCatalog.plans.length === 0}
-					<p class="mt-4 text-[12px] text-text-tertiary">{m.billing_no_plans({}, { locale })}</p>
-				{:else if selectedPlanProducts.length > 0}
-					<div class="mt-3 grid gap-3 md:grid-cols-3">
-						{#each selectedPlanProducts as product (product.key)}
-							<div class="flex min-h-64 flex-col rounded-[6px] border border-border-subtle px-3 py-3 {product.isDefaultPlan ? 'bg-bg-subtle' : ''}">
-								<div class="flex min-w-0 items-center gap-2">
-									<h3 class="min-w-0 truncate text-[13px] font-semibold text-text-primary">{product.name}</h3>
-									{#if product.isDefaultPlan}
-										<span class="shrink-0 rounded-[4px] border border-border-subtle px-1.5 py-0.5 text-[10px] uppercase leading-none tracking-wider text-text-tertiary">{m.billing_default_plan({}, { locale })}</span>
-									{/if}
-								</div>
-								<div class="mt-3 space-y-1">
-									<div class="text-[11px] text-text-tertiary">{m.billing_list_price({ price: formatProductPrice(product.pricing.compareAtAmountUsd ?? product.pricing.amountUsd) }, { locale })}</div>
-									{#if getDiscountText(product)}
-										<div class="text-[11px] text-text-tertiary">{m.billing_discount_label({ discount: getDiscountText(product) }, { locale })}</div>
-									{/if}
-									<div class="text-[18px] font-semibold text-text-primary">{formatProductPrice(product.pricing.amountUsd)}</div>
-									{#if getProductBalanceText(product)}
-										<div class="text-[11px] text-text-secondary">{m.billing_balance_included({ amount: getProductBalanceText(product) }, { locale })}</div>
-									{/if}
-								</div>
-								<button type="button" onclick={() => startCheckout(product)} disabled={isCurrentPlanProduct(product) || billingCatalog?.hasActiveSubscription || billingCatalog?.payment.available === false} class="mt-3 inline-flex h-8 items-center justify-center rounded-[5px] border border-border-subtle bg-bg-input px-3 text-[12px] font-medium text-text-primary transition-colors hover:bg-bg-hover disabled:cursor-not-allowed disabled:opacity-55">
-									{#if isCurrentPlanProduct(product)}
-										<span>{m.billing_current_subscription({}, { locale })}</span>
-									{:else if billingCatalog?.hasActiveSubscription || billingCatalog?.payment.available === false}
-										<span>{m.billing_not_available({}, { locale })}</span>
-									{:else}
-										<span>{m.billing_subscribe({}, { locale })}</span>
-									{/if}
-								</button>
-								{#if productDescription(product)}
-									<p class="mt-3 text-[12px] leading-5 text-text-secondary">{productDescription(product)}</p>
-								{/if}
-								{#if product.display.benefits.length}
-									<ul class="mt-3 grid gap-1.5 text-[11px] text-text-tertiary">
-										{#each product.display.benefits as benefit}
-											<li class="flex gap-1.5">
-												<span class="mt-1 h-1 w-1 shrink-0 rounded-full bg-text-placeholder"></span>
-												<span>{benefit}</span>
-											</li>
-										{/each}
-									</ul>
-								{/if}
-							</div>
-						{/each}
-					</div>
-				{:else}
-					<p class="mt-4 text-[12px] text-text-tertiary">{m.billing_no_plans_period({}, { locale })}</p>
-				{/if}
-
-				{#if addonProducts.length > 0}
-					<section class="mt-6 border-t border-border-subtle pt-5">
-						<h2 class="text-[14px] font-medium text-text-primary">{m.billing_credit_packages({}, { locale })}</h2>
-						<div class="mt-3 grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
-							{#each addonProducts as product (product.key)}
-								<div class="flex min-h-36 flex-col rounded-[6px] border border-border-subtle px-3 py-3">
-									<div class="flex items-start justify-between gap-3">
-										<div class="min-w-0">
-											<h3 class="truncate text-[13px] font-semibold text-text-primary">{product.name}</h3>
-											{#if getProductBalanceText(product)}
-												<p class="mt-1 text-[11px] text-text-tertiary">{m.billing_balance_suffix({ amount: getProductBalanceText(product) }, { locale })}</p>
-											{/if}
-										</div>
-										<div class="shrink-0 text-right">
-											{#if product.offer}
-												<div class="font-mono text-[13px] font-semibold text-text-primary">{formatProductPrice(product.offer.pricing.paidAmountUsd)}</div>
-												<div class="mt-0.5 text-[10px] text-brand">{m.billing_first_purchase_off({}, { locale })}</div>
-											{:else}
-												<div class="font-mono text-[13px] font-semibold text-text-primary">{formatProductPrice(product.pricing.amountUsd)}</div>
-											{/if}
-										</div>
-									</div>
-									<button type="button" onclick={() => startCheckout(product)} disabled={billingCatalog?.payment.available === false} class="mt-auto inline-flex h-9 items-center justify-center rounded-[5px] border border-border-subtle bg-bg-input px-3 text-[12px] font-medium text-text-primary transition-colors hover:bg-bg-hover disabled:cursor-not-allowed disabled:opacity-55">{m.billing_buy_package({}, { locale })}</button>
-								</div>
-							{/each}
-						</div>
-					</section>
-				{/if}
+				<PurchasePanel
+					flow={purchase}
+					{locale}
+					signedIn
+					focus={purchase.focus()}
+					onbuy={buyFromSettings}
+				/>
 
 				<div class="mt-6 border-t border-border-subtle pt-5">
 					<div class="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
@@ -1179,10 +995,3 @@ $effect(() => {
 		</section>
 	</div>
 </div>
-
-<BillingCheckoutSheet
-	open={checkoutProduct !== null}
-	product={checkoutProduct}
-	returnUrl={returnUrl()}
-	onClose={() => (checkoutProduct = null)}
-/>

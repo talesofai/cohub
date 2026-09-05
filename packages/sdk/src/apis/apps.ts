@@ -242,6 +242,12 @@ export type AppViewerGrantRecord = {
   updatedAt: string | null;
 };
 
+export type AppActionRunResponse = {
+  taskRunId: string;
+  action: string;
+  status: "pending";
+};
+
 export type AppAuthorizeResponse = {
   token: string;
   expiresIn: number;
@@ -262,6 +268,17 @@ export class AppsApi {
 
   get(id: string) {
     return this.transport.request<AppGetResponse>(`/api/apps/${id}`);
+  }
+
+  runAction(appId: string, action: string, input?: unknown) {
+    return this.transport.request<AppActionRunResponse>(
+      `/api/apps/${encodeURIComponent(appId)}/actions/${encodeURIComponent(action)}/run`,
+      {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ input: input ?? null }),
+      },
+    );
   }
 
   /**

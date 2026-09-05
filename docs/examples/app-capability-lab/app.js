@@ -19,7 +19,9 @@ const statusMap = {
   import: ["sImport", "tImport"],
   client: ["sClient", "tClient"],
   context: ["sContext", "tContext"],
+  shell: ["sShell", "tShell"],
   wire: ["sWire", "tWire"],
+  action: ["sAction", "tAction"],
   token: ["sToken", "tToken"],
   config: ["sConfig", "tConfig"],
   files: ["sFiles", "tFiles"],
@@ -101,7 +103,31 @@ function decodeJwtPayload(token) {
   }
 }
 
+function shellPath(shell) {
+  return [shell?.space?.id, shell?.session?.id, shell?.turn?.id].map((value) => value || "none").join("/");
+}
+
+function applyShellContext(shell, source) {
+  $("shellSurface").textContent = shell?.surface || "unavailable";
+  $("shellSpacePath").textContent = shell?.space?.id || "space";
+  $("shellSessionPath").textContent = shell?.session?.id || "session";
+  $("shellTurnPath").textContent = shell?.turn?.id || "turn";
+  $("shellSpace").textContent = shell?.space?.name
+    ? `${shell.space.name} · ${shell.space.id}`
+    : shell?.space?.id || "none";
+  $("shellSession").textContent = shell?.session?.id || "none";
+  $("shellTurn").textContent = shell?.turn?.id || "none";
+  setStatus("shell", shell ? "ok" : "warn", shell ? "live" : "not available");
+  $("shellUpdated").textContent = source === "event"
+    ? `Updated ${new Date().toLocaleTimeString()}`
+    : "Waiting for shell events";
+  $("shellEventSummary").textContent = source === "event"
+    ? `Observed ${shellPath(shell)}`
+    : "Listening for shell changes";
+}
+
 function applyContext(context, source = "snapshot") {
+  const previousShellPath = shellPath(state.context?.shell);
   state.context = context;
   state.space = context ? state.client.space(context.space.id) : null;
   $("appId").textContent = context?.app?.id || "missing";
@@ -110,9 +136,15 @@ function applyContext(context, source = "snapshot") {
   $("contextSource").textContent = context?.invocation?.source || "none";
   $("contextSession").textContent = context?.invocation?.sessionId || "none";
   $("contextTurn").textContent = context?.invocation?.turnId || "none";
+  applyShellContext(context?.shell || null, source);
   renderChips("appScopes", context?.permissions?.appScopes || [], true);
   renderViewerGrants(context?.permissions?.viewerGrants || []);
-  log("info", source === "event" ? "App context changed" : "App context loaded", context?.invocation?.source || "no invocation");
+  const nextShellPath = shellPath(context?.shell);
+  if (source === "event" && previousShellPath !== nextShellPath) {
+    log("info", "Shell environment changed", `${previousShellPath} to ${nextShellPath}`);
+  } else {
+    log("info", source === "event" ? "App context changed" : "App context loaded", context?.invocation?.source || "no invocation");
+  }
 }
 
 function renderSurfaceState(source = "local") {
@@ -464,6 +496,43 @@ async function accountUsage() {
   });
 }
 
+const wait = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+
+async function runAppAction(action, buttonId) {
+  const button = $(buttonId);
+  button.disabled = true;
+  $("actionOutput").textContent = `Queueing ${action}...`;
+  try {
+    return await run("action", async () => {
+      const client = await ensureClient();
+      const queued = await client.app.actions.run({
+        action,
+        input: { message: "Hello from the App frontend", requestedAt: new Date().toISOString() },
+      });
+      log("info", "App Action queued", queued.taskRunId);
+
+      for (let attempt = 0; attempt < 120; attempt += 1) {
+        const detail = await client.tasks.get(queued.taskRunId);
+        if (detail.run.status === "completed") {
+          const output = detail.run.result?.output ?? "";
+          let rendered = output;
+          try { rendered = JSON.stringify(JSON.parse(output), null, 2); } catch { /* keep raw output */ }
+          $("actionOutput").textContent = rendered || "Action completed without output.";
+          log("ok", "App Action completed", queued.taskRunId);
+          return detail;
+        }
+        if (detail.run.status === "failed") {
+          throw new Error(detail.run.errorMessage || "App Action failed. Inspect the Task Run for details.");
+        }
+        await wait(1000);
+      }
+      throw new Error("App Action is still running. Inspect the Task Run for its latest status.");
+    });
+  } finally {
+    button.disabled = false;
+  }
+}
+
 async function bootstrap() {
   try {
     await probeAssets();
@@ -487,6 +556,8 @@ $("importSdk").onclick = () => importSdk().catch(() => {});
 $("createClient").onclick = () => createClient().catch(() => {});
 $("sdkContext").onclick = () => sdkContext().catch(() => {});
 $("wireContext").onclick = () => wireContext().catch(() => {});
+$("runActionTs").onclick = () => runAppAction("inspect-ts", "runActionTs").catch(() => {});
+$("runActionBash").onclick = () => runAppAction("inspect-bash", "runActionBash").catch(() => {});
 $("getToken").onclick = () => getRuntimeToken(false).catch(() => {});
 $("refreshToken").onclick = () => getRuntimeToken(true).catch(() => {});
 $("spaceConfig").onclick = () => spaceConfig().catch(() => {});

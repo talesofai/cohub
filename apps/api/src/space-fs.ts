@@ -30,6 +30,7 @@ import {
   type SpaceFsPreparingFile,
   type SpaceFsTreeResponse,
   type SpaceFsUploadResponse,
+  type SpaceFsUploadTargetVersion,
   type SpaceFsWriteFileInput,
 } from "@cohub/protocol/fs";
 import { isTextMime } from "./space-fs-mime.js";
@@ -1235,6 +1236,19 @@ export async function streamSpaceFile(
     observation.result = { fileSizeBytes: response.size, mimeType: response.mimeType };
     return response;
   });
+}
+
+export async function statSpaceFileVersion(spaceId: string, path: string): Promise<SpaceFsUploadTargetVersion> {
+  const { target } = await resolveTarget(spaceId, path);
+  let info: Stats;
+  try {
+    info = await lstat(target);
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") return { exists: false };
+    throw error;
+  }
+  if (!info.isFile()) throw new SpaceFsError(400, "not_a_file", "The upload target is not a file.");
+  return { exists: true, size: info.size, mtimeMs: Math.trunc(info.mtimeMs) };
 }
 
 export async function writeSpaceFile(spaceId: string, input: SpaceFsWriteFileInput) {

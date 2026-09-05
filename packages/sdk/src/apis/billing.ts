@@ -1,6 +1,7 @@
 import type {
   BillingBalanceActivityList,
   BillingCatalog,
+  BillingCheckoutConfirmation,
   BillingCheckoutResult,
   BillingCreditStatus,
   BillingDiscountOfferRef,
@@ -53,6 +54,14 @@ export class BillingApi {
     const query = params.toString();
     return this.transport.request<{ subscriptions: BillingSubscriptionHistoryList }>(
       `/api/billing/subscriptions${query ? `?${query}` : ""}`,
+    );
+  }
+
+  /** Confirms a returned checkout against the provider's order/subscription state. */
+  async confirmCheckout(productKey: string, checkoutId: string) {
+    return this.transport.request<{ confirmation: BillingCheckoutConfirmation }>(
+      "/api/billing/checkout-confirmation",
+      { method: "POST", body: JSON.stringify({ productKey, checkoutId }) },
     );
   }
 

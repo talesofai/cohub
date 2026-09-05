@@ -6,10 +6,26 @@ import {
 
 const idSchema = z.string().min(1).max(160);
 const finiteSchema = z.number().finite();
+// Awareness is transient UI data. These generous bounds keep arithmetic and CSS
+// transforms safe without constraining any practical Board workspace.
+export const BOARD_AWARENESS_WORLD_COORDINATE_LIMIT = 1_000_000_000;
+export const BOARD_AWARENESS_WORLD_EXTENT_LIMIT = 100_000_000;
+export const BOARD_AWARENESS_MIN_VIEWPORT_ZOOM = 0.05;
+export const BOARD_AWARENESS_MAX_VIEWPORT_ZOOM = 8;
+
+const worldCoordinateSchema = finiteSchema
+	.min(-BOARD_AWARENESS_WORLD_COORDINATE_LIMIT)
+	.max(BOARD_AWARENESS_WORLD_COORDINATE_LIMIT);
+const worldExtentSchema = finiteSchema
+	.positive()
+	.max(BOARD_AWARENESS_WORLD_EXTENT_LIMIT);
+const viewportZoomSchema = finiteSchema
+	.min(BOARD_AWARENESS_MIN_VIEWPORT_ZOOM)
+	.max(BOARD_AWARENESS_MAX_VIEWPORT_ZOOM);
 
 export const BoardAwarenessPointSchema = z.object({
-	x: finiteSchema,
-	y: finiteSchema,
+	x: worldCoordinateSchema,
+	y: worldCoordinateSchema,
 });
 
 export const BoardAwarenessDrawPointSchema = BoardAwarenessPointSchema.extend({
@@ -17,11 +33,19 @@ export const BoardAwarenessDrawPointSchema = BoardAwarenessPointSchema.extend({
 });
 
 export const BoardAwarenessFrameSchema = z.object({
-	x: finiteSchema,
-	y: finiteSchema,
-	width: finiteSchema.positive(),
-	height: finiteSchema.positive(),
+	x: worldCoordinateSchema,
+	y: worldCoordinateSchema,
+	width: worldExtentSchema,
+	height: worldExtentSchema,
 	rotation: finiteSchema,
+});
+
+export const BoardAwarenessViewportSchema = z.object({
+	x: worldCoordinateSchema,
+	y: worldCoordinateSchema,
+	width: worldExtentSchema,
+	height: worldExtentSchema,
+	zoom: viewportZoomSchema,
 });
 
 export const BoardAwarenessNodePreviewSchema = z.object({
@@ -48,6 +72,8 @@ export const BoardAwarenessStateUpdateSchema = z.object({
 		pointerType: z.enum(["mouse", "pen", "touch"]),
 	})
 		.nullable(),
+	/** Visible world-space area. Optional so older clients remain compatible. */
+	viewport: BoardAwarenessViewportSchema.nullable().optional(),
 	tool: z.string().min(1).max(40),
 	selection: z.object({
 		ids: z.array(idSchema).max(64),
@@ -145,6 +171,9 @@ export type BoardAwarenessDrawPoint = z.infer<
 	typeof BoardAwarenessDrawPointSchema
 >;
 export type BoardAwarenessFrame = z.infer<typeof BoardAwarenessFrameSchema>;
+export type BoardAwarenessViewport = z.infer<
+	typeof BoardAwarenessViewportSchema
+>;
 export type BoardAwarenessNodePreview = z.infer<
 	typeof BoardAwarenessNodePreviewSchema
 >;

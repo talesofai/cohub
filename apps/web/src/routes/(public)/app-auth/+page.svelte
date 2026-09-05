@@ -7,7 +7,6 @@ import { PUBLIC_API_ORIGIN } from "$env/static/public";
 import { getAuthToken, signInWithRedirectPath } from "$lib/auth";
 import { readAppCheckoutState } from "$lib/components/app/app-checkout-state";
 import AppAuthorizeDialog from "$lib/features/app/AppAuthorizeDialog.svelte";
-import AppPurchaseDialog from "$lib/features/app/AppPurchaseDialog.svelte";
 import { isAllowedAppOrigin } from "$lib/features/app/app-origin-allowlist";
 import { createAppBridgeHost } from "$lib/features/app/bridge-host.svelte";
 import type { Locale } from "$lib/i18n/locale";
@@ -188,14 +187,6 @@ onDestroy(() => window.removeEventListener("message", onMessage));
 	{#if host && appDetail}
 		{@const h = host}
 		{@const detail = appDetail}
-		<AppPurchaseDialog
-			open={h.purchaseOpen && !!h.pendingPurchase}
-			pending={h.pendingPurchase}
-			error={h.purchaseError}
-			saving={h.purchaseSaving}
-			onConfirm={() => void h.confirmPurchase()}
-			onCancel={h.cancelPurchase}
-		/>
 
 		<AppAuthorizeDialog
 			open={h.authOpen && !!h.pendingAuth}

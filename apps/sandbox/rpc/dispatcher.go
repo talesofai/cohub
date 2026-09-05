@@ -161,12 +161,13 @@ type fsReadParams struct {
 }
 
 type fsWriteParams struct {
-	Path      string          `json:"path"`
-	CWD       string          `json:"cwd"`
-	Content   string          `json:"content"`
-	Encoding  string          `json:"encoding"`
-	Exclusive bool            `json:"exclusive"`
-	Expected  *fsWriteVersion `json:"expected"`
+	Path       string          `json:"path"`
+	CWD        string          `json:"cwd"`
+	Content    string          `json:"content"`
+	SourcePath string          `json:"sourcePath"`
+	Encoding   string          `json:"encoding"`
+	Exclusive  bool            `json:"exclusive"`
+	Expected   *fsWriteVersion `json:"expected"`
 }
 
 // fsWriteVersion is the caller's baseline for optimistic concurrency: reject
@@ -365,8 +366,34 @@ func (d *Dispatcher) handleFSWrite(request protocol.RPCRequest) interface{} {
 	if info, err := os.Stat(resolved.path); err == nil && info.IsDir() {
 		return d.failed(request, "", "NOT_DIRECTORY", fmt.Sprintf("cannot write to a directory: %s", resolved.path))
 	}
+
+	var source *resolvedSandboxPath
 	data := []byte(params.Content)
-	if params.Encoding == "base64" {
+	if params.SourcePath != "" {
+		if params.Content != "" || params.Encoding != "" || (params.Expected == nil && !params.Exclusive) {
+			return d.failed(request, "", "BAD_REQUEST", "sourcePath requires an expected version or exclusive create and no inline content")
+		}
+		resolvedSource, sourceErrResponse, sourceOK := d.resolvePathForRequest(request, params.SourcePath, params.CWD)
+		if !sourceOK {
+			return sourceErrResponse
+		}
+		if isReadOnlyPath(d.cfg, resolvedSource.path) {
+			return d.failed(request, "", "READ_ONLY_FILESYSTEM", fmt.Sprintf("source path is read-only: %s", resolvedSource.path))
+		}
+		if filepath.Base(resolvedSource.path) == filepath.Base(resolved.path) ||
+			!strings.HasPrefix(filepath.Base(resolvedSource.path), ".cohub-upload.") ||
+			resolvePathLockKey(filepath.Dir(resolvedSource.path)) != resolvePathLockKey(filepath.Dir(resolved.path)) {
+			return d.failed(request, "", "INVALID_PATH", "sourcePath must be an upload staging file next to the target")
+		}
+		info, err := os.Lstat(resolvedSource.path)
+		if err != nil {
+			return d.failedFSMutation(request, err)
+		}
+		if !info.Mode().IsRegular() {
+			return d.failed(request, "", "INVALID_PATH", "sourcePath must be a regular file")
+		}
+		source = &resolvedSource
+	} else if params.Encoding == "base64" {
 		decoded, decErr := decodeBase64(params.Content)
 		if decErr != nil {
 			return d.failed(request, "", "BAD_REQUEST", decErr.Error())
@@ -381,6 +408,7 @@ func (d *Dispatcher) handleFSWrite(request protocol.RPCRequest) interface{} {
 	// belong to a subsequent writer.
 	var created bool
 	var createdDirs []string
+	var bytesWritten int
 	var mtimeMs int64
 	lockErr := withPathLock(resolved.path, func() error {
 		if params.Expected != nil && !params.Exclusive {
@@ -395,23 +423,57 @@ func (d *Dispatcher) handleFSWrite(request protocol.RPCRequest) interface{} {
 				return errPathConflict
 			}
 		}
+		if source != nil {
+			targetInfo, targetErr := os.Lstat(resolved.path)
+			if targetErr == nil {
+				if targetInfo.Mode()&os.ModeSymlink != 0 || !targetInfo.Mode().IsRegular() {
+					return errPathConflict
+				}
+			} else if !os.IsNotExist(targetErr) {
+				return targetErr
+			}
+		}
 		var err error
 		createdDirs, err = ensureParentDirs(d.cfg.WorkspaceDir, resolved.path)
 		if err != nil {
 			return err
 		}
-		if params.Exclusive {
+		if source != nil {
+			// Install the already-downloaded file while holding the same path lock
+			// used by editor writes; never expose an unconditional late mv.
+			sourceInfo, statErr := os.Lstat(source.path)
+			if statErr != nil {
+				return statErr
+			}
+			if !sourceInfo.Mode().IsRegular() {
+				return errPathConflict
+			}
+			if params.Exclusive {
+				if err := installFileExclusive(source.path, resolved.path); err != nil {
+					return err
+				}
+				created = true
+			} else {
+				if err := os.Rename(source.path, resolved.path); err != nil {
+					return err
+				}
+				created = false
+			}
+			bytesWritten = int(sourceInfo.Size())
+		} else if params.Exclusive {
 			// Atomic create: O_EXCL fails if the path already exists, so concurrent
 			// exclusive creates cannot clobber each other.
 			if err := osWriteFileExclusive(resolved.path, data); err != nil {
 				return err
 			}
 			created = true
+			bytesWritten = len(data)
 		} else {
 			created, err = writeFileWithDisposition(resolved.path, data)
 			if err != nil {
 				return err
 			}
+			bytesWritten = len(data)
 		}
 		mtimeMs = statMtimeMs(resolved.path)
 		return nil
@@ -428,7 +490,7 @@ func (d *Dispatcher) handleFSWrite(request protocol.RPCRequest) interface{} {
 
 	result := map[string]interface{}{
 		"path":         resolved.path,
-		"bytesWritten": len(data),
+		"bytesWritten": bytesWritten,
 		"created":      created,
 		"createdDirs":  createdDirs,
 	}

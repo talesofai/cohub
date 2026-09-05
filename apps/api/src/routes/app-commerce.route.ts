@@ -2,7 +2,7 @@ import { randomUUID } from "node:crypto";
 import { Hono } from "hono";
 import { isBillingApiError } from "../lib/billing-api-error.js";
 import { mapWithConcurrency } from "../lib/concurrency.js";
-import { authzDenied, getOptionalAuth, requireValidId, useAuth } from "../lib/middleware.js";
+import { authzDenied, getExecutionPrincipal, getOptionalAuth, requireValidId, useAuth } from "../lib/middleware.js";
 import { handleAppCommerceRouteError } from "../lib/commerce-http.js";
 import { hasPermission } from "../permissions.js";
 import {
@@ -32,6 +32,10 @@ import {
   recordResolvedAppPromotionEvent,
   resolvePublishedAppPromotion,
 } from "../app-promotion-events.js";
+import {
+  canTargetCommerceViewer,
+  resolveCommerceViewerUserId,
+} from "../lib/app-commerce-viewer.js";
 
 /**
  * Commerce endpoints live under `/{resource}/:id/commerce/*`; the router is a
@@ -171,7 +175,9 @@ router.get(`/${resource}/:id/commerce/entitlements`, async (c) => {
   try {
     const businessKey = await requireSpaceCommerceBusinessKey(resolved.app.spaceId);
     const ops = await createSpaceBusinessBillingOperations(businessKey);
-    const state = await ops.getEntitlements({ userId: user.uuid });
+    const viewerUserId = resolveCommerceViewerUserId(getExecutionPrincipal(c), appId, user.uuid);
+    if (!viewerUserId) return authzDenied(c);
+    const state = await ops.getEntitlements({ userId: viewerUserId });
     const creditBalance = state.credits.find((c: { tokenType: string }) => c.tokenType === "cohub_credit");
     return c.json({
       entitlements: state.entitlements.map((entitlement: { key: string; enabled: boolean; metadata: Record<string, string | number | boolean> }) => ({
@@ -216,9 +222,13 @@ router.post(`/${resource}/:id/commerce/credits/consume`, async (c) => {
   }
   const reason = typeof body?.reason === "string" ? body.reason.trim().slice(0, 512) : undefined;
 
+  const execution = getExecutionPrincipal(c);
+  const executionViewerUserId = resolveCommerceViewerUserId(execution, appId, user.uuid);
+  if (!executionViewerUserId) return authzDenied(c);
   const consumerUserId = typeof body?.consumerUserId === "string" ? body.consumerUserId.trim() : null;
-  const targetUserId = consumerUserId ?? user.uuid;
-  if (consumerUserId && consumerUserId !== user.uuid) {
+  const targetUserId = consumerUserId ?? executionViewerUserId;
+  if (!canTargetCommerceViewer(execution, executionViewerUserId, consumerUserId)) return authzDenied(c);
+  if (consumerUserId && consumerUserId !== executionViewerUserId) {
     if (!(await hasPermission(user, "space.commerce.manage", { spaceId: resolved.app.spaceId }))) return authzDenied(c);
   }
   try {

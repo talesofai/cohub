@@ -41,14 +41,20 @@ ctx.app.slug;                      // 公开 slug
 ctx.app.homeSpace;                 // 拥有该 App 的 Space
 ctx.viewer;                        // 当前 viewer，可能为 null
 ctx.invocation;                    // App 从哪里被打开
+ctx.shell;                         // 当前 Cohub workspace 位置
 ctx.permissions;                   // appScopes + viewerGrants，用于渲染状态
 ```
 
 `invocation` 在可用时携带 `surface`、`source`、`spaceId`、`sessionId`、
 `turnId`、`toolCallId`。它描述的是打开来源 — 是上下文，不是授权。
 
-`client.app.onContextChanged(cb)` 会在登录或授权变化时推送新 context，权限
-状态无需轮询即可渲染。
+`ctx.shell` 描述当前壳中的 `space`、`session` 和 `turn`。其中 `turn` 是当前
+正在查看的 Turn，不一定是正在生成的 Turn。它们可能与 `app.homeSpace` 和
+`invocation` 不同；没有对应位置时返回 `null`。
+
+`client.app.onContextChanged(cb)` 会在壳位置、登录或授权变化时推送新 context。
+高频读取时请在 App 内缓存最近一次 context，不要轮询 `client.context()`。
+context 仅用于提供信息，不能作为授权依据。
 
 ## 能力场景
 

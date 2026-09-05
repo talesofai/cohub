@@ -1,4 +1,10 @@
-import type { SpaceCommerceProduct, AppCommerceEntitlement, AppCommerceEntitlementsResponse, AppCommerceOrder } from "@neta-art/cohub";
+import {
+  resolveExecutionAppId,
+  type SpaceCommerceProduct,
+  type AppCommerceEntitlement,
+  type AppCommerceEntitlementsResponse,
+  type AppCommerceOrder,
+} from "@neta-art/cohub";
 import type { Command } from "commander";
 import { createClient } from "../client.js";
 import { error, handleHttp, json as outJson, jsonRequested, ok, table } from "../output.js";
@@ -35,6 +41,10 @@ function requireText(value: string | undefined, label: string, flag: string): st
   const text = value?.trim();
   if (text) return text;
   return error(`Missing ${label}`, `Pass ${flag}.`);
+}
+
+function requireAppId(value: string | undefined): string {
+  return requireText(value ?? resolveExecutionAppId() ?? undefined, "app ID", "--app-id <id>");
 }
 
 function requireList(values: string[] | undefined, label: string, flag: string): string[] {
@@ -124,7 +134,7 @@ Examples:
     .option("--product-key <key>", "Product key", collectOption)
     .option("--json", "Output as JSON")
     .action(async (opts: ProductKeysOptions) => {
-      const appId = requireText(opts.appId, "app ID", "--app-id <id>");
+      const appId = requireAppId(opts.appId);
       const productKeys = requireList(opts.productKey, "product key", "--product-key <key>");
       const client = createClient();
       try {
@@ -142,7 +152,7 @@ Examples:
     .option("--app-id <id>", "App ID")
     .option("--json", "Output as JSON")
     .action(async (opts: JsonOption & { appId?: string }) => {
-      const appId = requireText(opts.appId, "app ID", "--app-id <id>");
+      const appId = requireAppId(opts.appId);
       const client = createClient();
       try {
         const result = await client.appCommerce.getEntitlements(appId);
@@ -166,7 +176,7 @@ Examples:
     .option("--reason <text>", "Reason for the consumption")
     .option("--json", "Output as JSON")
     .action(async (opts: ConsumeOptions) => {
-      const appId = requireText(opts.appId, "app ID", "--app-id <id>");
+      const appId = requireAppId(opts.appId);
       const amountText = requireText(opts.amount, "amount", "--amount <n>");
       const amount = Number.parseInt(amountText, 10);
       if (!Number.isSafeInteger(amount) || amount <= 0) {
@@ -205,7 +215,7 @@ Examples:
     .option("--product-key <key>", "Product key")
     .option("--json", "Output as JSON")
     .action(async (opts: PurchaseOptions) => {
-      const appId = requireText(opts.appId, "app ID", "--app-id <id>");
+      const appId = requireAppId(opts.appId);
       const productKey = requireText(opts.productKey, "product key", "--product-key <key>");
       const client = createClient();
       try {
@@ -243,7 +253,7 @@ Examples:
     .option("--order-id <id>", "Order ID")
     .option("--json", "Output as JSON")
     .action(async (opts: OrderGetOptions) => {
-      const appId = requireText(opts.appId, "app ID", "--app-id <id>");
+      const appId = requireAppId(opts.appId);
       const orderId = requireText(opts.orderId, "order ID", "--order-id <id>");
       const client = createClient();
       try {

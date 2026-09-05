@@ -9,6 +9,7 @@ import { onDestroy, onMount, untrack } from "svelte";
 import { createSpaceBoardAssetSource } from "$lib/board/board-asset-source";
 import {
 	type BoardAwarenessController,
+	boardAwarenessViewportFromCamera,
 	createBoardAwarenessController,
 } from "$lib/board/board-awareness";
 import {
@@ -32,6 +33,7 @@ import { createBoardEditor } from "$lib/board/editor.svelte";
 import type { BoardRuntimeProps } from "$lib/board/runtime/board-runtime";
 import { canUseUserScopedCache, getCacheUserKey } from "$lib/cache/keys";
 import BoardAppearancePopover from "$lib/components/board/BoardAppearancePopover.svelte";
+import BoardAppOverlay from "$lib/components/board/BoardAppOverlay.svelte";
 import BoardCollaboratorOverlay from "$lib/components/board/BoardCollaboratorOverlay.svelte";
 import BoardConnectionToolbar from "$lib/components/board/BoardConnectionToolbar.svelte";
 import BoardContextMenu from "$lib/components/board/BoardContextMenu.svelte";
@@ -59,6 +61,8 @@ const {
 	document: initialDocument,
 	runtime,
 	spaceId,
+	shell,
+	onNavigationOpen,
 	mode = "edit",
 	assetSource,
 	active = true,
@@ -269,6 +273,12 @@ $effect(() => {
 	// untrack: only re-run when the document/path prop changes, not when
 	// loadDocument reads interaction/editing state for its deferral decision.
 	untrack(() => editor.loadDocument(doc, k));
+});
+
+$effect(() => {
+	if (readonly) return;
+	const viewport = boardAwarenessViewportFromCamera(editor.camera, surfaceSize);
+	untrack(() => awareness.setViewport(viewport));
 });
 
 $effect(() => {
@@ -747,6 +757,14 @@ onDestroy(() => {
 			onSurfaceChange={handleSurfaceChange}
 			onExportReady={(bridge) => { exportBridge = bridge; }}
 			onBackgroundLoadStateChange={(state) => { backgroundLoadState = state; }}
+		/>
+		<BoardAppOverlay
+			{editor}
+			{spaceId}
+			{readonly}
+			surface={surfaceSize}
+			{shell}
+			onNavigationOpen={onNavigationOpen}
 		/>
 
 		{#if !readonly}

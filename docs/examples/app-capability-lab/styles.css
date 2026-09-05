@@ -95,6 +95,16 @@ h1 { margin: 0; max-width: 760px; font-size: clamp(31px, 5vw, 58px); line-height
 .panel-title { font-weight: 760; font-size: 13px; }
 .panel-note { color: var(--faint); font-size: 11px; }
 .panel-body { padding: 14px; }
+.environment { border: 1px solid color-mix(in srgb, var(--info) 38%, var(--line-soft)); border-radius: 7px; padding: 11px; background: color-mix(in srgb, var(--info) 7%, var(--surface)); }
+.environment-head { display: flex; align-items: flex-start; justify-content: space-between; gap: 10px; }
+.environment-path { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 7px; color: var(--text); font-size: 12px; }
+.environment-path span:nth-child(even) { color: var(--faint); }
+.environment-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 0 14px; margin: 10px 0 0; }
+.environment-grid .kv { grid-template-columns: 62px 1fr; padding: 7px 0; }
+.environment-updated { margin-top: 9px; color: var(--faint); font-size: 11px; }
+.shell-probe { border-color: color-mix(in srgb, var(--info) 38%, var(--line-soft)); }
+.shell-event-line { display: flex; align-items: center; gap: 7px; margin-top: 12px; color: var(--info); font-size: 11px; overflow-wrap: anywhere; }
+.pulse-mark { width: 7px; height: 7px; border-radius: 50%; background: var(--info); box-shadow: 0 0 0 4px color-mix(in srgb, var(--info) 15%, transparent); flex: 0 0 auto; }
 .stack { display: grid; gap: 10px; }
 .kv { display: grid; grid-template-columns: 92px 1fr; gap: 10px; padding: 9px 0; border-bottom: 1px solid var(--line-soft); }
 .kv:last-child { border-bottom: 0; }
@@ -135,6 +145,7 @@ code { color: var(--info); }
 @keyframes pulse { 50% { opacity: .42; } }
 
 @media (max-width: 900px) {
+  .environment-grid { grid-template-columns: 1fr; }
   .hero { display: block; }
   .stamp { margin-top: 14px; }
   .layout, .grid, .form-grid { grid-template-columns: 1fr; }

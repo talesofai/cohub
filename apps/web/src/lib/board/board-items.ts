@@ -371,6 +371,26 @@ export function createArrowBoardItem(
 
 const DEFAULT_FRAME_SIZE = { width: 480, height: 320 };
 
+export type BoardAppMetadata = {
+	appId: string;
+	ref: string;
+	url: string;
+	name: string;
+	icon?: string;
+};
+
+export function createAppBoardItem(
+	app: BoardAppMetadata,
+	x: number,
+	y: number,
+	id = createBoardItemId(),
+): BoardItem {
+	return {
+		...createFrameBoardItem(x, y, "brand", app.name, id),
+		metadata: { cohubApp: app },
+	};
+}
+
 export function createFrameBoardItem(
 	x: number,
 	y: number,

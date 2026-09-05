@@ -12,7 +12,7 @@ import type {
 } from "@cohub/protocol/realtime";
 import type {
 	AppRecord,
-	AppRuntimeInvocationContext,
+	AppRuntimeShellContext,
 	LocalAcpRuntimeRecord,
 	Permission,
 	SpaceRecord,
@@ -377,6 +377,21 @@ const sessionChat = createSessionChatHost({
 // Host is the unique owner of chat controllers and session records.
 
 const activeSessionId = $derived(sessionChat.activeSessionId);
+const appShell = $derived.by<AppRuntimeShellContext>(() => {
+	const currentTurnSequence = sessionChat.currentTurnSequence;
+	const currentTurn =
+		currentTurnSequence == null
+			? null
+			: (sessionChat.activeTurnRailItems.find(
+					(turn) => turn.sequence === currentTurnSequence,
+				)?.id ?? null);
+	return {
+		surface: "workspace",
+		space: { id: spaceId, name: space?.name ?? null },
+		session: activeSessionId ? { id: activeSessionId } : null,
+		turn: currentTurn ? { id: currentTurn } : null,
+	};
+});
 // Session rename (header inline edit)
 let sessionRenaming = $state(false);
 let sessionRenameValue = $state("");
@@ -632,9 +647,12 @@ const fileWorkspace = createFileWorkspaceController({
 		openInlinePort(port, url, optionsArg),
 	onCloseInlinePort: () => closeInlinePort(),
 	onActivateFilePreview: () => {
-		// Domain open paths (and re-activate) must reveal Files even when the
-		// page wrapper was skipped (e.g. route hydrate -> controller openFile).
+		// Domain open paths (and re-activate) must reveal the resource sidebar
+		// even when the page wrapper was skipped (e.g. route hydrate ->
+		// controller openFile). Keep the Files / Apps tabs visible alongside
+		// the preview instead of leaving the whole sidebar collapsed.
 		if (uiState.filesColumnHidden) uiState.setFilesColumnHidden(false);
+		if (uiState.rightSidebarCollapsed) uiState.setRightSidebarCollapsed(false);
 	},
 	onInlineFileClosed: (path) => windowManager.tabClosed("file", path),
 	onClosePreviewFocusMode: () => {
@@ -868,6 +886,9 @@ let workspaceBodyEl = $state<HTMLDivElement | null>(null);
 const previewLayout = createWorkspaceLayoutController({
 	getIsCompact: () => isMobile,
 	getWorkspaceBodyEl: () => workspaceBodyEl,
+	getMainPanelWidth: () =>
+		workspaceBodyEl?.querySelector<HTMLElement>(".workspace-main")
+			?.clientWidth ?? null,
 	getFilesAvailable: () => rightSidebarAvailable,
 	getHasPreview: () => Boolean(activeWindowKind),
 });
@@ -2894,6 +2915,7 @@ const spaceFileDomainProps = $derived.by<
 	inlineAppPreview,
 	inlineAppTabs,
 	activeInlineAppId,
+	appShell,
 	activeWindowKind,
 	inlinePortEndpoint,
 	previewEndpoints,

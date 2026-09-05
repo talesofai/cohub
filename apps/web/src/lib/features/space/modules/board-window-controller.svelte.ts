@@ -2,6 +2,7 @@ import {
 	type BoardAuthoringSnapshot,
 	type BoardSemanticMutation,
 	isPureBoardAnimationChange,
+	type RequestSource,
 } from "@cohub/protocol";
 import type {
 	BoardPlaybackSnapshot,
@@ -12,11 +13,15 @@ import { HttpError } from "@neta-art/cohub";
 import {
 	applyBoardAuthoringSnapshot,
 	type BoardDocument,
+	type BoardFrame,
 	boardAuthoringSnapshotToDocument,
 } from "@neta-art/cohub/board";
 import {
-	BOARD_AUTOMATION_ACTIVITY_MS,
+	BOARD_AUTOMATION_ACTIVE_MS,
 	type BoardAutomationActivity,
+	boardAutomationExpiresAt,
+	boardAutomationFocus,
+	boardAutomationKind,
 	createBoardAutomationActivity,
 	mergeBoardAutomationActivity,
 } from "$lib/board/board-activity";
@@ -86,11 +91,20 @@ export function createBoardWindowController(
 	/** Conflict-recovery attempts per document, to bound rebase retries. */
 	let conflictAttemptsByBoardId: Record<string, number> = {};
 	/** Remote semantic changes deferred while a save is in flight. */
+	type AutomationEvent = {
+		boardId: string;
+		actorId: string;
+		txId: string;
+		itemIds: string[];
+		source: RequestSource;
+		fallbackFocus: BoardFrame | null;
+	};
 	type PendingRemoteEvent = {
 		boardId: string;
 		version: number;
 		mutationId: string;
 		changed: import("@cohub/protocol").BoardMutationReceipt["changed"];
+		automation?: AutomationEvent;
 	};
 	let pendingRemoteEvents: PendingRemoteEvent[] = [];
 	/** Documents that need a full authoring snapshot (version gap / missing projection). */
@@ -120,60 +134,118 @@ export function createBoardWindowController(
 	 * one self-expires so a finished automation run does not leave a marker behind.
 	 */
 	let automationActivities = $state<BoardAutomationActivity[]>([]);
-	const activityExpiryTimers = new Map<string, ReturnType<typeof setTimeout>>();
+	type ActivityTimers = {
+		settle: ReturnType<typeof setTimeout>;
+		expire: ReturnType<typeof setTimeout>;
+	};
+	const activityTimers = new Map<string, ActivityTimers>();
+	const activityModelRequests = new Map<
+		string,
+		Promise<{ provider: string | null; id: string } | null>
+	>();
+	let disposed = false;
+
+	function clearActivityTimers(id: string) {
+		const timers = activityTimers.get(id);
+		if (!timers) return;
+		clearTimeout(timers.settle);
+		clearTimeout(timers.expire);
+		activityTimers.delete(id);
+	}
 
 	function expireActivity(id: string) {
-		const timer = activityExpiryTimers.get(id);
-		if (timer) clearTimeout(timer);
-		activityExpiryTimers.delete(id);
+		clearActivityTimers(id);
 		automationActivities = automationActivities.filter(
 			(item) => item.id !== id,
 		);
 	}
 
-	/**
-	 * Record automation attribution for a committed remote transaction.
-	 *
-	 * Called for every remote transaction regardless of whether it is applied
-	 * incrementally or triggers a bootstrap, so the marker does not depend on which
-	 * sync path the event happens to take. Focus is computed against the document
-	 * as it stands *before* the ops are applied, which is what lets a delete still
-	 * resolve to where the node used to be.
-	 */
-	function noteRemoteTransaction(input: {
-		boardId: string;
-		actorId: string;
-		txId: string;
-		itemIds?: string[];
-		source?: import("@cohub/protocol").RequestSource | null;
-	}) {
-		const board = boards.find((item) => item.boardId === input.boardId);
-		if (!board?.document) return;
-		const activity = createBoardAutomationActivity(board.document, input);
+	function scheduleActivityLifecycle(activity: BoardAutomationActivity) {
+		clearActivityTimers(activity.id);
+		const expiresAt = boardAutomationExpiresAt(activity);
+		const settle = setTimeout(() => {
+			automationActivities = automationActivities.map((item) =>
+				item.id === activity.id && item.updatedAt === activity.updatedAt
+					? { ...item, status: "settled" }
+					: item,
+			);
+		}, BOARD_AUTOMATION_ACTIVE_MS);
+		const expire = setTimeout(
+			() => expireActivity(activity.id),
+			Math.max(0, expiresAt - Date.now()),
+		);
+		activityTimers.set(activity.id, { settle, expire });
+	}
+
+	function resolveActivityModel(activity: BoardAutomationActivity) {
+		if (disposed || activity.kind !== "agent") return;
+		const sessionId = activity.source.sessionId;
+		const turnId = activity.source.turnId;
+		if (!sessionId || !turnId) return;
+		const targetSpaceId = activity.source.spaceId ?? options.getSpaceId();
+		const key = `${targetSpaceId}:${sessionId}:${turnId}`;
+		let request = activityModelRequests.get(key);
+		if (!request) {
+			if (activityModelRequests.size >= 64) {
+				const oldestKey = activityModelRequests.keys().next().value;
+				if (oldestKey) activityModelRequests.delete(oldestKey);
+			}
+			request = sdk
+				.space(targetSpaceId)
+				.session(sessionId)
+				.turns.get(turnId)
+				.then(({ turn }) =>
+					turn.model ? { provider: turn.provider, id: turn.model } : null,
+				)
+				.catch(() => null);
+			activityModelRequests.set(key, request);
+		}
+		void request.then((model) => {
+			if (disposed || !model) return;
+			automationActivities = automationActivities.map((item) =>
+				item.id === activity.id && item.source.turnId === turnId
+					? { ...item, model }
+					: item,
+			);
+		});
+	}
+
+	/** Record transient attribution without making it part of the Board document. */
+	function noteRemoteTransaction(
+		input: Omit<AutomationEvent, "fallbackFocus">,
+		document?: BoardDocument | null,
+		fallbackFocus: BoardFrame | null = null,
+	) {
+		const targetDocument =
+			document ??
+			boards.find((item) => item.boardId === input.boardId)?.document;
+		if (!targetDocument) return;
+		const activity = createBoardAutomationActivity(
+			targetDocument,
+			input,
+			fallbackFocus,
+		);
 		if (!activity) return;
+		const previousActivities = automationActivities;
 		automationActivities = mergeBoardAutomationActivity(
-			automationActivities,
+			previousActivities,
 			activity,
 		);
-		// Consecutive transactions from one tool call reuse the marker, so restart
-		// the timer rather than stacking expiries.
-		const existing = activityExpiryTimers.get(activity.id);
-		if (existing) clearTimeout(existing);
-		activityExpiryTimers.set(
-			activity.id,
-			setTimeout(
-				() => expireActivity(activity.id),
-				BOARD_AUTOMATION_ACTIVITY_MS,
-			),
+		const retainedIds = new Set(automationActivities.map((item) => item.id));
+		for (const previous of previousActivities) {
+			if (!retainedIds.has(previous.id)) clearActivityTimers(previous.id);
+		}
+		const current = automationActivities.find(
+			(item) => item.id === activity.id,
 		);
+		if (!current) return;
+		scheduleActivityLifecycle(current);
+		resolveActivityModel(current);
 	}
 
 	function clearActivitiesForBoard(boardId: string) {
 		for (const activity of automationActivities) {
-			if (activity.boardId !== boardId) continue;
-			const timer = activityExpiryTimers.get(activity.id);
-			if (timer) clearTimeout(timer);
-			activityExpiryTimers.delete(activity.id);
+			if (activity.boardId === boardId) clearActivityTimers(activity.id);
 		}
 		automationActivities = automationActivities.filter(
 			(item) => item.boardId !== boardId,
@@ -206,14 +278,35 @@ export function createBoardWindowController(
 		const unsubscribe = boardClient.subscribe({
 			changed: (event) => {
 				if (isOwnTransaction(event.payload.mutationId)) return;
-				if (event.payload.changed.items.length && event.payload.actorId) {
-					noteRemoteTransaction({
-						boardId,
-						actorId: event.payload.actorId,
-						txId: event.payload.mutationId,
-						itemIds: event.payload.changed.items,
-						source: event.payload.source ?? null,
-					});
+				const source = event.payload.source;
+				const currentDocument = boards.find(
+					(item) => item.boardId === boardId,
+				)?.document;
+				const automation =
+					event.payload.changed.items.length > 0 &&
+					event.payload.actorId &&
+					source &&
+					boardAutomationKind(source)
+						? {
+								boardId,
+								actorId: event.payload.actorId,
+								txId: event.payload.mutationId,
+								itemIds: event.payload.changed.items,
+								source,
+								fallbackFocus: currentDocument
+									? boardAutomationFocus(
+											currentDocument,
+											event.payload.changed.items,
+										)
+									: null,
+							}
+						: undefined;
+				if (automation) {
+					noteRemoteTransaction(
+						automation,
+						currentDocument,
+						automation.fallbackFocus,
+					);
 				}
 				const pureAnimation = isPureBoardAnimationChange(event.payload.changed);
 				if (event.payload.animationPatch && pureAnimation) {
@@ -233,6 +326,7 @@ export function createBoardWindowController(
 					version: event.payload.version,
 					mutationId: event.payload.mutationId,
 					changed: event.payload.changed,
+					...(automation ? { automation } : {}),
 				});
 			},
 			playback: (event) => applyPlayback(event.payload),
@@ -473,11 +567,14 @@ export function createBoardWindowController(
 	}
 
 	function dispose() {
+		disposed = true;
 		for (const unsubscribe of boardRealtimeUnsubscribers.values())
 			unsubscribe();
-		for (const timer of activityExpiryTimers.values()) clearTimeout(timer);
+		for (const activity of automationActivities) {
+			clearActivityTimers(activity.id);
+		}
 		boardRealtimeUnsubscribers.clear();
-		activityExpiryTimers.clear();
+		activityModelRequests.clear();
 		ownTxIds.clear();
 		conflictAttemptsByBoardId = {};
 		pendingRecoveryCleanup.clear();
@@ -838,6 +935,10 @@ export function createBoardWindowController(
 				? { ...item, document: nextDocument, runtime: nextRuntime, error: null }
 				: item,
 		);
+		if (event.automation) {
+			const { fallbackFocus, ...activityInput } = event.automation;
+			noteRemoteTransaction(activityInput, nextDocument, fallbackFocus);
+		}
 		return true;
 	}
 
@@ -916,8 +1017,19 @@ export function createBoardWindowController(
 
 				try {
 					const bootstrap = await inspect(boardId);
-					applyBootstrap(boardId, bootstrap);
+					const bootstrapDocument = applyBootstrap(boardId, bootstrap);
 					const bootVersion = bootstrap.board.version;
+					if (bootstrapDocument) {
+						for (const event of events) {
+							if (!event.automation || event.version > bootVersion) continue;
+							const { fallbackFocus, ...activityInput } = event.automation;
+							noteRemoteTransaction(
+								activityInput,
+								bootstrapDocument,
+								fallbackFocus,
+							);
+						}
+					}
 					// Re-queue only events newer than the bootstrap; drop the rest.
 					const newer = remainder.filter(
 						(event) => event.version > bootVersion,
@@ -1060,23 +1172,29 @@ export function createBoardWindowController(
 		return true;
 	}
 
-	function applyBootstrap(boardId: string, bootstrap: BoardAuthoringSnapshot) {
+	function applyBootstrap(
+		boardId: string,
+		bootstrap: BoardAuthoringSnapshot,
+	): BoardDocument | null {
 		const board = boards.find((item) => item.boardId === boardId);
-		if (!board || board.saving) return;
+		if (!board || board.saving) return null;
 		const currentVersion = syncVersionByBoardId[boardId] ?? null;
-		if (!canAdoptBoardVersion(currentVersion, bootstrap.board.version)) return;
+		if (!canAdoptBoardVersion(currentVersion, bootstrap.board.version))
+			return null;
+		const document = boardAuthoringSnapshotToDocument(bootstrap);
 		advanceSyncVersion(boardId, bootstrap.board.version);
 		boards = boards.map((item) =>
 			item.boardId === boardId
 				? {
 						...item,
-						document: boardAuthoringSnapshotToDocument(bootstrap),
+						document,
 						runtime: boardRuntimeDataFromAuthoring(bootstrap),
 						loading: false,
 						saveError: null,
 					}
 				: item,
 		);
+		return document;
 	}
 
 	return {

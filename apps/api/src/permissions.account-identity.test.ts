@@ -6,6 +6,7 @@ import {
   canViewOwnTaskRunsAccountWide,
   canViewTaskRunViaAccountScope,
   filterSpaceIdsByPermission,
+  isTaskRunOwner,
   listAppSessionTaskRunSpaceIds,
 } from "./permissions.js";
 
@@ -16,6 +17,12 @@ import {
 const resolvedGrants = (scopes: string[]) => [{ grantId: "grant-1", scopes }] as { grantId: string; scopes: string[] }[];
 
 describe("asAccountIdentity", () => {
+  it("recognizes a Task Run owner without requiring Space access", () => {
+    assert.equal(isTaskRunOwner({ uuid: "user-1" }, { userUuid: "user-1" }), true);
+    assert.equal(isTaskRunOwner({ uuid: "user-2" }, { userUuid: "user-1" }), false);
+    assert.equal(isTaskRunOwner(null, { userUuid: "user-1" }), false);
+  });
+
   it("keeps only the account uuid so app/preview scopes cannot leak into account lists", () => {
     const workish = {
       uuid: "user-1",

@@ -17,6 +17,7 @@ import {
 	type TaskRealtimeEvent,
 } from "./task-run-detail-controller.svelte";
 import {
+	appActionName,
 	checkpointIdFromTaskRun,
 	displaySafeJson,
 	formatDurationMs,
@@ -160,6 +161,7 @@ function userTitle(
 			<div class="rounded-md border border-error-soft/30 bg-error-bg p-3 text-[12px] font-mono text-error-soft break-all">{taskRunDetailError}</div>
 		{:else if taskRunDetail && taskRunDetail.id === taskId}
 			{@const badge = taskRunStatusBadge(taskRunDetail, locale)}
+			{@const actionName = appActionName(taskRunDetail)}
 			{@const resultCheckpointId = checkpointIdFromTaskRun(taskRunDetail)}
 			{@const saveStageLabel = taskRunDetail.taskType === "save_checkpoint" ? saveCheckpointProgressLabel(taskRunProgress, locale) : null}
 			{@const commandInfo = runCommandPayload(taskRunDetail)}
@@ -171,7 +173,7 @@ function userTitle(
 				<header class="flex flex-col gap-4 border-b border-border-subtle/70 pb-5 lg:flex-row lg:items-start lg:justify-between">
 					<div class="min-w-0 space-y-3">
 						<div>
-							<h1 class="text-[24px] font-semibold tracking-tight text-text-primary sm:text-[30px]">{taskTypeLabel(taskRunDetail.taskType, locale)}</h1>
+							<h1 class="text-[24px] font-semibold tracking-tight text-text-primary sm:text-[30px]">{actionName ? m.task_type_app_action({ action: actionName }, { locale }) : taskTypeLabel(taskRunDetail.taskType, locale)}</h1>
 							<div class="mt-3 flex flex-wrap items-center gap-x-3 gap-y-1.5">
 								<span class="inline-flex items-center gap-1.5 text-[11px] font-medium {badge.color}">
 									<span class="relative flex h-1.5 w-1.5 shrink-0">
@@ -209,7 +211,7 @@ function userTitle(
 					</section>
 				{/if}
 
-				{#if taskRunDetail.taskType === "run_command"}
+				{#if taskRunDetail.taskType === "run_command" && !actionName}
 					<section class="space-y-2">
 						<div class="text-[11px] font-medium uppercase tracking-wider text-text-placeholder">{m.task_section_command({}, { locale })}</div>
 						<div class="rounded-[8px] bg-bg-elevated/35 px-4 py-3">
@@ -302,17 +304,19 @@ function userTitle(
 							<div class="space-y-1"><div class="text-[11px] font-medium uppercase tracking-wider text-text-placeholder">{m.task_section_finished({}, { locale })}</div><div class="text-[13px] text-text-primary">{formatDateTime(taskRunDetail.finishedAt, locale)}</div></div>
 						</div>
 
-						<div class="space-y-2">
-							<div class="flex items-center justify-between gap-3">
-								<div class="text-[11px] font-medium uppercase tracking-wider text-text-placeholder">{m.task_section_payload({}, { locale })}</div>
-								<button type="button" class="inline-flex min-h-8 items-center gap-1 rounded-[4px] px-2 py-1 text-[11px] text-text-placeholder transition-colors hover:bg-bg-hover hover:text-text-secondary" onclick={() => void taskDetail.copyField("payload", taskRunDetail!.payload)} title={m.task_copy_payload({}, { locale })}>
-									{#if taskCopiedField === "payload"}<Check class="h-3 w-3 text-success-soft" /><span class="text-success-soft">{m.copied({}, { locale })}</span>{:else}<Copy class="h-3 w-3" /><span>{m.copy({}, { locale })}</span>{/if}
-								</button>
+						{#if !actionName}
+							<div class="space-y-2">
+								<div class="flex items-center justify-between gap-3">
+									<div class="text-[11px] font-medium uppercase tracking-wider text-text-placeholder">{m.task_section_payload({}, { locale })}</div>
+									<button type="button" class="inline-flex min-h-8 items-center gap-1 rounded-[4px] px-2 py-1 text-[11px] text-text-placeholder transition-colors hover:bg-bg-hover hover:text-text-secondary" onclick={() => void taskDetail.copyField("payload", taskRunDetail!.payload)} title={m.task_copy_payload({}, { locale })}>
+										{#if taskCopiedField === "payload"}<Check class="h-3 w-3 text-success-soft" /><span class="text-success-soft">{m.copied({}, { locale })}</span>{:else}<Copy class="h-3 w-3" /><span>{m.copy({}, { locale })}</span>{/if}
+									</button>
+								</div>
+								<pre class="max-h-[48vh] overflow-auto rounded-[7px] bg-bg-elevated/35 p-3 text-[12px] font-mono leading-relaxed text-text-secondary whitespace-pre-wrap break-all sm:max-h-[520px]">{displaySafeJson(taskRunDetail.payload, { locale })}</pre>
 							</div>
-							<pre class="max-h-[48vh] overflow-auto rounded-[7px] bg-bg-elevated/35 p-3 text-[12px] font-mono leading-relaxed text-text-secondary whitespace-pre-wrap break-all sm:max-h-[520px]">{displaySafeJson(taskRunDetail.payload, { locale })}</pre>
-						</div>
+						{/if}
 
-						{#if rawResult}
+						{#if rawResult && !actionName}
 							<div class="space-y-2">
 								<div class="flex items-center justify-between gap-3">
 									<div class="text-[11px] font-medium uppercase tracking-wider text-text-placeholder">{m.task_section_result({}, { locale })}</div>

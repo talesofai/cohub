@@ -8,11 +8,15 @@ import {
   canViewOwnTaskRunsAccountWide,
   canViewTaskRunViaAccountScope,
   hasPermission,
+  isTaskRunOwner,
   listAppSessionTaskRunSpaceIds,
 } from "../permissions.js";
 import { taskQueue } from "../tasks.js";
 import { fallbackPublicUserProfile, getProfilesByUuids } from "../user-profiles.js";
-import { sanitizeTaskRunPricingForViewer } from "../task-run-privacy.js";
+import {
+  sanitizeTaskRunPricingForViewer,
+  sanitizeTaskRunProgressForViewer,
+} from "../task-run-privacy.js";
 
 const router = new Hono();
 
@@ -207,7 +211,9 @@ router.get("/:taskId", async (c) => {
   if (!run) return c.json({ message: "task run not found" }, 404);
 
   if (run.spaceId) {
-    const perSpace = await hasPermission(user, "taskrun.view", { spaceId: run.spaceId, sessionId: run.sessionId ?? undefined });
+    const owner = isTaskRunOwner(user, run);
+    const perSpace = owner
+      || await hasPermission(user, "taskrun.view", { spaceId: run.spaceId, sessionId: run.sessionId ?? undefined });
     if (!perSpace && !(await canViewTaskRunViaAccountScope(user, run))) {
       return authzDenied(c);
     }
@@ -217,7 +223,8 @@ router.get("/:taskId", async (c) => {
 
   const job = await taskQueue.getJob(run.jobId).catch(() => null);
   const [hydratedRun] = await hydrateTaskRunUserProfiles([run], { viewerUserId: user?.uuid });
-  return c.json({ run: hydratedRun, progress: job?.progress ?? null });
+  const progress = sanitizeTaskRunProgressForViewer(run, job?.progress ?? null, user?.uuid);
+  return c.json({ run: hydratedRun, progress });
 });
 
 export default router;

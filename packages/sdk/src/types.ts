@@ -5,6 +5,10 @@ import type {
   SessionTurnIndexItem,
   SessionTurnRecord,
   SessionTurnSegmentRecord,
+  MessageToolCallsFile,
+  StoredIntermediateMessage,
+  StoredToolCall,
+  TurnIntermediateMessagesFile,
   SpaceTurnAuthorFilter as ProtocolSpaceTurnAuthorFilter,
   SpaceTurnListItem as ProtocolSpaceTurnListItem,
   SpaceTurnsResponse as ProtocolSpaceTurnsResponse,
@@ -257,6 +261,12 @@ export type BillingDiscountOffer = {
   pricing: BillingDiscountPricing;
 };
 
+export type BillingProductPromotion = {
+  kind: "first_purchase";
+  percentOff: number;
+  endsAt: string | null;
+};
+
 export type BillingProductDisplay = {
   description: string | null;
   benefits: string[];
@@ -292,6 +302,7 @@ export type BillingCatalogProduct = {
   kind: BillingProductKind;
   interval: BillingProductBillingInterval;
   pricing: BillingProductPricing;
+  promotion: BillingProductPromotion | null;
   offer: BillingDiscountOffer | null;
   display: BillingProductDisplay;
   isDefaultPlan: boolean;
@@ -477,6 +488,14 @@ export type BillingCheckoutResult = {
   reused: boolean;
 };
 
+export type BillingCheckoutConfirmation = {
+  productKey: string;
+  settled: boolean;
+  status: string | null;
+  pending: boolean;
+  productName: string | null;
+};
+
 export type BillingPromotionCodePreview = {
   userId: string;
   productKey: string;
@@ -577,6 +596,10 @@ export type {
   MessageRecord,
   SessionTurnRecord,
   SessionTurnIndexItem,
+  MessageToolCallsFile,
+  StoredIntermediateMessage,
+  StoredToolCall,
+  TurnIntermediateMessagesFile,
   SessionForkRecord,
   SessionTurnSegmentRecord,
   CreateGenerationTaskRequest,

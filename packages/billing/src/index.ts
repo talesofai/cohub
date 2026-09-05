@@ -37,6 +37,7 @@ export type {
   BillingProductDisplay,
   BillingProductKind,
   BillingProductPricing,
+  BillingProductPromotion,
   BillingDiscountOffer,
   BillingDiscountOfferRef,
   BillingDiscountPricing,

@@ -21,6 +21,7 @@ import ComposerRuntimeSelector from "$lib/components/composer/ComposerRuntimeSel
 import ComposerSubmitButton from "$lib/components/composer/ComposerSubmitButton.svelte";
 import ComposerSurface from "$lib/components/composer/ComposerSurface.svelte";
 import { mediaLightbox } from "$lib/components/media-lightbox.svelte";
+import SessionChatQuickActions from "$lib/components/SessionChatQuickActions.svelte";
 import SlashCommandMenu, {
 	type SlashCommandMenuItem,
 } from "$lib/components/SlashCommandMenu.svelte";
@@ -37,6 +38,7 @@ import {
 	isMobileComposerInput,
 } from "$lib/composer-keyboard";
 import { isCreateModeCommand } from "$lib/composer-mode-command";
+import type { PromptQuickAction } from "$lib/features/space/modules/prompt-template-controller.svelte";
 import { getLocale } from "$lib/i18n/locale.svelte";
 import { isComposingKeyboardEvent } from "$lib/keyboard";
 import { getCohubAppLinkKey, parseCohubAppUrls } from "$lib/mentions/app";
@@ -96,6 +98,9 @@ type Props = {
 	thinkingLevelLabel?: string | null;
 	/** Compact generation-policy suffix; null/empty hides (Auto). */
 	generationPolicyLabel?: string | null;
+	/** Quick prompt action chips rendered above the composer surface. */
+	quickActions?: PromptQuickAction[];
+	onquickaction?: (action: PromptQuickAction) => void;
 	promptTemplates?: PromptTemplateCatalogEntry[];
 	promptTemplatesLoaded?: boolean;
 	skills?: SkillCatalogEntry[];
@@ -131,6 +136,8 @@ let {
 	currentModel = null,
 	thinkingLevelLabel = null,
 	generationPolicyLabel = null,
+	quickActions = [],
+	onquickaction,
 	promptTemplates = [],
 	promptTemplatesLoaded = true,
 	skills = [],
@@ -1175,6 +1182,17 @@ $effect(() => {
 
 <div class="px-2 pb-[calc(0.75rem+env(safe-area-inset-bottom))] pt-2 sm:px-4 sm:pb-4">
 	<div class={`relative mx-auto transition-[max-width] duration-200 ${isComposerExpanded ? 'max-w-[var(--chat-composer-expanded-max-width)]' : 'max-w-[var(--chat-composer-max-width)]'}`}>
+		{#if quickActions.length > 0}
+			<div class="mb-2">
+				<SessionChatQuickActions
+					actions={quickActions}
+					disabled={disabled || sending}
+					onsend={(action) => {
+						onquickaction?.(action);
+					}}
+				/>
+			</div>
+		{/if}
 		{#if streamError}
 			{#if showBillingAction}
 				<button type="button" class="mb-3 flex w-full cursor-pointer items-center justify-between gap-3 rounded-2xl border border-error-soft/25 bg-error-bg px-3 py-2 text-left text-[11px] text-error-soft transition-colors hover:border-error-soft/40 hover:bg-error-bg/80 focus:outline-none focus:ring-1 focus:ring-error-soft/40" onclick={() => billingConversion.openFallbackHard()}>

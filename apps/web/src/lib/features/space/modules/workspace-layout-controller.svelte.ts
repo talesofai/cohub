@@ -30,6 +30,7 @@ function snapshotPreviewWidth(snapshot: WorkspaceLayoutSnapshot | null) {
 export function createWorkspaceLayoutController(options: {
 	getIsCompact: () => boolean;
 	getWorkspaceBodyEl: () => HTMLDivElement | null;
+	getMainPanelWidth: () => number | null;
 	getFilesAvailable: () => boolean;
 	getHasPreview: () => boolean;
 }) {
@@ -184,8 +185,15 @@ export function createWorkspaceLayoutController(options: {
 			exitPresentation();
 			return;
 		}
+		// Capture the current split chat width before changing flex geometry so
+		// entering Float does not visibly jump to its stored/default width.
+		const currentMainWidth =
+			presentation === "default" ? options.getMainPanelWidth() : null;
 		// Switching from focus: keep the original restore snapshot.
 		captureSnapshot();
+		if (currentMainWidth !== null && currentMainWidth > 0) {
+			uiState.setImmersiveChatWidth(currentMainWidth);
+		}
 		setPresentation("immersive");
 		immersiveMainVisible = true;
 		uiState.setFilesColumnHidden(false);

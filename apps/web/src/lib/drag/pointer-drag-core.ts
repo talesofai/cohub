@@ -27,7 +27,7 @@ export const POINTER_DRAG_SETTLE_MS = 180;
  */
 export const POINTER_DRAG_CLICK_SUPPRESS_MS = 400;
 
-export type PointerDragItemType = "file" | "dir";
+export type PointerDragItemType = "file" | "dir" | "app";
 
 export type PointerDragItem = {
 	type: PointerDragItemType;
@@ -36,9 +36,13 @@ export type PointerDragItem = {
 	mimeType?: string | null;
 	size?: number;
 	mtimeMs?: number;
+	appId?: string;
+	appRef?: string;
+	appUrl?: string;
+	icon?: string;
 };
 
-export type PointerDragOrigin = "space-file-tree";
+export type PointerDragOrigin = "space-file-tree" | "apps-sidebar";
 
 export type PointerDragPayload = {
 	origin: PointerDragOrigin;
@@ -166,7 +170,7 @@ export function toBoardDropItems(payload: PointerDragPayload): BoardDropItem[] {
 	const items: BoardDropItem[] = [];
 	for (const item of payload.items) {
 		if (item.type !== "file") continue;
-		const path = item.path.replace(/\/$/, "");
+		const path = item.path?.replace(/\/$/, "");
 		if (!path) continue;
 		items.push({
 			path,

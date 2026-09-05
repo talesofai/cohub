@@ -3,8 +3,10 @@ import { buildAppPwaMeta, resolvePublicAppStartUrl } from "$lib/app-pwa";
 import { loadPublicAppDetail } from "$lib/server/public-api";
 import { PUBLIC_PAGE_CACHE_CONTROL } from "$lib/server/public-cache";
 
-const THEME_COLOR = "#1F2026";
-const BACKGROUND_COLOR = "#1a1a1a";
+// Manifest colors are a cross-platform install/cold-start fallback. The
+// running shell synchronizes theme-color from the computed app background.
+const THEME_COLOR = "#F8F8FA";
+const BACKGROUND_COLOR = "#F8F8FA";
 
 function iconMimeType(url: string) {
 	const path = url.split("?")[0]?.split("#")[0]?.toLowerCase() ?? "";

@@ -78,8 +78,8 @@ load → check balance → [has credits? consume] → [empty? purchase] → chec
 1. The App calls `cohub.app.commerce.resolveProducts()`.
 2. The App calls `cohub.app.commerce.getEntitlements()` — returns feature entitlements **and** credit balance in one call.
 3. The user clicks Buy.
-4. The App calls `cohub.app.commerce.purchase()`.
-5. The outer host creates the order with a stable purchase attempt ID and redirects to checkout. Retries of the same attempt resolve to the original Billing order.
+4. The App calls `cohub.app.commerce.purchase()` from the user's purchase action.
+5. The outer host creates the order with a stable purchase attempt ID and immediately redirects to checkout. Retries of the same attempt resolve to the original Billing order. The purchase call must not run automatically during app initialization.
 6. The provider returns to the Work public URL with `cohub_checkout` and, when available, `cohub_order`.
 7. The App calls `cohub.app.commerce.getCheckoutState()`.
 8. If an `orderId` is available, the App calls `cohub.app.commerce.getOrder(orderId)`.

@@ -169,12 +169,12 @@ $effect(() => {
 	inert={desktopCollapsed ? true : undefined}
 >
 	{#if desktopMounted}
-		<div class="panel-shell-inner relative" style={`width: ${desktopWidth}px`}>
-			<div class="panel-shell-fade">
-				<div class="flex h-10 items-center gap-1 border-b border-border-subtle px-2" role="tablist" aria-label="Workspace resources">
-					<button type="button" role="tab" aria-selected={activePanel === "files"} class="inline-flex h-7 items-center gap-1.5 rounded-[5px] px-2 text-[11px] font-medium transition-colors {activePanel === "files" ? "bg-bg-elevated text-text-primary" : "text-text-tertiary hover:text-text-secondary"}" onclick={() => selectPanel("files")}><Files class="h-3.5 w-3.5" />Files</button>
-					<button type="button" role="tab" aria-selected={activePanel === "apps"} class="inline-flex h-7 items-center gap-1.5 rounded-[5px] px-2 text-[11px] font-medium transition-colors {activePanel === "apps" ? "bg-bg-elevated text-text-primary" : "text-text-tertiary hover:text-text-secondary"}" onclick={() => selectPanel("apps")}><PanelsTopLeft class="h-3.5 w-3.5" />Apps</button>
-				</div>
+		<div class="panel-shell-inner relative flex flex-col" style={`width: ${desktopWidth}px`}>
+			<div class="flex h-10 shrink-0 items-center gap-1 border-b border-border-subtle px-2" role="tablist" aria-label="Workspace resources">
+				<button type="button" role="tab" aria-selected={activePanel === "files"} class="inline-flex h-7 items-center gap-1.5 rounded-[5px] px-2 text-[11px] font-medium transition-colors {activePanel === "files" ? "bg-bg-elevated text-text-primary" : "text-text-tertiary hover:text-text-secondary"}" onclick={() => selectPanel("files")}><Files class="h-3.5 w-3.5" />Files</button>
+				<button type="button" role="tab" aria-selected={activePanel === "apps"} class="inline-flex h-7 items-center gap-1.5 rounded-[5px] px-2 text-[11px] font-medium transition-colors {activePanel === "apps" ? "bg-bg-elevated text-text-primary" : "text-text-tertiary hover:text-text-secondary"}" onclick={() => selectPanel("apps")}><PanelsTopLeft class="h-3.5 w-3.5" />Apps</button>
+			</div>
+			<div class="panel-shell-fade min-h-0 flex-1">
 				{#if activePanel === "files"}
 				<SpaceFileSidebar
 					{nodes}

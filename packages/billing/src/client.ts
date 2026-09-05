@@ -7,6 +7,7 @@ import {
   type BillingBalanceActivityListInput,
   type BillingCatalog,
   type BillingCheckoutInput,
+  type BillingCheckoutConfirmation,
   type BillingCheckoutResult,
   type BillingCreditStatus,
   type BillingCreditUnit,
@@ -300,6 +301,16 @@ export function createDisabledBillingOperations(
         status,
         reason: status.reason ?? "Billing integration is not configured",
       });
+    },
+
+    async resolveCheckoutConfirmation(input: BillingUserRef & { productKey: string; checkoutId: string }): Promise<BillingCheckoutConfirmation> {
+      return {
+        productKey: input.productKey,
+        settled: false,
+        status: null,
+        pending: false,
+        productName: null,
+      };
     },
 
     async cancelSubscriptionCheckout(): Promise<BillingSubscriptionHistoryStatus> {

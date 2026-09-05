@@ -26,7 +26,12 @@ import { VoiceApi } from "./voice-input.js";
 import { AppSurfaceApi } from "./app-surface.js";
 import { LocalAgentApi } from "./apis/local-agent.js";
 import type { AppComposerChip } from "@cohub/protocol/app-surface";
-import { resolveApiBaseUrl, resolveWebsocketUrl } from "./environment.js";
+import {
+  resolveApiBaseUrl,
+  resolveExecutionAppId,
+  resolveExecutionToken,
+  resolveWebsocketUrl,
+} from "./environment.js";
 import {
   createSlugAppIdResolver,
   createAppRuntime,
@@ -107,7 +112,11 @@ export class CohubClient {
         : undefined;
     const appTransport = resolveAppTransport(appRuntime, appIdResolver);
     this.appRuntime = createAppRuntime(appTransport, appRuntime?.appId, appIdResolver);
-    const getAccessToken = options.getAccessToken ?? ((tokenOptions?: { forceRefresh?: boolean }) => this.appRuntime.getAccessToken(tokenOptions));
+    const executionToken = resolveExecutionToken();
+    const getAccessToken = options.getAccessToken
+      ?? (executionToken
+        ? () => executionToken
+        : (tokenOptions?: { forceRefresh?: boolean }) => this.appRuntime.getAccessToken(tokenOptions));
     const resolvedOptions = { ...options, getAccessToken };
     this.transport = new HttpTransport(resolvedOptions);
     this.websocketClient = createWebsocketClient({
@@ -188,6 +197,13 @@ export class CohubClient {
       /** Remove context previously attached by this app. */
       clearChip: (key: string) => this.app.surface.clearComposerChip(key),
     },
+    actions: {
+      run: async (input: { action: string; input?: unknown }) => {
+        const context = await this.appRuntime.context();
+        if (!context?.app?.id) throw new Error("App context is unavailable — not running inside a published app runtime.");
+        return this.apps.runAction(context.app.id, input.action, input.input);
+      },
+    },
     commerce: {
       resolveProducts: async (input: { productKeys: string[] }) => {
         const context = await this.appRuntime.context();
@@ -196,13 +212,15 @@ export class CohubClient {
       },
       getEntitlements: async () => {
         const context = await this.appRuntime.context();
-        if (!context?.app?.id) throw new Error("App context is unavailable — not running inside a published app runtime.");
-        return this.appCommerce.getEntitlements(context.app.id);
+        const appId = context?.app?.id || resolveExecutionAppId();
+        if (!appId) throw new Error("App context is unavailable — not running inside a published app runtime or App Action.");
+        return this.appCommerce.getEntitlements(appId);
       },
       consumeCredits: async (input: { amount: number; operationId: string; reason?: string }) => {
         const context = await this.appRuntime.context();
-        if (!context?.app?.id) throw new Error("App context is unavailable — not running inside a published app runtime.");
-        return this.appCommerce.consumeCredits(context.app.id, input);
+        const appId = context?.app?.id || resolveExecutionAppId();
+        if (!appId) throw new Error("App context is unavailable — not running inside a published app runtime or App Action.");
+        return this.appCommerce.consumeCredits(appId, input);
       },
       purchase: async (input: { productKey: string; purchaseAttemptId?: string }) =>
         this.appRuntime.purchase(input),

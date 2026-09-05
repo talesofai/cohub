@@ -1,3 +1,4 @@
+import { syncSystemChromeColor } from "$lib/system-chrome";
 import {
 	getSystemTheme,
 	isThemeMode,
@@ -21,9 +22,7 @@ function applyTheme(mode: ThemeMode, skipDom = false) {
 	_resolved = resolved;
 	if (!skipDom && typeof document !== "undefined") {
 		document.documentElement.setAttribute("data-theme", resolved);
-		document
-			.querySelector('meta[name="theme-color"]')
-			?.setAttribute("content", THEME_COLOR[resolved]);
+		syncSystemChromeColor(THEME_COLOR[resolved]);
 	}
 }
 
@@ -52,6 +51,12 @@ if (typeof window !== "undefined") {
 	// app.html inline script already set data-theme before JS loads —
 	// skip redundant DOM write here, only sync reactive state.
 	applyTheme(initial, true);
+	// Custom space styles load after the shell boots; the space-style-changed
+	// event below re-syncs the color once those overrides are applied.
+	syncSystemChromeColor(THEME_COLOR[resolveThemeMode(initial)]);
+	window.addEventListener("cohub:space-style-changed", () => {
+		syncSystemChromeColor(THEME_COLOR[_resolved]);
+	});
 
 	// React to system preference changes (only affects "system" mode).
 	// applyTheme("system") resolves via getSystemTheme() and updates both

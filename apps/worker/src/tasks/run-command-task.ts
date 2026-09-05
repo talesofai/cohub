@@ -16,7 +16,10 @@ import { config } from "../config.js";
 import { getPromptTemplateService } from "../prompt-templates.js";
 import { getSkillService } from "../skills.js";
 import { getSessionDomainServices } from "../session-services.js";
-import { parseRunCommandExecutionContext } from "./run-command-context.js";
+import {
+  appActionFailureMessage,
+  parseRunCommandExecutionContext,
+} from "./run-command-context.js";
 import { registerTask } from "./registry.js";
 
 const agentQueue = createAgentTurnsQueue<AgentRunCommandJobData, AgentRunCommandJobResult>(config.bullmqRedisUrl, "cohub-worker-run-command");
@@ -190,15 +193,22 @@ registerTask(RUN_COMMAND_TASK_TYPE, async (job) => {
   if (!command) throw new Error("command is required for run_command task");
 
   const taskRunId = getJobId(job);
-  const userId = payload.userId?.trim() || null;
+  const userId = typeof data.actorUserId === "string" && data.actorUserId.trim()
+    ? data.actorUserId.trim()
+    : payload.userId?.trim() || null;
   const agentJob = await enqueueAgentRunCommandJob(agentQueue, {
     spaceId,
     sessionId: payload.sessionId ?? null,
     taskRunId,
     command,
     cwd,
+    ...(typeof data.source === "string" ? { source: data.source } : {}),
     ...(timeout !== undefined ? { timeout } : {}),
     ...(userId ? { userId } : {}),
+    ...(typeof data.viewerUserId === "string" ? { viewerUserId: data.viewerUserId } : {}),
+    ...(typeof data.appId === "string" ? { appId: data.appId } : {}),
+    ...(typeof data.appVersionId === "string" ? { appVersionId: data.appVersionId } : {}),
+    ...(typeof data.action === "string" ? { action: data.action } : {}),
     ...(sourceClientId ? { sourceClientId } : {}),
     ...(model ? { model } : {}),
     ...(generationPolicy ? { generationPolicy } : {}),
@@ -226,6 +236,8 @@ registerTask(RUN_COMMAND_TASK_TYPE, async (job) => {
   try {
     const result = await agentJob.waitUntilFinished(queueEvents, ((timeout ?? RUN_COMMAND_TIMEOUT_SECONDS) + 60) * 1000) as AgentRunCommandJobResult;
     await mirrorAgentProgress(job, agentJob.id ?? `run-command-${taskRunId}`);
+    const failureMessage = appActionFailureMessage(data.source, result);
+    if (failureMessage) throw new Error(failureMessage);
     await notifyRunCommandCompletion({ payload, taskRunId, command, result, notify, origin, sourceClientId });
     return result;
   } catch (error) {

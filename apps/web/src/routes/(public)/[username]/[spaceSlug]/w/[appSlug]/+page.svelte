@@ -152,9 +152,9 @@ $effect(() => {
 					? Number((err as { status?: unknown }).status)
 					: 0;
 			clientError =
-				status === 401 || status === 403
+				status === 401
 					? "Sign in to view this App."
-					: status === 404
+					: status === 403 || status === 404
 						? "App not found."
 						: "Failed to load this App.";
 		});

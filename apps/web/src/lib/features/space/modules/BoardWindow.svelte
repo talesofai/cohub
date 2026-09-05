@@ -1,4 +1,6 @@
 <script lang="ts">
+import type { AppNavigationOpenMessage } from "@cohub/protocol/app-navigation";
+import type { AppRuntimeShellContext } from "@neta-art/cohub";
 import type { BoardDocument } from "@neta-art/cohub/board";
 import type {
 	BoardAutomationActivity,
@@ -32,6 +34,14 @@ type Props = {
 	board: InlineBoardPanelState;
 	windows: Window[];
 	spaceId: string;
+	shell?: AppRuntimeShellContext;
+	onNavigationOpen?: (message: AppNavigationOpenMessage) => Promise<{
+		handled: boolean;
+		reason?: "unsupported" | "invalid_target" | "inaccessible" | "timeout";
+		call?:
+			| { ok: true; result?: unknown }
+			| { ok: false; code: string; message: string };
+	}>;
 	active?: boolean;
 	immersive: boolean;
 	isMobile: boolean;
@@ -62,6 +72,8 @@ let {
 	board,
 	windows,
 	spaceId,
+	shell,
+	onNavigationOpen,
 	active = true,
 	immersive,
 	isMobile,
@@ -138,6 +150,8 @@ const boardRuntimeModulePromise = $derived.by(() => {
 						document={board.document}
 						runtime={board.runtime}
 						spaceId={spaceId}
+						shell={shell}
+						onNavigationOpen={onNavigationOpen}
 						{active}
 						{immersive}
 						{isMobile}

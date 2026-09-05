@@ -1,4 +1,5 @@
 import type { SpacePublicEndpoints } from "@cohub/protocol/ports";
+import type { ContentBlock } from "@cohub/protocol/core";
 import { BoardAuthoringItemSchema } from "@cohub/protocol";
 import type {
   PublicFileCreateUploadInput,
@@ -42,6 +43,10 @@ import type {
   SessionTurnWindowResponse,
   SessionTurnsPaginatedResponse,
   SessionTurnSignedUrlsResponse,
+  MessageToolCallsFile,
+  StoredIntermediateMessage,
+  StoredToolCall,
+  TurnIntermediateMessagesFile,
   SessionRecord,
   SpaceAccessPolicy,
   SpaceCheckpointDetailResponse,
@@ -102,6 +107,30 @@ import type {
 } from "../types.js";
 import { SpaceInvitationsApi } from "./invitations.js";
 
+
+async function fetchTurnObject<T>(url: string, fetchImpl: Fetch = globalThis.fetch, signal?: AbortSignal): Promise<T> {
+  const response = await fetchImpl(url, { signal });
+  if (!response.ok) throw new Error(`Failed to fetch turn object: HTTP ${response.status}`);
+  return response.json() as Promise<T>;
+}
+
+function extractToolCalls(content: ContentBlock[]): StoredToolCall[] {
+  const byId = new Map<string, StoredToolCall>();
+  for (const block of content) {
+    if (block.type === "tool_use") {
+      byId.set(block.id, { id: block.id, name: block.name, input: block.input, meta: block._meta ?? null, result: null });
+    }
+  }
+  for (const block of content) {
+    if (block.type !== "tool_result") continue;
+    const existing = byId.get(block.tool_use_id);
+    if (existing) byId.set(block.tool_use_id, {
+      ...existing,
+      result: { content: block.content, isError: Boolean(block.is_error), meta: block._meta ?? null },
+    });
+  }
+  return [...byId.values()];
+}
 
 const getFilenameFromContentDisposition = (value: string | null) => {
   if (!value) return null;
@@ -634,10 +663,50 @@ class SessionMessagesClient {
 }
 
 class SessionTurnsClient {
+  readonly intermediate: {
+    get: (turnId: string, messagesObjectKey?: string | null, options?: { fetch?: Fetch; signal?: AbortSignal }) => Promise<TurnIntermediateMessagesFile | null>;
+    getToolCalls: (turnId: string, message: StoredIntermediateMessage, options?: { fetch?: Fetch; signal?: AbortSignal }) => Promise<MessageToolCallsFile | null>;
+  };
+
   constructor(
     private readonly transport: HttpTransport,
     private readonly sessionId: string,
-  ) {}
+    private readonly spaceId: string,
+  ) {
+    this.intermediate = {
+      get: (turnId, messagesObjectKey, options) => this.getIntermediate(turnId, messagesObjectKey, options),
+      getToolCalls: (turnId, message, options) => this.getToolCalls(turnId, message, options),
+    };
+  }
+
+  private async getIntermediate(turnId: string, messagesObjectKey?: string | null, options?: { fetch?: Fetch; signal?: AbortSignal }) {
+    const objectKey = messagesObjectKey === undefined
+      ? (await this.get(turnId, options?.fetch)).turn.intermediateIndex?.messagesObjectKey
+      : messagesObjectKey;
+    if (!objectKey) return null;
+    const { urls } = await this.signedUrls(turnId, [objectKey], options?.fetch);
+    const url = urls[objectKey];
+    if (!url) throw new Error("Missing signed URL for intermediate messages");
+    return fetchTurnObject<TurnIntermediateMessagesFile>(url, options?.fetch, options?.signal);
+  }
+
+  private async getToolCalls(turnId: string, message: StoredIntermediateMessage, options?: { fetch?: Fetch; signal?: AbortSignal }) {
+    if (!message.toolCallsObjectKey) {
+      const toolCalls = extractToolCalls(message.content);
+      return toolCalls.length === 0 ? null : {
+        version: 1 as const,
+        spaceId: this.spaceId,
+        sessionId: this.sessionId,
+        turnId,
+        messageId: message.id,
+        toolCalls,
+      };
+    }
+    const { urls } = await this.signedUrls(turnId, [message.toolCallsObjectKey], options?.fetch);
+    const url = urls[message.toolCallsObjectKey];
+    if (!url) throw new Error("Missing signed URL for tool calls");
+    return fetchTurnObject<MessageToolCallsFile>(url, options?.fetch, options?.signal);
+  }
 
   listPaginated(
     options?: {
@@ -710,13 +779,14 @@ class SessionTurnsClient {
     );
   }
 
-  signedUrls(turnId: string, objectKeys: string[]) {
+  signedUrls(turnId: string, objectKeys: string[], customFetch?: Fetch) {
     return this.transport.request<SessionTurnSignedUrlsResponse>(
       `/api/sessions/${this.sessionId}/turns/${turnId}/signed-urls`,
       {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ objectKeys }),
+        fetch: customFetch,
       },
     );
   }
@@ -828,7 +898,7 @@ export class SessionClient {
     websocketClient: WebsocketClient | null,
   ) {
     this.messages = new SessionMessagesClient(transport, id);
-    this.turns = new SessionTurnsClient(transport, id);
+    this.turns = new SessionTurnsClient(transport, id, spaceId);
     this.realtime = new SessionRealtimeClient(websocketClient, spaceId, id);
     this.generation = new SessionGenerationStreamClient(
       websocketClient,

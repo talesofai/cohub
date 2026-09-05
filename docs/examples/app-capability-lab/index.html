@@ -13,7 +13,7 @@
       <div>
         <p class="kicker">App SDK Lab</p>
         <h1>Build an App, inspect it like a platform engineer.</h1>
-        <p class="sub">Exercise live App context, a stateful App Surface, scoped reads, viewer authorization, prompt submission, account-level data access, and the minimal commerce loop.</p>
+        <p class="sub">Exercise live App context, a stateful App Surface, owner-funded App Actions, scoped reads, viewer authorization, prompt submission, account-level data access, and the minimal commerce loop.</p>
       </div>
       <aside class="stamp" aria-label="Runtime status">
         <div class="stamp-row"><span class="label">Mode</span><span class="value" id="modeStamp">Booting</span></div>
@@ -39,6 +39,22 @@
             <div class="kv"><dt>Client</dt><dd id="clientState">not ready</dd></div>
             <div class="kv"><dt>Token</dt><dd id="tokenState">empty</dd></div>
           </dl>
+          <section class="environment" aria-labelledby="environmentTitle">
+            <div class="environment-head">
+              <div>
+                <div class="panel-note" id="environmentTitle">Live shell environment</div>
+                <div class="environment-path mono"><span id="shellSpacePath">space</span><span>/</span><span id="shellSessionPath">session</span><span>/</span><span id="shellTurnPath">turn</span></div>
+              </div>
+              <div class="status"><span class="dot warn" id="sShell"></span><span id="tShell">not loaded</span></div>
+            </div>
+            <dl class="environment-grid">
+              <div class="kv"><dt>Surface</dt><dd id="shellSurface">unavailable</dd></div>
+              <div class="kv"><dt>Space</dt><dd id="shellSpace" class="mono">none</dd></div>
+              <div class="kv"><dt>Session</dt><dd id="shellSession" class="mono">none</dd></div>
+              <div class="kv"><dt>Turn</dt><dd id="shellTurn" class="mono">none</dd></div>
+            </dl>
+            <div class="environment-updated" id="shellUpdated">Waiting for a context snapshot</div>
+          </section>
           <div>
             <div class="panel-note">App scopes</div>
             <div class="chips" id="appScopes"><span class="chip">none</span></div>
@@ -107,9 +123,11 @@ const space = client.space(context.space.id);</pre>
               <article class="probe"><div><h2>Directory assets</h2><p>Loads <code>styles.css</code>, <code>app.js</code>, and <code>assets/lab-manifest.json</code> through relative paths.</p></div><div class="probe-row"><button id="assetProbe">Probe</button><span class="status"><span class="dot" id="sAsset"></span><span id="tAsset">idle</span></span></div></article>
               <article class="probe"><div><h2>Import SDK</h2><p>Loads <code>@neta-art/cohub</code> from an ESM CDN with no bundler.</p></div><div class="probe-row"><button id="importSdk">Import</button><span class="status"><span class="dot" id="sImport"></span><span id="tImport">idle</span></span></div></article>
               <article class="probe"><div><h2>Create client</h2><p>Calls <code>createCohubClient()</code>. The SDK supplies App runtime tokens by default.</p></div><div class="probe-row"><button id="createClient">Create</button><span class="status"><span class="dot" id="sClient"></span><span id="tClient">idle</span></span></div></article>
-              <article class="probe"><div><h2>SDK context</h2><p>Calls <code>client.context()</code> and renders App, Space, and permission metadata.</p></div><div class="probe-row"><button id="sdkContext">Probe</button><span class="status"><span class="dot" id="sContext"></span><span id="tContext">idle</span></span></div></article>
+              <article class="probe"><div><h2>SDK context</h2><p>Calls <code>client.context()</code> and renders App, invocation, shell, and permission metadata.</p></div><div class="probe-row"><button id="sdkContext">Probe</button><span class="status"><span class="dot" id="sContext"></span><span id="tContext">idle</span></span></div></article>
               <article class="probe state-probe"><div><h2>Live App state</h2><p>Callable Surface methods update this counter without recreating the App iframe. Try <code>counter.increment</code> repeatedly from the App command line.</p><div class="state-value" id="surfaceCounter">0</div><div class="state-meta" id="surfaceStateMeta">Waiting for App Surface</div></div><div class="probe-row"><button type="button" id="incrementState">Increment</button><button type="button" class="ghost" id="resetState">Reset</button></div></article>
+              <article class="probe shell-probe"><div><h2>Shell context events</h2><p>Switch Space, Session, or the viewed Turn in the Cohub shell. This view updates from <code>onContextChanged()</code> without polling.</p><div class="shell-event-line"><span class="pulse-mark"></span><span id="shellEventSummary">Listening for shell changes</span></div></div><div class="probe-row"><span class="status"><span class="dot warn" id="sShellProbe"></span><span id="tShellProbe">listening</span></span></div></article>
               <article class="probe"><div><h2>Runtime wire tap</h2><p>Calls the same parent protocol directly to compare SDK behavior with the wire.</p></div><div class="probe-row"><button id="wireContext">Probe</button><span class="status"><span class="dot" id="sWire"></span><span id="tWire">idle</span></span></div></article>
+              <article class="probe"><div><h2>App Action</h2><p>Runs either <code>inspect-ts.ts</code> with Node or <code>inspect-bash.sh</code> with Bash as the App owner, then reads the existing Task Run as the viewer. No viewer capability grant is requested.</p><pre class="output mono" id="actionOutput">No Action run yet.</pre></div><div class="probe-row"><button id="runActionTs">Run TS</button><button class="ghost" id="runActionBash">Run Bash</button><span class="status"><span class="dot" id="sAction"></span><span id="tAction">idle</span></span></div></article>
               <article class="probe"><div><h2>Token mint</h2><p>Uses <code>client.context()</code> for identity and the App runtime token for payload inspection.</p></div><div class="probe-row"><button id="getToken">Get token</button><button class="ghost" id="refreshToken">Refresh</button><span class="status"><span class="dot" id="sToken"></span><span id="tToken">idle</span></span></div></article>
               <article class="probe"><div><h2>Space config</h2><p>Calls <code>space.getConfig()</code>. Expects <code>space.view</code>.</p></div><div class="probe-row"><button id="spaceConfig">Probe</button><span class="status"><span class="dot" id="sConfig"></span><span id="tConfig">idle</span></span></div></article>
               <article class="probe"><div><h2>File tree</h2><p>Calls <code>space.files.list(path)</code>. Expects <code>file.view</code>.</p></div><div class="probe-row"><button id="fileTree">Probe</button><span class="status"><span class="dot" id="sFiles"></span><span id="tFiles">idle</span></span></div></article>

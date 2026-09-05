@@ -2,6 +2,14 @@
 set -euo pipefail
 
 : "${UPLOAD_ROOT:?UPLOAD_ROOT is required}"
+: "${MATERIALIZE_MODE:=replace}"
+case "$MATERIALIZE_MODE" in
+  replace|stage) ;;
+  *)
+    echo "invalid materialize mode" >&2
+    exit 2
+    ;;
+esac
 
 b64_decode() {
   if base64 --help 2>&1 | grep -q -- '-d'; then
@@ -13,8 +21,14 @@ b64_decode() {
 
 root_real="$(mkdir -p "$UPLOAD_ROOT" && cd "$UPLOAD_ROOT" && pwd -P)"
 tmp=""
+# Atomic workspace uploads hand these files to fs.write after the download
+# completes. Keep every staged path until the agent has installed it.
+staged=()
 cleanup_tmp() {
-  [ -z "$tmp" ] || rm -f "$tmp"
+  [ -z "$tmp" ] || rm -f -- "$tmp"
+  for staged_path in "${staged[@]}"; do
+    rm -f -- "$staged_path"
+  done
 }
 trap cleanup_tmp EXIT
 
@@ -69,7 +83,19 @@ while IFS=$'\t' read -r rel_b64 expected_size url_b64; do
     exit 3
   fi
 
-  mv -f "$tmp" "$target"
-  tmp=""
-  printf 'uploaded\t%s\t%s\n' "$relative_path" "$target"
+  if [ "$MATERIALIZE_MODE" = "stage" ]; then
+    staged+=("$tmp")
+    printf 'staged\t%s\t%s\t%s\n' "$relative_path" "$target" "$tmp"
+    tmp=""
+  else
+    mv -f "$tmp" "$target"
+    tmp=""
+    printf 'uploaded\t%s\t%s\n' "$relative_path" "$target"
+  fi
 done
+
+# The agent owns staged files after this point and will remove each source as it
+# is installed (or clean the remaining paths on a conflict).
+if [ "$MATERIALIZE_MODE" = "stage" ]; then
+  staged=()
+fi

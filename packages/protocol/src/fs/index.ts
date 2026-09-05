@@ -93,6 +93,16 @@ export type SpaceFsVersion = {
 };
 
 /**
+ * Version captured for an upload target when the upload is planned. A missing
+ * target is represented explicitly so materialization can use atomic create
+ * semantics instead of overwriting a file created while the upload was in
+ * flight.
+ */
+export type SpaceFsUploadTargetVersion =
+  | { exists: false }
+  | { exists: true; size: number; mtimeMs: number };
+
+/**
  * Compare file versions at the integer-millisecond precision carried by every
  * filesystem transport. Node may expose fractional milliseconds while the Go
  * sandbox protocol uses Unix milliseconds, so comparing the raw values would

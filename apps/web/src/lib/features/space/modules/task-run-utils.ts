@@ -1,4 +1,5 @@
 import type { ContentBlock } from "@cohub/protocol/core";
+import { APP_ACTION_EXECUTION_SOURCE } from "@cohub/protocol/task";
 import type { TaskRunRecord } from "@neta-art/cohub";
 import { toIntlTag } from "$lib/i18n/format";
 import type { Locale } from "$lib/i18n/locale";
@@ -210,13 +211,25 @@ function contentBlocksFrom(value: unknown): ContentBlock[] {
 	return [];
 }
 
+function appActionContent(content: ContentBlock[]): ContentBlock[] {
+	return content.map((block) => {
+		if (block.type !== "tool_use") return block;
+		const input = { ...block.input };
+		delete input.command;
+		const meta = block._meta ? { ...block._meta } : undefined;
+		if (meta) delete meta.command;
+		return { ...block, input, _meta: meta };
+	});
+}
+
 export function runCommandContent(
 	run: TaskRunRecord,
 	progress: unknown,
 ): ContentBlock[] {
 	const resultContent = contentBlocksFrom(run.result);
-	if (resultContent.length > 0) return resultContent;
-	return contentBlocksFrom(progress);
+	const content =
+		resultContent.length > 0 ? resultContent : contentBlocksFrom(progress);
+	return appActionName(run) ? appActionContent(content) : content;
 }
 
 export function taskOutputContent(
@@ -320,6 +333,19 @@ export function taskContextLabel(run: TaskRunRecord, locale?: Locale): string {
 
 export function taskIsStreaming(run: TaskRunRecord): boolean {
 	return run.status === "pending" || run.status === "running";
+}
+
+export function appActionName(
+	run: Pick<TaskRunRecord, "payload">,
+): string | null {
+	const payload = asRecord(run.payload);
+	const data = asRecord(payload?.data);
+	const action = data?.action;
+	return data?.source === APP_ACTION_EXECUTION_SOURCE &&
+		typeof action === "string" &&
+		action.trim()
+		? action.trim()
+		: null;
 }
 
 export function runCommandPayload(run: TaskRunRecord) {

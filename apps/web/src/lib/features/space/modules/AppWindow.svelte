@@ -1,6 +1,7 @@
 <script lang="ts">
 import type { AppNavigationOpenMessage } from "@cohub/protocol/app-navigation";
 import type { AppComposerChip } from "@cohub/protocol/app-surface";
+import type { AppRuntimeShellContext } from "@neta-art/cohub";
 import { ExternalLink, Loader2, RefreshCw } from "lucide-svelte";
 import AppSurface from "$lib/components/app/AppSurface.svelte";
 import CenteredLoading from "$lib/components/CenteredLoading.svelte";
@@ -14,6 +15,7 @@ import type { Window } from "./windows";
 
 type Props = {
 	preview: InlineAppPreview;
+	shell: AppRuntimeShellContext;
 	windows: Window[];
 	immersive: boolean;
 	isMobile: boolean;
@@ -36,6 +38,7 @@ type Props = {
 
 const {
 	preview,
+	shell,
 	windows,
 	immersive,
 	isMobile,
@@ -161,6 +164,7 @@ const isDisabled = $derived(detail?.app.status === "disabled");
 					content={detail.content}
 					{launchState}
 					invocation={preview.invocation}
+					{shell}
 					onSurfaceHost={handleSurfaceHost}
 					onComposerChip={handleComposerChip}
 					onNavigationOpen={onNavigationOpen}

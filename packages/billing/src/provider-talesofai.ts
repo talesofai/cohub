@@ -50,9 +50,11 @@ import {
   type BillingCatalog,
   type BillingCatalogProduct,
   type BillingCheckoutInput,
+  type BillingCheckoutConfirmation,
   type BillingCheckoutResult,
   type BillingDiscountOffer,
   type BillingDiscountPricing,
+  type BillingProductPromotion,
   type BillingProductCreditBenefit,
   type BillingCreditBalance,
   type BillingCreditExpiryGroup,
@@ -130,12 +132,14 @@ type ResolvedCheckoutDiscount = {
 const FIRST_PURCHASE_MARKER = "cohub_first_purchase_default_v1";
 const FIRST_PURCHASE_PRODUCT_KEY = "cohub_first_purchase_product_key";
 const FIRST_SUBSCRIPTION_OFFER_KEY = "cohub-first-subscription-v1";
+const CHECKOUT_RETURN_PARAM = "cohub_billing";
+const CHECKOUT_PRODUCT_PARAM = "cohub_billing_product";
 const MAX_PROMOTION_CODE_LENGTH = 256;
 
 const ENSURE_CUSTOMER_CACHE_TTL_MS = 5 * 60 * 1000;
 const BILLING_STATIC_CATALOG_CACHE_TTL_SECONDS = 6 * 60 * 60;
 const FIRST_PURCHASE_CAMPAIGN_CACHE_TTL_SECONDS = 60;
-const BILLING_OFFER_PREVIEW_CACHE_TTL_SECONDS = 15;
+const BILLING_OFFER_PREVIEW_CACHE_TTL_SECONDS = 60;
 const BILLING_PURCHASE_FACTS_CACHE_TTL_SECONDS = 15;
 const BILLING_CATALOG_APP_NAME = "cohub";
 const CHECKOUT_LOCK_TTL_MS = 30_000;
@@ -794,14 +798,33 @@ function checkoutSelectionKey(input: BillingCheckoutInput): string {
   return createHash("sha256").update(selection).digest("hex");
 }
 
+/**
+ * A first-purchase Discount must be automatic (no code), a one-off percentage
+ * and limited to one redemption per customer. The percentage itself is read
+ * from the Discount so operators can retune the campaign without a deploy.
+ */
 function isValidFirstPurchaseDiscount(discount: Discount): boolean {
   return (
     discount.code_preview === null &&
     discount.effect.type === "percentage" &&
-    discount.effect.percentage_bps === 5_000 &&
+    typeof discount.effect.percentage_bps === "number" &&
+    discount.effect.percentage_bps >= 100 &&
+    discount.effect.percentage_bps <= 10_000 &&
     discount.duration.type === "once" &&
     discount.max_redemptions_per_customer === 1
   );
+}
+
+function firstPurchasePromotion(
+  campaign: FirstPurchaseCampaign | null,
+): BillingProductPromotion | null {
+  if (!campaign) return null;
+  const bps = campaign.discount.effect.percentage_bps ?? 0;
+  return {
+    kind: "first_purchase",
+    percentOff: Math.round(bps / 100),
+    endsAt: campaign.discount.ends_at ?? null,
+  };
 }
 
 function newestDiscount(
@@ -1184,6 +1207,7 @@ function mapCatalogProduct(
       discountLabel: optionalString(pricing.discount_label),
       discountRate: optionalNumber(pricing.discount_rate),
     },
+    promotion: null,
     offer: null,
     display: {
       description: optionalString(display.description) ?? product.description,
@@ -1342,13 +1366,31 @@ function checkoutResultFromSubscription(input: {
   };
 }
 
-function checkoutRedirects(returnUrl: string | undefined) {
-  const resolved =
-    returnUrl && /^https?:\/\//i.test(returnUrl) ? returnUrl : undefined;
+/**
+ * The client hands over one return URL; each redirect gets the outcome
+ * appended as `cohub_billing` so the app can confirm, retry or restore state
+ * without polling the order first.
+ */
+function checkoutRedirects(returnUrl: string | undefined, productKey: string) {
+  if (!returnUrl || !/^https?:\/\//i.test(returnUrl)) {
+    return {
+      success_redirect_url: undefined,
+      failed_redirect_url: undefined,
+      cancel_redirect_url: undefined,
+    };
+  }
+  const withOutcome = (outcome: "success" | "failed" | "cancel") => {
+    const url = new URL(returnUrl);
+    url.searchParams.set(CHECKOUT_RETURN_PARAM, outcome);
+    // The product is server-authoritative (it is the key the checkout was
+    // created for), so the landing page never trusts a client-supplied name.
+    url.searchParams.set(CHECKOUT_PRODUCT_PARAM, productKey);
+    return url.toString();
+  };
   return {
-    success_redirect_url: resolved,
-    failed_redirect_url: resolved,
-    cancel_redirect_url: resolved,
+    success_redirect_url: withOutcome("success"),
+    failed_redirect_url: withOutcome("failed"),
+    cancel_redirect_url: withOutcome("cancel"),
   };
 }
 
@@ -1954,13 +1996,33 @@ export function createTalesofaiBillingOperations(
       },
     );
 
-  const applyAutomaticOffers = async (
-    userId: string,
+  const campaignForProduct = (
+    campaigns: FirstPurchaseCampaigns,
+    product: BillingCatalogProduct,
+  ): FirstPurchaseCampaign | null =>
+    product.kind === "plan"
+      ? campaigns.subscription
+      : (campaigns.addons.get(product.key) ?? null);
+
+  /**
+   * Attaches viewer-independent campaign facts and, for a signed-in user,
+   * the priced automatic offer they are actually eligible for. Campaign
+   * discovery failures degrade to the base catalog instead of failing it.
+   */
+  const applyFirstPurchaseCampaigns = async (
+    userId: string | null,
     products: BillingCatalogProduct[],
   ): Promise<BillingCatalogProduct[]> => {
     try {
       const campaigns = await listFirstPurchaseCampaigns();
-      const hasPlanCampaign = products.some(
+      const promoted = products.map((product) => {
+        const promotion = firstPurchasePromotion(
+          campaignForProduct(campaigns, product),
+        );
+        return promotion ? { ...product, promotion } : product;
+      });
+      if (!userId) return promoted;
+      const hasPlanCampaign = promoted.some(
         (product) => product.kind === "plan" && campaigns.subscription,
       );
       const purchaseFacts = hasPlanCampaign
@@ -1970,8 +2032,13 @@ export function createTalesofaiBillingOperations(
             () => getPurchaseFacts(userId),
           )
         : null;
-      const previews = await Promise.all(
-        products.map(async (product) => {
+      const previews: BillingCatalogProduct[] = [];
+      const previewQueue = [...promoted];
+      const previewWorker = async () => {
+        while (previewQueue.length > 0) {
+          const product = previewQueue.shift();
+          if (!product) return;
+          const previewed = await (async () => {
           const campaign =
             product.kind === "plan"
               ? purchaseFacts?.facts.subscription_purchase.exists === false
@@ -2017,7 +2084,17 @@ export function createTalesofaiBillingOperations(
             );
             return product;
           }
-        }),
+          })();
+          previews.push(previewed);
+        }
+      };
+      await Promise.all(
+        Array.from({ length: Math.min(4, promoted.length) }, previewWorker),
+      );
+      previews.sort(
+        (left, right) =>
+          promoted.findIndex((product) => product.key === left.key) -
+          promoted.findIndex((product) => product.key === right.key),
       );
       return previews;
     } catch (error) {
@@ -2068,9 +2145,10 @@ export function createTalesofaiBillingOperations(
       .sort(
         (left, right) => left.pricing.amountMinor - right.pricing.amountMinor,
       );
-    const mappedProducts = input?.userId
-      ? await applyAutomaticOffers(input.userId, baseProducts)
-      : baseProducts;
+    const mappedProducts = await applyFirstPurchaseCampaigns(
+      input?.userId ?? null,
+      baseProducts,
+    );
     const plans = mappedProducts.filter((product) => product.kind === "plan");
     const addons = mappedProducts.filter((product) => product.kind === "addon");
     return {
@@ -2374,7 +2452,7 @@ export function createTalesofaiBillingOperations(
       external_user_id: input.userId,
       product_key: product.key,
       billing_reason: "purchase",
-      ...checkoutRedirects(input.returnUrl),
+      ...checkoutRedirects(input.returnUrl, input.productKey),
       ...(discount?.createSelector ?? {}),
     });
     return checkoutResultFromOrder({
@@ -2445,7 +2523,7 @@ export function createTalesofaiBillingOperations(
       business_key: businessKey,
       external_user_id: input.userId,
       product_key: product.key,
-      ...checkoutRedirects(input.returnUrl),
+      ...checkoutRedirects(input.returnUrl, input.productKey),
       ...(discount?.createSelector ?? {}),
     });
     return checkoutResultFromSubscription({
@@ -2467,6 +2545,70 @@ export function createTalesofaiBillingOperations(
       subscription.cancel_at_period_end === false &&
       subscription.current_period_end !== null
     );
+  };
+
+  const resolveCheckoutConfirmation = async (input: {
+    userId: string;
+    productKey: string;
+    checkoutId: string;
+  }): Promise<BillingCheckoutConfirmation> => {
+    await ensureCustomer({ userId: input.userId });
+    try {
+      const product = await sdk.admin.products.get({
+        business_key: businessKey,
+        product_key: input.productKey,
+      });
+      const isPlan = product.billing_type === "recurring";
+      if (isPlan) {
+        const subscription = await sdk.admin.subscriptions.get({
+          business_key: businessKey,
+          subscription_id: input.checkoutId,
+        });
+        if (
+          subscription.external_user_id !== input.userId ||
+          subscription.product_key_snapshot !== input.productKey
+        ) {
+          throw billingApiError(404, "Checkout not found", "checkout_not_found");
+        }
+        return {
+          productKey: input.productKey,
+          settled: BILLING_CURRENT_SUBSCRIPTION_STATUSES.includes(
+            subscription.status as (typeof BILLING_CURRENT_SUBSCRIPTION_STATUSES)[number],
+          ),
+          status: subscription.status ?? null,
+          pending: subscription.status === "pending_checkout",
+          productName: product.name ?? null,
+        };
+      }
+      const order = await sdk.admin.orders.get({
+        business_key: businessKey,
+        order_id: input.checkoutId,
+      });
+      if (
+        order.external_user_id !== input.userId ||
+        order.product_key_snapshot !== input.productKey
+      ) {
+        throw billingApiError(404, "Checkout not found", "checkout_not_found");
+      }
+      return {
+        productKey: input.productKey,
+        settled: order.status === "paid",
+        status: order.status ?? null,
+        pending: order.status === "pending_checkout",
+        productName: product.name ?? null,
+      };
+    } catch (error) {
+      if (isNotFound(error)) {
+        return {
+          productKey: input.productKey,
+          settled: false,
+          status: null,
+          pending: false,
+          productName: null,
+        };
+      }
+      throw error;
+    }
   };
 
   const listSubscriptions = async (
@@ -2720,6 +2862,8 @@ export function createTalesofaiBillingOperations(
     purchaseAddon,
 
     createSubscription,
+
+    resolveCheckoutConfirmation,
 
     cancelSubscriptionCheckout,
 

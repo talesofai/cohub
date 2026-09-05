@@ -15,6 +15,7 @@ import Sidebar from "$lib/components/Sidebar.svelte";
 import TurnNotificationStack from "$lib/components/TurnNotificationStack.svelte";
 import { createDeferredMount } from "$lib/deferred-mount.svelte";
 import { pointerDrag } from "$lib/drag/pointer-drag.svelte";
+import CheckoutReturnHandler from "$lib/features/billing/CheckoutReturnHandler.svelte";
 import { startDesktopCommandListener } from "$lib/features/desktop-command/bus";
 import GlobalMarkCapture from "$lib/features/preview-mark/ui/GlobalMarkCapture.svelte";
 import {
@@ -660,6 +661,7 @@ onMount(() => {
   <DragGhostLayer />
   <HelpPanel open={showHelpPanel} onClose={() => { showHelpPanel = false; }} />
   <BillingConversionCenter />
+  <CheckoutReturnHandler />
   <TurnNotificationStack />
   <GlobalMarkCapture />
 

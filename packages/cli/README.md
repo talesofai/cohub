@@ -188,7 +188,13 @@ List recent turns across all visible Sessions in a Space:
 cohub -s <spaceId> spaces turns ls
 cohub -s <spaceId> spaces turns ls --author others --limit 50 --json
 cohub -s <spaceId> spaces turns ls --session <sessionId>
+cohub -s <spaceId> spaces turns intermediate <sessionId> <turnId>
+cohub -s <spaceId> spaces turns intermediate <sessionId> <turnId> --json
 ```
+
+When `--session` is provided, the CLI uses the same full turn endpoint as the
+Web session view. Intermediate messages are read from the turn's CDN archive;
+`--json` returns the archive without reducing its content blocks.
 
 Use `pageInfo.nextCursor` with `--cursor` to load older pages. Use a previous
 `snapshotCursor` with `--after` and an explicit `--before` boundary to query

@@ -245,6 +245,12 @@ test("catalog shares one first-purchase offer across plans and isolates addon of
 
     assert.ok(pro?.offer);
     assert.ok(max?.offer);
+    assert.deepEqual(pro.promotion, {
+      kind: "first_purchase",
+      percentOff: 50,
+      endsAt: null,
+    });
+    assert.deepEqual(small?.promotion, pro.promotion);
     assert.equal(pro.offer.ref.key, "cohub-first-subscription-v1");
     assert.equal(pro.offer.ref.revision, max.offer.ref.revision);
     assert.equal(pro.pricing.amountMinor, 2_000);
@@ -272,6 +278,15 @@ test("catalog shares one first-purchase offer across plans and isolates addon of
     );
     assert.equal(discountListRequests, 2);
     failingPreviewId = null;
+
+    const anonymousCatalog = await operations.getCatalog();
+    assert.ok(anonymousCatalog.products.every((item) => item.offer === null));
+    assert.ok(
+      anonymousCatalog.products.every(
+        (item) => item.promotion?.kind === "first_purchase",
+      ),
+    );
+    assert.equal(discountListRequests, 2);
 
     const checkout = await operations.createSubscription({
       userId: "user_1",
@@ -361,6 +376,82 @@ test("promotion code preview preserves Billing pricing and rejection reasons", a
     assert.equal(rejected.eligible, false);
     assert.equal(rejected.reasonCode, "discount_not_found");
     assert.equal(rejected.pricing, null);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test("checkout confirmation reads provider order/subscription state", async () => {
+  const originalFetch = globalThis.fetch;
+  const products = [
+    product("cohub_pro_monthly", "recurring"),
+    product("cohub_credits_small", "one_time"),
+  ];
+  const subscriptions = [
+    {
+      id: "sub_live",
+      status: "active",
+      external_user_id: "user_1",
+      product_key_snapshot: "cohub_pro_monthly",
+    },
+  ];
+  const orders = [
+    {
+      id: "order_paid",
+      status: "paid",
+      external_user_id: "user_1",
+      product_key_snapshot: "cohub_credits_small",
+    },
+  ];
+  globalThis.fetch = async (input, init) => {
+    const url = new URL(String(input));
+    const method = init?.method ?? "GET";
+    if (url.pathname === "/v1/customers" && method === "POST") {
+      return response({ customer: { external_user_id: "user_1" } });
+    }
+    if (url.pathname.startsWith("/v1/products/") && method === "GET") {
+      const productKey = decodeURIComponent(url.pathname.split("/").at(-1) ?? "");
+      const found = products.find((item) => item.key === productKey);
+      return found
+        ? response({ product: found })
+        : response({ error: { message: "Not found" } }, 404);
+    }
+    if (url.pathname === "/v1/subscriptions/sub_live" && method === "GET") {
+      return response({ subscription: subscriptions[0] });
+    }
+    if (url.pathname === "/v1/orders/order_paid" && method === "GET") {
+      return response({ order: orders[0] });
+    }
+    throw new Error(`Unexpected request: ${method} ${url}`);
+  };
+  try {
+    const operations = createTalesofaiBillingOperations({
+      baseUrl: "https://billing.example.test/v1",
+      businessKey: "cohub",
+      adminApiKey: "test-key",
+    });
+    const plan = await operations.resolveCheckoutConfirmation({
+      userId: "user_1",
+      productKey: "cohub_pro_monthly",
+      checkoutId: "sub_live",
+    });
+    assert.equal(plan.settled, true);
+    assert.equal(plan.status, "active");
+    assert.equal(plan.productName, "cohub_pro_monthly");
+    const pack = await operations.resolveCheckoutConfirmation({
+      userId: "user_1",
+      productKey: "cohub_credits_small",
+      checkoutId: "order_paid",
+    });
+    assert.equal(pack.settled, true);
+    assert.equal(pack.status, "paid");
+    const missing = await operations.resolveCheckoutConfirmation({
+      userId: "user_1",
+      productKey: "cohub_nope",
+      checkoutId: "missing",
+    });
+    assert.equal(missing.settled, false);
+    assert.equal(missing.status, null);
   } finally {
     globalThis.fetch = originalFetch;
   }

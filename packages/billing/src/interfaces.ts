@@ -234,6 +234,17 @@ export type BillingDiscountOffer = {
   pricing: BillingDiscountPricing;
 };
 
+/**
+ * Campaign a product participates in, independent of the viewer. Lets
+ * anonymous and ineligible visitors see the incentive that exists, while
+ * {@link BillingCatalogProduct.offer} stays the only source of a real price.
+ */
+export type BillingProductPromotion = {
+  kind: "first_purchase";
+  percentOff: number;
+  endsAt: string | null;
+};
+
 export type BillingProductDisplay = {
   description: string | null;
   benefits: string[];
@@ -269,6 +280,8 @@ export type BillingCatalogProduct = {
   kind: BillingProductKind;
   interval: BillingProductBillingInterval;
   pricing: BillingProductPricing;
+  /** Viewer-independent campaign the product is part of, if any. */
+  promotion: BillingProductPromotion | null;
   /** User-specific automatic offer. Base pricing remains unchanged. */
   offer: BillingDiscountOffer | null;
   display: BillingProductDisplay;
@@ -393,6 +406,23 @@ export type BillingCheckoutResult = BillingUserRef & {
   subscriptionId: string | null;
   reused: boolean;
 };
+
+/**
+ * Server-confirmed state of a checkout that just returned to the app. The
+ * outcome is only trusted once the provider reports the order/subscription as
+ * settled; the URL alone never carries that promise.
+ */
+export type BillingCheckoutConfirmation = {
+  productKey: string;
+  /** `true` when the order/subscription reached a paid (or live) terminal state. */
+  settled: boolean;
+  /** Provider status when settled, e.g. `paid` for an order or `active` for a subscription. */
+  status: string | null;
+  /** Whether the record is still awaiting payment (vs. failed/canceled, which also settle as `!settled`). */
+  pending: boolean;
+  productName: string | null;
+};
+
 
 export type BillingRedemptionInput = BillingUserRef & {
   code: string;
@@ -564,6 +594,7 @@ export interface BillingOperations {
   listSubscriptions(input: BillingHistoryListInput): Promise<BillingSubscriptionHistoryList>;
   purchaseAddon(input: BillingCheckoutInput): Promise<BillingCheckoutResult>;
   createSubscription(input: BillingCheckoutInput): Promise<BillingCheckoutResult>;
+  resolveCheckoutConfirmation(input: BillingUserRef & { productKey: string; checkoutId: string }): Promise<BillingCheckoutConfirmation>;
   cancelSubscriptionCheckout(input: BillingUserRef & { subscriptionId: string }): Promise<BillingSubscriptionHistoryStatus>;
   cancelSubscriptionAutoRenew(input: BillingUserRef & { subscriptionId: string }): Promise<BillingSubscriptionHistoryStatus>;
   redeemCode(input: BillingRedemptionInput): Promise<BillingRedemptionResult>;

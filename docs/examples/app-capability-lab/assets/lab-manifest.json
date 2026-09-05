@@ -1,11 +1,13 @@
 {
   "name": "app-sdk-lab-directory",
-  "version": "2026.08.23",
-  "purpose": "Validate Cohub App directory publishing, relative assets, runtime permissions, App Surface calls, and no-build SDK usage.",
+  "version": "2026.09.04",
+  "purpose": "Validate Cohub App directory publishing, App Actions, relative assets, runtime permissions, App Surface calls, and no-build SDK usage.",
   "files": [
     "index.html",
     "styles.css",
     "app.js",
-    "assets/lab-manifest.json"
+    "assets/lab-manifest.json",
+    ".cohub/actions/inspect-bash.sh",
+    ".cohub/actions/inspect-ts.ts"
   ]
 }

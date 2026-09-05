@@ -1,6 +1,6 @@
 <script lang="ts">
 import type { BoardViewport } from "@neta-art/cohub/board";
-import { Bot, Smartphone, Terminal } from "lucide-svelte";
+import { Bot, Check, Scan, Smartphone, Terminal } from "lucide-svelte";
 import type {
 	BoardAutomationActivity,
 	BoardCollaboratorProfile,
@@ -11,7 +11,9 @@ import {
 } from "$lib/board/board-awareness";
 import UserAvatar from "$lib/components/UserAvatar.svelte";
 import { getLocale } from "$lib/i18n/locale.svelte";
+import { getModelDisplayName } from "$lib/model-catalog";
 import { m } from "$lib/paraglide/messages.js";
+import { modelsCatalogStore } from "$lib/stores/models-catalog.svelte";
 
 type Props = {
 	peers: RemoteBoardAwarenessPeer[];
@@ -38,9 +40,10 @@ let {
 
 const locale = $derived(getLocale());
 
-/** Touch has no hover: hold the last contact briefly, then fade it out. */
-const TOUCH_HOLD_MS = 700;
-const TOUCH_FADE_MS = 200;
+/** Touch has no hover: hold the released contact long enough to be understood. */
+const TOUCH_HOLD_MS = 1_500;
+const TOUCH_FADE_MS = 250;
+const CURSOR_LABEL_MS = 2_500;
 const EDGE_INSET = 14;
 
 let now = $state(Date.now());
@@ -69,12 +72,14 @@ const TICK_MS = 100;
 const pendingCursorDeadline = $derived.by(() => {
 	let deadline = 0;
 	for (const peer of peers) {
-		if (!(peer.state?.cursor ?? peer.lastCursor)) continue;
+		if (!(peer.state?.cursor ?? peer.lastCursor ?? peer.state?.viewport))
+			continue;
 		const until = Math.max(
 			peer.cursorClearedAt == null
 				? 0
 				: peer.cursorClearedAt + TOUCH_HOLD_MS + TOUCH_FADE_MS,
-			peer.cursorMovedAt + 1_500,
+			peer.cursorMovedAt + CURSOR_LABEL_MS,
+			peer.viewportMovedAt + CURSOR_LABEL_MS,
 		);
 		deadline = Math.max(deadline, until);
 	}
@@ -108,58 +113,92 @@ function avatarUrl(actorId: string) {
 	return profiles.get(actorId)?.avatarUrl ?? null;
 }
 
-/**
- * Human cursors, resolved to screen space.
- *
- * Touch is the interesting case: a finger has no hover, so `pointerup` clears
- * the cursor. Rather than snapping the marker away we hold the last contact
- * point briefly and fade it, which reads as "this is where they last touched"
- * instead of "they are still pressing".
- */
+function cursorAction(peer: RemoteBoardAwarenessPeer): string | null {
+	const gesture = peer.gesture;
+	if (gesture?.kind === "draw") return m.collab_drawing({}, { locale });
+	if (gesture?.kind === "connection")
+		return m.collab_connecting({}, { locale });
+	if (gesture?.kind === "arrow" || gesture?.kind === "box")
+		return m.collab_creating({}, { locale });
+	if (gesture?.kind === "transform") {
+		if (gesture.mode === "translate") return m.collab_moving({}, { locale });
+		if (gesture.mode === "resize") return m.collab_resizing({}, { locale });
+		if (gesture.mode === "rotate") return m.collab_rotating({}, { locale });
+		return m.collab_adjusting({}, { locale });
+	}
+	if (peer.state?.editingId) return m.collab_editing({}, { locale });
+	return null;
+}
+
+$effect(() => {
+	if (
+		!activities.some((activity) => activity.kind === "agent" && activity.model)
+	)
+		return;
+	void modelsCatalogStore.load().catch(() => undefined);
+});
+
+/** One honest location per human: input first, then the mobile viewport. */
 const cursors = $derived.by(() => {
 	return peers.flatMap((peer) => {
-		const cursor = peer.state?.cursor ?? peer.lastCursor;
-		if (!cursor) return [];
 		if (now - peer.lastSeenAt > cursorVisibleMs) return [];
+		const mobile = peer.state?.client?.formFactor === "mobile";
+		const liveCursor = peer.state?.cursor ?? null;
+		let cursor = liveCursor ?? peer.lastCursor;
+		let released = !liveCursor && Boolean(cursor);
+		let opacity = 1;
+		if (released) {
+			const heldFor = peer.cursorClearedAt ? now - peer.cursorClearedAt : 0;
+			if (heldFor > TOUCH_HOLD_MS + TOUCH_FADE_MS) {
+				cursor = null;
+				released = false;
+			} else if (heldFor > TOUCH_HOLD_MS) {
+				opacity = Math.max(0, 1 - (heldFor - TOUCH_HOLD_MS) / TOUCH_FADE_MS);
+			}
+		}
 
-		const released = peer.state?.cursor == null;
-		const heldFor =
-			released && peer.cursorClearedAt ? now - peer.cursorClearedAt : 0;
-		if (released && heldFor > TOUCH_HOLD_MS + TOUCH_FADE_MS) return [];
-		const opacity = !released
-			? 1
-			: heldFor <= TOUCH_HOLD_MS
-				? 1
-				: Math.max(0, 1 - (heldFor - TOUCH_HOLD_MS) / TOUCH_FADE_MS);
+		const viewport = mobile ? peer.state?.viewport : null;
+		const viewportMode = !cursor && Boolean(viewport);
+		const point =
+			cursor ??
+			(viewport
+				? {
+						x: viewport.x + viewport.width / 2,
+						y: viewport.y + viewport.height / 2,
+					}
+				: null);
+		if (!point) return [];
 
-		const screen = toScreen(cursor);
+		const screen = toScreen(point);
 		const offscreen =
 			screen.x < 0 ||
 			screen.y < 0 ||
 			screen.x > surface.width ||
 			screen.y > surface.height;
-		// Mobile peers are the ones worth chasing off-screen: their viewport rarely
-		// matches ours. Showing an edge hint for every desktop peer would crowd it.
-		const mobile = peer.state?.client?.formFactor === "mobile";
 		if (offscreen && !mobile) return [];
 
-		// Keep the label on the leading side so it never runs off the right edge.
 		const flip = screen.x > surface.width - 148;
+		const action = viewportMode
+			? m.collab_viewing({}, { locale })
+			: cursorAction(peer);
+		const movedAt = viewportMode ? peer.viewportMovedAt : peer.cursorMovedAt;
 		return [
 			{
 				key: peer.connectionId,
 				name: displayName(peer.actorId, peer.actorName),
+				action,
 				avatar: avatarUrl(peer.actorId),
 				color: `var(${collaborationColorToken(peer.actorId)})`,
-				pointerType: cursor.pointerType,
+				pointerType: cursor?.pointerType ?? null,
+				viewportMode,
 				mobile,
 				released,
 				opacity,
 				offscreen,
 				flip,
-				// Names are noise once someone parks their cursor; keep them while moving
-				// or mid-gesture, which is when knowing who is acting actually matters.
-				showName: peer.gesture !== null || now - peer.cursorMovedAt < 1_500,
+				showName: viewportMode
+					? now - movedAt < CURSOR_LABEL_MS
+					: action !== null || now - movedAt < CURSOR_LABEL_MS,
 				x: offscreen
 					? Math.min(Math.max(screen.x, EDGE_INSET), surface.width - EDGE_INSET)
 					: screen.x,
@@ -196,8 +235,18 @@ const automation = $derived.by(() => {
 		// Only an agent turn has somewhere to navigate to.
 		const actionable =
 			activity.kind === "agent" && Boolean(activity.source.sessionId);
+		const modelName = activity.model
+			? getModelDisplayName(modelsCatalogStore.items, {
+					provider: activity.model.provider,
+					model: activity.model.id,
+				})
+			: "";
 		const label =
-			activity.kind === "agent" ? `${name}'s agent` : `${name} · CLI`;
+			activity.kind === "agent"
+				? modelName
+					? `${modelName} · ${name}`
+					: `${name}'s agent`
+				: `${name} · CLI`;
 		return [
 			{
 				key: activity.id,
@@ -211,6 +260,7 @@ const automation = $derived.by(() => {
 				avatar: avatarUrl(activity.actorId),
 				name,
 				actionable,
+				status: activity.status,
 				x,
 				y,
 			},
@@ -224,11 +274,18 @@ const automation = $derived.by(() => {
 	label: string;
 	name: string;
 	avatar: string | null;
+	status: "active" | "settled";
 })}
 	<span class="collab-activity-icon">
 		{#if marker.kind === "agent"}
 			<Bot class="h-3 w-3" />
-			<span class="collab-activity-corner"><Terminal class="h-1.5 w-1.5" /></span>
+			<span class="collab-activity-corner">
+				{#if marker.status === "settled"}
+					<Check class="h-2 w-2" />
+				{:else}
+					<Terminal class="h-1.5 w-1.5" />
+				{/if}
+			</span>
 		{:else}
 			<Terminal class="h-3 w-3" />
 		{/if}
@@ -248,7 +305,9 @@ const automation = $derived.by(() => {
 			style:opacity={cursor.opacity}
 			aria-hidden="true"
 		>
-			{#if cursor.pointerType === "touch"}
+			{#if cursor.viewportMode}
+				<span class="collab-view-focus"><Scan class="h-3 w-3" /></span>
+			{:else if cursor.pointerType === "touch"}
 				<span class="collab-touch-ring" class:collab-touch-ring--released={cursor.released}></span>
 			{:else if cursor.pointerType === "pen"}
 				<span class="collab-pen-dot"></span>
@@ -272,7 +331,9 @@ const automation = $derived.by(() => {
 					{/if}
 				</span>
 				{#if cursor.showName}
-					<span class="collab-name">{cursor.name}</span>
+					<span class="collab-name">
+						{cursor.name}{cursor.action ? ` · ${cursor.action}` : ""}
+					</span>
 				{/if}
 			</span>
 		</div>
@@ -281,6 +342,7 @@ const automation = $derived.by(() => {
 	{#each automation as marker (marker.key)}
 		<div
 			class="collab-activity"
+			class:collab-activity--settled={marker.status === "settled"}
 			style:--collab-color={marker.color}
 			style:transform={`translate3d(${marker.x}px, ${marker.y}px, 0)`}
 		>
@@ -337,7 +399,8 @@ const automation = $derived.by(() => {
 
 	.collab-cursor--edge .collab-arrow,
 	.collab-cursor--edge .collab-touch-ring,
-	.collab-cursor--edge .collab-pen-dot {
+	.collab-cursor--edge .collab-pen-dot,
+	.collab-cursor--edge .collab-view-focus {
 		opacity: 0.35;
 	}
 
@@ -377,6 +440,21 @@ const automation = $derived.by(() => {
 	   rather than "still pressing". */
 	.collab-touch-ring--released::after {
 		opacity: 0;
+	}
+
+	.collab-view-focus {
+		display: inline-flex;
+		align-items: center;
+		justify-content: center;
+		height: 20px;
+		width: 20px;
+		flex-shrink: 0;
+		margin: -10px 0 0 -10px;
+		border: 1px solid color-mix(in srgb, var(--collab-color) 70%, transparent);
+		border-radius: 4px;
+		background: var(--bg-elevated);
+		color: var(--collab-color);
+		box-shadow: 0 1px 3px var(--shadow-subtle);
 	}
 
 	.collab-pen-dot {
@@ -442,8 +520,14 @@ const automation = $derived.by(() => {
 	/* Automation is intentionally chip-shaped, not cursor-shaped: it has no
 	   pointer, and pretending otherwise would misrepresent what happened. */
 	.collab-activity {
-		transition: transform 140ms cubic-bezier(0.16, 1, 0.3, 1);
+		transition:
+			transform 280ms cubic-bezier(0.22, 1, 0.36, 1),
+			opacity 180ms ease-out;
 		animation: collab-activity-in 120ms ease-out both;
+	}
+
+	.collab-activity--settled {
+		opacity: 0.58;
 	}
 
 	.collab-activity-chip {
@@ -502,7 +586,7 @@ const automation = $derived.by(() => {
 	}
 
 	.collab-activity-label {
-		max-width: 148px;
+		max-width: min(220px, calc(100vw - 96px));
 		overflow: hidden;
 		text-overflow: ellipsis;
 		white-space: nowrap;

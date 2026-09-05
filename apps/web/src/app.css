@@ -16,6 +16,7 @@
    ============================================================ */
 html,
 body {
+	min-height: 100%;
 	scrollbar-width: thin;
 	scrollbar-color: var(--scrollbar-thumb) transparent;
 	background-color: var(--bg-primary);
@@ -26,6 +27,10 @@ body {
 	transition:
 		background-color 0.2s ease,
 		color 0.2s ease;
+}
+
+body {
+	min-height: 100dvh;
 }
 
 /* Motion tokens — keep numeric values aligned with $lib/motion.svelte.ts */
@@ -170,7 +175,7 @@ body.sidebar-resizing .panel-shell-fade {
 	}
 }
 
-/* Safe area padding for notched devices */
+/* Safe area padding for notched devices and Android gesture navigation. */
 @supports (padding: max(0px)) {
 	.safe-top {
 		padding-top: max(0.75rem, env(safe-area-inset-top));

@@ -2,6 +2,15 @@ name: CI
 
 on:
   pull_request:
+    # changesets 机器人每次 push main 都会同步 Version Packages PR，该 PR 只改
+    # 这些机器生成的文件（.changeset/CHANGELOG/package.json），同步事件产生的 CI run
+    # 永远在等审批、毫无意义，直接跳过。真实代码 PR 都会碰到源码文件，不受影响。
+    # 注：纯依赖升级（只改 package.json/pnpm-lock）的 PR 会跳过 CI，代码质量
+    # 由合并后 deploy 流程里的 lint/typecheck 兜底。
+    paths-ignore:
+      - '.changeset/**'
+      - '**/CHANGELOG.md'
+      - '**/package.json'
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}

@@ -4,7 +4,10 @@ import { setTimeout as delay } from "node:timers/promises";
 import type { BoardAwarenessUpdate } from "@cohub/protocol/realtime";
 import type { BoardAwarenessUpdatedEvent } from "@neta-art/cohub";
 import type { BoardItem } from "@neta-art/cohub/board";
-import { createBoardAwarenessController } from "../lib/board/board-awareness.ts";
+import {
+	boardAwarenessViewportFromCamera,
+	createBoardAwarenessController,
+} from "../lib/board/board-awareness.ts";
 import type { BoardEditor } from "../lib/board/editor.svelte.ts";
 
 function event(
@@ -196,6 +199,47 @@ test("local arrow awareness preserves the active stroke width", async () => {
 		4.5,
 	);
 	controller.destroy();
+});
+
+test("viewport presence converts the camera to world space", () => {
+	assert.deepEqual(
+		boardAwarenessViewportFromCamera(
+			{ x: -200, y: 100, zoom: 2 },
+			{ width: 800, height: 600 },
+		),
+		{ x: 100, y: -50, width: 400, height: 300, zoom: 2 },
+	);
+	assert.equal(
+		boardAwarenessViewportFromCamera(
+			{ x: 0, y: 0, zoom: 1 },
+			{ width: 0, height: 600 },
+		),
+		null,
+	);
+});
+
+test("viewport presence ignores sub-pixel camera movement", async () => {
+	const sent: BoardAwarenessUpdate[] = [];
+	const controller = createBoardAwarenessController({
+		send: async (_seq, update) => {
+			sent.push(update);
+		},
+		onChange: () => {},
+	});
+	controller.setViewport({ x: 0, y: 0, width: 800, height: 600, zoom: 1 });
+	await delay(120);
+	controller.setViewport({ x: 1, y: 0, width: 800, height: 600, zoom: 1 });
+	await delay(120);
+	controller.setViewport({ x: 3, y: 0, width: 800, height: 600, zoom: 1 });
+	await delay(120);
+
+	const states = sent.filter((update) => update.type === "state");
+	assert.equal(states.length, 2);
+	assert.equal(
+		states.at(-1)?.type === "state" ? states.at(-1)?.viewport?.x : null,
+		3,
+	);
+	await controller.destroy();
 });
 
 test("local state publishes the client form factor", async () => {

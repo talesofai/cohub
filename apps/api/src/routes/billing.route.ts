@@ -34,7 +34,8 @@ function parseReturnUrl(value: unknown) {
   if (!trimmed) return fallback;
   try {
     const url = new URL(trimmed);
-    const allowedOrigin = config.webOrigin ? new URL(config.webOrigin).origin : url.origin;
+    if (!config.webOrigin) return fallback;
+    const allowedOrigin = new URL(config.webOrigin).origin;
     if (url.origin !== allowedOrigin || url.pathname !== "/settings/billing") return fallback;
     return billingSettingsUrl(allowedOrigin);
   } catch {
@@ -151,6 +152,37 @@ router.get("/balance-activities", async (c) => {
     limit: parsePositiveInt(c.req.query("limit"), BILLING_PAGE_SIZE, BILLING_PAGE_SIZE),
   });
   return c.json({ activities });
+});
+
+router.post("/checkout-confirmation", async (c) => {
+  const user = useAuth(c);
+  if (user instanceof Response) return user;
+  try {
+    const body = await readCheckoutBody(c);
+    if (!body || typeof body !== "object" || Array.isArray(body)) {
+      return c.json({ message: "Request body must be an object" }, 400);
+    }
+    const productKey =
+      typeof (body as { productKey?: unknown }).productKey === "string"
+        ? (body as { productKey: string }).productKey.trim()
+        : "";
+    const checkoutId =
+      typeof (body as { checkoutId?: unknown }).checkoutId === "string"
+        ? (body as { checkoutId: string }).checkoutId.trim()
+        : "";
+    if (!productKey || !checkoutId) {
+      return c.json({ message: "Product key and checkout ID are required" }, 400);
+    }
+    const confirmation = await billingOperations.resolveCheckoutConfirmation({
+      userId: user.uuid,
+      productKey,
+      checkoutId,
+    });
+    return c.json({ confirmation });
+  } catch (error) {
+    if (isBillingApiError(error)) return billingApiErrorResponse(c, error);
+    throw error;
+  }
 });
 
 router.get("/catalog", async (c) => {

@@ -13,12 +13,30 @@ export const COHUB_ENVIRONMENTS = {
   },
 } as const satisfies Record<CohubEnvironment, { apiBaseUrl: string; websocketUrl: string; voiceInputWebsocketUrl: string }>;
 
-const readRuntimeEnv = (): string | undefined => {
+const readProcessEnv = (): Record<string, string | undefined> | undefined => {
   const runtime = globalThis as typeof globalThis & {
     process?: { env?: Record<string, string | undefined> };
   };
-  return runtime.process?.env?.ENV;
+  return runtime.process?.env;
 };
+
+const readRuntimeEnv = (): string | undefined => readProcessEnv()?.ENV;
+
+/** Existing scoped identity injected into Sandbox command processes. */
+export const resolveExecutionToken = (): string | null =>
+  readProcessEnv()?.COHUB_EXECUTION_TOKEN?.trim() || null;
+
+export function resolveExecutionAppId(): string | null {
+  const payload = resolveExecutionToken()?.split(".")[1];
+  if (!payload) return null;
+  try {
+    const base64 = payload.replaceAll("-", "+").replaceAll("_", "/").padEnd(Math.ceil(payload.length / 4) * 4, "=");
+    const appId = (JSON.parse(globalThis.atob(base64)) as { appId?: unknown }).appId;
+    return typeof appId === "string" && appId ? appId : null;
+  } catch {
+    return null;
+  }
+}
 
 export const resolveCohubEnvironment = (env?: CohubEnvironment): CohubEnvironment => {
   if (env) return env;

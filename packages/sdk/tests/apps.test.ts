@@ -74,6 +74,41 @@ test("AppsApi authorize and grants hit the app-scoped paths", async () => {
 	});
 });
 
+test("AppsApi.runAction posts structured input to the app action route", async () => {
+  const transport = {
+    request: async (path: string, init?: RequestInit) => {
+      assert.equal(path, "/api/apps/app-1/actions/summarize/run");
+      assert.equal(init?.method, "POST");
+      assert.deepEqual(JSON.parse(String(init?.body)), { input: { text: "Hello" } });
+      return { taskRunId: "task-1", action: "summarize", status: "pending" };
+    },
+  } as unknown as HttpTransport;
+
+  await new AppsApi(transport).runAction("app-1", "summarize", { text: "Hello" });
+});
+
+test("CohubClient reuses App Action execution identity and context", async () => {
+  const previous = process.env.COHUB_EXECUTION_TOKEN;
+  const payload = Buffer.from(JSON.stringify({ appId: "app-1" })).toString("base64url");
+  process.env.COHUB_EXECUTION_TOKEN = `header.${payload}.signature`;
+  try {
+    const client = new CohubClient({
+      fetch: async (request, init) => {
+        assert.equal(String(request), "https://api.cohub.live/api/apps/app-1/commerce/entitlements");
+        assert.equal(new Headers(init?.headers).get("authorization"), `Bearer header.${payload}.signature`);
+        return new Response(JSON.stringify({ entitlements: [], credits: { available: 0, net: 0 }, businessKey: "business-1" }), {
+          headers: { "content-type": "application/json" },
+        });
+      },
+    });
+
+    await client.app.commerce.getEntitlements();
+  } finally {
+    if (previous === undefined) delete process.env.COHUB_EXECUTION_TOKEN;
+    else process.env.COHUB_EXECUTION_TOKEN = previous;
+  }
+});
+
 test("AppsApi.getBySlug forwards the abort signal", async () => {
   const controller = new AbortController();
   const transport = {

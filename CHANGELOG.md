@@ -4,6 +4,46 @@ All notable changes to Cohub are documented in this file.
 
 <!-- Generated from apps/web/src/lib/changelog/entries.json. Do not edit. -->
 
+## v2.41 — 2026-09-04
+
+- **Owner-funded App Actions**: Published apps can now expose server-side entrypoints under `.cohub/actions/` and run them via `cohub.app.actions.run()` in the SDK or `cohub apps actions run` in the CLI. Cohub downloads the immutable, version-pinned app artifact into the Space sandbox and executes TypeScript/JavaScript (Node 24 with native type stripping) or any executable, passing JSON input on stdin and capturing output into the Task Run. Actions execute with the app owner as actor and platform cost owner, while entitlement checks and credit metering apply to the signed-in viewer — action code can use the SDK or CLI with no credential management.
+- **Verified checkout returns**: Payment redirects now carry a server-appended outcome and product key, and a new checkout-confirmation endpoint reconciles each return against the provider's settlement state. The UI confirms success only when an order or subscription is actually paid or active, so forged URLs can no longer claim a purchase and stale redirects resolve to the correct product state.
+- **Campaign-driven first-purchase discounts**: The billing catalog now surfaces viewer-independent promotions — discount percent and end date — so anonymous and ineligible visitors see the incentive on pricing pages, while priced offers are applied server-side only to eligible signed-in users. Campaign parameters are read from provider discount configuration instead of a hard-coded 50%.
+- **Pricing and purchase UX overhaul**: The public pricing page, billing settings, and conversion center were rebuilt around reusable checkout components — product cards, interval toggle, and a live order summary — with plan vs. balance-pack selection, per-month equivalents, first-order offer states with countdowns, promo codes, and an FAQ section.
+
+### Bug Fixes
+
+- App Action runs now report precise failure reasons — timeouts, aborts, and exit codes — via a shared execution-source contract, and task-run privacy metadata is sanitized consistently for viewers.
+
+## v2.40 — 2026-09-04
+
+- **MiniMax H3 model support**: Upgraded the generation SDK across API, worker, infra, protocol, and CLI to @neta-art/generation 0.1.25, bringing MiniMax H3 model declarations to generation endpoints and pipelines.
+- **Live Apps on Boards**: Apps are now first-class board items — an embedded app renders its real, interactive surface inside a board frame, with the full app runtime shell and navigation context forwarded through the board runtime so it behaves exactly as in its own window. Frames track pan, zoom, rotation, and selection, and can be repositioned by dragging their title bar.
+- **Drag-and-Drop App Placement**: Apps in the sidebar (installed-apps panel and app list) are now drop sources — native HTML5 drag on desktop, pointer-based drag on touch — and boards advertise an "Add App to Board" drop affordance. Releasing spawns an app frame at the drop point, stacks multi-app drops cleanly, and selects the result for immediate arrangement.
+- **Zoom-aware App Rendering**: Embedded apps stay cheap at any zoom — iframe content mounts lazily and only while a frame is on-screen at a readable size, otherwise collapsing to a lightweight title bar, while camera updates are coalesced to a single layout pass per animation frame.
+
+### Bug Fixes
+
+- Opening a file preview now reveals the resource sidebar with its Files / Apps tabs intact instead of collapsing it, and the tabs stay visible even when the panel fades shut.
+- Switching chat into float layout now preserves the current panel width instead of jumping to the stored default.
+- Inaccessible apps (403) no longer show a misleading "Sign in" prompt — both 403 and 404 now report the app as not found.
+
+## v2.39 — 2026-09-03
+
+- **Streamlined App commerce checkout**: In-app purchase flows bypass the redundant host confirmation dialog and transition straight to checkout, supporting promotion attribution and client-level tracking callbacks.
+- **Atomic file upload concurrency**: Space file uploads now detect and reject concurrent local edits via snapshot validation and file write guards across the API, Agent, and Sandbox daemon, preventing in-progress edits from being silently overwritten.
+- **Live collaborator presence on Boards**: Peers now share their realtime viewport, so collaborators without an active cursor — especially on mobile — appear as "Viewing" markers with off-screen edge hints; cursors carry live gesture labels (Drawing, Moving, Resizing, Editing), and agent/CLI automation shows as chips that transition from active to settled with the running model named. The presence protocol in @cohub/protocol gains a validated, backward-compatible viewport schema with world-coordinate and zoom bounds.
+- **Session turn browsing and intermediate archives**: The CLI's `spaces turns ls --session <sessionId>` now lists full turns from one session through the same endpoint as the Web session view, with sequence-cursor pagination (`--cursor`, `--direction older|newer`), and a new `spaces turns intermediate <sessionId> <turnId>` command reads a turn's persisted intermediate messages from its CDN archive (`--json` returns the raw archive). The SDK mirrors both with `session.turns.intermediate.get()` and `getToolCalls()` — resolving message object keys and signed URLs automatically — and exports the archive types; the Web session view was refactored onto this shared SDK client, deleting duplicated fetch, URL, and tool-call extraction logic.
+- **Live shell context for Apps**: The App runtime context now exposes `ctx.shell` — the current workspace Space, Session, and in-view Turn — and context-change events fire as the user navigates, so installed Apps can react to what is actually open rather than polling. Docs were updated and the capability-lab example demonstrates the new context.
+- **Consolidated General settings**: The web Profile and Appearance pages merge into a single General settings page, so identity, theme, and device look-and-read preferences live in one place with a slimmer settings sidebar and fewer nested sections.
+
+### Bug Fixes
+
+- Coalesce concurrent App purchases: Repeated or concurrent purchase requests for the same product are deduplicated and serialized by attempt ID, preventing duplicate orders and race conditions during payment initialization.
+- Aligned session quick action row: Quick action chips inside the chat session panel are now placed directly in `SessionComposer`'s width container, matching composer margins across compact themes, expanded modes, and mobile viewports.
+- PWA system chrome now follows the theme: the browser theme-color is synced to the real shell background — including space-level theme.css overrides — instead of a hardcoded value, with corrected safe-area handling for notched devices and Android gesture navigation.
+- File upload completion now recovers outdated sandbox runtimes before atomic materialization and returns a clear `sandbox_unsupported` response when an upgrade is unavailable, instead of retrying a deterministic capability mismatch for 55 seconds.
+
 ## v2.38 — 2026-09-03
 
 - **App Center**: Spaces gain an Apps panel alongside Files (desktop sidebar and mobile drawer) listing installed Apps with enable/disable and uninstall, plus a new first-party Marketplace App for discovery and installation; installed Apps live in a validated `.cohub/apps.json` space file with LRU caching and realtime cross-client refresh, and the protocol adds versioned marketplace/installed-app schemas with canonical `username/space/app` references

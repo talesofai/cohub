@@ -89,9 +89,10 @@ export default defineConfig(({ mode }) => {
 					name: "Cohub",
 					short_name: "Cohub",
 					description: "AI-powered space collaboration",
-					// Keep the installed PWA chrome calm; reserve brand orange for in-app emphasis.
-					theme_color: "#1F2026",
-					background_color: "#1a1a1a",
+					// Stable light fallback for install/cold-start chrome. Runtime theme
+					// synchronization handles the active shell and custom space themes.
+					theme_color: "#F8F8FA",
+					background_color: "#F8F8FA",
 					display: "standalone",
 					icons: [
 						{

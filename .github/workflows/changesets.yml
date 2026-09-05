@@ -4,6 +4,13 @@ on:
   push:
     branches:
       - main
+    # 只在真正需要版本处理时触发：有 changeset、或版本号/锁文件变更。
+    # 避免每次 push main 都全量 install 并 force-push changeset-release/main 分支
+    #（那会反复同步 Version Packages PR，触发该 PR 上一堆无意义的 CI/Preview Deploy run）
+    paths:
+      - '.changeset/**'
+      - '**/package.json'
+      - 'pnpm-lock.yaml'
 
 concurrency: ${{ github.workflow }}-${{ github.ref }}
 
@@ -40,6 +47,8 @@ jobs:
 
       - name: Create Release Pull Request or Publish
         id: changesets
+        # 注意：Version Packages PR 合并回 main 时（只改 package.json/CHANGELOG/.changeset）
+        # 需要靠上面的 paths 命中才会跑到这里执行 publish，路径过滤不能改窄
         uses: changesets/action@v1
         with:
           version: pnpm version-packages

@@ -53,7 +53,7 @@ const RIGHT_SIDEBAR_MAX = 520;
 const RIGHT_SIDEBAR_DEFAULT = 320;
 const IMMERSIVE_CHAT_MIN = 320;
 const IMMERSIVE_CHAT_MAX = 760;
-const IMMERSIVE_CHAT_DEFAULT = 640;
+const IMMERSIVE_CHAT_DEFAULT = 480;
 /** Preview panel bounds shared with the workspace layout controller. */
 const WORKSPACE_PREVIEW_MIN_WIDTH = 280;
 const WORKSPACE_PREVIEW_DEFAULT_WIDTH = 480;

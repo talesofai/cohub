@@ -2,10 +2,13 @@
 <html lang="en">
   <head>
     <meta charset="utf-8" />
-    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
     <title>Cohub</title>
     <meta name="application-name" content="Cohub" />
     <meta name="apple-mobile-web-app-title" content="Cohub" />
+    <meta name="apple-mobile-web-app-capable" content="yes" />
+    <meta name="apple-mobile-web-app-status-bar-style" content="default" />
+    <meta name="color-scheme" content="light dark" />
     <!-- Favicons are set per-route (Work pages use Work icons; others use shell defaults). -->
     <script>
       (() => {
@@ -17,7 +20,7 @@
         document.write(`<link rel="manifest" href="${href}" />`);
       })();
     </script>
-    <meta name="theme-color" content="#1F2026" />
+    <meta name="theme-color" content="#F8F8FA" />
     <script>
       // Prevent FOUC — resolve theme before first paint
       (() => {

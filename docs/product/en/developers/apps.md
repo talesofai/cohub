@@ -42,6 +42,7 @@ ctx.app.slug;                      // public slug
 ctx.app.homeSpace;                 // the Space that owns the App
 ctx.viewer;                        // current viewer, may be null
 ctx.invocation;                    // where the App was opened from
+ctx.shell;                         // current Cohub workspace location
 ctx.permissions;                   // appScopes + viewerGrants, for rendering state
 ```
 
@@ -49,8 +50,15 @@ ctx.permissions;                   // appScopes + viewerGrants, for rendering st
 and `toolCallId` when available. It describes where an open came from — it is
 context, not authorization.
 
-`client.app.onContextChanged(cb)` pushes fresh context on sign-in or grant
-changes, so permission state renders without polling.
+`ctx.shell` contains the current workspace `space`, `session`, and `turn` ids.
+Its `turn` is the Turn currently in view, not necessarily the Turn being
+generated. These values can differ from `app.homeSpace` and `invocation`.
+They are null when the shell has no matching location.
+
+`client.app.onContextChanged(cb)` pushes fresh context when the shell location,
+sign-in state, or grants change. Keep the latest context in memory for frequent
+reads instead of polling `client.context()`. Context is informational, not an
+authorization source.
 
 ## Capability scenarios
 

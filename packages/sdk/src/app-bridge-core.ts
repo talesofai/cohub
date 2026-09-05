@@ -4,6 +4,7 @@ import type {
 	AppRuntimeCheckoutState,
 	AppRuntimeContext,
 	AppRuntimeInvocationContext,
+	AppRuntimeShellContext,
 } from "./app-runtime.js";
 import {
 	syncGrantedAppScopes,
@@ -54,7 +55,7 @@ export type AppAuthorizeRequest = {
 };
 
 /**
- * A pending purchase request surfaced to the UI as a checkout confirmation.
+ * A purchase request being processed by the host.
  */
 export type AppPurchaseRequest = {
 	requestId: string;
@@ -77,10 +78,6 @@ export type AppBridgeDialogState = {
 	pendingAuth: AppAuthorizeRequest | null;
 	authError: string | null;
 	authSaving: boolean;
-	purchaseOpen: boolean;
-	pendingPurchase: AppPurchaseRequest | null;
-	purchaseError: string | null;
-	purchaseSaving: boolean;
 };
 
 /**
@@ -132,6 +129,10 @@ export type AppBridgeCoreConfig = {
 	invocation?: AppRuntimeInvocationContext;
 	/** Reads the latest opening context without recreating the app surface. */
 	getInvocation?: () => AppRuntimeInvocationContext | undefined;
+	/** Optional snapshot of the current embedding shell location. */
+	shell?: AppRuntimeShellContext;
+	/** Reads the latest shell context without recreating the app surface. */
+	getShell?: () => AppRuntimeShellContext | undefined;
 	/** Sends an unsolicited event to the app runtime. */
 	notify?: (payload: Record<string, unknown>) => void;
 	/** @deprecated Use authorizationContext with a background surface. */
@@ -150,7 +151,7 @@ export type AppBridgeCoreConfig = {
 	requestSignIn: AppBridgeRequestSignIn;
 	/** Returns optional host-owned promotion attribution for checkout. */
 	getPromotionAttribution?: () => AppPromotionAttributionContext | null;
-	/** Called when the host displays the purchase confirmation. */
+	/** Called when the host begins processing a purchase request. */
 	onPurchaseRequested?: (input: AppPurchaseRequest) => void;
 	/** Called immediately before navigating to a usable checkout. */
 	onCheckoutStarted?: (input: AppCheckoutStarted) => void;
@@ -170,9 +171,6 @@ export type AppBridgeCore = {
 	/** Confirm/cancel handlers for the authorize dialog. `confirmAuth` receives the space picked in picker mode. */
 	confirmAuth: (pickedSpaceId?: string) => Promise<void>;
 	cancelAuth: () => void;
-	/** Confirm/cancel handlers for the purchase dialog. */
-	confirmPurchase: () => Promise<void>;
-	cancelPurchase: () => void;
 };
 
 function readTokenResponse(value: unknown) {
@@ -263,6 +261,7 @@ export function createAppBridgeCore(
 			activeInvocation !== undefined
 				? activeInvocation
 				: config.getInvocation?.() ?? config.invocation;
+		const shell = config.getShell?.() ?? config.shell;
 		const appScopes = clonePermissionScopes(app.appScopes);
 		const viewerUuid = await getViewerUuid();
 		// Viewer grants as far as the host can tell: previously consented
@@ -283,6 +282,16 @@ export function createAppBridgeCore(
 			space: { id: app.spaceId },
 			viewer: viewerUuid ? { userUuid: viewerUuid } : null,
 			...(invocation ? { invocation: { ...invocation } } : {}),
+			...(shell
+				? {
+						shell: {
+							...shell,
+							space: shell.space ? { ...shell.space } : null,
+							session: shell.session ? { ...shell.session } : null,
+							turn: shell.turn ? { ...shell.turn } : null,
+						},
+					}
+				: {}),
 			permissions: {
 				scopes: normalizePermissionScopes([
 					...appScopes,
@@ -370,10 +379,6 @@ export function createAppBridgeCore(
 		pendingAuth: null,
 		authError: null,
 		authSaving: false,
-		purchaseOpen: false,
-		pendingPurchase: null,
-		purchaseError: null,
-		purchaseSaving: false,
 	};
 
 	function notify() {
@@ -381,6 +386,8 @@ export function createAppBridgeCore(
 	}
 
 	const pendingPurchaseStorageKey = `cohub-app-purchase:${app.id}`;
+	const purchaseInFlight = new Map<string, Promise<unknown>>();
+	let activePurchase: { productKey: string; promise: Promise<unknown> } | null = null;
 
 	async function isCurrentViewerAppOwner() {
 		const viewerUuid = await getViewerUuid();
@@ -735,15 +742,35 @@ export function createAppBridgeCore(
 					}, true);
 					return;
 				}
-				state.pendingPurchase = {
-					requestId: data.requestId,
-					productKey,
-					purchaseAttemptId,
-				};
-				state.purchaseError = null;
-				state.purchaseOpen = true;
-				notify();
-				config.onPurchaseRequested?.({ ...state.pendingPurchase });
+				const purchase = { requestId: data.requestId, productKey, purchaseAttemptId };
+				const existing = purchaseInFlight.get(purchaseAttemptId);
+				if (existing) {
+					await replyPurchaseResult(purchase, existing);
+					return;
+				}
+				if (activePurchase) {
+					if (activePurchase.productKey !== productKey) {
+						replyForRequest(data.requestId, {
+							type: isLegacyWork ? "cohub.work.error" : "cohub.app.error",
+							message: "Another purchase is already in progress.",
+						}, true);
+						return;
+					}
+					// Older SDKs may generate a new attempt id for every click. Coalesce
+					// those requests while the same product is already being purchased.
+					await replyPurchaseResult(purchase, activePurchase.promise);
+					return;
+				}
+				config.onPurchaseRequested?.(purchase);
+				const request = executePurchase(purchase);
+				activePurchase = { productKey, promise: request };
+				purchaseInFlight.set(purchaseAttemptId, request);
+				try {
+					await replyPurchaseResult(purchase, request);
+				} finally {
+					purchaseInFlight.delete(purchaseAttemptId);
+					if (activePurchase?.promise === request) activePurchase = null;
+				}
 			}
 			if (data.type === "cohub.app.authorize" || data.type === "cohub.work.authorize") {
 				const scopes = sanitizeRequestedScopes(data.scopes);
@@ -871,71 +898,50 @@ export function createAppBridgeCore(
 		notify();
 	}
 
-	function cancelPurchase() {
-		if (state.purchaseSaving) return;
-		if (!state.pendingPurchase) return;
-		replyForRequest(state.pendingPurchase.requestId, {
-			type: "cohub.app.purchase.result",
-			checkout: null,
-		}, true);
-		state.purchaseOpen = false;
-		state.purchaseError = null;
-		state.pendingPurchase = null;
-		state.purchaseSaving = false;
-		notify();
+	async function executePurchase(purchase: AppPurchaseRequest) {
+		const checkout = await createPurchase(
+			purchase.productKey,
+			purchase.purchaseAttemptId,
+		);
+		if (checkout && typeof checkout === "object") {
+			const next = checkout as {
+				checkoutUrl?: unknown;
+				checkoutUsable?: unknown;
+				orderId?: unknown;
+				productKey?: unknown;
+				value?: unknown;
+				currency?: unknown;
+			};
+			if (typeof next.orderId === "string" && typeof next.productKey === "string") {
+				writePendingPurchase({ orderId: next.orderId, productKey: next.productKey });
+			}
+			const url = next.checkoutUrl;
+			if (next.checkoutUsable === true && typeof url === "string" && url) {
+				config.onCheckoutStarted?.({
+					...purchase,
+					...(typeof next.value === "number" ? { value: next.value } : {}),
+					...(typeof next.currency === "string" ? { currency: next.currency } : {}),
+				});
+				window.location.href = url;
+			}
+		}
+		return checkout;
 	}
 
-	async function confirmPurchase() {
-		if (!state.pendingPurchase || state.purchaseSaving) return;
-		state.purchaseSaving = true;
-		state.purchaseError = null;
-		notify();
+	async function replyPurchaseResult(
+		purchase: AppPurchaseRequest,
+		request: Promise<unknown>,
+	) {
 		try {
-			const checkout = await createPurchase(
-				state.pendingPurchase.productKey,
-				state.pendingPurchase.purchaseAttemptId,
-			);
-			replyForRequest(state.pendingPurchase.requestId, {
+			replyForRequest(purchase.requestId, {
 				type: "cohub.app.purchase.result",
-				checkout,
+				checkout: await request,
 			}, true);
-			if (checkout && typeof checkout === "object") {
-				const next = checkout as {
-					checkoutUrl?: unknown;
-					checkoutUsable?: unknown;
-					orderId?: unknown;
-					productKey?: unknown;
-					value?: unknown;
-					currency?: unknown;
-				};
-				if (
-					typeof next.orderId === "string" &&
-					typeof next.productKey === "string"
-				) {
-					writePendingPurchase({
-						orderId: next.orderId,
-						productKey: next.productKey,
-					});
-				}
-				const url = next.checkoutUrl;
-				const usable = next.checkoutUsable === true;
-				if (usable && typeof url === "string" && url) {
-					config.onCheckoutStarted?.({
-						...state.pendingPurchase,
-						...(typeof next.value === "number" ? { value: next.value } : {}),
-						...(typeof next.currency === "string" ? { currency: next.currency } : {}),
-					});
-					window.location.href = url;
-				}
-			}
-			state.purchaseOpen = false;
-			state.pendingPurchase = null;
 		} catch (error) {
-			state.purchaseError =
-				error instanceof Error ? error.message : "Purchase failed.";
-		} finally {
-			state.purchaseSaving = false;
-			notify();
+			replyForRequest(purchase.requestId, {
+				type: "cohub.app.error",
+				message: error instanceof Error ? error.message : "Purchase failed.",
+			}, true);
 		}
 	}
 
@@ -981,7 +987,5 @@ export function createAppBridgeCore(
 		notifyContextChanged,
 		confirmAuth,
 		cancelAuth,
-		confirmPurchase,
-		cancelPurchase,
 	};
 }

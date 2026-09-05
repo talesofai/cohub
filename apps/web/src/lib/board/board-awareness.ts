@@ -3,6 +3,13 @@ import type {
 	BoardAwarenessNodePreview,
 	BoardAwarenessStateUpdate,
 	BoardAwarenessUpdate,
+	BoardAwarenessViewport,
+} from "@cohub/protocol/realtime";
+import {
+	BOARD_AWARENESS_MAX_VIEWPORT_ZOOM,
+	BOARD_AWARENESS_MIN_VIEWPORT_ZOOM,
+	BOARD_AWARENESS_WORLD_COORDINATE_LIMIT,
+	BOARD_AWARENESS_WORLD_EXTENT_LIMIT,
 } from "@cohub/protocol/realtime";
 import type { BoardAwarenessUpdatedEvent } from "@neta-art/cohub";
 import type { BoardFrame, BoardItem } from "@neta-art/cohub/board";
@@ -10,6 +17,9 @@ import { selectionBounds } from "@neta-art/cohub/board";
 import type { BoardEditor, BoardInteraction } from "$lib/board/editor.svelte";
 
 const SEND_INTERVAL_MS = 40;
+const VIEWPORT_SEND_INTERVAL_MS = 100;
+const VIEWPORT_POSITION_THRESHOLD_PX = 2;
+const VIEWPORT_ZOOM_THRESHOLD = 0.005;
 const HEARTBEAT_MS = 2_000;
 const CURSOR_VISIBLE_MS = 5_000;
 const PEER_TTL_MS = 10_000;
@@ -55,6 +65,7 @@ export type RemoteBoardAwarenessPeer = {
 	lastCursor: BoardAwarenessCursor | null;
 	cursorClearedAt: number | null;
 	cursorMovedAt: number;
+	viewportMovedAt: number;
 	lastSeenAt: number;
 };
 
@@ -77,6 +88,8 @@ type LocalState = Omit<LocalStateInput, "bounds"> & {
 
 type CursorInput = BoardAwarenessCursor;
 
+type ViewportInput = BoardAwarenessViewport;
+
 type ControllerOptions = {
 	send: (seq: number, update: BoardAwarenessUpdate) => Promise<void>;
 	onChange: () => void;
@@ -87,6 +100,71 @@ function frameFromBounds(
 	bounds: { x: number; y: number; width: number; height: number } | null,
 ): BoardFrame | null {
 	return bounds ? { ...bounds, rotation: 0 } : null;
+}
+
+export function boardAwarenessViewportFromCamera(
+	camera: { x: number; y: number; zoom: number },
+	surface: { width: number; height: number },
+): BoardAwarenessViewport | null {
+	if (
+		!Number.isFinite(camera.x) ||
+		!Number.isFinite(camera.y) ||
+		!Number.isFinite(camera.zoom) ||
+		camera.zoom < BOARD_AWARENESS_MIN_VIEWPORT_ZOOM ||
+		camera.zoom > BOARD_AWARENESS_MAX_VIEWPORT_ZOOM ||
+		!Number.isFinite(surface.width) ||
+		!Number.isFinite(surface.height) ||
+		surface.width <= 0 ||
+		surface.height <= 0
+	)
+		return null;
+	const viewport = {
+		x: -camera.x / camera.zoom,
+		y: -camera.y / camera.zoom,
+		width: surface.width / camera.zoom,
+		height: surface.height / camera.zoom,
+		zoom: camera.zoom,
+	};
+	if (
+		Math.abs(viewport.x) > BOARD_AWARENESS_WORLD_COORDINATE_LIMIT ||
+		Math.abs(viewport.y) > BOARD_AWARENESS_WORLD_COORDINATE_LIMIT ||
+		viewport.width > BOARD_AWARENESS_WORLD_EXTENT_LIMIT ||
+		viewport.height > BOARD_AWARENESS_WORLD_EXTENT_LIMIT
+	)
+		return null;
+	return viewport;
+}
+
+function viewportChanged(
+	current: BoardAwarenessViewport | null,
+	next: BoardAwarenessViewport | null,
+): boolean {
+	if (!current || !next) return current !== next;
+	const currentCenter = {
+		x: current.x + current.width / 2,
+		y: current.y + current.height / 2,
+	};
+	const nextCenter = {
+		x: next.x + next.width / 2,
+		y: next.y + next.height / 2,
+	};
+	const positionDelta =
+		Math.hypot(nextCenter.x - currentCenter.x, nextCenter.y - currentCenter.y) *
+		next.zoom;
+	const zoomDelta =
+		Math.abs(next.zoom - current.zoom) / Math.max(current.zoom, next.zoom);
+	const widthDelta = Math.abs(
+		next.width * next.zoom - current.width * current.zoom,
+	);
+	const heightDelta = Math.abs(
+		next.height * next.zoom - current.height * current.zoom,
+	);
+	return (
+		positionDelta >= VIEWPORT_POSITION_THRESHOLD_PX ||
+		zoomDelta >= VIEWPORT_ZOOM_THRESHOLD ||
+		widthDelta >= VIEWPORT_POSITION_THRESHOLD_PX ||
+		heightDelta >= VIEWPORT_POSITION_THRESHOLD_PX
+	);
 }
 
 function previewForItem(item: BoardItem): BoardAwarenessNodePreview {
@@ -252,6 +330,7 @@ export function createBoardAwarenessController(options: ControllerOptions) {
 	const peers = new Map<string, RemoteBoardAwarenessPeer>();
 	let seq = 0;
 	let localCursor: CursorInput | null = null;
+	let localViewport: ViewportInput | null = null;
 	let localState: LocalState = {
 		client: { formFactor: "desktop" },
 		tool: "select",
@@ -285,6 +364,7 @@ export function createBoardAwarenessController(options: ControllerOptions) {
 			type: "state",
 			client: localState.client,
 			cursor: localCursor,
+			viewport: localViewport,
 			tool: localState.tool,
 			selection: {
 				ids: localState.selection.slice(0, MAX_PREVIEW_NODES),
@@ -302,11 +382,14 @@ export function createBoardAwarenessController(options: ControllerOptions) {
 		emit(currentState());
 	}
 
-	function scheduleState(immediate = false) {
+	function scheduleState(
+		immediate = false,
+		minimumInterval = SEND_INTERVAL_MS,
+	) {
 		if (stateTimer) return;
 		const delay = immediate
 			? 0
-			: Math.max(0, SEND_INTERVAL_MS - (now() - lastStateSentAt));
+			: Math.max(0, minimumInterval - (now() - lastStateSentAt));
 		stateTimer = setTimeout(flushState, delay);
 	}
 
@@ -357,6 +440,12 @@ export function createBoardAwarenessController(options: ControllerOptions) {
 	function setCursor(cursor: CursorInput | null) {
 		localCursor = cursor;
 		scheduleState(cursor === null);
+	}
+
+	function setViewport(viewport: ViewportInput | null) {
+		if (!viewportChanged(localViewport, viewport)) return;
+		localViewport = viewport;
+		scheduleState(viewport === null, VIEWPORT_SEND_INTERVAL_MS);
 	}
 
 	function syncGesture(editor: BoardEditor) {
@@ -410,6 +499,7 @@ export function createBoardAwarenessController(options: ControllerOptions) {
 			lastCursor: null,
 			cursorClearedAt: null,
 			cursorMovedAt: now(),
+			viewportMovedAt: now(),
 			lastSeenAt: now(),
 		};
 		peer.actorId = payload.actorId;
@@ -420,6 +510,11 @@ export function createBoardAwarenessController(options: ControllerOptions) {
 		const update = payload.update;
 		if (update.type === "state") {
 			const previousCursor = peer.state?.cursor ?? peer.lastCursor;
+			if (
+				viewportChanged(peer.state?.viewport ?? null, update.viewport ?? null)
+			) {
+				peer.viewportMovedAt = now();
+			}
 			if (update.cursor) {
 				if (
 					!previousCursor ||
@@ -521,6 +616,7 @@ export function createBoardAwarenessController(options: ControllerOptions) {
 	function destroy(): Promise<void> {
 		if (destroyed) return sendTail;
 		localCursor = null;
+		localViewport = null;
 		localState = {
 			...localState,
 			selection: [],
@@ -550,6 +646,7 @@ export function createBoardAwarenessController(options: ControllerOptions) {
 		},
 		updateLocalState,
 		setCursor,
+		setViewport,
 		syncGesture,
 		receive,
 		reconcile,

@@ -10,12 +10,10 @@ const locale = $derived(getLocale());
 function settingsTitle(section: string): string {
 	const options = { locale };
 	switch (section) {
-		case "profile":
-			return m.nav_profile({}, options);
+		case "general":
+			return m.nav_general({}, options);
 		case "activity":
 			return m.nav_activity({}, options);
-		case "appearance":
-			return m.nav_appearance({}, options);
 		case "referrals":
 			return m.nav_referrals({}, options);
 		case "billing":
@@ -31,7 +29,7 @@ function settingsTitle(section: string): string {
 }
 
 const currentSection = $derived(
-	page.url.pathname.split("/").filter(Boolean)[1] ?? "profile",
+	page.url.pathname.split("/").filter(Boolean)[1] ?? "general",
 );
 const title = $derived(settingsTitle(currentSection));
 

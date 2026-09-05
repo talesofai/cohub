@@ -9,7 +9,7 @@ import {
   createQueueTelemetry,
 } from "@cohub/infra/bullmq";
 import { env } from "./env.js";
-import { AGENT_SANDBOX_BASH_JOB_NAME, AGENT_RUN_COMMAND_JOB_NAME, AGENT_SESSION_FORK_JOB_NAME, NATIVE_AGENT_INGEST_JOB_NAME, AGENT_TURN_JOB_NAME, AGENT_TURN_QUEUE_NAME, AGENT_SANDBOX_FS_MUTATION_JOB_NAME, type AgentJobData, type AgentTurnJobData, type AgentSessionForkJobData, type NativeAgentIngestJobData, type AgentSandboxBashUploadJobData, type AgentRunCommandJobData, type AgentSandboxFsMutationJobData } from "./queue.js";
+import { AGENT_SANDBOX_BASH_JOB_NAME, AGENT_SANDBOX_BASH_ATOMIC_JOB_NAME, AGENT_RUN_COMMAND_JOB_NAME, AGENT_SESSION_FORK_JOB_NAME, NATIVE_AGENT_INGEST_JOB_NAME, AGENT_TURN_JOB_NAME, AGENT_TURN_QUEUE_NAME, AGENT_SANDBOX_FS_MUTATION_JOB_NAME, type AgentJobData, type AgentTurnJobData, type AgentSessionForkJobData, type NativeAgentIngestJobData, type AgentSandboxBashUploadJobData, type AgentRunCommandJobData, type AgentSandboxFsMutationJobData } from "./queue.js";
 import { processAgentTurnJob, disposeAllSessionHandles } from "./processor.js";
 import { processSessionForkJob } from "./fork.js";
 import { processSandboxBashJob } from "./sandbox-bash.js";
@@ -46,7 +46,7 @@ const processor: Processor<AgentJobData> = async (job) => {
     if (!env.NATIVE_AGENT_MIRROR_ENABLED) throw new Error("native_agent_mirror_disabled");
     return processNativeAgentIngestJob(job as Job<NativeAgentIngestJobData>);
   }
-  if (job.name === AGENT_SANDBOX_BASH_JOB_NAME) {
+  if (job.name === AGENT_SANDBOX_BASH_JOB_NAME || job.name === AGENT_SANDBOX_BASH_ATOMIC_JOB_NAME) {
     return processSandboxBashJob(job as Job<AgentSandboxBashUploadJobData>);
   }
   if (job.name === AGENT_SANDBOX_FS_MUTATION_JOB_NAME) {

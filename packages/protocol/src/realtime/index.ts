@@ -2,6 +2,10 @@ export type * from "./board-awareness.js";
 export type * from "./stream.js";
 export type * from "./types.js";
 export {
+  BOARD_AWARENESS_MAX_VIEWPORT_ZOOM,
+  BOARD_AWARENESS_MIN_VIEWPORT_ZOOM,
+  BOARD_AWARENESS_WORLD_COORDINATE_LIMIT,
+  BOARD_AWARENESS_WORLD_EXTENT_LIMIT,
   BoardAwarenessClientPayloadSchema,
   BoardAwarenessDrawPointSchema,
   BoardAwarenessFrameSchema,
@@ -10,6 +14,7 @@ export {
   BoardAwarenessPointSchema,
   BoardAwarenessStateUpdateSchema,
   BoardAwarenessUpdateSchema,
+  BoardAwarenessViewportSchema,
 } from "./board-awareness.js";
 export {
   AGENT_REALTIME_PATCH_CHANNEL,

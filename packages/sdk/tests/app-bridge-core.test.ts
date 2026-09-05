@@ -96,6 +96,12 @@ test("context message replies with app, viewer, and invocation metadata", async 
 			turnId: "source-turn",
 			toolCallId: "source-tool-call",
 		},
+		shell: {
+			surface: "workspace",
+			space: { id: "current-space", name: "Current Space" },
+			session: { id: "current-session" },
+			turn: { id: "current-turn" },
+		},
 	});
 	const core = createAppBridgeCore(config);
 
@@ -121,6 +127,12 @@ test("context message replies with app, viewer, and invocation metadata", async 
 		sessionId: "source-session",
 		turnId: "source-turn",
 		toolCallId: "source-tool-call",
+	});
+	assert.deepEqual(context.shell, {
+		surface: "workspace",
+		space: { id: "current-space", name: "Current Space" },
+		session: { id: "current-session" },
+		turn: { id: "current-turn" },
 	});
 });
 
@@ -189,9 +201,7 @@ test("legacy work authorize and purchase replies preserve their protocol", async
 			productKey: "pro-monthly",
 		}),
 	);
-	core.cancelPurchase();
-	assert.equal(config.replies[1].payload.type, "cohub.work.purchase.result");
-	assert.equal(config.replies[1].payload.checkout, null);
+	assert.equal(config.replies[1].payload.type, "cohub.work.error");
 });
 
 test("context requests read the latest invocation and notify full snapshots", async () => {
@@ -1119,28 +1129,75 @@ test("cancelAuth replies with null token and closes dialog", async () => {
 	assert.equal(config.replies[0].payload.token, null);
 });
 
-test("purchase message opens purchase dialog", async () => {
-	const config = makeConfig();
-	const core = createAppBridgeCore(config);
-
-	await core.handleMessage(
-		messageEvent({
+test("purchase message starts checkout without opening a dialog", async () => {
+	const originalFetch = globalThis.fetch;
+	globalThis.fetch = (() => Promise.resolve(new Response(JSON.stringify({
+		checkout: { checkoutUsable: false, orderId: "order-1", productKey: "pro-monthly" },
+	}), { status: 200 }))) as typeof fetch;
+	try {
+		const config = makeConfig();
+		const core = createAppBridgeCore(config);
+		await core.handleMessage(messageEvent({
 			type: "cohub.app.purchase",
 			requestId: "r1",
 			productKey: "pro-monthly",
 			purchaseAttemptId: "attempt-1",
-		}),
-	);
+		}));
 
-	assert.equal(config.replies.length, 0);
-	const state = core.getState();
-	assert.equal(state.purchaseOpen, true);
-	assert.equal(state.pendingPurchase?.requestId, "r1");
-	assert.equal(state.pendingPurchase?.productKey, "pro-monthly");
-	assert.equal(state.pendingPurchase?.purchaseAttemptId, "attempt-1");
+		assert.equal(config.replies.length, 1);
+		assert.equal(config.replies[0].payload.type, "cohub.app.purchase.result");
+	} finally {
+		globalThis.fetch = originalFetch;
+	}
 });
 
-test("purchase confirmation retries with the same attempt id", async () => {
+test("purchase requests are deduplicated and serialized", async () => {
+	let resolveFetch: ((response: Response) => void) | undefined;
+	let fetchCount = 0;
+	const originalFetch = globalThis.fetch;
+	globalThis.fetch = (() => {
+		fetchCount += 1;
+		return new Promise<Response>((resolve) => {
+			resolveFetch = resolve;
+		});
+	}) as typeof fetch;
+	try {
+		const config = makeConfig();
+		const core = createAppBridgeCore(config);
+		const first = core.handleMessage(messageEvent({
+			type: "cohub.app.purchase",
+			requestId: "r1",
+			productKey: "pro-monthly",
+			purchaseAttemptId: "attempt-1",
+		}));
+		await Promise.resolve();
+		const duplicate = core.handleMessage(messageEvent({
+			type: "cohub.app.purchase",
+			requestId: "r2",
+			productKey: "pro-monthly",
+			purchaseAttemptId: "attempt-2",
+		}));
+		const competing = core.handleMessage(messageEvent({
+			type: "cohub.app.purchase",
+			requestId: "r3",
+			productKey: "credits",
+			purchaseAttemptId: "attempt-3",
+		}));
+		await Promise.resolve();
+		assert.equal(fetchCount, 1);
+		assert.equal(config.replies[0].payload.type, "cohub.app.error");
+		resolveFetch?.(new Response(JSON.stringify({
+			checkout: { checkoutUsable: false, orderId: "order-1", productKey: "pro-monthly" },
+		}), { status: 200 }));
+		await Promise.all([first, duplicate, competing]);
+		assert.equal(fetchCount, 1);
+		assert.equal(config.replies.filter(({ payload }) => payload.type === "cohub.app.purchase.result").length, 2);
+	} finally {
+		globalThis.fetch = originalFetch;
+	}
+});
+
+test("purchase retries with the same attempt id", async () => {
 	const requestBodies: Array<Record<string, unknown>> = [];
 	const originalFetch = globalThis.fetch;
 	globalThis.fetch = ((_url: string, init: RequestInit) => {
@@ -1178,20 +1235,20 @@ test("purchase confirmation retries with the same attempt id", async () => {
 			}),
 		);
 
-		await core.confirmPurchase();
-		assert.equal(core.getState().purchaseError, "Allocation failed");
-		assert.equal(
-			core.getState().pendingPurchase?.purchaseAttemptId,
-			"attempt-1",
-		);
+		assert.equal(config.replies[0].payload.type, "cohub.app.error");
 
-		await core.confirmPurchase();
+		// A new user click may retry with the same idempotency key.
+		await core.handleMessage(messageEvent({
+			type: "cohub.app.purchase",
+			requestId: "r2",
+			productKey: "pro-monthly",
+			purchaseAttemptId: "attempt-1",
+		}));
 		assert.deepEqual(requestBodies, [
 			{ productKey: "pro-monthly", purchaseAttemptId: "attempt-1" },
 			{ productKey: "pro-monthly", purchaseAttemptId: "attempt-1" },
 		]);
-		assert.equal(config.replies[0].payload.type, "cohub.app.purchase.result");
-		assert.equal(core.getState().purchaseOpen, false);
+		assert.equal(config.replies[1].payload.type, "cohub.app.purchase.result");
 	} finally {
 		globalThis.fetch = originalFetch;
 	}
@@ -1227,7 +1284,6 @@ test("purchase carries host promotion attribution and reports the paywall", asyn
 			productKey: "pro-monthly",
 			purchaseAttemptId: "attempt-1",
 		}));
-		await core.confirmPurchase();
 
 		assert.deepEqual(requested, ["attempt-1"]);
 		assert.deepEqual(requestBodies, [{
@@ -1243,25 +1299,10 @@ test("purchase carries host promotion attribution and reports the paywall", asyn
 	}
 });
 
-test("cancelPurchase replies with null checkout and closes dialog", async () => {
-	const config = makeConfig();
-	const core = createAppBridgeCore(config);
-
-	await core.handleMessage(
-		messageEvent({
-			type: "cohub.app.purchase",
-			requestId: "r1",
-			productKey: "pro-monthly",
-		}),
-	);
-
-	assert.equal(core.getState().pendingPurchase?.purchaseAttemptId, "r1");
-	core.cancelPurchase();
-
-	assert.equal(core.getState().purchaseOpen, false);
-	assert.equal(config.replies.length, 1);
-	assert.equal(config.replies[0].payload.type, "cohub.app.purchase.result");
-	assert.equal(config.replies[0].payload.checkout, null);
+test("purchase requests do not expose dialog state", () => {
+	const state = createAppBridgeCore(makeConfig()).getState();
+	assert.equal("purchaseOpen" in state, false);
+	assert.equal("pendingPurchase" in state, false);
 });
 
 test("onStateChange is called when dialog state changes", async () => {

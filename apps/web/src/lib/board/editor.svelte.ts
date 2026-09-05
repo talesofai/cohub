@@ -52,6 +52,7 @@ import { reconcileExternal } from "$lib/board/board-document";
 import { appendBoardDrawSample } from "$lib/board/board-draw-input";
 import { createBoardItemId } from "$lib/board/board-id";
 import {
+	createAppBoardItem,
 	createArrowBoardItem,
 	createDrawBoardItem,
 	createFileNodeForPath,
@@ -918,6 +919,21 @@ export function createBoardEditor(options: BoardEditorOptions) {
 	 * in how much detail it can show — so this always returns the created node's id
 	 * for the caller to enrich once a preview has been read.
 	 */
+	function addApp(
+		app: {
+			appId: string;
+			ref: string;
+			url: string;
+			name: string;
+			icon?: string;
+		},
+		at: WorldPoint,
+	) {
+		const item = createAppBoardItem(app, at.x, at.y);
+		addItemAt(item);
+		return item.id;
+	}
+
 	function addFile(
 		path: string,
 		at: WorldPoint,
@@ -3195,6 +3211,7 @@ export function createBoardEditor(options: BoardEditorOptions) {
 		setSelection,
 		clearSelection,
 		selectAll,
+		addApp,
 		addFile,
 		addTask,
 		addTaskWithSources,

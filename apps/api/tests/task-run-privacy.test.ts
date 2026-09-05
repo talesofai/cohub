@@ -1,6 +1,9 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { sanitizeTaskRunPricingForViewer } from "../src/task-run-privacy.js";
+import {
+  sanitizeTaskRunPricingForViewer,
+  sanitizeTaskRunProgressForViewer,
+} from "../src/task-run-privacy.js";
 
 function generationRun() {
   return {
@@ -77,6 +80,51 @@ test("Space creation Git tokens are removed for every viewer without mutating st
     });
   }
   assert.equal((run.payload.data as Record<string, unknown>).gitToken, "secret");
+});
+
+test("App Action internals are visible only to the App owner", () => {
+  const run = {
+    taskType: "run_command",
+    userUuid: "viewer_1",
+    payload: {
+      type: "run_command",
+      data: {
+        source: "app_action",
+        appId: "app_1",
+        appVersionId: "version_1",
+        action: "summarize",
+        actorUserId: "owner_1",
+        executionScopes: ["command.execute"],
+        command: "secret command",
+      },
+    },
+    result: {
+      command: "secret command",
+      content: [{ type: "tool_use", input: { command: "secret command" }, _meta: { command: "secret command" } }],
+    },
+  };
+  const progress = {
+    command: "secret command",
+    content: [{ type: "tool_use", input: { command: "secret command" }, _meta: { command: "secret command" } }],
+  };
+
+  assert.equal(sanitizeTaskRunPricingForViewer(run, "owner_1"), run);
+  assert.deepEqual(sanitizeTaskRunPricingForViewer(run, "viewer_1"), {
+    ...run,
+    payload: {
+      type: "run_command",
+      data: {
+        source: "app_action",
+        appId: "app_1",
+        appVersionId: "version_1",
+        action: "summarize",
+      },
+    },
+    result: { content: [{ type: "tool_use", input: {}, _meta: {} }] },
+  });
+  assert.deepEqual(sanitizeTaskRunProgressForViewer(run, progress, "viewer_1"), {
+    content: [{ type: "tool_use", input: {}, _meta: {} }],
+  });
 });
 
 test("non-generation task responses are unchanged", () => {

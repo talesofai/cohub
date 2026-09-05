@@ -8,7 +8,11 @@ import {
 	type BoardAuthoringSnapshot,
 	parseBoardPlaybackPolicy,
 } from "@cohub/protocol";
-import type { BoardPlaybackPolicy } from "@neta-art/cohub";
+import type { AppNavigationOpenMessage } from "@cohub/protocol/app-navigation";
+import type {
+	AppRuntimeShellContext,
+	BoardPlaybackPolicy,
+} from "@neta-art/cohub";
 import { BOARD_DOCUMENT_KIND, type BoardDocument } from "@neta-art/cohub/board";
 import type {
 	BoardAutomationActivity,
@@ -71,6 +75,15 @@ export type BoardRuntimeProps = {
 	document: BoardDocument;
 	runtime: BoardRuntimeData;
 	spaceId: string;
+	/** Runtime context forwarded to Apps rendered inside Board nodes. */
+	shell?: AppRuntimeShellContext;
+	onNavigationOpen?: (message: AppNavigationOpenMessage) => Promise<{
+		handled: boolean;
+		reason?: "unsupported" | "invalid_target" | "inaccessible" | "timeout";
+		call?:
+			| { ok: true; result?: unknown }
+			| { ok: false; code: string; message: string };
+	}>;
 	mode?: BoardRuntimeMode;
 	/**
 	 * Where referenced media resolves from. Defaults to the live Space file API;

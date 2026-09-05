@@ -1,5 +1,31 @@
 # @neta-art/cohub-cli
 
+## 6.6.0
+
+### Minor Changes
+
+- c59bc31: Add published App Actions backed by existing Run Command Task Runs, with owner-funded execution, viewer-scoped App Commerce access, and private owner diagnostics.
+
+### Patch Changes
+
+- Updated dependencies [c59bc31]
+  - @neta-art/cohub@8.9.0
+
+## 6.5.0
+
+### Minor Changes
+
+- 0cd4d32: Turn browsing now matches the Web session view:
+  
+  - `spaces turns ls --session <sessionId>` lists full turns from one session (the same endpoint the Web session view uses), with `--cursor <sequence>` and `--direction older|newer` pagination.
+  - New `spaces turns intermediate <sessionId> <turnId>` command reads a turn's persisted intermediate messages from its CDN archive; `--json` returns the raw archive without reducing its content blocks.
+
+### Patch Changes
+
+- Updated dependencies [9275e77]
+- Updated dependencies [0cd4d32]
+  - @neta-art/cohub@8.8.0
+
 ## 6.4.0
 
 ### Minor Changes

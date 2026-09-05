@@ -2,9 +2,9 @@ import {
 	type AppAuthorizeRequest,
 	type AppBridgeAuthorizationContext,
 	type AppBridgeCoreApp,
-	type AppPurchaseRequest,
 	type AppRuntimeCheckoutState,
 	type AppRuntimeInvocationContext,
+	type AppRuntimeShellContext,
 	createAppBridgeCore,
 } from "@neta-art/cohub";
 import { PUBLIC_API_ORIGIN } from "$env/static/public";
@@ -27,7 +27,7 @@ export type AppBridgeHostApp = AppBridgeCoreApp;
  * A pending authorize request surfaced to the UI as a consent dialog.
  */
 /**
- * A pending purchase request surfaced to the UI as a checkout confirmation.
+ * Purchase request payload received from an App.
  */
 export type {
 	AppAuthorizeRequest,
@@ -46,6 +46,9 @@ export type AppBridgeHostConfig = {
 	invocation?: AppRuntimeInvocationContext;
 	/** Reads the latest opening context without recreating the app surface. */
 	getInvocation?: () => AppRuntimeInvocationContext | undefined;
+	shell?: AppRuntimeShellContext;
+	/** Reads the latest shell context without recreating the app surface. */
+	getShell?: () => AppRuntimeShellContext | undefined;
 	/** Sends an unsolicited event to the app runtime. */
 	notify?: (payload: Record<string, unknown>) => void;
 	/** Sends a reply payload back to the app runtime. */
@@ -60,11 +63,6 @@ export type AppBridgeHost = {
 	readonly pendingAuth: AppAuthorizeRequest | null;
 	readonly authError: string | null;
 	readonly authSaving: boolean;
-	/** Reactive purchase-dialog state. */
-	readonly purchaseOpen: boolean;
-	readonly pendingPurchase: AppPurchaseRequest | null;
-	readonly purchaseError: string | null;
-	readonly purchaseSaving: boolean;
 	/** Processes an inbound bridge message (already source/origin-validated). */
 	handleMessage: (event: MessageEvent) => Promise<void>;
 	/** Sends the current complete runtime context to the app. */
@@ -74,9 +72,6 @@ export type AppBridgeHost = {
 	/** Confirm/cancel handlers for the authorize dialog. */
 	confirmAuth: (pickedSpaceId?: string) => Promise<void>;
 	cancelAuth: () => void;
-	/** Confirm/cancel handlers for the purchase dialog. */
-	confirmPurchase: () => Promise<void>;
-	cancelPurchase: () => void;
 };
 
 /**
@@ -94,16 +89,14 @@ export function createAppBridgeHost(
 	let pendingAuth = $state<AppAuthorizeRequest | null>(null);
 	let authError = $state<string | null>(null);
 	let authSaving = $state(false);
-	let purchaseOpen = $state(false);
-	let pendingPurchase = $state<AppPurchaseRequest | null>(null);
-	let purchaseError = $state<string | null>(null);
-	let purchaseSaving = $state(false);
 
 	const core = createAppBridgeCore({
 		app: config.app,
 		authorizationContext: config.authorizationContext,
 		invocation: config.invocation,
 		getInvocation: config.getInvocation,
+		shell: config.shell,
+		getShell: config.getShell,
 		notify: config.notify,
 		apiOrigin: PUBLIC_API_ORIGIN ?? "",
 		reply: config.reply,
@@ -122,9 +115,7 @@ export function createAppBridgeHost(
 				eventId: purchase.purchaseAttemptId,
 				productKey: purchase.productKey,
 			}).catch(() => {
-				console.warn(
-					"[app-promotions] Failed to report purchase confirmation.",
-				);
+				console.warn("[app-promotions] Failed to report purchase intent.");
 			});
 		},
 		onCheckoutStarted: (purchase) => {
@@ -140,10 +131,6 @@ export function createAppBridgeHost(
 			pendingAuth = next.pendingAuth;
 			authError = next.authError;
 			authSaving = next.authSaving;
-			purchaseOpen = next.purchaseOpen;
-			pendingPurchase = next.pendingPurchase;
-			purchaseError = next.purchaseError;
-			purchaseSaving = next.purchaseSaving;
 		},
 	});
 
@@ -160,23 +147,9 @@ export function createAppBridgeHost(
 		get authSaving() {
 			return authSaving;
 		},
-		get purchaseOpen() {
-			return purchaseOpen;
-		},
-		get pendingPurchase() {
-			return pendingPurchase;
-		},
-		get purchaseError() {
-			return purchaseError;
-		},
-		get purchaseSaving() {
-			return purchaseSaving;
-		},
 		handleMessage: core.handleMessage,
 		notifyContextChanged: core.notifyContextChanged,
 		confirmAuth: core.confirmAuth,
 		cancelAuth: core.cancelAuth,
-		confirmPurchase: core.confirmPurchase,
-		cancelPurchase: core.cancelPurchase,
 	};
 }

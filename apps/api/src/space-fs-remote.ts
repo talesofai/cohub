@@ -8,6 +8,7 @@ import {
   type SpaceFsReadFilesResponse,
   type SpaceFsTreeResponse,
   type SpaceFsUploadResponse,
+  type SpaceFsUploadTargetVersion,
   type SpaceFsWriteFileInput,
 } from "@cohub/protocol/fs";
 import type { RpcEventPayload } from "@cohub/protocol/sandbox";
@@ -277,6 +278,23 @@ export async function readSpaceFiles(
   }
 
   return { files, errors };
+}
+
+export async function statSpaceFileVersion(spaceId: string, path: string): Promise<SpaceFsUploadTargetVersion> {
+  const safePath = assertSafeSubpath(path);
+  try {
+    const result = await callSandboxRpc(spaceId, "fs.stat", { path: safePath });
+    if (!result.exists) return { exists: false };
+    if (result.isDirectory || result.isFile === false) {
+      throw new SpaceFsError(400, "not_a_file", "The upload target is not a file.");
+    }
+    if (typeof result.size !== "number" || typeof result.mtimeMs !== "number") {
+      throw new SpaceFsError(500, "space_fs_error", "Upload target metadata is unavailable.");
+    }
+    return { exists: true, size: result.size, mtimeMs: Math.trunc(result.mtimeMs) };
+  } catch (error) {
+    mapRpcError(error);
+  }
 }
 
 export async function writeSpaceFile(spaceId: string, input: SpaceFsWriteFileInput) {

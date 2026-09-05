@@ -416,6 +416,145 @@ func TestFSWriteReportsCreatedFileAndParentDirectories(t *testing.T) {
 	}
 }
 
+func TestFSWriteSourceExpectedVersion(t *testing.T) {
+	root := setupTree(t)
+	d := newTreeDispatcher(t, root)
+	target := filepath.Join(root, "source.txt")
+	staging := filepath.Join(root, ".cohub-upload.source")
+	if err := os.WriteFile(target, []byte("old"), 0o644); err != nil {
+		t.Fatalf("seed target: %v", err)
+	}
+	info, err := os.Stat(target)
+	if err != nil {
+		t.Fatalf("stat target: %v", err)
+	}
+	if err := os.WriteFile(staging, []byte("uploaded"), 0o600); err != nil {
+		t.Fatalf("write staging file: %v", err)
+	}
+
+	res := d.handleFSWrite(writeRequest(t, fsWriteParams{
+		Path:       "source.txt",
+		SourcePath: staging,
+		Expected:   &fsWriteVersion{Size: info.Size(), MtimeMs: info.ModTime().UnixMilli()},
+	}))
+	if _, ok := res.(map[string]interface{}); !ok {
+		t.Fatalf("expected source install to succeed, got %T (%v)", res, res)
+	}
+	content, err := os.ReadFile(target)
+	if err != nil {
+		t.Fatalf("read target: %v", err)
+	}
+	if string(content) != "uploaded" {
+		t.Fatalf("target content = %q, want uploaded", content)
+	}
+	if _, err := os.Stat(staging); !os.IsNotExist(err) {
+		t.Fatalf("staging file should be consumed, stat error = %v", err)
+	}
+}
+
+func TestFSWriteSourceExpectedVersionConflict(t *testing.T) {
+	root := setupTree(t)
+	d := newTreeDispatcher(t, root)
+	target := filepath.Join(root, "source-conflict.txt")
+	staging := filepath.Join(root, ".cohub-upload.conflict")
+	if err := os.WriteFile(target, []byte("old"), 0o644); err != nil {
+		t.Fatalf("seed target: %v", err)
+	}
+	info, err := os.Stat(target)
+	if err != nil {
+		t.Fatalf("stat target: %v", err)
+	}
+	if err := os.WriteFile(staging, []byte("uploaded"), 0o600); err != nil {
+		t.Fatalf("write staging file: %v", err)
+	}
+	if err := os.WriteFile(target, []byte("edited by user"), 0o644); err != nil {
+		t.Fatalf("edit target: %v", err)
+	}
+
+	res := d.handleFSWrite(writeRequest(t, fsWriteParams{
+		Path:       "source-conflict.txt",
+		SourcePath: staging,
+		Expected:   &fsWriteVersion{Size: info.Size(), MtimeMs: info.ModTime().UnixMilli()},
+	}))
+	failed, ok := res.(protocol.RPCFailed)
+	if !ok {
+		t.Fatalf("expected source install conflict, got %T (%v)", res, res)
+	}
+	if failed.Error.Code != "CONFLICT" {
+		t.Fatalf("error code = %q, want CONFLICT", failed.Error.Code)
+	}
+	content, err := os.ReadFile(target)
+	if err != nil {
+		t.Fatalf("read target: %v", err)
+	}
+	if string(content) != "edited by user" {
+		t.Fatalf("conflict clobbered target: %q", content)
+	}
+	if _, err := os.Stat(staging); err != nil {
+		t.Fatalf("staging file should remain for cleanup, stat error = %v", err)
+	}
+}
+
+func TestFSWriteSourceExclusiveCreate(t *testing.T) {
+	root := setupTree(t)
+	d := newTreeDispatcher(t, root)
+	staging := filepath.Join(root, ".cohub-upload.create")
+	if err := os.WriteFile(staging, []byte("created"), 0o600); err != nil {
+		t.Fatalf("write staging file: %v", err)
+	}
+
+	res := d.handleFSWrite(writeRequest(t, fsWriteParams{
+		Path:       "created-from-upload.txt",
+		SourcePath: staging,
+		Exclusive:  true,
+	}))
+	if _, ok := res.(map[string]interface{}); !ok {
+		t.Fatalf("expected source create to succeed, got %T (%v)", res, res)
+	}
+	content, err := os.ReadFile(filepath.Join(root, "created-from-upload.txt"))
+	if err != nil {
+		t.Fatalf("read created target: %v", err)
+	}
+	if string(content) != "created" {
+		t.Fatalf("target content = %q, want created", content)
+	}
+	if _, err := os.Stat(staging); !os.IsNotExist(err) {
+		t.Fatalf("staging file should be consumed, stat error = %v", err)
+	}
+}
+
+func TestFSWriteSourceExclusiveCreateConflict(t *testing.T) {
+	root := setupTree(t)
+	d := newTreeDispatcher(t, root)
+	staging := filepath.Join(root, ".cohub-upload.create-conflict")
+	if err := os.WriteFile(staging, []byte("uploaded"), 0o600); err != nil {
+		t.Fatalf("write staging file: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(root, "created-by-user.txt"), []byte("user"), 0o644); err != nil {
+		t.Fatalf("create target: %v", err)
+	}
+
+	res := d.handleFSWrite(writeRequest(t, fsWriteParams{
+		Path:       "created-by-user.txt",
+		SourcePath: staging,
+		Exclusive:  true,
+	}))
+	failed, ok := res.(protocol.RPCFailed)
+	if !ok {
+		t.Fatalf("expected source create conflict, got %T (%v)", res, res)
+	}
+	if failed.Error.Code != "ALREADY_EXISTS" {
+		t.Fatalf("error code = %q, want ALREADY_EXISTS", failed.Error.Code)
+	}
+	content, err := os.ReadFile(filepath.Join(root, "created-by-user.txt"))
+	if err != nil {
+		t.Fatalf("read target: %v", err)
+	}
+	if string(content) != "user" {
+		t.Fatalf("exclusive conflict clobbered target: %q", content)
+	}
+}
+
 func TestFSWriteExclusive(t *testing.T) {
 	root := setupTree(t)
 	d := newTreeDispatcher(t, root)

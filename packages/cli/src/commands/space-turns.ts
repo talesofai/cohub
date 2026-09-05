@@ -3,6 +3,8 @@ import type {
   SpaceTurnListItem,
   SpaceTurnListOptions,
   SpaceTurnsResponse,
+  SessionTurnRecord,
+  TurnIntermediateMessagesFile,
 } from "@neta-art/cohub";
 import type { Command } from "commander";
 import { createClient } from "../client.js";
@@ -26,12 +28,26 @@ export type SpaceTurnListCliOptions = {
   limit?: string;
   session?: string;
   json?: boolean;
+  direction?: "older" | "newer";
 };
 
 type SpaceTurnsCommandClient = {
   space(spaceId: string): {
     turns: {
       list(options: SpaceTurnListOptions): Promise<SpaceTurnsResponse>;
+    };
+    session(sessionId: string): {
+      turns: {
+        listPaginated(options?: { cursor?: number; limit?: number; direction?: "older" | "newer" }): Promise<{
+          session: unknown;
+          turns: SessionTurnRecord[];
+          hasMore: boolean;
+          nextCursor: number | undefined;
+        }>;
+        intermediate: {
+          get(turnId: string): Promise<TurnIntermediateMessagesFile | null>;
+        };
+      };
     };
   };
 };
@@ -99,6 +115,33 @@ export function parseSpaceTurnListOptions(
   };
 }
 
+export function parseSessionTurnCursor(value: string | undefined): number | undefined {
+  if (value === undefined) return undefined;
+  const cursor = Number(value);
+  if (!Number.isSafeInteger(cursor) || cursor < 1) {
+    throw new InvalidSpaceTurnCliOptionsError(
+      "Invalid cursor",
+      "Session cursor must be a positive turn sequence",
+    );
+  }
+  return cursor;
+}
+
+export function validateSpaceTurnListMode(options: SpaceTurnListCliOptions): void {
+  if (!options.session && options.direction !== undefined) {
+    throw new InvalidSpaceTurnCliOptionsError(
+      "Invalid direction",
+      "--direction only applies with --session",
+    );
+  }
+  if (options.session && (options.author || options.after || options.before)) {
+    throw new InvalidSpaceTurnCliOptionsError(
+      "Invalid session turn options",
+      "--session uses the Session turns API; omit --author, --after, and --before",
+    );
+  }
+}
+
 export function toSpaceTurnRows(turns: SpaceTurnListItem[]): Row[] {
   return turns.map((turn) => ({
     createdAt: turn.createdAt,
@@ -127,13 +170,14 @@ export function registerSpaceTurns(
   turnsCmd
     .command("ls")
     .alias("list")
-    .description("List recent turns across sessions")
-    .option("--author <any|self|others>", "Filter turns by author")
-    .option("--after <cursor>", "Only turns after a snapshot cursor")
-    .option("--before <timestamp>", "Only turns at or before an ISO 8601 timestamp")
-    .option("--cursor <cursor>", "Older-page cursor from a previous result")
-    .option("--limit <n>", "Page size, from 1 to 100")
-    .option("--session <id>", "Only turns from this session")
+    .description("List turns in the space, or full turns from one session")
+    .option("--author <any|self|others>", "Filter space turns by author")
+    .option("--after <cursor>", "Start after a previous snapshot cursor")
+    .option("--before <timestamp>", "End at an ISO 8601 timestamp")
+    .option("--cursor <cursor>", "Page cursor; with --session, use a turn sequence")
+    .option("--limit <n>", "Maximum turns per page, 1-100")
+    .option("--session <id>", "Use the full turn list for this session")
+    .option("--direction <older|newer>", "Session page direction; use with --session")
     .option("--json", "Output as JSON")
     .action(async (options: SpaceTurnListCliOptions) => {
       let query: SpaceTurnListOptions;
@@ -149,6 +193,38 @@ export function registerSpaceTurns(
       const spaceId = resolveSpace(spacesCmd);
       const client = dependencies.createClient?.() ?? createClient();
       try {
+        try {
+          validateSpaceTurnListMode(options);
+        } catch (cause) {
+          if (cause instanceof InvalidSpaceTurnCliOptionsError) return error(cause.message, cause.detail);
+          throw cause;
+        }
+        if (options.session) {
+          let sessionCursor: number | undefined;
+          try {
+            sessionCursor = parseSessionTurnCursor(options.cursor);
+          } catch (cause) {
+            if (cause instanceof InvalidSpaceTurnCliOptionsError) return error(cause.message, cause.detail);
+            throw cause;
+          }
+          const result = await client.space(spaceId).session(options.session).turns.listPaginated({
+            cursor: sessionCursor,
+            limit: query.limit,
+            direction: options.direction,
+          });
+          if (jsonRequested(options)) return outJson(result);
+          if (result.turns.length === 0) return console.log("  No turns found");
+          table(result.turns, [
+            { key: "sequence", label: "Seq" },
+            { key: "id", label: "Turn ID" },
+            { key: "status", label: "Status" },
+            { key: "userText", label: "User" },
+            { key: "assistantText", label: "Assistant" },
+            { key: "updatedAt", label: "Updated" },
+          ]);
+          if (result.hasMore) console.log(`\n  More turns available - next cursor: ${result.nextCursor}`);
+          return;
+        }
         const result = await client.space(spaceId).turns.list(query);
         if (jsonRequested(options)) return outJson(result);
         if (result.turns.length === 0) return console.log("  No turns found");
@@ -166,6 +242,29 @@ export function registerSpaceTurns(
         ]);
         if (result.pageInfo.hasMore && result.pageInfo.nextCursor) {
           console.log(`\n  More turns available - next cursor: ${result.pageInfo.nextCursor}`);
+        }
+      } catch (cause) {
+        handleHttp(cause);
+      }
+    });
+
+  turnsCmd
+    .command("intermediate <sessionId> <turnId>")
+    .description("Read persisted intermediate messages from the CDN archive")
+    .option("--json", "Output as JSON")
+    .action(async (sessionId: string, turnId: string, options: { json?: boolean }) => {
+      const spaceId = resolveSpace(spacesCmd);
+      const client = dependencies.createClient?.() ?? createClient();
+      try {
+        const archive = await client.space(spaceId).session(sessionId).turns.intermediate.get(turnId);
+        if (jsonRequested(options)) return outJson(archive);
+        if (!archive) return console.log("  No intermediate messages found");
+        console.log(`Turn ${archive.turnId}`);
+        console.log(`  ${archive.summary.messageCount} intermediate messages · ${archive.summary.toolCallCount} tool calls`);
+        for (const [index, message] of archive.messages.entries()) {
+          console.log(`\n${index + 1}. ${message.role}${message.provider ? ` · ${message.provider}/${message.model ?? ""}` : ""}`);
+          if (message.text) console.log(message.text);
+          if (message.toolCallsObjectKey) console.log("  Tool calls: available");
         }
       } catch (cause) {
         handleHttp(cause);

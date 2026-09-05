@@ -1124,6 +1124,14 @@ type BoardTaskDropItem = {
 	snapshot: BoardTaskSnapshot;
 };
 
+type BoardAppDropItem = {
+	appId: string;
+	ref: string;
+	url: string;
+	name: string;
+	icon?: string;
+};
+
 function handleDrop(event: DragEvent) {
 	event.preventDefault();
 	dropActive = false;
@@ -1131,6 +1139,7 @@ function handleDrop(event: DragEvent) {
 
 	const items: BoardDropItem[] = [];
 	const taskItems: BoardTaskDropItem[] = [];
+	const appItems: BoardAppDropItem[] = [];
 
 	const raw = event.dataTransfer?.getData("application/x-cohub-resource");
 	if (raw) {
@@ -1141,6 +1150,9 @@ function handleDrop(event: DragEvent) {
 					title?: string;
 					path?: string;
 					ref?: string;
+					appId?: string;
+					icon?: string;
+					href?: string;
 					mimeType?: string;
 					size?: number;
 					mtimeMs?: number;
@@ -1149,6 +1161,22 @@ function handleDrop(event: DragEvent) {
 				}>;
 			};
 			for (const resource of payload.resources ?? []) {
+				if (
+					resource.type === "app" &&
+					resource.appId &&
+					resource.ref &&
+					resource.href &&
+					resource.title
+				) {
+					appItems.push({
+						appId: resource.appId,
+						ref: resource.ref,
+						url: resource.href,
+						name: resource.title,
+						icon: resource.icon,
+					});
+					continue;
+				}
 				if (
 					resource.type === "task" &&
 					resource.taskRunId &&
@@ -1188,6 +1216,7 @@ function handleDrop(event: DragEvent) {
 	if (taskItems.length > 0)
 		dropTaskItems(event.clientX, event.clientY, taskItems);
 	if (items.length > 0) dropBoardItems(event.clientX, event.clientY, items);
+	if (appItems.length > 0) dropAppItems(event.clientX, event.clientY, appItems);
 }
 
 /**
@@ -1227,6 +1256,20 @@ function dropBoardItems(
 		// simply gain detail when this lands.
 		void enrichFileCards(created);
 	}
+}
+
+function dropAppItems(
+	clientX: number,
+	clientY: number,
+	items: BoardAppDropItem[],
+) {
+	if (!host || items.length === 0) return;
+	const rect = host.getBoundingClientRect();
+	const origin = screenToWorld(clientX, clientY, rect, editor.camera);
+	const created = items.map((entry, index) =>
+		editor.addApp(entry, worldPoint(origin.x + index * 36, origin.y)),
+	);
+	editor.setSelection(created);
 }
 
 function dropTaskItems(
@@ -1517,15 +1560,20 @@ onDestroy(() => {
 	use:pointerDropZone={{
 		resolve: (payload) => {
 			if (readonly) return null;
-			// Directories have no single file to reference, so the board declines them
-			// rather than silently dropping part of the payload.
+			const apps = payload.items.filter((item) => item.type === "app" && item.appId && item.appRef && item.appUrl);
+			if (apps.length > 0) return { label: "Add App to Board", effect: "copy" };
 			const items = toBoardDropItems(payload);
 			if (items.length === 0) return null;
 			return { label: m.board_add_to_board({}, { locale }), effect: "copy" };
 		},
 		drop: (payload, point) => {
 			if (readonly) return;
-			dropBoardItems(point.clientX, point.clientY, toBoardDropItems(payload));
+			const apps = payload.items
+				.filter((item) => item.type === "app" && item.appId && item.appRef && item.appUrl)
+				.map((item) => ({ appId: item.appId as string, ref: item.appRef as string, url: item.appUrl as string, name: item.name, icon: item.icon }));
+			if (apps.length > 0) dropAppItems(point.clientX, point.clientY, apps);
+			const items = toBoardDropItems(payload);
+			if (items.length > 0) dropBoardItems(point.clientX, point.clientY, items);
 		},
 	}}
 	ondragover={(event) => {

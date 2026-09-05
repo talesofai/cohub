@@ -41,7 +41,7 @@ type PoolEntry = {
   idleTimer: ReturnType<typeof setTimeout> | null;
 };
 
-type SandboxRecoverOutcome = {
+export type SandboxRecoverOutcome = {
   ok: boolean;
   recovering: boolean;
   throttled: boolean;
@@ -219,6 +219,11 @@ function disconnectEntry(spaceId: string, reason: string) {
 export function invalidateSandboxConnection(spaceId: string, reason: string) {
   disconnectEntry(spaceId, reason);
   wsUrlResolutions.delete(spaceId);
+}
+
+export async function recoverSandboxForUpgrade(spaceId: string, reason: string): Promise<SandboxRecoverOutcome> {
+  invalidateSandboxConnection(spaceId, reason);
+  return recoverSandboxOnce(spaceId, reason);
 }
 
 function scheduleIdleEviction(entry: PoolEntry) {

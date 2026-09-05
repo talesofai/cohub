@@ -10,6 +10,7 @@ import type {
 	AppContent,
 	AppRecord,
 	AppRuntimeInvocationContext,
+	AppRuntimeShellContext,
 } from "@neta-art/cohub";
 import { onMount, untrack } from "svelte";
 import { page } from "$app/state";
@@ -21,7 +22,6 @@ import { readAppCheckoutState } from "$lib/components/app/app-checkout-state";
 import SpaceAvatar from "$lib/components/SpaceAvatar.svelte";
 import UserIdentity from "$lib/components/UserIdentity.svelte";
 import AppAuthorizeDialog from "$lib/features/app/AppAuthorizeDialog.svelte";
-import AppPurchaseDialog from "$lib/features/app/AppPurchaseDialog.svelte";
 import { createAppBridgeHost } from "$lib/features/app/bridge-host.svelte";
 import {
 	type AppSurfaceHost,
@@ -65,6 +65,7 @@ type Props = {
 	mode?: AppSurfaceMode;
 	launchState?: AppLaunchState | null;
 	invocation?: AppRuntimeInvocationContext;
+	shell?: AppRuntimeShellContext;
 	/**
 	 * Receives the surface RPC host once mounted, so a parent can invoke methods
 	 * the app registered. Only meaningful for embedded (web / port) apps.
@@ -90,6 +91,7 @@ const {
 	mode = "page",
 	launchState = null,
 	invocation = undefined,
+	shell = undefined,
 	onSurfaceHost = undefined,
 	onComposerChip = undefined,
 	onReady = undefined,
@@ -166,6 +168,8 @@ const host = untrack(() =>
 		authorizationContext: { surface: mode },
 		invocation,
 		getInvocation: () => invocation,
+		shell,
+		getShell: () => shell,
 		notify: (payload) => {
 			// Only a ready runtime can receive unsolicited context updates. The
 			// iframe may have navigated without changing iframeSrc.
@@ -185,6 +189,7 @@ const host = untrack(() =>
 
 $effect(() => {
 	void invocation;
+	void shell;
 	pushSurfaceContext();
 });
 
@@ -349,14 +354,6 @@ onMount(() => {
 	{/if}
 </div>
 
-<AppPurchaseDialog
-	open={host.purchaseOpen && !!host.pendingPurchase}
-	pending={host.pendingPurchase}
-	error={host.purchaseError}
-	saving={host.purchaseSaving}
-	onConfirm={() => void host.confirmPurchase()}
-	onCancel={host.cancelPurchase}
-/>
 
 <AppAuthorizeDialog
 	open={host.authOpen && !!host.pendingAuth}

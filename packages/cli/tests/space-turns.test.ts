@@ -9,8 +9,10 @@ import { Command } from "commander";
 import {
   InvalidSpaceTurnCliOptionsError,
   parseSpaceTurnListOptions,
+  parseSessionTurnCursor,
   registerSpaceTurns,
   toSpaceTurnRows,
+  validateSpaceTurnListMode,
 } from "../src/commands/space-turns.js";
 
 const turn: SpaceTurnListItem = {
@@ -88,6 +90,20 @@ test("space turn CLI options reject invalid author, time, and limit", () => {
   );
 });
 
+test("session cursors start at the first turn sequence", () => {
+  assert.equal(parseSessionTurnCursor("1"), 1);
+  assert.throws(() => parseSessionTurnCursor("0"), InvalidSpaceTurnCliOptionsError);
+  assert.throws(() => parseSessionTurnCursor("-1"), InvalidSpaceTurnCliOptionsError);
+});
+
+test("turn list rejects direction outside session mode", () => {
+  assert.throws(
+    () => validateSpaceTurnListMode({ direction: "newer" }),
+    InvalidSpaceTurnCliOptionsError,
+  );
+  assert.doesNotThrow(() => validateSpaceTurnListMode({ session: "session-1", direction: "newer" }));
+});
+
 test("space turn table rows retain identifiers, authors, and previews", () => {
   assert.deepEqual(toSpaceTurnRows([turn]), [
     {
@@ -121,6 +137,16 @@ test("spaces turns ls forwards parsed options to the selected space", async () =
             return response;
           },
         },
+        session: () => ({
+          turns: {
+            listPaginated: async () => {
+              calledSpaceId = spaceId;
+              return { session: {}, turns: [turn], hasMore: true, nextCursor: 6 };
+            },
+            get: async () => ({ turn }),
+            intermediate: { get: async () => null },
+          },
+        }),
       }),
     }),
   });
@@ -138,8 +164,6 @@ test("spaces turns ls forwards parsed options to the selected space", async () =
       "spaces",
       "turns",
       "ls",
-      "--author",
-      "self",
       "--limit",
       "25",
       "--session",
@@ -150,15 +174,8 @@ test("spaces turns ls forwards parsed options to the selected space", async () =
   }
 
   assert.equal(calledSpaceId, "space-1");
-  assert.deepEqual(calledOptions, {
-    author: "self",
-    after: undefined,
-    before: undefined,
-    cursor: undefined,
-    limit: 25,
-    sessionId: "session-1",
-  });
-  assert.match(logs.join("\n"), /next cursor: next-cursor/);
+  assert.equal(calledOptions, null);
+  assert.match(logs.join("\n"), /next cursor: 6/);
   assert.match(turns.helpInformation(), /Browse turns across the space/);
   assert.match(turns.commands[0]?.helpInformation() ?? "", /--after <cursor>/);
 });

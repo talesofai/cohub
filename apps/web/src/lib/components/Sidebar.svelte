@@ -30,7 +30,6 @@ import {
 	MessageSquare,
 	Network,
 	NotebookPen,
-	Palette,
 	PanelLeftClose,
 	PanelLeftOpen,
 	Pencil,
@@ -41,7 +40,6 @@ import {
 	Settings,
 	Tags,
 	Trash2,
-	User,
 	X,
 } from "lucide-svelte";
 import { onMount, tick, untrack } from "svelte";
@@ -75,12 +73,14 @@ import {
 	type LabelAssignableCohubResource,
 	setCohubResourceDragData,
 } from "$lib/drag/cohub-resource-drag";
+import { pointerDragSource } from "$lib/drag/pointer-drag.svelte";
 import {
 	APPS_CHANGED_EVENT,
 	type AppsChangedDetail,
 	createAppMutationBuffer,
 	upsertAppSnapshot,
 } from "$lib/features/app/app-realtime";
+import { appActionName } from "$lib/features/space/modules/task-run-utils";
 import { withSidebarMainWindow } from "$lib/features/space/modules/window-route";
 import { extractGenerationPromptPreview } from "$lib/generation-task-media";
 import { getLocale } from "$lib/i18n/locale.svelte";
@@ -567,16 +567,10 @@ async function refreshBillingPlan() {
 
 const baseSettingsTabs = $derived([
 	{
-		id: "profile",
-		label: m.nav_profile({}, { locale }),
-		icon: User,
-		href: "/settings/profile",
-	},
-	{
-		id: "appearance",
-		label: m.nav_appearance({}, { locale }),
-		icon: Palette,
-		href: "/settings/appearance",
+		id: "general",
+		label: m.nav_general({}, { locale }),
+		icon: Settings,
+		href: "/settings/general",
 	},
 	{
 		id: "activity",
@@ -729,6 +723,8 @@ function getTaskRunTitle(run: TaskRunRecord) {
 		return m.sidebar_send_message({}, { locale });
 	}
 	if (run.taskType === "run_command") {
+		const action = appActionName(run);
+		if (action) return m.task_type_app_action({ action }, { locale });
 		const command = readTaskString(data, ["command", "rawText"]);
 		return command
 			? compactTaskText(command)
@@ -747,6 +743,41 @@ function getTaskRunTitle(run: TaskRunRecord) {
 
 function getTaskRunMeta(run: TaskRunRecord) {
 	return `${formatTaskTypeLabel(run.taskType)} · ${run.status} · ${formatTaskRunTime(run)}`;
+}
+
+function handleAppDragStart(event: DragEvent, app: AppRecord) {
+	const href = currentSpaceId ? buildSpaceAppRoute(currentSpaceId, app.id) : "";
+	setCohubResourceDragData(event.dataTransfer, {
+		version: 1,
+		resources: [
+			{
+				type: "app",
+				ref: app.slug,
+				appId: app.id,
+				title: app.slug,
+				href,
+			},
+		],
+		origin: { kind: "sidebar-session-list" },
+	});
+}
+
+function appPointerDragPayload(app: AppRecord) {
+	return {
+		origin: "apps-sidebar" as const,
+		items: [
+			{
+				type: "app" as const,
+				path: "",
+				name: app.slug,
+				appId: app.id,
+				appRef: app.slug,
+				appUrl: currentSpaceId
+					? buildSpaceAppRoute(currentSpaceId, app.id)
+					: "",
+			},
+		],
+	};
 }
 
 function handleTaskDragStart(event: DragEvent, run: TaskRunRecord) {
@@ -2404,7 +2435,7 @@ async function handleNavigate(
 function openSettings() {
 	showUserMenu = false;
 	// Entering settings always pushes once; subsequent tab moves replace.
-	void handleNavigate(withSettingsReturn("/settings/profile"));
+	void handleNavigate(withSettingsReturn("/settings/general"));
 }
 
 function openBillingSettings() {
@@ -3827,7 +3858,7 @@ $effect(() => {
 			{#each apps.slice(0, sidebarFlyoutPreviewLimit) as app (app.id)}
 				{@const manageHref = currentSpaceId ? buildSpaceAppRoute(currentSpaceId, app.id) : "#"}
 				{@const isActive = activeApp?.id === app.id}
-				<a href={manageHref} class="sidebar-flyout-item flex items-center gap-2 rounded-[var(--sidebar-item-radius)] px-1.5 py-1.5 text-[13px] {isActive ? 'bg-[var(--sidebar-item-active-bg)] font-medium text-[var(--sidebar-item-active-fg)]' : 'text-text-tertiary hover:bg-[var(--sidebar-item-hover-bg)] hover:text-text-secondary'}" onclick={(e) => { e.preventDefault(); void handleNavigateToApp(app.id); }}>
+				<a href={manageHref} draggable={!isMobile} use:pointerDragSource={{ enabled: isMobile, getPayload: () => appPointerDragPayload(app) }} ondragstart={(event) => handleAppDragStart(event, app)} class="sidebar-flyout-item flex items-center gap-2 rounded-[var(--sidebar-item-radius)] px-1.5 py-1.5 text-[13px] {isActive ? 'bg-[var(--sidebar-item-active-bg)] font-medium text-[var(--sidebar-item-active-fg)]' : 'text-text-tertiary hover:bg-[var(--sidebar-item-hover-bg)] hover:text-text-secondary'}" onclick={(e) => { e.preventDefault(); void handleNavigateToApp(app.id); }}>
 					<div class="min-w-0 flex-1"><div class="truncate font-mono leading-tight">{app.slug}</div></div>
 				</a>
 			{/each}
@@ -4253,6 +4284,9 @@ $effect(() => {
                     {@const isActive = activeApp?.id === app.id}
                     <a
                       href={manageHref}
+                      draggable={!isMobile}
+                      use:pointerDragSource={{ enabled: isMobile, getPayload: () => appPointerDragPayload(app) }}
+                      ondragstart={(event) => handleAppDragStart(event, app)}
                       class="flex items-center gap-2 rounded-[var(--sidebar-item-radius)] px-1.5 py-1.5 text-[13px] transition-colors duration-100 {isActive ? 'bg-[var(--sidebar-item-active-bg)] font-medium text-[var(--sidebar-item-active-fg)]' : 'text-text-tertiary hover:bg-[var(--sidebar-item-hover-bg)] hover:text-text-secondary'}"
                       onclick={(e) => { e.preventDefault(); void handleNavigateToApp(app.id); }}
                     >

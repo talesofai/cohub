@@ -35,6 +35,7 @@ test("Board awareness validates bounded state and gesture updates", () => {
 		update: {
 			type: "state",
 			cursor: { x: 10, y: 20, pointerType: "pen" },
+			viewport: { x: -100, y: -50, width: 800, height: 600, zoom: 1.5 },
 			tool: "draw",
 			selection: { ids: [], count: 0, bounds: null },
 			editingId: null,
@@ -69,6 +70,31 @@ test("Board awareness validates bounded state and gesture updates", () => {
 		},
 	};
 	assert.equal(BoardAwarenessClientPayloadSchema.safeParse(oversized).success, false);
+	for (const viewport of [
+		{ x: 0, y: 0, width: 0, height: 600, zoom: 1 },
+		{ x: Number.MAX_VALUE, y: 0, width: 800, height: 600, zoom: 1 },
+		{ x: 0, y: 0, width: 100_000_001, height: 600, zoom: 1 },
+		{ x: 0, y: 0, width: 800, height: 600, zoom: 0.01 },
+		{ x: 0, y: 0, width: 800, height: 600, zoom: 9 },
+	]) {
+		assert.equal(
+			BoardAwarenessClientPayloadSchema.safeParse({
+				...payload,
+				update: { ...payload.update, viewport },
+			}).success,
+			false,
+		);
+	}
+	assert.equal(
+		BoardAwarenessClientPayloadSchema.safeParse({
+			...payload,
+			update: {
+				...payload.update,
+				cursor: { x: Number.MAX_VALUE, y: 0, pointerType: "mouse" },
+			},
+		}).success,
+		false,
+	);
 
 	const arrow = BoardAwarenessClientPayloadSchema.parse({
 		...payload,

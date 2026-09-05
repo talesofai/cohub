@@ -2,7 +2,10 @@ import type { RequestSource } from "@cohub/protocol";
 import type { BoardDocument, BoardFrame } from "@neta-art/cohub/board";
 import { selectionBounds } from "@neta-art/cohub/board";
 
-export const BOARD_AUTOMATION_ACTIVITY_MS = 2_500;
+export const BOARD_AUTOMATION_ACTIVE_MS = 1_800;
+export const BOARD_AGENT_ACTIVITY_MS = 8_000;
+export const BOARD_CLI_ACTIVITY_MS = 4_000;
+export const BOARD_AUTOMATION_MAX_ACTIVITY_MS = 30_000;
 const MAX_ACTIVITIES = 12;
 
 export type BoardCollaboratorProfile = {
@@ -16,8 +19,11 @@ export type BoardAutomationActivity = {
 	boardId: string;
 	actorId: string;
 	kind: "cli" | "agent";
+	status: "active" | "settled";
 	focus: BoardFrame;
 	source: RequestSource;
+	model: { provider: string | null; id: string } | null;
+	startedAt: number;
 	updatedAt: number;
 };
 
@@ -30,25 +36,50 @@ type ActivityEvent = {
 	timestamp?: number;
 };
 
-function automationKind(source: RequestSource): "cli" | "agent" | null {
+export function boardAutomationKind(
+	source: RequestSource,
+): "cli" | "agent" | null {
 	if (source.toolCallId) return "agent";
 	return source.via === "cli" ? "cli" : null;
 }
 
-export function createBoardAutomationActivity(
+export function boardAutomationFocus(
 	document: BoardDocument,
-	event: ActivityEvent,
-): BoardAutomationActivity | null {
-	if (!event.source) return null;
-	const kind = automationKind(event.source);
-	if (!kind) return null;
-	const wanted = new Set(event.itemIds ?? []);
+	itemIds: string[] = [],
+): BoardFrame | null {
+	const wanted = new Set(itemIds);
 	const focus = selectionBounds(
 		document.items
 			.filter((item) => wanted.has(item.id))
 			.map((item) => item.frame),
 	);
+	return focus ? { ...focus, rotation: 0 } : null;
+}
+
+export function boardAutomationVisibleMs(kind: "cli" | "agent"): number {
+	return kind === "agent" ? BOARD_AGENT_ACTIVITY_MS : BOARD_CLI_ACTIVITY_MS;
+}
+
+export function boardAutomationExpiresAt(
+	activity: Pick<BoardAutomationActivity, "kind" | "startedAt" | "updatedAt">,
+): number {
+	return Math.min(
+		activity.updatedAt + boardAutomationVisibleMs(activity.kind),
+		activity.startedAt + BOARD_AUTOMATION_MAX_ACTIVITY_MS,
+	);
+}
+
+export function createBoardAutomationActivity(
+	document: BoardDocument,
+	event: ActivityEvent,
+	fallbackFocus: BoardFrame | null = null,
+): BoardAutomationActivity | null {
+	if (!event.source) return null;
+	const kind = boardAutomationKind(event.source);
+	if (!kind) return null;
+	const focus = boardAutomationFocus(document, event.itemIds) ?? fallbackFocus;
 	if (!focus) return null;
+	const timestamp = event.timestamp ?? Date.now();
 	const id =
 		kind === "agent" && event.source.toolCallId
 			? `agent:${event.boardId}:${event.source.toolCallId}`
@@ -58,9 +89,12 @@ export function createBoardAutomationActivity(
 		boardId: event.boardId,
 		actorId: event.actorId,
 		kind,
+		status: "active",
 		focus: { ...focus, rotation: 0 },
 		source: event.source,
-		updatedAt: event.timestamp ?? Date.now(),
+		model: null,
+		startedAt: timestamp,
+		updatedAt: timestamp,
 	};
 }
 
@@ -68,7 +102,15 @@ export function mergeBoardAutomationActivity(
 	activities: BoardAutomationActivity[],
 	activity: BoardAutomationActivity,
 ): BoardAutomationActivity[] {
-	return [activity, ...activities.filter((item) => item.id !== activity.id)]
+	const existing = activities.find((item) => item.id === activity.id);
+	const next = existing
+		? {
+				...activity,
+				model: activity.model ?? existing.model,
+				startedAt: existing.startedAt,
+			}
+		: activity;
+	return [next, ...activities.filter((item) => item.id !== activity.id)]
 		.sort((left, right) => right.updatedAt - left.updatedAt)
 		.slice(0, MAX_ACTIVITIES);
 }

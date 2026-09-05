@@ -22,6 +22,11 @@ export const getTokenFromRequest = (c: Context) => {
 export type ExecutionAuthPrincipal = {
   type: "execution";
   actorUserId: string | null;
+  viewerUserId: string | null;
+  appId: string | null;
+  appVersionId: string | null;
+  action: string | null;
+  taskRunId: string | null;
   spaceId: string;
   sessionId: string | null;
   turnId: string | null;
@@ -40,6 +45,11 @@ function toExecutionAuthPrincipal(grant: ExecutionGrantPayload): ExecutionAuthPr
   return {
     type: "execution",
     actorUserId: grant.actorUserId,
+    viewerUserId: grant.viewerUserId ?? null,
+    appId: grant.appId ?? null,
+    appVersionId: grant.appVersionId ?? null,
+    action: grant.action ?? null,
+    taskRunId: grant.taskRunId ?? null,
     spaceId: grant.spaceId,
     sessionId: grant.sessionId,
     turnId: grant.turnId,

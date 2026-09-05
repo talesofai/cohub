@@ -5,7 +5,6 @@ import * as publicEnv from "$env/static/public";
 import { readAppCheckoutState } from "$lib/components/app/app-checkout-state";
 import MarkdownView from "$lib/components/MarkdownView.svelte";
 import AppAuthorizeDialog from "$lib/features/app/AppAuthorizeDialog.svelte";
-import AppPurchaseDialog from "$lib/features/app/AppPurchaseDialog.svelte";
 import { createAppBridgeHost } from "$lib/features/app/bridge-host.svelte";
 import type { PreviewCaptureTarget } from "$lib/features/preview-mark";
 import { getLocale } from "$lib/i18n/locale.svelte";
@@ -150,14 +149,6 @@ onDestroy(() => {
 		{/if}
 	</div>
 	{#if host}
-		<AppPurchaseDialog
-			open={host.purchaseOpen && !!host.pendingPurchase}
-			pending={host.pendingPurchase}
-			error={host.purchaseError}
-			saving={host.purchaseSaving}
-			onConfirm={() => void host.confirmPurchase()}
-			onCancel={host.cancelPurchase}
-		/>
 		<AppAuthorizeDialog
 			open={host.authOpen && !!host.pendingAuth}
 			pending={host.pendingAuth}

@@ -1,6 +1,6 @@
 import { HttpError, type CohubHttpClient, type Permission, type AppCreateInput, type AppMeta, type AppStatus, type AppUpdateInput, type AppViewStatsResponse, type AppVisibility } from "@neta-art/cohub";
 import type { Command } from "commander";
-import { createClient } from "../client.js";
+import { createClient, createClientWithAccessToken } from "../client.js";
 import { error, handleHttp, json as outJson, jsonRequested, ok, table } from "../output.js";
 import { resolveSpace } from "../space.js";
 import { downloadApp } from "../app-download.js";
@@ -27,6 +27,15 @@ function parseJsonObject(value: string | undefined, name: string): Record<string
     // handled below
   }
   return error(`Invalid ${name}`, `${name} must be a JSON object`);
+}
+
+function parseJsonValue(value: string | undefined, name: string): unknown {
+  if (!value) return null;
+  try {
+    return JSON.parse(value) as unknown;
+  } catch {
+    return error(`Invalid ${name}`, `${name} must be valid JSON`);
+  }
 }
 
 function compactObject<T extends object>(input: T): Partial<T> {
@@ -291,6 +300,32 @@ export function registerApps(program: Command): void {
         const result = await downloadApp(detail, opts.output);
         if (jsonRequested(opts)) return outJson(result);
         ok(`Downloaded ${result.files} file${result.files === 1 ? "" : "s"} to ${result.output}`);
+      } catch (e: unknown) {
+        handleHttp(e);
+      }
+    });
+
+  const actionsCmd = appsCmd
+    .command("actions")
+    .description("Run published App Actions");
+
+  actionsCmd
+    .command("run <app> <action>")
+    .description("Run an App Action")
+    .option("--input <json>", "JSON input", "null")
+    .option("--json", "Output as JSON")
+    .action(async (appRef: string, action: string, opts: { input?: string; json?: boolean }) => {
+      const client = createClient();
+      try {
+        const ref = parseAppRef(appRef);
+        const detail = "id" in ref
+          ? await client.apps.getPublicById(ref.id)
+          : await client.apps.getBySlug(ref.username, ref.spaceSlug, ref.appSlug);
+        const session = await client.apps.createSession(detail.app.id);
+        const appClient = createClientWithAccessToken(session.token);
+        const result = await appClient.apps.runAction(detail.app.id, action, parseJsonValue(opts.input, "input"));
+        if (jsonRequested(opts)) return outJson(result);
+        ok(`App Action queued: ${result.taskRunId}`);
       } catch (e: unknown) {
         handleHttp(e);
       }

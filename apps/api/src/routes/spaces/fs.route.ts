@@ -19,6 +19,8 @@ import {
   readSpaceFile,
   readSpaceFiles,
   resolveSpaceFileDownload,
+  SpaceFsError,
+  statSpaceFileVersion,
   spaceFsJsonError,
   streamSpaceFile,
   uploadSpaceFiles,
@@ -45,7 +47,12 @@ import {
   type SpaceUploadDestination,
   type SpaceUploadManifestEntry,
 } from "../../space-upload-storage.js";
-import { enqueueSandboxUploadFilesJob, SandboxUploadSizeMismatchError } from "../../sandbox-bash-queue.js";
+import {
+  enqueueSandboxUploadFilesJob,
+  SandboxUploadConflictError,
+  SandboxUploadSizeMismatchError,
+  SandboxUploadUnsupportedError,
+} from "../../sandbox-bash-queue.js";
 import { beginCloudFileMutation, completeCloudFileMutation, ensureCloudFileWriterLease, heartbeatCloudFileWriterLease, releaseCloudFileWriterLease, WorkspaceWriterLeaseError, type WorkspaceMutationLease } from "../../workspace-writer-lease.js";
 import { enqueueWorkspaceSyncJob } from "../../workspace-sync-queue.js";
 import { isAllowedPublicAssetDownloadUrl } from "../../public-asset-storage.js";
@@ -62,6 +69,21 @@ const router = new Hono();
 /** Inline text writes are capped at the same limit as inline reads. */
 const MAX_INLINE_WRITE_BYTES = 10 * 1024 * 1024;
 const MAX_INLINE_WRITE_REQUEST_BYTES = Math.ceil(MAX_INLINE_WRITE_BYTES * 4 / 3) + 256 * 1024;
+const UPLOAD_TARGET_STAT_CONCURRENCY = 8;
+
+async function mapWithConcurrency<T, R>(items: T[], concurrency: number, mapper: (item: T, index: number) => Promise<R>) {
+  const results = new Array<R>(items.length);
+  let nextIndex = 0;
+  const workers = Array.from({ length: Math.min(concurrency, items.length) }, async () => {
+    while (nextIndex < items.length) {
+      const index = nextIndex;
+      nextIndex += 1;
+      results[index] = await mapper(items[index] as T, index);
+    }
+  });
+  await Promise.all(workers);
+  return results;
+}
 
 /** Client mutation ids are bounded before they are used in queue job ids. */
 const isValidMutationId = (value: unknown) =>
@@ -566,6 +588,19 @@ router.post("/uploads", async (c) => {
       });
     }
 
+    // Capture the destination baseline before the client uploads the object;
+    // the async materializer uses it to reject a late overwrite.
+    if (destination.kind === "workspace") {
+      const targetDir = destination.targetDir ?? "";
+      const targetVersions = await mapWithConcurrency(entries, UPLOAD_TARGET_STAT_CONCURRENCY, (entry) => {
+        const targetPath = targetDir ? `${targetDir}/${entry.relativePath}` : entry.relativePath;
+        return statSpaceFileVersion(spaceId, targetPath);
+      });
+      for (const [index, entry] of entries.entries()) {
+        entry.targetVersion = targetVersions[index];
+      }
+    }
+
     // Charge quota only after full validation so bad requests cannot consume tokens.
     await consumeSpaceUploadQuota(user.uuid, entries.length);
 
@@ -591,6 +626,10 @@ router.post("/uploads", async (c) => {
     if (error instanceof SpaceUploadRateLimitError) {
       c.header("Retry-After", String(error.retryAfterSeconds));
       return c.json({ message: error.message, retryAfterSeconds: error.retryAfterSeconds }, 429);
+    }
+    if (error instanceof SpaceFsError || (error instanceof Error && error.name === "SandboxOfflineError")) {
+      const mapped = spaceFsJsonError(error);
+      return c.json(mapped.body, mapped.status as never);
     }
     const message = error instanceof Error ? error.message.toLowerCase().replace(/\.$/, "") : "failed to create upload";
     return c.json({ message }, 400);
@@ -626,6 +665,10 @@ router.post("/uploads/:uploadId/complete", async (c) => {
       await cancelSpaceUploadComplete(spaceId, uploadId);
       return c.json({ message: "no completed entries" }, 400);
     }
+    if (manifest.destination.kind === "workspace" && entries.some((entry) => !entry.targetVersion)) {
+      await cancelSpaceUploadComplete(spaceId, uploadId);
+      return c.json({ code: "upload_conflict", message: "upload target version is unavailable; upload the file again" }, 409);
+    }
 
     const destinationRoot = buildUploadDestinationRoot(manifest.destination, manifest.uploadId);
     const sessionId =
@@ -639,9 +682,10 @@ router.post("/uploads/:uploadId/complete", async (c) => {
       destinationRoot,
       workspaceLease: workspaceLease ? {
         holderKind: workspaceLease.holderKind,
-        holderId: workspaceLease.holderId,
-        epoch: workspaceLease.epoch,
+    holderId: workspaceLease.holderId,
+ epoch: workspaceLease.epoch,
       } : null,
+      ...(manifest.destination.kind === "workspace" ? { materialize: "atomic" as const } : {}),
       files: entries.map((entry) => {
         const rawUrl = entry.downloadUrl
           ? entry.downloadUrl
@@ -652,6 +696,7 @@ router.post("/uploads/:uploadId/complete", async (c) => {
           size: entry.size,
           mimeType: entry.mimeType,
           downloadUrl: rawUrl,
+          targetVersion: entry.targetVersion,
         };
       }),
     });
@@ -677,6 +722,12 @@ router.post("/uploads/:uploadId/complete", async (c) => {
     if (error instanceof Error && error.name === "WorkspaceWriterLeaseError") {
       const { status, body: errorBody } = spaceFsJsonError(error);
       return c.json(errorBody, status as never);
+    }
+    if (error instanceof SandboxUploadConflictError) {
+      return c.json({ code: "upload_conflict", message: "upload target changed while uploading" }, 409);
+  }
+    if (error instanceof SandboxUploadUnsupportedError) {
+      return c.json({ code: "sandbox_unsupported", message: "sandbox must be upgraded before this upload can be completed" }, 503);
     }
     logger.error("[space-fs] failed to complete upload", error, {
       spaceId,

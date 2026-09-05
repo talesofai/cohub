@@ -1,3 +1,5 @@
+export const APP_ACTION_EXECUTION_SOURCE = "app_action" as const;
+
 export type TaskType = string;
 
 export interface TaskPayload {

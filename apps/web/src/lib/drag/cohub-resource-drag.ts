@@ -4,7 +4,7 @@ import type { BoardTaskSnapshot } from "@neta-art/cohub/board";
 export const COHUB_RESOURCE_MIME = "application/x-cohub-resource";
 export const COHUB_PATH_MIME = "text/cohub-path";
 
-export type CohubResourceType = LabelResourceType | "task";
+export type CohubResourceType = LabelResourceType | "task" | "app";
 
 export type CohubDragResource = {
 	type: CohubResourceType;
@@ -12,6 +12,7 @@ export type CohubDragResource = {
 	title?: string;
 	subtitle?: string | null;
 	href?: string;
+	appId?: string;
 	path?: string;
 	mimeType?: string | null;
 	size?: number;
@@ -46,7 +47,8 @@ function normalizeResource(
 		resource.type !== "session" &&
 		resource.type !== "file" &&
 		resource.type !== "checkpoint" &&
-		resource.type !== "task"
+		resource.type !== "task" &&
+		resource.type !== "app"
 	)
 		return null;
 	if (typeof resource.ref !== "string" || !resource.ref.trim()) return null;

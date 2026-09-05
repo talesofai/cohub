@@ -17,6 +17,15 @@ export type AppRuntimeInvocationContext = {
   toolCallId?: string;
 };
 
+/** Current navigation context supplied by the embedding Cohub shell. */
+export type AppRuntimeShellContext = {
+  surface: "workspace" | "background" | "broker";
+  space: { id: string; name?: string | null } | null;
+  session: { id: string } | null;
+  /** The Turn currently in view, not necessarily the Turn being generated. */
+  turn: { id: string } | null;
+};
+
 export type AppRuntimeGrantSummary = {
   spaceId: string;
   scopes: Permission[];
@@ -34,6 +43,7 @@ export type AppRuntimeContext = {
   space: { id: string; name?: string | null };
   viewer?: { userUuid: string } | null;
   invocation?: AppRuntimeInvocationContext;
+  shell?: AppRuntimeShellContext;
   permissions?: {
     scopes: Permission[];
     appScopes: Permission[];
