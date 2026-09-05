@@ -963,16 +963,26 @@ export const renderStreamingMarkdownSplit = async (
 		tailIsFence = false;
 	}
 
-	const stableSource = stableSources.join("\n\n");
 	const hasTail = tailSource.trim().length > 0;
-	const stableHtml = stableSource.trim()
-		? await cacheMarkdownRender(`stream-stable-v2:${stableSource}`, async () =>
-				renderMarkdownBlock(stableSource, {
-					highlight: false,
-					streamingSafe: true,
-				}),
-			)
-		: "";
+	// Render each stable block independently. Stable blocks never change once
+	// promoted, so per-block caching means a new paragraph only costs one lexer +
+	// DOMPurify pass for itself. Keying the cache on the concatenated stable
+	// source instead would re-sanitize the entire message every time the
+	// stable/tail boundary moves, which grows linearly with answer length.
+	const stableHtml = (
+		await Promise.all(
+			stableSources.map((blockSource) =>
+				blockSource.trim()
+					? cacheMarkdownRender(`stream-stable-v3:${blockSource}`, () =>
+							renderMarkdownBlock(blockSource, {
+								highlight: false,
+								streamingSafe: true,
+							}),
+						)
+					: Promise.resolve(""),
+			),
+		)
+	).join("");
 
 	const tailHtml = !hasTail
 		? ""

@@ -72,7 +72,13 @@ export class StreamingMarkdownController {
 			this.#publish(createEmptySnapshot());
 		}
 		this.#targetSource = nextSource;
-		this.#scheduleTextAdvance();
+		// Streaming patches arrive far more often than the 24ms reveal cadence.
+		// If the reveal loop is already running it will pick up the new target on
+		// its next tick; tearing the timers down and re-arming them per patch was
+		// the dominant main-thread cost during streaming (clearTimeout/setTimeout
+		// churn), not the rendering itself.
+		if (this.#textTimer) return;
+		this.#advanceText();
 	}
 
 	flush(source = this.#targetSource) {
@@ -113,36 +119,50 @@ export class StreamingMarkdownController {
 		}
 	}
 
-	#scheduleTextAdvance() {
-		this.#clearTextTimer();
-		if (this.#displayedSource === this.#targetSource) {
-			this.#scheduleCommit();
-			return;
-		}
+	/**
+	 * One tick of the word-by-word reveal loop. Advances the displayed slice
+	 * toward the target, requests a (throttled) markdown commit, and re-arms
+	 * itself only while there is still text left to reveal.
+	 */
+	#advanceText() {
+		this.#textTimer = null;
+		if (this.#disposed) return;
 
-		if (!this.#targetSource.startsWith(this.#displayedSource)) {
-			this.#displayedSource = this.#targetSource;
-		} else {
-			const remaining =
-				this.#targetSource.length - this.#displayedSource.length;
-			const maxStep = Math.min(remaining, getVisibleStepSize(remaining));
-			const nextLength = advanceByWord(
-				this.#targetSource,
-				this.#displayedSource.length,
-				maxStep,
-			);
-			this.#displayedSource = this.#targetSource.slice(0, nextLength);
+		if (this.#displayedSource !== this.#targetSource) {
+			if (!this.#targetSource.startsWith(this.#displayedSource)) {
+				this.#displayedSource = this.#targetSource;
+			} else {
+				const remaining =
+					this.#targetSource.length - this.#displayedSource.length;
+				const maxStep = Math.min(remaining, getVisibleStepSize(remaining));
+				const nextLength = advanceByWord(
+					this.#targetSource,
+					this.#displayedSource.length,
+					maxStep,
+				);
+				this.#displayedSource = this.#targetSource.slice(0, nextLength);
+			}
 		}
 
 		this.#scheduleCommit();
-		this.#textTimer = setTimeout(
-			() => this.#scheduleTextAdvance(),
-			STREAM_FRAME_MS,
-		);
+		if (this.#displayedSource === this.#targetSource) return;
+		this.#textTimer = setTimeout(() => this.#advanceText(), STREAM_FRAME_MS);
 	}
 
+	/**
+	 * Request a markdown render of the current displayed source.
+	 *
+	 * Without an explicit delay this is a no-op when a commit is already
+	 * pending: the pending commit reads `#displayedSource` when it fires, so it
+	 * always renders the freshest text. Only `flush()` passes `0` to override a
+	 * pending throttled commit with an immediate one.
+	 */
 	#scheduleCommit(delay?: number) {
-		this.#clearCommitTimer();
+		if (delay === undefined) {
+			if (this.#commitTimer || this.#commitRaf) return;
+		} else {
+			this.#clearCommitTimer();
+		}
 		const now = performance.now();
 		const nextDelay =
 			delay ??
@@ -164,6 +184,14 @@ export class StreamingMarkdownController {
 			this.#publish(createEmptySnapshot());
 			return;
 		}
+		// Skip the render entirely when the displayed text has not changed since
+		// the last published snapshot (e.g. the reveal loop caught up and the
+		// trailing commit fired with nothing new).
+		if (
+			source === this.#snapshot.source &&
+			(this.#snapshot.stableHtml || this.#snapshot.tailHtml)
+		)
+			return;
 
 		try {
 			const { renderStreamingMarkdownSplit } = await import("$lib/markdown");

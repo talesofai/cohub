@@ -89,6 +89,33 @@ export function createSessionGenerationRealtimeController(options: {
 		ReturnType<typeof setTimeout>
 	>();
 	const lastStreamSnapshotRecoveryByTurn = new Map<string, number>();
+	// Streaming patches arrive many times per frame. Coalesce the "keep pinned
+	// to bottom" follow-up into one rAF: the callback runs after Svelte has
+	// flushed the DOM for every patch applied in this frame, so a single scroll
+	// write covers them all and we avoid a tick() + forced layout per patch.
+	let pendingStreamFollowFrame: number | null = null;
+	let pendingStreamFollowSessionId: string | null = null;
+
+	function scheduleStreamBottomFollow(sessionId: string) {
+		pendingStreamFollowSessionId = sessionId;
+		if (pendingStreamFollowFrame != null) return;
+		pendingStreamFollowFrame = requestAnimationFrame(() => {
+			pendingStreamFollowFrame = null;
+			const target = pendingStreamFollowSessionId;
+			pendingStreamFollowSessionId = null;
+			if (!target || target !== options.getActiveSessionId()) return;
+			if (!options.shouldAutoFollow()) return;
+			options.requestBottomFollow();
+		});
+	}
+
+	function cancelStreamBottomFollow() {
+		if (pendingStreamFollowFrame != null) {
+			cancelAnimationFrame(pendingStreamFollowFrame);
+			pendingStreamFollowFrame = null;
+		}
+		pendingStreamFollowSessionId = null;
+	}
 
 	async function restoreSessionStreamSnapshot(
 		sessionId: string,
@@ -496,8 +523,7 @@ export function createSessionGenerationRealtimeController(options: {
 				sessionId === options.getActiveSessionId() &&
 				options.shouldAutoFollow()
 			) {
-				await tick();
-				options.requestBottomFollow();
+				scheduleStreamBottomFollow(sessionId);
 			}
 		} catch (error) {
 			console.error("[WS] handleGenerationStreamEvent error:", error);
@@ -556,6 +582,7 @@ export function createSessionGenerationRealtimeController(options: {
 		// Do not clear process-wide finalized/snapshot maps: another host may still own them.
 		clearActiveGenerationSubscription();
 		clearAllPostSendRecovery();
+		cancelStreamBottomFollow();
 		recoveryCoordinator.dispose();
 		lastStreamSnapshotRecoveryByTurn.clear();
 	}

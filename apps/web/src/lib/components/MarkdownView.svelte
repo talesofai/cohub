@@ -68,6 +68,28 @@ let tailHtml = $state("");
 let renderSeq = 0;
 let controller: StreamingMarkdownController | null = null;
 let unsubscribeController: (() => void) | null = null;
+let streamingRenderedFrame: number | null = null;
+
+/**
+ * Streaming snapshots land several times per second and each `onRendered`
+ * consumer (timeline follow, turn-marker measurement) reads layout. Notify at
+ * most once per frame, after Svelte has flushed this frame's DOM writes, so
+ * consumers batch their layout reads instead of forcing one per snapshot.
+ */
+function notifyStreamingRenderedSoon() {
+	if (streamingRenderedFrame != null) return;
+	streamingRenderedFrame = requestAnimationFrame(() => {
+		streamingRenderedFrame = null;
+		if (!controller) return;
+		untrack(() => onRendered?.());
+	});
+}
+
+function cancelStreamingRenderedNotify() {
+	if (streamingRenderedFrame == null) return;
+	cancelAnimationFrame(streamingRenderedFrame);
+	streamingRenderedFrame = null;
+}
 
 const source = $derived.by(() => {
 	const raw =
@@ -88,12 +110,13 @@ function ensureController() {
 	unsubscribeController = controller.subscribe((snapshot) => {
 		stableHtml = snapshot.stableHtml;
 		tailHtml = snapshot.tailHtml;
-		void tick().then(() => untrack(() => onRendered?.()));
+		notifyStreamingRenderedSoon();
 	});
 	return controller;
 }
 
 function destroyController() {
+	cancelStreamingRenderedNotify();
 	unsubscribeController?.();
 	unsubscribeController = null;
 	controller?.dispose();

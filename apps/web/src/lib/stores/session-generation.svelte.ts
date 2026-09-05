@@ -323,14 +323,26 @@ class SessionGenerationStore {
 			this.clearPersisted(state.sessionId, state.spaceId);
 			return;
 		}
-		this.clearPersistTimer(state.sessionId);
+		// Throttle rather than debounce: during streaming, patches arrive faster
+		// than the debounce window, so a trailing-edge reset (clearTimeout +
+		// setTimeout per patch) never fires and just burns timer churn on the
+		// main thread. Keep the existing timer and let it read the latest state
+		// from the store when it fires.
+		if (this.persistTimers.has(state.sessionId)) return;
+		const sessionId = state.sessionId;
 		const timer = setTimeout(() => {
-			this.persistTimers.delete(state.sessionId);
+			this.persistTimers.delete(sessionId);
+			const latest = this.bySessionId[sessionId];
+			if (!latest) return;
+			if (!isPersistable(latest) || !latest.spaceId) {
+				this.clearPersisted(sessionId, latest.spaceId);
+				return;
+			}
 			void sessionGenerationSnapshotsRepo
-				.put(toSnapshotInput(state))
+				.put(toSnapshotInput(latest))
 				.catch(() => undefined);
 		}, PERSIST_WRITE_DEBOUNCE_MS);
-		this.persistTimers.set(state.sessionId, timer);
+		this.persistTimers.set(sessionId, timer);
 	}
 
 	private setState(sessionId: string, state: SessionGenerationState) {
