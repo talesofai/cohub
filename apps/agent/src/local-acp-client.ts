@@ -65,6 +65,8 @@ class JsonRpcWebSocket {
   private notificationError: Error | null = null;
   private nextRequestId = 1;
   private closed = false;
+  /** WebSocket close code once the relay or runtime closed the channel. */
+  closeCode: number | null = null;
   private readonly opened: Promise<void>;
 
   private constructor(
@@ -89,7 +91,11 @@ class JsonRpcWebSocket {
       socket.once("error", onError);
     });
     socket.on("message", (data: RawData) => this.handleRawMessage(data));
-    socket.on("close", () => this.handleClose(new Error("local ACP runtime connection closed")));
+    socket.on("close", (code: number, reason: Buffer) => {
+      this.closeCode = code;
+      const detail = reason.toString("utf8").trim();
+      this.handleClose(new Error(`local ACP runtime connection closed (${code}${detail ? `: ${detail}` : ""})`));
+    });
     socket.on("error", (error) => this.handleClose(error instanceof Error ? error : new Error(String(error))));
   }
 
@@ -1450,14 +1456,20 @@ export async function processLocalAcpTurn(input: { attemptId: string }) {
     await failLocalAcpAttempt({ attemptId: attempt.id, spaceId: attempt.spaceId, turnId: turn.id, message, errorCode: localAcpErrorCode(message) }).catch((cleanupError) => {
       logger.error("[LocalACP] turn cleanup failed", { attemptId: attempt.id, error: cleanupError });
     });
-    const requiresReconnect = message.startsWith("runtime_reconnect_required") || !isAcpRpcError(error);
-    await setLocalAcpRuntimeStatus({
-      runtimeId: runtime.id,
-      connectionEpoch: connection.connectionEpoch,
-      status: requiresReconnect ? "error" : "ready",
-      error: requiresReconnect ? message : null,
-    }).catch(() => undefined);
-    if (requiresReconnect) {
+    // The Gateway closes a peer with 4409 when another worker already holds
+    // the runtime's provider channel. That is contention, not a runtime fault:
+    // leave the runtime status alone and drop only this process's connection.
+    const runtimeBusy = connection.acp.closeCode === 4409;
+    const requiresReconnect = !runtimeBusy && (message.startsWith("runtime_reconnect_required") || !isAcpRpcError(error));
+    if (!runtimeBusy) {
+      await setLocalAcpRuntimeStatus({
+        runtimeId: runtime.id,
+        connectionEpoch: connection.connectionEpoch,
+        status: requiresReconnect ? "error" : "ready",
+        error: requiresReconnect ? message : null,
+      }).catch(() => undefined);
+    }
+    if (requiresReconnect || runtimeBusy) {
       connection.acp.close();
       if (connections.get(runtime.id) === connection) connections.delete(runtime.id);
     }
