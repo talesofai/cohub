@@ -89,27 +89,41 @@ export function createSessionGenerationRealtimeController(options: {
 		ReturnType<typeof setTimeout>
 	>();
 	const lastStreamSnapshotRecoveryByTurn = new Map<string, number>();
-	// Streaming patches arrive many times per frame. Coalesce the "keep pinned
-	// to bottom" follow-up into one rAF: the callback runs after Svelte has
-	// flushed the DOM for every patch applied in this frame, so a single scroll
-	// write covers them all and we avoid a tick() + forced layout per patch.
+	// Streaming patches arrive many times per second. Coalesce the "keep pinned
+	// to bottom" follow-up into one throttled pass: a 32ms leading-edge timer
+	// bounds the rate independently of the display refresh (a bare rAF on a
+	// 144Hz panel would run ~144 scrollHeight reads/s), and the rAF inside it
+	// aligns the scroll write with the frame after Svelte has flushed the DOM.
+	const STREAM_FOLLOW_THROTTLE_MS = 32;
+	let pendingStreamFollowTimer: ReturnType<typeof setTimeout> | null = null;
 	let pendingStreamFollowFrame: number | null = null;
 	let pendingStreamFollowSessionId: string | null = null;
 
+	function runStreamBottomFollow() {
+		pendingStreamFollowFrame = null;
+		const target = pendingStreamFollowSessionId;
+		pendingStreamFollowSessionId = null;
+		if (!target || target !== options.getActiveSessionId()) return;
+		if (!options.shouldAutoFollow()) return;
+		options.requestBottomFollow();
+	}
+
 	function scheduleStreamBottomFollow(sessionId: string) {
 		pendingStreamFollowSessionId = sessionId;
-		if (pendingStreamFollowFrame != null) return;
-		pendingStreamFollowFrame = requestAnimationFrame(() => {
-			pendingStreamFollowFrame = null;
-			const target = pendingStreamFollowSessionId;
-			pendingStreamFollowSessionId = null;
-			if (!target || target !== options.getActiveSessionId()) return;
-			if (!options.shouldAutoFollow()) return;
-			options.requestBottomFollow();
-		});
+		if (pendingStreamFollowTimer != null || pendingStreamFollowFrame != null)
+			return;
+		pendingStreamFollowTimer = setTimeout(() => {
+			pendingStreamFollowTimer = null;
+			if (pendingStreamFollowSessionId == null) return;
+			pendingStreamFollowFrame = requestAnimationFrame(runStreamBottomFollow);
+		}, STREAM_FOLLOW_THROTTLE_MS);
 	}
 
 	function cancelStreamBottomFollow() {
+		if (pendingStreamFollowTimer != null) {
+			clearTimeout(pendingStreamFollowTimer);
+			pendingStreamFollowTimer = null;
+		}
 		if (pendingStreamFollowFrame != null) {
 			cancelAnimationFrame(pendingStreamFollowFrame);
 			pendingStreamFollowFrame = null;

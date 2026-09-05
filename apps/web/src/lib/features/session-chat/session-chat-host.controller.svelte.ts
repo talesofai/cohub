@@ -3474,8 +3474,19 @@ export function createSessionChatHost(options: SessionChatHostOptions) {
 	}
 
 	function scrollToBottomNow() {
-		if (!activeSessionId || !getSessionScrollList(activeSessionId)) return;
-		setProgrammaticScrollTop(scroll.getTimelineBottomScrollTop());
+		if (!activeSessionId) return;
+		const list = getSessionScrollList(activeSessionId);
+		if (!list) return;
+		const bottom = scroll.getTimelineBottomScrollTop();
+		// Already pinned: skip the scrollTop write, the metrics refresh and the
+		// epoch rAF. During streaming this path is reached from several sources
+		// (stream follow, ResizeObserver, markdown rendered) per content change;
+		// only the first one after a height change needs to do any work.
+		if (Math.abs(list.scrollTop - bottom) <= 1) {
+			markSessionFollowingTail(activeSessionId);
+			return;
+		}
+		setProgrammaticScrollTop(bottom);
 		markSessionFollowingTail(activeSessionId);
 	}
 

@@ -49,6 +49,9 @@ class UnreadTracker {
 
 	markViewed(sessionId: string, latestItemId: string | null | undefined) {
 		if (!latestItemId) return;
+		// Called from every bottom-follow while streaming; avoid a reactive Map
+		// swap + localStorage write when nothing changed.
+		if (this.viewed.get(sessionId) === latestItemId) return;
 		this.viewed = new Map(this.viewed).set(sessionId, latestItemId);
 		this.persist();
 	}
