@@ -1,14 +1,9 @@
-import { createHash } from "node:crypto";
 import { and, asc, count, desc, eq, gt, inArray, isNull, ne, or, sql } from "drizzle-orm";
 import {
   localAgentDevices,
   localAgentRuntimes,
   localAgentRuntimeCommands,
   localAgentRuntimeSessions,
-  nativeAgentEventReceipts,
-  nativeAgentIngests,
-  nativeAgentSessions,
-  nativeAgentTurns,
   sessionTurns,
   spaceLocalAgentPolicies,
   spaceWorkspacePolicies,
@@ -26,39 +21,23 @@ import {
 } from "@cohub/db";
 import {
   LocalAgentPolicySchema,
-  MirrorCompletenessSchema,
-  MirrorFidelitySchema,
-  NativeIngestInlineRequestSchema,
-  NativeIngestPrepareRequestSchema,
-  validateLocalAgentHookEnvelope,
-  validateNativeTurnBundleInlineSize,
-  validateNativeTurnBundleSize,
-  type LocalAgentHookEnvelopeV1,
-  type MirrorCompleteness,
-  type MirrorFidelity,
-  type NativeProvider,
-  NativeTurnBundleSchema,
   WorkspaceManifestSchema,
   canonicalizeJsonBytes,
   canonicalJsonSha256,
   validateManifest,
   type LocalAgentPolicyV1,
-  type NativeIngestCommitResponseV1,
-  type NativeTurnBundleV1,
   type WorkspaceManifestV1,
 } from "@cohub/protocol";
 import { createLocalAgentObjectGetUrl, createLocalAgentObjectPutUrl, headLocalAgentObject, buildLocalAgentObjectKey } from "./local-agent-object-storage.js";
 import { createLocalAgentRefreshToken, createLocalAgentToken, hashLocalAgentRefreshToken, refreshTokenMatches } from "./local-agent-auth.js";
 import { dispatchWorkspaceStateUpdated } from "./workspace-realtime.js";
 import { enqueueWorkspaceSyncJob } from "./workspace-sync-queue.js";
-import { config } from "./config.js";
 import { db } from "./db/index.js";
 import { requestAgentTurnAbort } from "./agent-turn-abort.js";
 
 export const LOCAL_AGENT_MAX_MANIFEST_INLINE_BYTES = 1024 * 1024;
 export const LOCAL_AGENT_MAX_SNAPSHOT_ENTRIES = 2_000_000;
 export const LOCAL_AGENT_ONLINE_LEASE_SECONDS = 30;
-export const LOCAL_AGENT_OFFLINE_MAX_SECONDS = 24 * 60 * 60;
 
 export class LocalAgentServiceError extends Error {
   override name = "LocalAgentServiceError";
@@ -89,7 +68,6 @@ const SHA256_RE = /^[a-f0-9]{64}$/;
 const iso = (value: Date | null | undefined) => value?.toISOString() ?? null;
 const isUuid = (value: string) => UUID_RE.test(value);
 const isSha256 = (value: string) => SHA256_RE.test(value);
-type LocalAgentTransaction = Parameters<Parameters<typeof db.transaction>[0]>[0];
 const assertUuid = (value: string, field: string) => {
   if (!isUuid(value)) throw new LocalAgentServiceError(`${field} must be a UUID`, "invalid_id", 400);
   return value;
@@ -104,18 +82,8 @@ const normalizeBounded = (value: unknown, field: string, max: number) => {
   if (!trimmed || trimmed.length > max) throw new LocalAgentServiceError(`${field} is invalid`, "invalid_input", 400);
   return trimmed;
 };
-const hashCanonical = (value: unknown) => createHash("sha256").update(Buffer.from(canonicalizeJsonBytes(value))).digest("hex");
 const now = () => new Date();
 const WORKSPACE_CONFLICT_RESOLUTIONS = new Set(["local", "cloud", "merged", "deleted", "keep_managed", "unmanage"]);
-
-const assertNativeProviderEnabled = (provider: NativeProvider) => {
-  const enabled = provider === "pi"
-    ? config.nativeAgentPiEnabled
-    : provider === "claude_code"
-      ? config.nativeAgentClaudeEnabled
-      : config.nativeAgentCodexEnabled;
-  if (!enabled) throw new LocalAgentServiceError(`${provider} native mirroring is not enabled`, "provider_not_enabled", 403);
-};
 
 const serializeDevice = (row: typeof localAgentDevices.$inferSelect) => ({
   id: row.id,
@@ -211,7 +179,7 @@ export async function revokeLocalAgentDevice(input: { userUuid: string; deviceId
     const activeAttempts = replicaIds.length > 0
       ? await tx.select({ id: workspaceExecutionAttempts.id, spaceId: workspaceExecutionAttempts.spaceId, sessionId: workspaceExecutionAttempts.sessionId, turnId: workspaceExecutionAttempts.turnId, status: workspaceExecutionAttempts.status }).from(workspaceExecutionAttempts).where(and(
           inArray(workspaceExecutionAttempts.replicaId, replicaIds),
-          inArray(workspaceExecutionAttempts.executorKind, ["local_native", "local_acp"]),
+          eq(workspaceExecutionAttempts.executorKind, "local_acp"),
           inArray(workspaceExecutionAttempts.status, ["prepared", "running", "workspace_sealed", "transcript_sealed", "awaiting_recovery"]),
         ))
       : [];
@@ -233,13 +201,12 @@ export async function revokeLocalAgentDevice(input: { userUuid: string; deviceId
     if (replicaIds.length > 0) {
       await tx.update(workspaceReplicas).set({ status: "offline", activeExecutionAttemptId: null, updatedAt: revokedAt }).where(inArray(workspaceReplicas.id, replicaIds));
     }
-    await tx.update(workspaceWriterLeases).set({ expiresAt: revokedAt, lastHeartbeatAt: revokedAt, updatedAt: revokedAt }).where(and(
-      or(eq(workspaceWriterLeases.holderKind, "local_agent"), eq(workspaceWriterLeases.holderKind, "local_offline_reservation")),
-      or(
-        eq(workspaceWriterLeases.holderId, `device:${input.deviceId}`),
-        attemptIds.length > 0 ? inArray(workspaceWriterLeases.holderId, attemptIds) : undefined,
-      ),
-    ));
+    if (attemptIds.length > 0) {
+      await tx.update(workspaceWriterLeases).set({ expiresAt: revokedAt, lastHeartbeatAt: revokedAt, updatedAt: revokedAt }).where(and(
+        eq(workspaceWriterLeases.holderKind, "local_agent"),
+        inArray(workspaceWriterLeases.holderId, attemptIds),
+      ));
+    }
     return { device, spaceIds: [...new Set(replicas.map((replica) => replica.spaceId))] };
   });
   for (const request of abortRequests) {
@@ -297,12 +264,7 @@ const defaultIntegrationPolicy = (spaceId: string, deviceId: string, userUuid: s
   deviceId,
   userUuid,
   integrationPolicyVersion: 1,
-  sessionMirrorMode: "disabled" as const,
   workspaceMode: "handoff" as const,
-  offlineEnabled: false,
-  attachmentMode: "workspace_only",
-  maxBundleBytes: 256 * 1024 * 1024,
-  maxArtifactBytes: 5 * 1024 * 1024 * 1024,
   updatedBy: userUuid,
 });
 
@@ -453,16 +415,7 @@ const serializeReplica = (row: typeof workspaceReplicas.$inferSelect) => ({
   updatedAt: row.updatedAt.toISOString(),
 });
 
-type NativeMirrorOverview = {
-  status: string;
-  provider: string | null;
-  fidelity: string | null;
-  completeness: string | null;
-  lastSeenAt: string | null;
-  lastMirroredTurnId: string | null;
-};
-
-const serializeReplicaOverview = (row: typeof workspaceReplicas.$inferSelect, mirror: NativeMirrorOverview | null) => ({
+const serializeReplicaOverview = (row: typeof workspaceReplicas.$inferSelect) => ({
   id: row.id,
   spaceId: row.spaceId,
   kind: row.kind,
@@ -476,7 +429,6 @@ const serializeReplicaOverview = (row: typeof workspaceReplicas.$inferSelect, mi
   lastSeenAt: iso(row.lastSeenAt),
   createdAt: row.createdAt.toISOString(),
   updatedAt: row.updatedAt.toISOString(),
-  nativeMirror: mirror,
 });
 
 const serializeWorkspaceState = (row: typeof workspaceState.$inferSelect) => ({
@@ -520,12 +472,7 @@ export const notifyWorkspaceState = async (input: { spaceId: string; replica?: t
 const serializeIntegrationPolicy = (row: typeof spaceLocalAgentPolicies.$inferSelect): LocalAgentPolicyV1 & { spaceId: string; deviceId: string; integrationPolicyVersion: number } => ({
   ...LocalAgentPolicySchema.parse({
     version: 1,
-    sessionMirrorMode: row.sessionMirrorMode,
     workspaceMode: row.workspaceMode,
-    offlineEnabled: row.offlineEnabled,
-    attachmentMode: row.attachmentMode,
-    maxBundleBytes: row.maxBundleBytes,
-    maxArtifactBytes: row.maxArtifactBytes,
   }),
   spaceId: row.spaceId,
   deviceId: row.deviceId,
@@ -538,47 +485,12 @@ export async function listWorkspaceReplicaStates(input: { actor: LocalAgentActor
     ? or(eq(workspaceReplicas.kind, "cloud"), eq(workspaceReplicas.deviceId, input.actor.deviceId))
     : or(eq(workspaceReplicas.kind, "cloud"), eq(workspaceReplicas.userUuid, input.actor.userUuid));
   const replicas = await db.select().from(workspaceReplicas).where(and(eq(workspaceReplicas.spaceId, input.spaceId), visibility)).orderBy(asc(workspaceReplicas.kind), asc(workspaceReplicas.createdAt));
-  const localReplicas = replicas.filter((replica) => replica.kind === "local");
-  const localReplicaIds = localReplicas.map((replica) => replica.id);
-  const nativeRows = localReplicaIds.length > 0
-    ? await db.select().from(nativeAgentSessions).where(inArray(nativeAgentSessions.replicaId, localReplicaIds)).orderBy(desc(nativeAgentSessions.updatedAt))
-    : [];
-  const localDeviceIds = localReplicas.map((replica) => replica.deviceId).filter((deviceId): deviceId is string => Boolean(deviceId));
-  const integrationRows = localDeviceIds.length > 0
-    ? await db.select().from(spaceLocalAgentPolicies).where(and(eq(spaceLocalAgentPolicies.spaceId, input.spaceId), inArray(spaceLocalAgentPolicies.deviceId, localDeviceIds)))
-    : [];
-  const policyByDevice = new Map(integrationRows.map((row) => [row.deviceId, row]));
-  const mirrorByReplica = new Map<string, NativeMirrorOverview>();
-  for (const native of nativeRows) {
-    if (mirrorByReplica.has(native.replicaId)) continue;
-    mirrorByReplica.set(native.replicaId, {
-      status: native.status,
-      provider: native.provider,
-      fidelity: native.mirrorFidelity,
-      completeness: native.mirrorCompleteness,
-      lastSeenAt: iso(native.lastSeenAt),
-      lastMirroredTurnId: native.lastMirroredTurnId,
-    });
-  }
-  for (const replica of localReplicas) {
-    if (mirrorByReplica.has(replica.id)) continue;
-    const policy = replica.deviceId ? policyByDevice.get(replica.deviceId) : undefined;
-    if (!policy) continue;
-    mirrorByReplica.set(replica.id, {
-      status: "not_started",
-      provider: null,
-      fidelity: null,
-      completeness: policy.sessionMirrorMode,
-      lastSeenAt: null,
-      lastMirroredTurnId: null,
-    });
-  }
   const [state] = await db.select().from(workspaceState).where(eq(workspaceState.spaceId, input.spaceId)).limit(1);
   const [policy] = await db.select().from(spaceWorkspacePolicies).where(eq(spaceWorkspacePolicies.spaceId, input.spaceId)).limit(1);
   const [lease] = await db.select().from(workspaceWriterLeases).where(eq(workspaceWriterLeases.spaceId, input.spaceId)).limit(1);
   const [conflictCount] = await db.select({ count: count() }).from(workspaceSyncConflicts).where(and(eq(workspaceSyncConflicts.spaceId, input.spaceId), eq(workspaceSyncConflicts.status, "open")));
   return {
-    replicas: replicas.map((replica) => serializeReplicaOverview(replica, mirrorByReplica.get(replica.id) ?? null)),
+    replicas: replicas.map(serializeReplicaOverview),
     workspace: state ? serializeWorkspaceState(state) : null,
     workspacePolicy: policy ? serializeWorkspacePolicy(policy) : null,
     lease: lease ? serializeLease(lease) : null,
@@ -618,14 +530,11 @@ const serializeLease = (row: typeof workspaceWriterLeases.$inferSelect) => ({
   baseSnapshotId: row.baseSnapshotId,
   expiresAt: row.expiresAt.toISOString(),
   lastHeartbeatAt: row.lastHeartbeatAt.toISOString(),
-  maximumDurationAt: iso(row.maximumDurationAt),
-  takeoverRequiresConfirmation: row.takeoverRequiresConfirmation,
   updatedAt: row.updatedAt.toISOString(),
 });
 
 const WORKSPACE_LEASE_HOLDER_KINDS = new Set([
   "local_agent",
-  "local_offline_reservation",
   "cloud_agent",
   "cloud_file_api",
   "cloud_command",
@@ -656,7 +565,7 @@ async function assertLeaseActor(input: {
   if (input.epoch !== undefined) conditions.push(eq(workspaceWriterLeases.epoch, input.epoch));
   const [lease] = await db.select().from(workspaceWriterLeases).where(and(...conditions)).limit(1);
   if (!lease) throw new LocalAgentServiceError("workspace lease not found", "workspace_lease_not_found", 404);
-  if (holderKind === "local_agent" || holderKind === "local_offline_reservation") {
+  if (holderKind === "local_agent") {
     if (input.actor.principal === "user") {
       if (lease.holderUserUuid !== input.actor.userUuid) {
         throw new LocalAgentServiceError("workspace lease does not belong to this user", "lease_owner_mismatch", 403);
@@ -666,17 +575,12 @@ async function assertLeaseActor(input: {
     if (!input.actor.deviceId) {
       throw new LocalAgentServiceError("a device credential is required for this workspace lease", "device_required", 401);
     }
-    if (holderKind === "local_offline_reservation" && input.holderId !== `device:${input.actor.deviceId}`) {
+    const [attempt] = await db.select({ deviceId: workspaceReplicas.deviceId }).from(workspaceExecutionAttempts)
+      .innerJoin(workspaceReplicas, eq(workspaceReplicas.id, workspaceExecutionAttempts.replicaId))
+      .where(and(eq(workspaceExecutionAttempts.id, input.holderId), eq(workspaceExecutionAttempts.spaceId, input.spaceId)))
+      .limit(1);
+    if (attempt?.deviceId !== input.actor.deviceId) {
       throw new LocalAgentServiceError("workspace lease does not belong to this device", "lease_owner_mismatch", 403);
-    }
-    if (holderKind === "local_agent") {
-      const [attempt] = await db.select({ deviceId: workspaceReplicas.deviceId }).from(workspaceExecutionAttempts)
-        .innerJoin(workspaceReplicas, eq(workspaceReplicas.id, workspaceExecutionAttempts.replicaId))
-        .where(and(eq(workspaceExecutionAttempts.id, input.holderId), eq(workspaceExecutionAttempts.spaceId, input.spaceId)))
-        .limit(1);
-      if (attempt?.deviceId !== input.actor.deviceId) {
-        throw new LocalAgentServiceError("workspace lease does not belong to this device", "lease_owner_mismatch", 403);
-      }
     }
   } else {
     if (input.actor.principal !== "user" || lease.holderUserUuid !== input.actor.userUuid) {
@@ -1088,17 +992,12 @@ export async function acquireWorkspaceWriterLease(input: {
   replicaId?: string | null;
   baseSnapshotId?: string | null;
   durationSeconds?: number;
-  offline?: boolean;
-  confirmTakeover?: boolean;
 }) {
   assertUuid(input.spaceId, "spaceId");
   const holderKind = normalizeLeaseHolderKind(input.holderKind);
-  if (input.offline !== (holderKind === "local_offline_reservation")) {
-    throw new LocalAgentServiceError("offline must match the lease holder kind", "invalid_lease_mode", 400);
-  }
   const holderId = normalizeBounded(input.holderId, "holderId", 255);
   let localReplicaIdentity: { id: string; deviceId: string } | null = null;
-  if (holderKind === "local_agent" || holderKind === "local_offline_reservation") {
+  if (holderKind === "local_agent") {
     if (input.replicaId) assertUuid(input.replicaId, "replicaId");
     const conditions = [
       eq(workspaceReplicas.spaceId, input.spaceId),
@@ -1111,13 +1010,10 @@ export async function acquireWorkspaceWriterLease(input: {
     const [ownedReplica] = await db.select({ id: workspaceReplicas.id, deviceId: workspaceReplicas.deviceId }).from(workspaceReplicas).where(and(...conditions)).orderBy(desc(workspaceReplicas.updatedAt)).limit(1);
     if (!ownedReplica?.deviceId) throw new LocalAgentServiceError("local replica is unavailable", "replica_not_found", 404);
     localReplicaIdentity = { id: ownedReplica.id, deviceId: ownedReplica.deviceId };
-    if (holderKind === "local_offline_reservation" && holderId !== `device:${ownedReplica.deviceId}`) {
-      throw new LocalAgentServiceError("workspace lease does not belong to this device", "lease_owner_mismatch", 403);
-    }
   } else if (input.actor.principal !== "user") {
     throw new LocalAgentServiceError("a user credential is required for a cloud workspace lease", "user_required", 401);
   }
-  const requestedDuration = input.offline ? Math.min(input.durationSeconds ?? LOCAL_AGENT_OFFLINE_MAX_SECONDS, LOCAL_AGENT_OFFLINE_MAX_SECONDS) : Math.min(input.durationSeconds ?? LOCAL_AGENT_ONLINE_LEASE_SECONDS, LOCAL_AGENT_ONLINE_LEASE_SECONDS);
+  const requestedDuration = Math.min(input.durationSeconds ?? LOCAL_AGENT_ONLINE_LEASE_SECONDS, LOCAL_AGENT_ONLINE_LEASE_SECONDS);
   if (!Number.isSafeInteger(requestedDuration) || requestedDuration <= 0) throw new LocalAgentServiceError("durationSeconds is invalid", "invalid_duration", 400);
   if (input.baseSnapshotId) assertUuid(input.baseSnapshotId, "baseSnapshotId");
   const result = await db.transaction(async (tx) => {
@@ -1129,7 +1025,7 @@ export async function acquireWorkspaceWriterLease(input: {
     if (input.baseSnapshotId && input.baseSnapshotId !== workspace.canonicalSnapshotId) {
       throw new LocalAgentServiceError("lease base snapshot is not canonical", "lease_base_stale", 409);
     }
-    if ((holderKind === "local_agent" || holderKind === "local_offline_reservation") && localReplicaIdentity) {
+    if (holderKind === "local_agent" && localReplicaIdentity) {
       const [integrationPolicy] = await tx.select().from(spaceLocalAgentPolicies).where(and(
         eq(spaceLocalAgentPolicies.spaceId, input.spaceId),
         eq(spaceLocalAgentPolicies.deviceId, localReplicaIdentity.deviceId),
@@ -1138,86 +1034,29 @@ export async function acquireWorkspaceWriterLease(input: {
       if (integrationPolicy.workspaceMode === "one_way_to_local") {
         throw new LocalAgentServiceError("local workspace is read-only under the current policy", "workspace_write_disabled", 403);
       }
-      if (holderKind === "local_offline_reservation" && !integrationPolicy.offlineEnabled) {
-        throw new LocalAgentServiceError("offline workspace execution is not enabled", "offline_not_enabled", 403);
-      }
     }
     const [existing] = await tx.select().from(workspaceWriterLeases).where(eq(workspaceWriterLeases.spaceId, input.spaceId)).for("update").limit(1);
     const sameHolder = existing?.holderId === holderId && existing.holderKind === holderKind;
     if (existing && existing.expiresAt.getTime() > current.getTime() && !sameHolder) {
       throw new LocalAgentServiceError("workspace is held by another writer", "workspace_lease_busy", 409);
     }
-    let takeoverRequiresConfirmation = existing?.takeoverRequiresConfirmation ?? false;
-    if (existing && existing.expiresAt <= current && !sameHolder && (existing.holderKind === "local_agent" || existing.holderKind === "local_offline_reservation")) {
-      const [unresolvedAttempt] = await tx.select({ id: workspaceExecutionAttempts.id }).from(workspaceExecutionAttempts).where(and(
-        eq(workspaceExecutionAttempts.spaceId, input.spaceId),
-        inArray(workspaceExecutionAttempts.status, ["running", "workspace_sealed", "transcript_sealed", "awaiting_recovery"]),
-        existing.holderKind === "local_agent" ? eq(workspaceExecutionAttempts.id, existing.holderId) : undefined,
-      )).limit(1);
-      takeoverRequiresConfirmation = takeoverRequiresConfirmation || Boolean(unresolvedAttempt);
-      if (unresolvedAttempt && input.confirmTakeover) {
-        await tx.update(workspaceExecutionAttempts).set({
-          status: "blocked",
-          errorCode: "explicit_workspace_takeover",
-          errorMessage: `Writer lease epoch ${existing.epoch} was explicitly taken over`,
-          updatedAt: current,
-        }).where(eq(workspaceExecutionAttempts.id, unresolvedAttempt.id));
-      }
-    }
-    if (existing && existing.expiresAt.getTime() <= current.getTime() && takeoverRequiresConfirmation && !input.confirmTakeover && !sameHolder) {
-      throw new LocalAgentServiceError("workspace lease expired; explicit takeover confirmation is required", "workspace_takeover_confirmation_required", 409);
-    }
     if (holderKind === "local_agent") {
       assertUuid(holderId, "holderId");
+      // A local writer lease is only ever held by a registered ACP execution
+      // attempt. Refusing unknown holders keeps the lease table and the attempt
+      // ledger consistent; there is no hook-driven attempt creation path.
       const [attempt] = await tx.select({ deviceId: workspaceReplicas.deviceId }).from(workspaceExecutionAttempts)
         .innerJoin(workspaceReplicas, eq(workspaceReplicas.id, workspaceExecutionAttempts.replicaId))
-        .where(and(eq(workspaceExecutionAttempts.id, holderId), eq(workspaceExecutionAttempts.spaceId, input.spaceId)))
+        .where(and(eq(workspaceExecutionAttempts.id, holderId), eq(workspaceExecutionAttempts.spaceId, input.spaceId), eq(workspaceExecutionAttempts.executorKind, "local_acp")))
         .limit(1);
-      if (attempt && attempt.deviceId !== localReplicaIdentity?.deviceId) {
+      if (!attempt) throw new LocalAgentServiceError("execution attempt is not registered for this workspace", "attempt_not_found", 404);
+      if (attempt.deviceId !== localReplicaIdentity?.deviceId) {
         throw new LocalAgentServiceError("execution attempt does not belong to this device", "attempt_identity_mismatch", 403);
-      }
-      if (!attempt) {
-        const [localReplica] = await tx.select({ id: workspaceReplicas.id }).from(workspaceReplicas).where(and(
-          eq(workspaceReplicas.id, localReplicaIdentity?.id as string),
-          eq(workspaceReplicas.spaceId, input.spaceId),
-          eq(workspaceReplicas.kind, "local"),
-          eq(workspaceReplicas.deviceId, localReplicaIdentity?.deviceId as string),
-          ne(workspaceReplicas.status, "detached"),
-        )).for("update").limit(1);
-        if (!localReplica) throw new LocalAgentServiceError("local replica is unavailable", "replica_not_found", 404);
-        const [integrationPolicy] = await tx.select({ sessionMirrorMode: spaceLocalAgentPolicies.sessionMirrorMode }).from(spaceLocalAgentPolicies).where(and(
-          eq(spaceLocalAgentPolicies.spaceId, input.spaceId),
-          eq(spaceLocalAgentPolicies.deviceId, localReplicaIdentity?.deviceId as string),
-        )).limit(1);
-        if (!integrationPolicy) throw new LocalAgentServiceError("local agent policy is unavailable", "policy_unavailable", 409);
-        const [createdAttempt] = await tx.insert(workspaceExecutionAttempts).values({
-          id: holderId,
-          spaceId: input.spaceId,
-          replicaId: localReplica.id,
-          idempotencyKey: `local:${holderId}`,
-          executorKind: "local_native",
-          sessionMirrorMode: integrationPolicy.sessionMirrorMode,
-          workspaceRequired: true,
-          transcriptRequired: integrationPolicy.sessionMirrorMode === "full",
-          baseCanonicalSnapshotId: workspace.canonicalSnapshotId,
-          workspacePolicyVersion: null,
-          status: "prepared",
-        }).onConflictDoNothing().returning({ id: workspaceExecutionAttempts.id });
-        if (!createdAttempt) {
-          throw new LocalAgentServiceError("another execution attempt is still active for this workspace", "workspace_attempt_active", 409);
-        }
       }
     }
     const sameActiveHolder = sameHolder && Boolean(existing && existing.expiresAt > current);
     const epoch = (existing?.epoch ?? 0) + (sameActiveHolder ? 0 : 1);
-    const maximumDurationAt = input.offline
-      ? sameHolder && existing?.maximumDurationAt
-        ? existing.maximumDurationAt
-        : new Date(current.getTime() + LOCAL_AGENT_OFFLINE_MAX_SECONDS * 1000)
-      : null;
-    const requestedExpiresAt = new Date(current.getTime() + requestedDuration * 1000);
-    const expiresAt = maximumDurationAt && requestedExpiresAt > maximumDurationAt ? maximumDurationAt : requestedExpiresAt;
-    if (expiresAt <= current) throw new LocalAgentServiceError("workspace offline reservation has reached its maximum duration", "workspace_lease_expired", 409);
+    const expiresAt = new Date(current.getTime() + requestedDuration * 1000);
     const [lease] = await tx.insert(workspaceWriterLeases).values({
       spaceId: input.spaceId,
       holderKind,
@@ -1227,8 +1066,6 @@ export async function acquireWorkspaceWriterLease(input: {
       baseSnapshotId: input.baseSnapshotId ?? existing?.baseSnapshotId ?? workspace.canonicalSnapshotId,
       expiresAt,
       lastHeartbeatAt: current,
-      maximumDurationAt,
-      takeoverRequiresConfirmation: false,
       updatedAt: current,
     }).onConflictDoUpdate({
       target: workspaceWriterLeases.spaceId,
@@ -1240,8 +1077,6 @@ export async function acquireWorkspaceWriterLease(input: {
         baseSnapshotId: input.baseSnapshotId ?? existing?.baseSnapshotId ?? workspace.canonicalSnapshotId,
         expiresAt,
         lastHeartbeatAt: current,
-        maximumDurationAt,
-        takeoverRequiresConfirmation: false,
         updatedAt: current,
       },
     }).returning();
@@ -1262,7 +1097,7 @@ export async function acquireWorkspaceWriterLease(input: {
     }
     return lease;
   });
-  void notifyWorkspaceState({ spaceId: input.spaceId, reason: input.offline ? "offline_lease_acquired" : "lease_acquired" }).catch(() => undefined);
+  void notifyWorkspaceState({ spaceId: input.spaceId, reason: "lease_acquired" }).catch(() => undefined);
   return serializeLease(result);
 }
 
@@ -1274,20 +1109,8 @@ export async function heartbeatWorkspaceWriterLease(input: { actor: LocalAgentAc
   const seconds = Math.min(input.durationSeconds ?? LOCAL_AGENT_ONLINE_LEASE_SECONDS, LOCAL_AGENT_ONLINE_LEASE_SECONDS);
   if (!Number.isSafeInteger(seconds) || seconds <= 0) throw new LocalAgentServiceError("durationSeconds is invalid", "invalid_duration", 400);
   const current = now();
-  const [existingLease] = await db.select({ maximumDurationAt: workspaceWriterLeases.maximumDurationAt }).from(workspaceWriterLeases).where(and(
-    eq(workspaceWriterLeases.spaceId, input.spaceId),
-    eq(workspaceWriterLeases.holderKind, holderKind),
-    eq(workspaceWriterLeases.holderId, input.holderId),
-    eq(workspaceWriterLeases.epoch, input.epoch),
-  )).limit(1);
-  if (!existingLease) throw new LocalAgentServiceError("workspace lease not found", "workspace_lease_not_found", 404);
-  const requestedExpiry = new Date(current.getTime() + seconds * 1000);
-  const expiresAt = existingLease.maximumDurationAt && existingLease.maximumDurationAt < requestedExpiry
-    ? existingLease.maximumDurationAt
-    : requestedExpiry;
-  if (expiresAt <= current) throw new LocalAgentServiceError("workspace offline reservation has reached its maximum duration", "workspace_lease_expired", 409);
   const [lease] = await db.update(workspaceWriterLeases).set({
-    expiresAt,
+    expiresAt: new Date(current.getTime() + seconds * 1000),
     lastHeartbeatAt: current,
     updatedAt: current,
   }).where(and(eq(workspaceWriterLeases.spaceId, input.spaceId), eq(workspaceWriterLeases.holderKind, holderKind), eq(workspaceWriterLeases.holderId, input.holderId), eq(workspaceWriterLeases.epoch, input.epoch), gt(workspaceWriterLeases.expiresAt, current))).returning();
@@ -1335,123 +1158,11 @@ export async function releaseWorkspaceWriterLease(input: { actor: LocalAgentActo
   return { released: true, epoch: lease.epoch };
 }
 
-const nativeKind = (bundle: NativeTurnBundleV1): string => bundle.historyDelta.length > 0 ? "turn_final" : bundle.events.some((event) => event.type === "turn_stopped" || event.type === "turn_failed") ? "turn_final" : "lifecycle";
-const nativeSemanticStatus = (status: string): NativeIngestCommitResponseV1["semanticStatus"] => {
-  if (status === "applied") return "applied";
-  if (status === "quarantined") return "quarantined";
-  if (status === "committed" || status === "translating" || status === "forking" || status === "appending_jsonl" || status === "projecting" || status === "publishing_marker") return "ready";
-  return "pending_verification";
-};
-const serializeIngestResponse = (row: typeof nativeAgentIngests.$inferSelect): NativeIngestCommitResponseV1 => ({
-  version: 1,
-  ingestId: row.id,
-  uploadStatus: row.status === "prepared" || row.status === "uploaded" ? "uploaded" : "committed",
-  semanticStatus: nativeSemanticStatus(row.status),
-  executionAttemptId: row.executionAttemptId,
-  cohubSessionId: row.cohubSessionId,
-  cohubTurnId: row.cohubTurnId,
-  nextPollAt: nativeSemanticStatus(row.status) === "applied" || nativeSemanticStatus(row.status) === "quarantined" ? null : new Date(Date.now() + 1000).toISOString(),
-});
-
-async function assertLocalNativeAttemptLease(tx: LocalAgentTransaction, input: {
-  spaceId: string;
-  replicaId: string;
-  deviceId: string;
-  attemptId: string;
-  leaseEpoch: number | null;
-  baseSnapshotId?: string | null;
-  terminalEvent: boolean;
-  provider?: NativeProvider;
-  sessionMirrorMode?: "full" | "metadata_only" | "disabled";
-  integrationPolicyVersion?: number;
-  workspacePolicyVersion?: number;
-}) {
-  let [attempt] = await tx.select().from(workspaceExecutionAttempts).where(and(
-    eq(workspaceExecutionAttempts.id, input.attemptId),
-    eq(workspaceExecutionAttempts.spaceId, input.spaceId),
-    eq(workspaceExecutionAttempts.replicaId, input.replicaId),
-  )).for("update").limit(1);
-  if (!attempt) {
-    const epoch = input.leaseEpoch;
-    if (!Number.isSafeInteger(epoch) || Number(epoch) < 1) throw new LocalAgentServiceError("execution attempt is not registered for this replica", "attempt_identity_mismatch", 409);
-    const [reservation] = await tx.select().from(workspaceWriterLeases).where(and(
-      eq(workspaceWriterLeases.spaceId, input.spaceId),
-      eq(workspaceWriterLeases.holderKind, "local_offline_reservation"),
-      eq(workspaceWriterLeases.holderId, `device:${input.deviceId}`),
-      eq(workspaceWriterLeases.epoch, Number(epoch)),
-    )).for("update").limit(1);
-    if (!reservation) throw new LocalAgentServiceError("execution attempt is not registered for this replica", "attempt_identity_mismatch", 409);
-    [attempt] = await tx.insert(workspaceExecutionAttempts).values({
-      id: input.attemptId,
-      spaceId: input.spaceId,
-      replicaId: input.replicaId,
-      idempotencyKey: `offline:${input.attemptId}`,
-      executorKind: "local_native",
-      provider: input.provider ?? null,
-      sessionMirrorMode: input.sessionMirrorMode ?? null,
-      integrationPolicyVersion: input.integrationPolicyVersion ?? null,
-      workspaceRequired: true,
-      transcriptRequired: input.sessionMirrorMode === "full",
-      baseCanonicalSnapshotId: reservation.baseSnapshotId,
-      workspaceLeaseEpoch: reservation.epoch,
-      workspacePolicyVersion: input.workspacePolicyVersion ?? null,
-      status: reservation.expiresAt > now() ? "prepared" : "awaiting_recovery",
-    }).onConflictDoNothing().returning();
-    if (!attempt) throw new LocalAgentServiceError("another execution attempt is still active for this workspace", "workspace_attempt_active", 409);
-  }
-  if (attempt.executorKind !== "local_native" && attempt.executorKind !== "local_acp") throw new LocalAgentServiceError("execution attempt is not a supported local attempt", "attempt_identity_mismatch", 409);
-  if (input.baseSnapshotId !== undefined && (attempt.baseCanonicalSnapshotId ?? null) !== (input.baseSnapshotId ?? null)) {
-    throw new LocalAgentServiceError("execution attempt base snapshot does not match the workspace lease", "attempt_base_stale", 409);
-  }
-  if (attempt.status === "awaiting_recovery") return attempt;
-  const terminal = ["completed", "failed", "aborted", "transcript_sealed", "workspace_sealed", "awaiting_recovery"].includes(attempt.status);
-  if (terminal && input.terminalEvent) return attempt;
-  if (input.terminalEvent) {
-    const [committedCandidate] = await tx.select({ id: workspaceSnapshots.id }).from(workspaceSnapshots).where(and(
-      eq(workspaceSnapshots.sourceExecutionAttemptId, attempt.id),
-      eq(workspaceSnapshots.spaceId, input.spaceId),
-      eq(workspaceSnapshots.status, "ready"),
-    )).limit(1);
-    if (committedCandidate) return attempt;
-  }
-  const epoch = input.leaseEpoch ?? attempt.workspaceLeaseEpoch;
-  if (!Number.isSafeInteger(epoch) || Number(epoch) < 1) throw new LocalAgentServiceError("a valid workspace lease epoch is required", "workspace_lease_required", 409);
-  const [lease] = await tx.select({ epoch: workspaceWriterLeases.epoch }).from(workspaceWriterLeases).where(and(
-    eq(workspaceWriterLeases.spaceId, input.spaceId),
-    eq(workspaceWriterLeases.epoch, Number(epoch)),
-    gt(workspaceWriterLeases.expiresAt, now()),
-    or(
-      and(eq(workspaceWriterLeases.holderKind, "local_agent"), eq(workspaceWriterLeases.holderId, input.attemptId)),
-      and(eq(workspaceWriterLeases.holderKind, "local_offline_reservation"), eq(workspaceWriterLeases.holderId, `device:${input.deviceId}`)),
-    ),
-  )).limit(1);
-  if (!lease) throw new LocalAgentServiceError("workspace writer lease is missing or expired", "workspace_lease_lost", 409);
-  if (attempt.workspaceLeaseEpoch !== Number(epoch)) {
-    await tx.update(workspaceExecutionAttempts).set({ workspaceLeaseEpoch: Number(epoch), updatedAt: now() }).where(eq(workspaceExecutionAttempts.id, attempt.id));
-  }
-  return attempt;
-}
-
-async function ensureNativeBinding(tx: LocalAgentTransaction, input: { spaceId: string; replicaId: string; deviceId: string; userUuid: string; provider: NativeProvider; nativeSessionKey: string; providerVersion: string; adapterVersion: string; fidelity: MirrorFidelity; completeness: MirrorCompleteness }) {
-  let [binding] = await tx.select().from(nativeAgentSessions).where(and(eq(nativeAgentSessions.spaceId, input.spaceId), eq(nativeAgentSessions.deviceId, input.deviceId), eq(nativeAgentSessions.provider, input.provider), eq(nativeAgentSessions.nativeSessionKey, input.nativeSessionKey))).for("update").limit(1);
-  if (!binding) {
-    [binding] = await tx.insert(nativeAgentSessions).values({
-      spaceId: input.spaceId,
-      replicaId: input.replicaId,
-      deviceId: input.deviceId,
-      userUuid: input.userUuid,
-      provider: input.provider,
-      nativeSessionKey: input.nativeSessionKey,
-      providerVersion: input.providerVersion,
-      adapterVersion: input.adapterVersion,
-      mirrorFidelity: MirrorFidelitySchema.parse(input.fidelity),
-      mirrorCompleteness: MirrorCompletenessSchema.parse(input.completeness),
-    }).returning();
-  }
-  if (!binding) throw new LocalAgentServiceError("failed to create native session binding", "binding_create_failed", 500);
-  return binding;
-}
-
+/**
+ * Seal a local ACP execution attempt from locald once the provider turn is
+ * terminal. The workspace worker completes the attempt after the candidate
+ * snapshot is reconciled; this only records that the transcript side is done.
+ */
 export async function registerLocalWorkspaceAttempt(input: {
   actor: LocalAgentActor;
   spaceId: string;
@@ -1461,7 +1172,6 @@ export async function registerLocalWorkspaceAttempt(input: {
   baseSnapshotId: string | null;
   workspacePolicyVersion: number;
   integrationPolicyVersion: number;
-  sessionMirrorMode: "full" | "metadata_only" | "disabled";
 }) {
   const replica = await resolveReplicaForActor({ actor: input.actor, spaceId: input.spaceId, replicaId: input.replicaId });
   if (replica.kind !== "local" || !input.actor.deviceId) throw new LocalAgentServiceError("local execution attempts require a device replica", "invalid_replica", 400);
@@ -1471,34 +1181,35 @@ export async function registerLocalWorkspaceAttempt(input: {
     eq(spaceLocalAgentPolicies.spaceId, input.spaceId),
     eq(spaceLocalAgentPolicies.deviceId, input.actor.deviceId),
   )).limit(1);
-  if (!policy || policy.integrationPolicyVersion !== input.integrationPolicyVersion || policy.sessionMirrorMode !== input.sessionMirrorMode) {
+  if (!policy || policy.integrationPolicyVersion !== input.integrationPolicyVersion) {
     throw new LocalAgentServiceError("local execution attempt uses an outdated integration policy", "policy_version_stale", 409);
   }
   const attempt = await db.transaction(async (tx) => {
-    let current = await assertLocalNativeAttemptLease(tx, {
-      spaceId: input.spaceId,
-      replicaId: replica.id,
-      deviceId: input.actor.deviceId as string,
-      attemptId: input.attemptId,
-      leaseEpoch: input.leaseEpoch,
-      baseSnapshotId: input.baseSnapshotId,
-      terminalEvent: true,
-      sessionMirrorMode: input.sessionMirrorMode,
-      integrationPolicyVersion: input.integrationPolicyVersion,
-      workspacePolicyVersion: input.workspacePolicyVersion,
-    });
-    if (current.executorKind === "local_acp" && current.turnId) {
+    let [current] = await tx.select().from(workspaceExecutionAttempts).where(and(
+      eq(workspaceExecutionAttempts.id, input.attemptId),
+      eq(workspaceExecutionAttempts.spaceId, input.spaceId),
+      eq(workspaceExecutionAttempts.replicaId, replica.id),
+      eq(workspaceExecutionAttempts.executorKind, "local_acp"),
+    )).for("update").limit(1);
+    if (!current) throw new LocalAgentServiceError("execution attempt is not registered for this replica", "attempt_identity_mismatch", 409);
+    if ((current.baseCanonicalSnapshotId ?? null) !== (input.baseSnapshotId ?? null)) {
+      throw new LocalAgentServiceError("execution attempt base snapshot does not match the workspace lease", "attempt_base_stale", 409);
+    }
+    if (current.workspaceLeaseEpoch !== input.leaseEpoch) {
+      throw new LocalAgentServiceError("execution attempt lease epoch does not match", "workspace_lease_lost", 409);
+    }
+    if (current.turnId) {
       const [turn] = await tx.select({ status: sessionTurns.status }).from(sessionTurns).where(eq(sessionTurns.id, current.turnId)).limit(1);
       if (!turn || !["completed", "failed", "interrupted", "cancelled", "merged"].includes(turn.status)) {
         throw new LocalAgentServiceError("local ACP transcript is not terminal yet", "transcript_pending", 409);
       }
-      if (["queued", "prepared", "running"].includes(current.status)) {
-        const [updated] = await tx.update(workspaceExecutionAttempts).set({ status: "transcript_sealed", updatedAt: now() }).where(and(
-          eq(workspaceExecutionAttempts.id, current.id),
-          inArray(workspaceExecutionAttempts.status, ["queued", "prepared", "running"]),
-        )).returning();
-        current = updated ?? current;
-      }
+    }
+    if (["queued", "prepared", "running"].includes(current.status)) {
+      const [updated] = await tx.update(workspaceExecutionAttempts).set({ status: "transcript_sealed", updatedAt: now() }).where(and(
+        eq(workspaceExecutionAttempts.id, current.id),
+        inArray(workspaceExecutionAttempts.status, ["queued", "prepared", "running"]),
+      )).returning();
+      current = updated ?? current;
     }
     return current;
   });
@@ -1508,411 +1219,6 @@ export async function registerLocalWorkspaceAttempt(input: {
     transcriptRequired: attempt.transcriptRequired,
     workspaceLeaseEpoch: attempt.workspaceLeaseEpoch,
   };
-}
-
-export async function acceptNativeHook(input: { actor: LocalAgentActor; spaceId: string; replicaId: string; value: unknown }) {
-  const replica = await resolveReplicaForActor({ actor: input.actor, spaceId: input.spaceId, replicaId: input.replicaId });
-  if (replica.kind !== "local" || !input.actor.deviceId) throw new LocalAgentServiceError("native events require a local device replica", "invalid_replica", 400);
-  let event: LocalAgentHookEnvelopeV1;
-  try {
-    event = validateLocalAgentHookEnvelope(input.value);
-  } catch (error) {
-    const message = error instanceof Error ? error.message : "hook payload is invalid";
-    const tooLarge = message.startsWith("hook_payload_too_large:");
-    throw new LocalAgentServiceError(message, tooLarge ? "hook_payload_too_large" : "invalid_request", tooLarge ? 413 : 400);
-  }
-  assertNativeProviderEnabled(event.provider);
-  if (event.deviceId !== input.actor.deviceId || event.replicaId !== replica.id) {
-    throw new LocalAgentServiceError("hook identity does not match the enrolled device or replica", "hook_identity_mismatch", 403);
-  }
-  if (event.workspace.relativeCwd.startsWith("/") || event.workspace.relativeCwd.split("/").some((part) => part === "..")) {
-    throw new LocalAgentServiceError("hook cwd is outside the attached workspace", "invalid_cwd", 422);
-  }
-  const [policy] = await db.select().from(spaceLocalAgentPolicies).where(and(eq(spaceLocalAgentPolicies.spaceId, input.spaceId), eq(spaceLocalAgentPolicies.deviceId, input.actor.deviceId))).limit(1);
-  if (!policy) throw new LocalAgentServiceError("local agent policy is not initialized", "policy_unavailable", 409);
-  if (
-    event.integrationPolicyVersion !== policy.integrationPolicyVersion
-    || event.sessionMirrorMode !== policy.sessionMirrorMode
-    || event.workspacePolicyVersion <= 0
-  ) {
-    throw new LocalAgentServiceError("hook uses an outdated or invalid policy version", "policy_version_stale", 409);
-  }
-  if (policy.sessionMirrorMode === "disabled") {
-    throw new LocalAgentServiceError("session mirroring is disabled for this device and Space", "mirror_disabled", 403);
-  }
-  const eventHash = hashCanonical(event);
-  const executionAttemptId = event.executionAttemptId;
-  if (executionAttemptId) assertUuid(executionAttemptId, "executionAttemptId");
-  const result = await db.transaction(async (tx) => {
-    const binding = await ensureNativeBinding(tx, {
-      spaceId: input.spaceId,
-      replicaId: replica.id,
-      deviceId: input.actor.deviceId as string,
-      userUuid: input.actor.userUuid,
-      provider: event.provider,
-      nativeSessionKey: event.nativeSessionKey,
-      providerVersion: event.providerVersion,
-      adapterVersion: event.adapterVersion,
-      fidelity: "hook_reconstructed",
-      completeness: event.sessionMirrorMode === "metadata_only" ? "metadata_only" : "truncated",
-    });
-    const [existingReceipt] = await tx.select().from(nativeAgentEventReceipts).where(and(eq(nativeAgentEventReceipts.bindingId, binding.id), eq(nativeAgentEventReceipts.eventId, event.eventId))).for("update").limit(1);
-    if (existingReceipt) {
-      if (existingReceipt.eventSha256 !== eventHash) throw new LocalAgentServiceError("event id was reused with different content", "event_id_conflict", 409);
-      return { bindingId: binding.id, nativeTurnId: existingReceipt.nativeAgentTurnId, executionAttemptId: existingReceipt.executionAttemptId, duplicate: true };
-    }
-    const terminalEvent = event.type === "turn_stopped" || event.type === "turn_failed" || event.type === "session_ended" || event.type === "provider_exited";
-    if (event.executionAttemptId) {
-      const attempt = await assertLocalNativeAttemptLease(tx, {
-        spaceId: input.spaceId,
-        replicaId: replica.id,
-        deviceId: input.actor.deviceId as string,
-        attemptId: executionAttemptId as string,
-        leaseEpoch: event.workspace.leaseEpoch,
-        baseSnapshotId: event.workspace.baseCanonicalSnapshotId,
-        terminalEvent,
-        provider: event.provider,
-        sessionMirrorMode: event.sessionMirrorMode,
-        integrationPolicyVersion: event.integrationPolicyVersion,
-        workspacePolicyVersion: event.workspacePolicyVersion,
-      });
-      if (terminalEvent && event.sessionMirrorMode === "metadata_only" && ["prepared", "running"].includes(attempt.status)) {
-        await tx.update(workspaceExecutionAttempts).set({
-          status: "transcript_sealed",
-          completedAt: null,
-          updatedAt: now(),
-        }).where(eq(workspaceExecutionAttempts.id, attempt.id));
-      } else if (!terminalEvent && ["prepared", "queued"].includes(attempt.status) && (event.type === "prompt_submitted" || event.type === "turn_started")) {
-        await tx.update(workspaceExecutionAttempts).set({ status: "running", startedAt: attempt.startedAt ?? now(), updatedAt: now() }).where(eq(workspaceExecutionAttempts.id, attempt.id));
-      }
-    }
-    let nativeTurnId: string | null = null;
-    if (event.nativeTurnKey && event.executionAttemptId) {
-      let [nativeTurn] = await tx.select().from(nativeAgentTurns).where(and(eq(nativeAgentTurns.bindingId, binding.id), eq(nativeAgentTurns.nativeTurnKey, event.nativeTurnKey))).for("update").limit(1);
-      if (!nativeTurn) {
-        [nativeTurn] = await tx.insert(nativeAgentTurns).values({
-          bindingId: binding.id,
-          spaceId: input.spaceId,
-          replicaId: replica.id,
-          executionAttemptId: executionAttemptId as string,
-          nativeTurnKey: event.nativeTurnKey,
-          status: terminalEvent ? (event.sessionMirrorMode === "metadata_only" ? "applied" : "sealed") : "running",
-          terminalEventKind: event.type === "turn_failed" ? "failed" : terminalEvent ? "stopped" : "none",
-          relativeCwd: event.workspace.relativeCwd,
-          firstEventSequence: event.nativeEventSequence,
-          lastEventSequence: event.nativeEventSequence,
-          startedAt: event.type === "prompt_submitted" || event.type === "turn_started" ? now() : null,
-          stoppedAt: event.type === "turn_stopped" || event.type === "turn_failed" ? now() : null,
-        }).returning();
-      }
-      if (nativeTurn && terminalEvent && nativeTurn.status !== "applied" && nativeTurn.status !== "quarantined") {
-        const [updatedTurn] = await tx.update(nativeAgentTurns).set({
-          status: event.sessionMirrorMode === "metadata_only" ? "applied" : "sealed",
-          terminalEventKind: event.type === "turn_failed" ? "failed" : "stopped",
-          lastEventSequence: event.nativeEventSequence,
-          stoppedAt: now(),
-          updatedAt: now(),
-        }).where(eq(nativeAgentTurns.id, nativeTurn.id)).returning();
-        nativeTurn = updatedTurn ?? nativeTurn;
-      }
-      nativeTurnId = nativeTurn?.id ?? null;
-    }
-    await tx.insert(nativeAgentEventReceipts).values({
-      bindingId: binding.id,
-      eventId: event.eventId,
-      executionAttemptId,
-      nativeAgentTurnId: nativeTurnId,
-      eventSha256: eventHash,
-      eventSequence: event.nativeEventSequence,
-      eventType: event.type,
-      firstIngestId: null,
-    });
-    await tx.update(nativeAgentSessions).set({
-      nativeCursor: { eventId: event.eventId, localReceiptSequence: event.localReceiptSequence },
-      relativeCwd: event.workspace.relativeCwd,
-      lastSeenAt: now(),
-      updatedAt: now(),
-    }).where(eq(nativeAgentSessions.id, binding.id));
-    return { bindingId: binding.id, nativeTurnId, executionAttemptId, duplicate: false };
-  });
-  return {
-    version: 1,
-    accepted: true,
-    duplicate: result.duplicate,
-    eventId: event.eventId,
-    executionAttemptId: result.executionAttemptId,
-    nativeTurnId: result.nativeTurnId,
-    nativeSessionKey: event.nativeSessionKey,
-  };
-}
-
-export async function acceptNativeIngestInline(input: { actor: LocalAgentActor; spaceId: string; replicaId: string; value: unknown; requestId?: string | null }) {
-  const replica = await resolveReplicaForActor({ actor: input.actor, spaceId: input.spaceId, replicaId: input.replicaId });
-  if (replica.kind !== "local" || !input.actor.deviceId) throw new LocalAgentServiceError("native ingest requires a local device replica", "invalid_replica", 400);
-  const parsedRequest = NativeIngestInlineRequestSchema.parse(input.value);
-  const bundle = NativeTurnBundleSchema.parse(parsedRequest.bundle);
-  assertNativeProviderEnabled(bundle.provider);
-  const canonicalBytes = canonicalizeJsonBytes(bundle);
-  const calculatedHash = hashCanonical(bundle);
-  if (calculatedHash !== parsedRequest.payloadSha256) throw new LocalAgentServiceError("payloadSha256 does not match bundle", "payload_hash_mismatch", 422);
-  try {
-    validateNativeTurnBundleSize(bundle);
-  } catch (error) {
-    const message = error instanceof Error ? error.message : "native bundle exceeds size limit";
-    throw new LocalAgentServiceError(message, "bundle_limit", 413);
-  }
-  try {
-    validateNativeTurnBundleInlineSize(bundle);
-  } catch {
-    throw new LocalAgentServiceError("inline native bundle exceeds 128 KiB; use prepare and object upload", "inline_bundle_limit", 413);
-  }
-  const [policy] = await db.select().from(spaceLocalAgentPolicies).where(and(eq(spaceLocalAgentPolicies.spaceId, input.spaceId), eq(spaceLocalAgentPolicies.deviceId, input.actor.deviceId))).limit(1);
-  if (!policy) throw new LocalAgentServiceError("local agent policy is not initialized", "policy_unavailable", 409);
-  if (bundle.sessionMirrorMode !== policy.sessionMirrorMode || bundle.integrationPolicyVersion !== policy.integrationPolicyVersion) {
-    throw new LocalAgentServiceError("native bundle uses an outdated integration policy", "policy_version_stale", 409);
-  }
-  if (bundle.sessionMirrorMode === "disabled") throw new LocalAgentServiceError("session mirroring is disabled for this device and Space", "mirror_disabled", 403);
-  if (bundle.workspacePolicyVersion <= 0) throw new LocalAgentServiceError("bundle workspace policy version is invalid", "policy_version_invalid", 422);
-  if (bundle.events.some((event) => event.deviceId !== input.actor.deviceId || event.replicaId !== replica.id || event.executionAttemptId !== bundle.executionAttemptId)) {
-    throw new LocalAgentServiceError("bundle events do not match the device, replica, or execution attempt", "bundle_identity_mismatch", 422);
-  }
-  assertUuid(bundle.executionAttemptId, "executionAttemptId");
-  const result = await db.transaction(async (tx) => {
-    const [existing] = await tx.select().from(nativeAgentIngests).where(and(eq(nativeAgentIngests.replicaId, replica.id), eq(nativeAgentIngests.bundleId, bundle.bundleId))).for("update").limit(1);
-    if (existing) {
-      if (existing.payloadSha256 !== calculatedHash) throw new LocalAgentServiceError("bundle id was reused with different content", "idempotency_conflict", 409);
-      return existing;
-    }
-    const binding = await ensureNativeBinding(tx, {
-      spaceId: input.spaceId,
-      replicaId: replica.id,
-      deviceId: input.actor.deviceId as string,
-      userUuid: input.actor.userUuid,
-      provider: bundle.provider,
-      nativeSessionKey: bundle.nativeSessionKey,
-      providerVersion: bundle.providerVersion,
-      adapterVersion: bundle.adapterVersion,
-      fidelity: bundle.fidelityHint,
-      completeness: bundle.sessionMirrorMode === "metadata_only" ? "metadata_only" : "complete",
-    });
-    const [attempt] = await tx.select().from(workspaceExecutionAttempts).where(and(
-      eq(workspaceExecutionAttempts.id, bundle.executionAttemptId),
-      eq(workspaceExecutionAttempts.spaceId, input.spaceId),
-      eq(workspaceExecutionAttempts.replicaId, replica.id),
-    )).for("update").limit(1);
-    if (!attempt) throw new LocalAgentServiceError("execution attempt must be prepared by a workspace lease", "attempt_identity_mismatch", 409);
-    await assertLocalNativeAttemptLease(tx, {
-      spaceId: input.spaceId,
-      replicaId: replica.id,
-      deviceId: input.actor.deviceId as string,
-      attemptId: bundle.executionAttemptId,
-      leaseEpoch: bundle.workspaceExecutionBase.leaseEpoch,
-      baseSnapshotId: bundle.workspaceExecutionBase.canonicalSnapshotId,
-      terminalEvent: true,
-      provider: bundle.provider,
-      sessionMirrorMode: bundle.sessionMirrorMode,
-      integrationPolicyVersion: bundle.integrationPolicyVersion,
-      workspacePolicyVersion: bundle.workspacePolicyVersion,
-    });
-    let [nativeTurn] = await tx.select().from(nativeAgentTurns).where(and(eq(nativeAgentTurns.bindingId, binding.id), eq(nativeAgentTurns.nativeTurnKey, bundle.nativeTurnKey))).for("update").limit(1);
-    if (!nativeTurn) {
-      [nativeTurn] = await tx.insert(nativeAgentTurns).values({
-        bindingId: binding.id,
-        spaceId: input.spaceId,
-        replicaId: replica.id,
-        executionAttemptId: bundle.executionAttemptId,
-        nativeTurnKey: bundle.nativeTurnKey,
-        status: bundle.events.some((event) => event.type === "turn_stopped" || event.type === "turn_failed") ? "sealed" : "running",
-        terminalEventKind: bundle.events.find((event) => event.type === "turn_failed") ? "failed" : bundle.events.find((event) => event.type === "turn_stopped") ? "stopped" : "none",
-        baseCohubCursor: bundle.cohubTranscriptBase,
-        baseWorkspaceSnapshotId: bundle.workspaceExecutionBase.localSnapshotId,
-        relativeCwd: bundle.events.at(-1)?.workspace.relativeCwd ?? null,
-        startedAt: now(),
-        stoppedAt: bundle.events.some((event) => event.type === "turn_stopped" || event.type === "turn_failed") ? now() : null,
-      }).returning();
-    }
-    if (!nativeTurn) throw new LocalAgentServiceError("failed to create native turn", "native_turn_create_failed", 500);
-    const [ingest] = await tx.insert(nativeAgentIngests).values({
-      bindingId: binding.id,
-      nativeAgentTurnId: nativeTurn.id,
-      spaceId: input.spaceId,
-      replicaId: replica.id,
-      executionAttemptId: bundle.executionAttemptId,
-      workspacePolicyVersion: bundle.workspacePolicyVersion,
-      integrationPolicyVersion: bundle.integrationPolicyVersion,
-      sessionMirrorMode: bundle.sessionMirrorMode,
-      nativeTurnKey: bundle.nativeTurnKey,
-      bundleId: bundle.bundleId,
-      kind: nativeKind(bundle),
-      policyMode: bundle.sessionMirrorMode,
-      payloadInline: bundle as unknown as Record<string, unknown>,
-      payloadSha256: calculatedHash,
-      payloadBytes: canonicalBytes.byteLength,
-      baseCohubCursor: bundle.cohubTranscriptBase,
-      baseWorkspaceSnapshotId: bundle.workspaceExecutionBase.localSnapshotId,
-      status: "committed",
-      transcriptVisibility: bundle.sessionMirrorMode === "metadata_only" ? "orphaned" : "hidden",
-    }).returning();
-    if (!ingest) throw new LocalAgentServiceError("failed to create native ingest", "ingest_create_failed", 500);
-    for (const event of bundle.events) {
-      const eventHash = hashCanonical(event);
-      const [receipt] = await tx.select().from(nativeAgentEventReceipts).where(and(eq(nativeAgentEventReceipts.bindingId, binding.id), eq(nativeAgentEventReceipts.eventId, event.eventId))).for("update").limit(1);
-      if (receipt) {
-        if (receipt.eventSha256 !== eventHash) throw new LocalAgentServiceError("event id was reused with different content", "event_id_conflict", 409);
-        await tx.update(nativeAgentEventReceipts).set({
-          executionAttemptId: receipt.executionAttemptId ?? bundle.executionAttemptId,
-          nativeAgentTurnId: receipt.nativeAgentTurnId ?? nativeTurn.id,
-          firstIngestId: receipt.firstIngestId ?? ingest.id,
-        }).where(eq(nativeAgentEventReceipts.id, receipt.id));
-        continue;
-      }
-      await tx.insert(nativeAgentEventReceipts).values({
-        bindingId: binding.id,
-        eventId: event.eventId,
-        executionAttemptId: bundle.executionAttemptId,
-        nativeAgentTurnId: nativeTurn.id,
-        eventSha256: eventHash,
-        eventSequence: event.nativeEventSequence,
-        eventType: event.type,
-        firstIngestId: ingest.id,
-      });
-    }
-    await tx.update(nativeAgentTurns).set({ finalIngestId: nativeKind(bundle) === "turn_final" ? ingest.id : nativeTurn.finalIngestId, updatedAt: now() }).where(eq(nativeAgentTurns.id, nativeTurn.id));
-    return ingest;
-  });
-  return serializeIngestResponse(result);
-}
-
-export async function prepareNativeIngest(input: { actor: LocalAgentActor; spaceId: string; replicaId: string; value: unknown }) {
-  const replica = await resolveReplicaForActor({ actor: input.actor, spaceId: input.spaceId, replicaId: input.replicaId });
-  if (replica.kind !== "local" || !input.actor.deviceId) throw new LocalAgentServiceError("native ingest requires a local device replica", "invalid_replica", 400);
-  const request = NativeIngestPrepareRequestSchema.parse(input.value);
-  assertNativeProviderEnabled(request.provider);
-  assertUuid(request.executionAttemptId, "executionAttemptId");
-  if (request.bindingId) assertUuid(request.bindingId, "bindingId");
-  if (request.nativeAgentTurnId) assertUuid(request.nativeAgentTurnId, "nativeAgentTurnId");
-  assertSha256(request.payloadSha256, "payloadSha256");
-  if (!Number.isSafeInteger(request.payloadBytes) || request.payloadBytes <= 0 || request.payloadBytes > 256 * 1024 * 1024) throw new LocalAgentServiceError("payloadBytes is outside the allowed range", "bundle_limit", 413);
-  const [policy] = await db.select().from(spaceLocalAgentPolicies).where(and(eq(spaceLocalAgentPolicies.spaceId, input.spaceId), eq(spaceLocalAgentPolicies.deviceId, input.actor.deviceId))).limit(1);
-  if (!policy) throw new LocalAgentServiceError("local agent policy is not initialized", "policy_unavailable", 409);
-  if (request.integrationPolicyVersion !== policy.integrationPolicyVersion || request.sessionMirrorMode !== policy.sessionMirrorMode) {
-    throw new LocalAgentServiceError("native ingest uses an outdated integration policy", "policy_version_stale", 409);
-  }
-  if (request.sessionMirrorMode === "disabled") throw new LocalAgentServiceError("session mirroring is disabled", "mirror_disabled", 403);
-  const objectKey = buildLocalAgentObjectKey({ spaceId: input.spaceId, kind: "native_payload", identity: `${request.payloadSha256}.json` });
-  const ingest = await db.transaction(async (tx) => {
-    const [existing] = await tx.select().from(nativeAgentIngests).where(and(eq(nativeAgentIngests.replicaId, replica.id), eq(nativeAgentIngests.bundleId, request.bundleId))).for("update").limit(1);
-    if (existing) {
-      if (existing.payloadSha256 !== request.payloadSha256 || existing.payloadBytes !== request.payloadBytes) {
-        throw new LocalAgentServiceError("bundle id was reused with different content", "idempotency_conflict", 409);
-      }
-      return existing;
-    }
-    const binding = await ensureNativeBinding(tx, {
-      spaceId: input.spaceId,
-      replicaId: replica.id,
-      deviceId: input.actor.deviceId as string,
-      userUuid: input.actor.userUuid,
-      provider: request.provider,
-      nativeSessionKey: request.nativeSessionKey,
-      providerVersion: request.providerVersion,
-      adapterVersion: request.adapterVersion,
-      fidelity: "hook_reconstructed",
-      completeness: request.sessionMirrorMode === "metadata_only" ? "metadata_only" : "truncated",
-    });
-    if (request.bindingId && request.bindingId !== binding.id) throw new LocalAgentServiceError("bindingId does not match native session identity", "binding_identity_mismatch", 409);
-    const [attempt] = await tx.select().from(workspaceExecutionAttempts).where(and(
-      eq(workspaceExecutionAttempts.id, request.executionAttemptId),
-      eq(workspaceExecutionAttempts.spaceId, input.spaceId),
-      eq(workspaceExecutionAttempts.replicaId, replica.id),
-    )).for("update").limit(1);
-    if (!attempt) throw new LocalAgentServiceError("execution attempt must be prepared by a workspace lease", "attempt_identity_mismatch", 409);
-    await assertLocalNativeAttemptLease(tx, {
-      spaceId: input.spaceId,
-      replicaId: replica.id,
-      deviceId: input.actor.deviceId as string,
-      attemptId: request.executionAttemptId,
-      leaseEpoch: null,
-      terminalEvent: true,
-      provider: request.provider,
-      sessionMirrorMode: request.sessionMirrorMode,
-      integrationPolicyVersion: request.integrationPolicyVersion,
-      workspacePolicyVersion: request.workspacePolicyVersion,
-    });
-    let [nativeTurn] = await tx.select().from(nativeAgentTurns).where(and(eq(nativeAgentTurns.bindingId, binding.id), eq(nativeAgentTurns.nativeTurnKey, request.nativeTurnKey))).for("update").limit(1);
-    if (!nativeTurn) {
-      [nativeTurn] = await tx.insert(nativeAgentTurns).values({
-        bindingId: binding.id,
-        spaceId: input.spaceId,
-        replicaId: replica.id,
-        executionAttemptId: request.executionAttemptId,
-        nativeTurnKey: request.nativeTurnKey,
-        status: "sealed",
-        terminalEventKind: "stopped",
-        startedAt: now(),
-        stoppedAt: now(),
-      }).returning();
-    }
-    if (!nativeTurn) throw new LocalAgentServiceError("failed to create native turn", "native_turn_create_failed", 500);
-    if (request.nativeAgentTurnId && request.nativeAgentTurnId !== nativeTurn.id) throw new LocalAgentServiceError("nativeAgentTurnId does not match native turn identity", "native_turn_identity_mismatch", 409);
-    const [created] = await tx.insert(nativeAgentIngests).values({
-      bindingId: binding.id,
-      nativeAgentTurnId: nativeTurn.id,
-      spaceId: input.spaceId,
-      replicaId: replica.id,
-      executionAttemptId: request.executionAttemptId,
-      workspacePolicyVersion: request.workspacePolicyVersion,
-      integrationPolicyVersion: request.integrationPolicyVersion,
-      sessionMirrorMode: request.sessionMirrorMode,
-      nativeTurnKey: request.nativeTurnKey,
-      bundleId: request.bundleId,
-      kind: "turn_final",
-      policyMode: request.sessionMirrorMode,
-      payloadObjectKey: objectKey,
-      payloadSha256: request.payloadSha256,
-      payloadBytes: request.payloadBytes,
-      status: "prepared",
-      transcriptVisibility: request.sessionMirrorMode === "metadata_only" ? "orphaned" : "hidden",
-    }).returning();
-    if (!created) throw new LocalAgentServiceError("failed to prepare native ingest", "ingest_prepare_failed", 500);
-    await tx.update(nativeAgentTurns).set({ finalIngestId: created.id, updatedAt: now() }).where(eq(nativeAgentTurns.id, nativeTurn.id));
-    return created;
-  });
-  const signed = createLocalAgentObjectPutUrl({ objectKey: ingest.payloadObjectKey ?? objectKey, contentType: "application/json", contentLength: request.payloadBytes, sha256: request.payloadSha256 });
-  return { ingestId: ingest.id, objectKey: ingest.payloadObjectKey ?? objectKey, uploadUrl: signed.uploadUrl, headers: signed.headers ?? null, expiresAt: signed.expiresAt, status: ingest.status };
-}
-
-export async function commitNativeIngestObject(input: { actor: LocalAgentActor; spaceId: string; replicaId: string; ingestId: string }) {
-  await resolveReplicaForActor({ actor: input.actor, spaceId: input.spaceId, replicaId: input.replicaId });
-  assertUuid(input.ingestId, "ingestId");
-  const [row] = await db.select().from(nativeAgentIngests).where(and(eq(nativeAgentIngests.id, input.ingestId), eq(nativeAgentIngests.spaceId, input.spaceId), eq(nativeAgentIngests.replicaId, input.replicaId))).limit(1);
-  if (!row) throw new LocalAgentServiceError("native ingest not found", "ingest_not_found", 404);
-  if (row.status === "applied" || row.status === "quarantined") return serializeIngestResponse(row);
-  if (!row.payloadObjectKey) throw new LocalAgentServiceError("native ingest has no object payload", "ingest_payload_missing", 409);
-  try {
-    const head = await headLocalAgentObject(row.payloadObjectKey);
-    if (head.size !== row.payloadBytes) throw new LocalAgentServiceError("native payload size mismatch", "payload_size_mismatch", 422);
-  } catch (error) {
-    if (error instanceof LocalAgentServiceError) throw error;
-    throw new LocalAgentServiceError("native payload object is not available", "payload_object_missing", 409);
-  }
-  const [updated] = await db.update(nativeAgentIngests).set({ status: "uploaded", updatedAt: now() }).where(and(eq(nativeAgentIngests.id, row.id), eq(nativeAgentIngests.status, "prepared"))).returning();
-  return serializeIngestResponse(updated ?? row);
-}
-
-export async function getNativeIngest(input: { actor: LocalAgentActor; spaceId: string; ingestId: string }) {
-  assertUuid(input.spaceId, "spaceId");
-  assertUuid(input.ingestId, "ingestId");
-  const conditions = [eq(nativeAgentIngests.id, input.ingestId), eq(nativeAgentIngests.spaceId, input.spaceId)];
-  if (input.actor.deviceId) conditions.push(eq(workspaceReplicas.deviceId, input.actor.deviceId));
-  else conditions.push(eq(workspaceReplicas.userUuid, input.actor.userUuid));
-  const rows = await db.select({ ingest: nativeAgentIngests }).from(nativeAgentIngests)
-    .innerJoin(workspaceReplicas, eq(workspaceReplicas.id, nativeAgentIngests.replicaId))
-    .where(and(...conditions))
-    .limit(1);
-  const row = rows[0]?.ingest;
-  if (!row) throw new LocalAgentServiceError("native ingest not found", "ingest_not_found", 404);
-  return serializeIngestResponse(row);
 }
 
 export async function resolveWorkspaceConflict(input: {
@@ -1971,6 +1277,15 @@ export async function resolveWorkspaceConflict(input: {
       await tx.update(workspaceState).set({ status: "syncing", activeCycleId: cycle.id, updatedAt: now() }).where(eq(workspaceState.spaceId, input.spaceId));
     }
     await tx.update(workspaceReplicas).set({ status: "syncing", updatedAt: now() }).where(eq(workspaceReplicas.id, cycle.replicaId));
+    // The attempt was parked as `blocked` when the conflict was recorded. Move
+    // it back into the worker's completion window so the resumed cycle can
+    // finish it; otherwise the attempt would stay blocked forever.
+    if (cycle.executionAttemptId) {
+      await tx.update(workspaceExecutionAttempts).set({ status: "transcript_sealed", errorCode: null, errorMessage: null, updatedAt: now() }).where(and(
+        eq(workspaceExecutionAttempts.id, cycle.executionAttemptId),
+        eq(workspaceExecutionAttempts.status, "blocked"),
+      ));
+    }
     return { conflict: updatedConflict, cycleId: cycle.id, queued: true };
   });
   if (result.queued) {

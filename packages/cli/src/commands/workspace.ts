@@ -1,4 +1,3 @@
-import { randomUUID } from "node:crypto";
 import { spawn, type ChildProcess } from "node:child_process";
 import { readdir, stat } from "node:fs/promises";
 import { platform, homedir } from "node:os";
@@ -10,9 +9,7 @@ import { createClient } from "../client.js";
 import { error, handleHttp, json as outJson, jsonRequested, ok, table } from "../output.js";
 import { resolveLocaldBinary, LocaldUnavailableError } from "./locald-binary.js";
 
-const MIRROR_MODES = ["full", "metadata_only", "disabled"] as const;
 const WORKSPACE_MODES = ["two_way_safe", "one_way_to_cloud", "one_way_to_local", "handoff"] as const;
-type MirrorMode = (typeof MIRROR_MODES)[number];
 type WorkspaceMode = (typeof WORKSPACE_MODES)[number];
 
 type WorkspaceOptions = {
@@ -20,13 +17,11 @@ type WorkspaceOptions = {
   deviceId?: string;
   dataDir?: string;
   name?: string;
-  mirror?: string;
   mode?: string;
   yes?: boolean;
   useCloud?: boolean;
   useLocal?: boolean;
   merge?: boolean;
-  confirmTakeover?: boolean;
 };
 
 function choose<T extends readonly string[]>(value: string | undefined, values: T, name: string): T[number] {
@@ -159,7 +154,6 @@ export function registerWorkspace(program: Command): void {
     .description("Attach a local folder to a cloud Space workspace")
     .option("--device-id <id>", "Use an existing enrolled device")
     .option("--name <name>", "Device or replica display name")
-    .option("--mirror <mode>", "Session mirror mode: full, metadata_only, disabled", "disabled")
     .option("--mode <mode>", "Workspace mode: two_way_safe, one_way_to_cloud, one_way_to_local, handoff", "two_way_safe")
     .option("--data-dir <path>", "locald state directory")
     .option("--merge", "Merge local and cloud trees, stopping on overlapping changes")
@@ -171,7 +165,6 @@ export function registerWorkspace(program: Command): void {
       const root = resolve(rootArg ?? process.cwd());
       const info = await stat(root).catch(() => null);
       if (!info?.isDirectory()) return error("Invalid workspace root", `${root} is not a directory`);
-      const mirror = choose(opts.mirror, MIRROR_MODES, "mirror mode") as MirrorMode;
       const mode = choose(opts.mode, WORKSPACE_MODES, "workspace mode") as WorkspaceMode;
       let initialChoice: "use-cloud" | "use-local" | "merge";
       try {
@@ -209,21 +202,21 @@ export function registerWorkspace(program: Command): void {
           },
           protocolVersion: 1,
         });
-        const updatedPolicy = await client.localAgent.updatePolicy(spaceId, device.id, {
-          sessionMirrorMode: mirror,
-          workspaceMode: mode,
-        });
-        const integrationPolicyVersion = (updatedPolicy.policy as { integrationPolicyVersion?: number }).integrationPolicyVersion;
+        const currentPolicy = attached.integrationPolicy as { workspaceMode?: string; integrationPolicyVersion?: number };
+        const policy = currentPolicy.workspaceMode === mode
+          ? currentPolicy
+          : (await client.localAgent.updatePolicy(spaceId, device.id, { workspaceMode: mode })).policy as { integrationPolicyVersion?: number };
+        const integrationPolicyVersion = policy.integrationPolicyVersion;
         if (!Number.isSafeInteger(integrationPolicyVersion) || Number(integrationPolicyVersion) < 1) {
           throw new Error("Local agent policy response has no valid integrationPolicyVersion");
         }
         await ensureLocald(binary, dataDir, device.id);
-        await runLocald(binary, ["configure", "--data-dir", dataDir, "--space-id", spaceId, "--replica-id", String(attached.replica.id), "--device-id", device.id, "--root", root, "--root-fingerprint", rootFingerprint, "--policy-version", String((attached.workspacePolicy as { policyVersion?: number }).policyVersion ?? 1), "--integration-policy-version", String(integrationPolicyVersion), "--session-mirror-mode", mirror, "--initial-choice", initialChoice]);
+        await runLocald(binary, ["configure", "--data-dir", dataDir, "--space-id", spaceId, "--replica-id", String(attached.replica.id), "--device-id", device.id, "--root", root, "--root-fingerprint", rootFingerprint, "--policy-version", String((attached.workspacePolicy as { policyVersion?: number }).policyVersion ?? 1), "--integration-policy-version", String(integrationPolicyVersion), "--initial-choice", initialChoice]);
         if (jsonRequested(opts)) return outJson({ spaceId, root, device, replica: attached.replica, cloudReplica: attached.cloudReplica, workspace: attached.workspace, newlyEnrolled });
         ok(`Workspace attached to ${spaceId}`);
         console.log(`  Root:    ${root}`);
         console.log(`  Replica: ${String(attached.replica.id)}`);
-        console.log(`  Mirror:  ${mirror}`);
+        console.log(`  Mode:    ${mode}`);
         console.log(`  Initial: ${initialChoice}`);
         console.log("  locald is running and will synchronize in the background.");
       } catch (e: unknown) {
@@ -308,142 +301,6 @@ export function registerWorkspace(program: Command): void {
         const result = await createClient().localAgent.resolveConflict(opts.space, conflictId, resolutions[0] as "local" | "cloud" | "deleted" | "keep_managed");
         if (jsonRequested(opts)) return outJson(result);
         ok(result.queued ? "Conflict resolved; workspace reconciliation queued" : "Conflict resolution recorded");
-      } catch (e: unknown) {
-        handleHttp(e);
-      }
-    });
-
-  const handoff = workspace.command("handoff").description("Prepare a workspace writer handoff");
-  handoff
-    .command("local")
-    .description("Acquire a local writer permit before starting a native agent")
-    .requiredOption("-s, --space <id>", "Target Space ID")
-    .requiredOption("--replica-id <id>", "Local replica ID")
-    .option("--data-dir <path>", "locald state directory")
-    .option("--wait", "Wait for locald and the writer permit")
-    .option("--confirm-takeover", "Confirm takeover of an expired unresolved writer")
-    .option("--json", "Output as JSON")
-    .action(async (opts: { space: string; replicaId: string; dataDir?: string; wait?: boolean; confirmTakeover?: boolean; json?: boolean }) => {
-      try {
-        const binary = await resolveLocaldBinary();
-        const dataDir = localdDataDir(opts.dataDir);
-        const client = createClient();
-        const state = await client.localAgent.state(opts.space, opts.replicaId);
-        const deviceId = (state.replica as { deviceId?: string }).deviceId;
-        if (!deviceId) return error("Local device is unavailable", "Attach the replica again from this device.");
-        const workspaceState = state.workspace as { status?: string; canonicalSnapshotId?: string; cloudAppliedSnapshotId?: string } | null;
-        const appliedSnapshotId = (state.replica as { appliedSnapshotId?: string }).appliedSnapshotId ?? null;
-        if (workspaceState?.status !== "ready" || !workspaceState.canonicalSnapshotId || workspaceState.cloudAppliedSnapshotId !== workspaceState.canonicalSnapshotId || appliedSnapshotId !== workspaceState.canonicalSnapshotId) {
-          return error("Workspace is not ready", "Wait for local and cloud replicas to apply the canonical snapshot.");
-        }
-        await ensureLocald(binary, dataDir, deviceId);
-        const executionAttemptId = randomUUID();
-        const lease = await client.localAgent.acquireLease(opts.space, {
-          holderKind: "local_agent",
-          holderId: executionAttemptId,
-          replicaId: opts.replicaId,
-          baseSnapshotId: workspaceState.canonicalSnapshotId,
-          durationSeconds: 30,
-          confirmTakeover: opts.confirmTakeover === true,
-        }) as { epoch?: number; expiresAt?: string };
-        if (!Number.isSafeInteger(lease.epoch) || typeof lease.expiresAt !== "string") throw new Error("Workspace lease response is invalid");
-        await runLocald(binary, [
-          "permit",
-          "--data-dir", dataDir,
-          "--space-id", opts.space,
-          "--replica-id", opts.replicaId,
-          "--execution-attempt-id", executionAttemptId,
-          "--base-snapshot-id", workspaceState.canonicalSnapshotId,
-          "--lease-epoch", String(lease.epoch),
-          "--expires-at", lease.expiresAt,
-        ]);
-        const result = { executionAttemptId, spaceId: opts.space, replicaId: opts.replicaId, lease };
-        if (jsonRequested(opts)) return outJson(result);
-        ok("Local workspace handoff is ready");
-        console.log(`  Attempt: ${executionAttemptId}`);
-        console.log(`  Expires: ${lease.expiresAt}`);
-      } catch (e: unknown) {
-        handleHttp(e);
-      }
-    });
-
-  const offline = workspace.command("offline").description("Reserve a workspace for intentional offline execution");
-  offline
-    .command("enable")
-    .description("Acquire a bounded offline writer reservation")
-    .requiredOption("-s, --space <id>", "Target Space ID")
-    .requiredOption("--replica-id <id>", "Local replica ID")
-    .option("--max-duration <seconds>", "Maximum duration in seconds", "86400")
-    .option("--data-dir <path>", "locald state directory")
-    .option("--json", "Output as JSON")
-    .action(async (opts: { space: string; replicaId: string; maxDuration?: string; dataDir?: string; json?: boolean }) => {
-      try {
-        const state = await createClient().localAgent.state(opts.space, opts.replicaId);
-        const deviceId = (state.replica as { deviceId?: string }).deviceId;
-        if (!deviceId) return error("Local device is unavailable", "Attach the replica again from this device.");
-        const duration = Number(opts.maxDuration ?? "86400");
-        if (!Number.isSafeInteger(duration) || duration < 1 || duration > 86400) return error("Invalid duration", "Use a whole number between 1 and 86400 seconds.");
-        const workspaceState = state.workspace as { status?: string; canonicalSnapshotId?: string; cloudAppliedSnapshotId?: string } | null;
-        const appliedSnapshotId = (state.replica as { appliedSnapshotId?: string }).appliedSnapshotId ?? null;
-        if (workspaceState?.status !== "ready" || !workspaceState.canonicalSnapshotId || workspaceState.cloudAppliedSnapshotId !== workspaceState.canonicalSnapshotId || appliedSnapshotId !== workspaceState.canonicalSnapshotId) {
-          return error("Workspace is not ready", "Apply the canonical snapshot locally before reserving offline execution.");
-        }
-        const holderId = `device:${deviceId}`;
-        const binary = await resolveLocaldBinary();
-        const dataDir = localdDataDir(opts.dataDir);
-        await ensureLocald(binary, dataDir, deviceId);
-        await createClient().localAgent.updatePolicy(opts.space, deviceId, { offlineEnabled: true });
-        await runLocald(binary, ["refresh", "--data-dir", dataDir]);
-        const lease = await createClient().localAgent.acquireLease(opts.space, {
-          holderKind: "local_offline_reservation",
-          holderId,
-          replicaId: opts.replicaId,
-          baseSnapshotId: workspaceState.canonicalSnapshotId,
-          durationSeconds: duration,
-          offline: true,
-        }) as { epoch?: number; expiresAt?: string; maximumDurationAt?: string | null };
-        if (!Number.isSafeInteger(lease.epoch) || typeof lease.expiresAt !== "string") throw new Error("Offline workspace lease response is invalid");
-        const executionAttemptId = randomUUID();
-        await runLocald(binary, [
-          "permit",
-          "--data-dir", dataDir,
-          "--space-id", opts.space,
-          "--replica-id", opts.replicaId,
-          "--execution-attempt-id", executionAttemptId,
-          "--base-snapshot-id", workspaceState.canonicalSnapshotId,
-          "--lease-epoch", String(lease.epoch),
-          "--holder-kind", "local_offline_reservation",
-          "--holder-id", holderId,
-          "--expires-at", lease.expiresAt,
-        ]);
-        const result = { executionAttemptId, lease };
-        if (jsonRequested(opts)) return outJson(result);
-        ok("Offline workspace reservation acquired");
-        table([{ executionAttemptId, ...lease }], [{ key: "executionAttemptId", label: "Attempt" }, { key: "epoch", label: "Epoch" }, { key: "expiresAt", label: "Expires" }, { key: "maximumDurationAt", label: "Maximum" }]);
-      } catch (e: unknown) {
-        handleHttp(e);
-      }
-    });
-
-  offline
-    .command("disable")
-    .description("Release an offline writer reservation")
-    .requiredOption("-s, --space <id>", "Target Space ID")
-    .requiredOption("--device-id <id>", "Device ID")
-    .option("--holder-id <id>", "Reservation holder ID")
-    .requiredOption("--epoch <n>", "Lease epoch")
-    .option("--json", "Output as JSON")
-    .action(async (opts: { space: string; deviceId: string; holderId?: string; epoch?: string; json?: boolean }) => {
-      try {
-        const client = createClient();
-        const result = await client.localAgent.releaseLease(opts.space, {
-          holderKind: "local_offline_reservation",
-          holderId: opts.holderId ?? `device:${opts.deviceId}`,
-          epoch: Number(opts.epoch ?? "0"),
-        });
-        await client.localAgent.updatePolicy(opts.space, opts.deviceId, { offlineEnabled: false });
-        if (jsonRequested(opts)) return outJson(result);
-        ok("Offline workspace reservation released");
       } catch (e: unknown) {
         handleHttp(e);
       }

@@ -28,8 +28,6 @@ export type {
   WorkspaceSnapshotPrepareResponse,
   WorkspaceReplicaStateResponse,
   WorkspaceReplicaOverviewResponse,
-  NativeIngestInlineInput,
-  NativeIngestPrepareInput,
 } from "./apis/local-agent.js";
 export { ReferencesApi } from "./apis/references.js";
 export { ReferralsApi } from "./apis/referrals.js";

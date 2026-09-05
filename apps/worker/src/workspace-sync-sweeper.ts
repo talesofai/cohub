@@ -1,6 +1,6 @@
 import { and, asc, eq, inArray, isNotNull, lt, notExists, sql } from "drizzle-orm";
 import { workspaceExecutionAttempts, workspaceReplicas, workspaceSnapshots, workspaceState, workspaceSyncCycles } from "@cohub/db";
-import { COHUB_WORKSPACE_SYNC_QUEUE, createBullmqQueue, defaultCriticalJobOptions } from "@cohub/infra/bullmq";
+import { COHUB_WORKSPACE_SYNC_QUEUE, buildWorkspaceSyncJobId, createBullmqQueue, defaultCriticalJobOptions } from "@cohub/infra/bullmq";
 import { config } from "./config.js";
 import { db } from "./db.js";
 
@@ -12,42 +12,26 @@ const queue = createBullmqQueue(COHUB_WORKSPACE_SYNC_QUEUE, {
 const STALE_WORKSPACE_CYCLE_MS = Number(process.env.WORKSPACE_SYNC_STALE_CYCLE_MS ?? 60 * 60 * 1000);
 
 export async function sweepWorkspaceSyncWork() {
-  // Recover local attempts whose bounded online lease disappeared. A prepared
-  // attempt never reached provider preflight and can be aborted. A running
+  // Recover local ACP attempts whose bounded writer lease disappeared. A
+  // prepared attempt never reached the provider and can be aborted. A running
   // attempt may still own an unfenced local process, so retain it as recovery
-  // work and require explicit takeover.
+  // work; the next lease acquisition refuses to take over an unresolved attempt.
   await db.execute(sql`
     update v2.workspace_execution_attempts attempt
     set status = case when attempt.status = 'prepared' then 'aborted' else 'awaiting_recovery' end,
         error_code = case when attempt.status = 'prepared' then 'permit_expired_before_start' else 'local_lease_expired' end,
         completed_at = case when attempt.status = 'prepared' then now() else attempt.completed_at end,
         updated_at = now()
-    where attempt.executor_kind in ('local_native', 'local_acp')
-      and (
-        (attempt.executor_kind = 'local_native' and attempt.status in ('prepared', 'running'))
-        or (attempt.executor_kind = 'local_acp' and attempt.status in ('prepared', 'running', 'workspace_sealed', 'transcript_sealed'))
-      )
+    where attempt.executor_kind = 'local_acp'
+      and attempt.status in ('prepared', 'running', 'workspace_sealed', 'transcript_sealed')
       and attempt.updated_at < now() - interval '60 seconds'
       and not exists (
         select 1 from v2.workspace_writer_leases lease
         where lease.space_id = attempt.space_id
           and lease.epoch = attempt.workspace_lease_epoch
           and lease.expires_at > now()
-          and (
-            (lease.holder_kind = 'local_agent' and lease.holder_id = attempt.id::text)
-            or lease.holder_kind = 'local_offline_reservation'
-          )
-      )
-  `);
-  await db.execute(sql`
-    update v2.workspace_writer_leases lease
-    set takeover_requires_confirmation = true, updated_at = now()
-    where lease.holder_kind in ('local_agent', 'local_offline_reservation')
-      and lease.expires_at <= now()
-      and exists (
-        select 1 from v2.workspace_execution_attempts attempt
-        where attempt.space_id = lease.space_id
-          and attempt.status = 'awaiting_recovery'
+          and lease.holder_kind = 'local_agent'
+          and lease.holder_id = attempt.id::text
       )
   `);
   await db.execute(sql`
@@ -158,7 +142,7 @@ export async function sweepWorkspaceSyncWork() {
       spaceId: cycle.spaceId,
       replicaId: cycle.replicaId,
     }, {
-      jobId: `workspace-sync-${cycle.id}`,
+      jobId: buildWorkspaceSyncJobId(cycle.id),
       ...defaultCriticalJobOptions,
     });
   }

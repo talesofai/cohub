@@ -21,7 +21,6 @@ import { ensureSessionTurnSegments, findSegmentForTurn, MAX_SESSION_TURN_SEGMENT
 import { fallbackPublicUserProfile, getProfilesByUuids } from "./user-profiles.js";
 import { buildTurnObjectPrefix, assertTurnObjectKeyForTurn, createTurnObjectCdnUrl, writeTurnObjectJson } from "./turn-object-storage.js";
 import { deriveMessagePreviewText } from "./session-content.js";
-import { visibleSessionMessagePredicate, visibleSessionTurnPredicate } from "./native-transcript-visibility.js";
 
 
 const logger = createLogger({ serviceName: "cohub-api" });
@@ -332,7 +331,7 @@ export const createSessionTurn = async (input: {
 };
 
 export async function getSourceSessionTurnById(turnId: string) {
-  const [row] = await db.select().from(sessionTurns).where(and(eq(sessionTurns.id, turnId), visibleSessionTurnPredicate())).limit(1);
+  const [row] = await db.select().from(sessionTurns).where(eq(sessionTurns.id, turnId)).limit(1);
   return row ? toTurnRecord(row) : null;
 }
 
@@ -340,7 +339,6 @@ const buildSegmentPredicate = (segment: Awaited<ReturnType<typeof ensureSessionT
   const clauses = [
     eq(sessionTurns.sessionId, segment.sourceSessionId),
     gte(sessionTurns.sequence, segment.fromSequence),
-    visibleSessionTurnPredicate(),
   ];
   if (segment.toSequence != null) clauses.push(lte(sessionTurns.sequence, segment.toSequence));
   if (options?.cursor != null) clauses.push(options.direction === "newer" ? gt(sessionTurns.sequence, options.cursor) : lt(sessionTurns.sequence, options.cursor));
@@ -374,7 +372,6 @@ export const listSessionTurnIndex = async (sessionId: string, options?: { cursor
     const clauses = [
       eq(sessionTurns.sessionId, segment.sourceSessionId),
       gte(sessionTurns.sequence, segment.fromSequence),
-      visibleSessionTurnPredicate(),
     ];
     if (segment.toSequence != null) clauses.push(lte(sessionTurns.sequence, segment.toSequence));
     if (options?.cursor != null) clauses.push(gt(sessionTurns.sequence, options.cursor));
@@ -413,7 +410,7 @@ export const listSessionTurnIndex = async (sessionId: string, options?: { cursor
 export const getSessionTurnSequenceById = async (sessionId: string, turnId: string) => {
   const segments = await ensureSessionTurnSegments(sessionId);
   const sourceIds = [...new Set(segments.map((segment) => segment.sourceSessionId))];
-  const [row] = await db.select({ sequence: sessionTurns.sequence, sessionId: sessionTurns.sessionId }).from(sessionTurns).where(and(inArray(sessionTurns.sessionId, sourceIds), eq(sessionTurns.id, turnId), visibleSessionTurnPredicate())).limit(1);
+  const [row] = await db.select({ sequence: sessionTurns.sequence, sessionId: sessionTurns.sessionId }).from(sessionTurns).where(and(inArray(sessionTurns.sessionId, sourceIds), eq(sessionTurns.id, turnId))).limit(1);
   if (!row) return null;
   return findSegmentForTurn(segments, { sourceSessionId: row.sessionId, sequence: row.sequence }) ? row.sequence : null;
 };
@@ -446,7 +443,7 @@ export const listSessionTurnWindow = async (sessionId: string, input: { sequence
 export const getSessionTurnById = async (sessionId: string, turnId: string) => {
   const segments = await ensureSessionTurnSegments(sessionId);
   const sourceIds = [...new Set(segments.map((segment) => segment.sourceSessionId))];
-  const [row] = await db.select().from(sessionTurns).where(and(inArray(sessionTurns.sessionId, sourceIds), eq(sessionTurns.id, turnId), visibleSessionTurnPredicate())).limit(1);
+  const [row] = await db.select().from(sessionTurns).where(and(inArray(sessionTurns.sessionId, sourceIds), eq(sessionTurns.id, turnId))).limit(1);
   if (!row || !findSegmentForTurn(segments, { sourceSessionId: row.sessionId, sequence: row.sequence })) return null;
   return withTimelineSource(toTurnRecord(row), sessionId);
 };
@@ -488,7 +485,6 @@ export const buildIntermediateObjectsForTurn = async (input: { spaceId: string; 
   const rows = await db.select().from(sessionMessages).where(and(
     eq(sessionMessages.sessionId, input.sessionId),
     eq(sessionMessages.turnId, input.turnId),
-    visibleSessionMessagePredicate(),
   )).orderBy(asc(sessionMessages.sequence), asc(sessionMessages.createdAt));
 
   const intermediateRows = rows.filter((row) => {
@@ -678,7 +674,6 @@ const finalizeInterruptedTurn = async (input: {
     eq(sessionMessages.sessionId, input.sessionId),
     eq(sessionMessages.turnId, input.turnId),
     eq(sessionMessages.role, "assistant"),
-    visibleSessionMessagePredicate(),
   )).orderBy(desc(sessionMessages.sequence)).limit(1);
   const last = rows[0] ?? null;
   const intermediate = await buildIntermediateObjectsForTurn(input).catch((error) => {

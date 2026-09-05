@@ -40,7 +40,6 @@ export const EnvSchema = z.object({
   AGENT_BUSY_RETRY_BASE_DELAY_MS: z.coerce.number().int().positive().default(1_000),
   AGENT_BUSY_RETRY_MAX_DELAY_MS: z.coerce.number().int().positive().default(30_000),
   AGENT_SHUTDOWN_DRAIN_TIMEOUT_MS: z.coerce.number().int().positive().default(24 * 60 * 60_000),
-  SESSION_REALTIME_OUTBOX_RETENTION_DAYS: z.coerce.number().int().positive().default(30),
   WORKSPACE_ROOT: z
     .string()
     .min(1)
@@ -71,7 +70,6 @@ export const EnvSchema = z.object({
     .default("/configs"),
   ENV: z.enum(["dev", "prod"]).default("dev"),
   AGENT_VERSION: z.string().optional(),
-  NATIVE_AGENT_MIRROR_ENABLED: booleanEnv("NATIVE_AGENT_MIRROR_ENABLED", process.env.ENV !== "prod"),
   LOCAL_ACP_RUNTIME_ENABLED: booleanEnv("LOCAL_ACP_RUNTIME_ENABLED", process.env.ENV !== "prod"),
   LOCAL_ACP_PI_ENABLED: booleanEnv("LOCAL_ACP_PI_ENABLED", process.env.ENV !== "prod"),
   LOCAL_ACP_CLAUDE_ENABLED: booleanEnv("LOCAL_ACP_CLAUDE_ENABLED", false),

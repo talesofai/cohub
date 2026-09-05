@@ -58,8 +58,6 @@ export async function publishWorkspaceStateUpdated(input: {
         baseSnapshotId: lease.baseSnapshotId,
         expiresAt: lease.expiresAt.toISOString(),
         lastHeartbeatAt: lease.lastHeartbeatAt.toISOString(),
-        maximumDurationAt: lease.maximumDurationAt?.toISOString() ?? null,
-        takeoverRequiresConfirmation: lease.takeoverRequiresConfirmation,
         updatedAt: lease.updatedAt.toISOString(),
       } : null,
       reason: input.reason ?? null,

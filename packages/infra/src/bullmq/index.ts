@@ -109,6 +109,18 @@ export const defaultCriticalJobOptions = {
   ...defaultJobRetention,
 } satisfies JobsOptions;
 
+/**
+ * Workspace sync cycles are durable rows; the queue only wakes a worker. BullMQ
+ * keeps failed jobs for a retention window and refuses to enqueue a new job with
+ * the same id while one is retained, so a fixed `workspace-sync-<cycle>` id
+ * would make a failed cycle unretryable by the sweeper. Salt the id with a
+ * coarse time bucket: duplicates within a bucket still dedupe, and a later
+ * resubmission gets a fresh id. The processor is idempotent on the cycle row.
+ */
+export const WORKSPACE_SYNC_JOB_ID_BUCKET_MS = 60_000;
+export const buildWorkspaceSyncJobId = (cycleId: string, now = Date.now()) =>
+  `workspace-sync-${cycleId}-${Math.floor(now / WORKSPACE_SYNC_JOB_ID_BUCKET_MS)}`;
+
 export const createQueueTelemetry = (serviceName: string) =>
   new BullMQOtel({ tracerName: serviceName });
 

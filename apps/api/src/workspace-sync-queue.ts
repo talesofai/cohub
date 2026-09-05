@@ -1,4 +1,4 @@
-import { COHUB_WORKSPACE_SYNC_QUEUE, createBullmqQueue, defaultCriticalJobOptions } from "@cohub/infra/bullmq";
+import { COHUB_WORKSPACE_SYNC_QUEUE, buildWorkspaceSyncJobId, createBullmqQueue, defaultCriticalJobOptions } from "@cohub/infra/bullmq";
 import type { JobsOptions } from "bullmq";
 import type { WorkspaceSyncJobData } from "@cohub/protocol";
 import { config } from "./config.js";
@@ -12,7 +12,7 @@ export const workspaceSyncQueue = createBullmqQueue<WorkspaceSyncJobData>(COHUB_
 
 export function enqueueWorkspaceSyncJob(data: WorkspaceSyncJobData, options: JobsOptions = {}) {
   return workspaceSyncQueue.add(WORKSPACE_SYNC_JOB_NAME, data, {
-    jobId: `workspace-sync-${data.cycleId}`,
+    jobId: buildWorkspaceSyncJobId(data.cycleId),
     ...defaultCriticalJobOptions,
     ...options,
   });

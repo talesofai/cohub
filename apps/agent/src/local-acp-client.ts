@@ -976,12 +976,12 @@ async function acquireLocalAcpWorkspaceLease(input: { attemptId: string; spaceId
   if (!input.baseSnapshotId) throw new Error("local ACP execution requires a canonical workspace snapshot");
   const baseSnapshotId = input.baseSnapshotId;
   return db.transaction(async (tx) => {
-    const [policy] = await tx.select({ sessionMirrorMode: spaceLocalAgentPolicies.sessionMirrorMode, workspaceMode: spaceLocalAgentPolicies.workspaceMode, integrationPolicyVersion: spaceLocalAgentPolicies.integrationPolicyVersion }).from(spaceLocalAgentPolicies).where(and(
+    const [policy] = await tx.select({ workspaceMode: spaceLocalAgentPolicies.workspaceMode, integrationPolicyVersion: spaceLocalAgentPolicies.integrationPolicyVersion }).from(spaceLocalAgentPolicies).where(and(
       eq(spaceLocalAgentPolicies.spaceId, input.spaceId),
       eq(spaceLocalAgentPolicies.deviceId, input.deviceId),
     )).limit(1);
-    if (policy?.sessionMirrorMode !== "full" || policy.workspaceMode === "one_way_to_local" || input.integrationPolicyVersion == null || policy.integrationPolicyVersion !== input.integrationPolicyVersion) {
-      throw new Error("runtime_transcript_consent_required: local ACP integration policy changed; re-authorize the runtime");
+    if (!policy || policy.workspaceMode === "one_way_to_local" || input.integrationPolicyVersion == null || policy.integrationPolicyVersion !== input.integrationPolicyVersion) {
+      throw new Error("runtime_reconnect_required: local ACP workspace policy changed; re-authorize the runtime");
     }
     const [workspace] = await tx.select({ canonicalSnapshotId: workspaceState.canonicalSnapshotId, status: workspaceState.status }).from(workspaceState).where(eq(workspaceState.spaceId, input.spaceId)).for("update").limit(1);
     if (workspace?.status !== "ready" || workspace.canonicalSnapshotId !== baseSnapshotId) {
@@ -1001,13 +1001,16 @@ async function acquireLocalAcpWorkspaceLease(input: { attemptId: string; spaceId
     if (existing && existing.expiresAt > now && !sameHolder) {
       throw new Error("workspace is held by another writer");
     }
-    if (existing && existing.expiresAt <= now && !sameHolder && (existing.holderKind === "local_agent" || existing.holderKind === "local_offline_reservation")) {
+    if (existing && existing.expiresAt <= now && !sameHolder && existing.holderKind === "local_agent") {
+      // An expired local lease whose attempt is still unresolved means a
+      // provider may still be mutating the replica. The sweeper resolves those
+      // attempts; do not silently start a second writer on the same tree.
       const [unresolved] = await tx.select({ id: workspaceExecutionAttempts.id }).from(workspaceExecutionAttempts).where(and(
         eq(workspaceExecutionAttempts.spaceId, input.spaceId),
+        eq(workspaceExecutionAttempts.id, existing.holderId),
         inArray(workspaceExecutionAttempts.status, ["running", "workspace_sealed", "transcript_sealed", "awaiting_recovery"]),
-        existing.holderKind === "local_agent" ? eq(workspaceExecutionAttempts.id, existing.holderId) : undefined,
       )).limit(1);
-      if (unresolved) throw new Error("workspace takeover requires explicit confirmation");
+      if (unresolved) throw new Error("workspace is held by an unresolved local execution attempt");
     }
     const same = sameHolder && existing.expiresAt > now;
     const epoch = (existing?.epoch ?? 0) + (same ? 0 : 1);
@@ -1020,8 +1023,6 @@ async function acquireLocalAcpWorkspaceLease(input: { attemptId: string; spaceId
       baseSnapshotId,
       expiresAt: new Date(now.getTime() + 30_000),
       lastHeartbeatAt: now,
-      maximumDurationAt: null,
-      takeoverRequiresConfirmation: false,
       updatedAt: now,
     }).onConflictDoUpdate({
       target: workspaceWriterLeases.spaceId,
@@ -1033,7 +1034,6 @@ async function acquireLocalAcpWorkspaceLease(input: { attemptId: string; spaceId
         baseSnapshotId,
         expiresAt: new Date(now.getTime() + 30_000),
         lastHeartbeatAt: now,
-        takeoverRequiresConfirmation: false,
         updatedAt: now,
       },
     }).returning();
@@ -1103,7 +1103,6 @@ export async function processLocalAcpTurn(input: { attemptId: string }) {
     });
     throw new Error(message);
   };
-  if (attempt.sessionMirrorMode !== "full") await failPreflight("runtime_transcript_consent_required: ACP transcript projection requires full session mirror consent", "runtime_transcript_consent_required");
   if (runtime.status === "revoked") await failPreflight("local ACP runtime is revoked", "runtime_revoked");
   if (runtime.spaceId !== attempt.spaceId || !replica?.id || runtime.replicaId !== replica.id || attempt.replicaId !== replica.id) await failPreflight("local ACP execution workspace binding is invalid", "attempt_identity_mismatch");
   const boundReplica = replica;

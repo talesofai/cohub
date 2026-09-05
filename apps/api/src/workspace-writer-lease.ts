@@ -64,8 +64,6 @@ export async function ensureCloudFileWriterLease(input: { spaceId: string; userU
       baseSnapshotId: workspace.canonicalSnapshotId,
       expiresAt,
       lastHeartbeatAt: current,
-      maximumDurationAt: null,
-      takeoverRequiresConfirmation: false,
       updatedAt: current,
     }).onConflictDoUpdate({
       target: workspaceWriterLeases.spaceId,
@@ -77,8 +75,6 @@ export async function ensureCloudFileWriterLease(input: { spaceId: string; userU
         baseSnapshotId: workspace.canonicalSnapshotId,
         expiresAt,
         lastHeartbeatAt: current,
-        maximumDurationAt: null,
-        takeoverRequiresConfirmation: false,
         updatedAt: current,
       },
     }).returning();

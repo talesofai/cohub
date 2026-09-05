@@ -39,7 +39,7 @@ export type SessionLock = {
 export async function acquireSessionLock(
   sessionId: string,
   options: {
-    holderKind?: "cloud_agent" | "native_ingest" | "fork";
+    holderKind?: "cloud_agent" | "fork";
     holderId?: string;
     onLost?: (error: Error) => void;
   } = {},

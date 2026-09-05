@@ -81,30 +81,17 @@ COHUB_SPACE_ID=<spaceId> cohub spaces prompt "message" --json
 
 ## Local workspace replicas
 
-Install the pinned, checksummed local runtime, attach a folder, then install only the provider integration you use:
+Install the pinned, checksummed local runtime, attach a folder, then register and start an ACP runtime for the provider you use:
 
 ```bash
 cohub agent runtime install
-cohub workspace attach <spaceId> ./project --merge --mirror full
+cohub workspace attach <spaceId> ./project --merge
 cohub agent runtime register <spaceId> <replicaId> pi
 cohub agent runtime start <spaceId> <replicaId> pi --root ./project
 cohub agent doctor
 ```
 
-`cohub agent doctor` reports the installed ACP adapter separately from the optional legacy hook integration. A non-empty folder requires exactly one initial strategy: `--merge`, `--use-cloud`, or `--use-local`. `--use-cloud` creates a verified local recovery backup before replacing managed content. Empty folders default to `--use-cloud`.
-
-Prepare a bounded writer handoff before a legacy native-hook turn. ACP runtime prompts acquire their lease through the Agent worker:
-
-```bash
-cohub workspace handoff local --space <spaceId> --replica-id <replicaId> --wait
-```
-
-Intentional offline work requires a reservation. The command also writes a one-use permit into locald:
-
-```bash
-cohub workspace offline enable --space <spaceId> --replica-id <replicaId>
-cohub workspace offline disable --space <spaceId> --device-id <deviceId> --epoch <epoch>
-```
+`cohub agent doctor` reports the installed `cohub-locald` binary and the ACP adapter for each provider. A non-empty folder requires exactly one initial strategy: `--merge`, `--use-cloud`, or `--use-local`. `--use-cloud` creates a verified local recovery backup before replacing managed content. Empty folders default to `--use-cloud`.
 
 Inspect and resolve retained workspace conflicts without materializing conflict files into the project:
 

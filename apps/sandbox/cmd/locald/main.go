@@ -33,20 +33,8 @@ func main() {
 			fmt.Fprintln(os.Stderr, err)
 			os.Exit(1)
 		}
-	case "hook":
-		if err := runHook(os.Args[2:]); err != nil {
-			fmt.Fprintln(os.Stderr, err)
-			// Hook callers should receive a clear non-zero result only when the
-			// event could not be durably spooled at all.
-			os.Exit(1)
-		}
 	case "configure":
 		if err := runConfigure(os.Args[2:]); err != nil {
-			fmt.Fprintln(os.Stderr, err)
-			os.Exit(1)
-		}
-	case "collect-pi":
-		if err := runCollectPI(os.Args[2:]); err != nil {
 			fmt.Fprintln(os.Stderr, err)
 			os.Exit(1)
 		}
@@ -108,79 +96,6 @@ func runDaemon(args []string) error {
 	return daemon.Run(ctx)
 }
 
-func runHook(args []string) error {
-	flags := flag.NewFlagSet("hook", flag.ContinueOnError)
-	flags.SetOutput(io.Discard)
-	dataDir := flags.String("data-dir", "", "locald data directory")
-	provider := flags.String("provider", "", "provider name")
-	providerVersion := flags.String("provider-version", "unknown", "provider version")
-	event := flags.String("event", "", "provider event name")
-	cwd := flags.String("cwd", "", "provider current working directory")
-	attempt := flags.String("execution-attempt-id", "", "execution attempt id")
-	if err := flags.Parse(args); err != nil {
-		return err
-	}
-	if strings.TrimSpace(*provider) == "" || strings.TrimSpace(*event) == "" {
-		return errors.New("--provider and --event are required")
-	}
-	payload, err := io.ReadAll(io.LimitReader(os.Stdin, 512*1024))
-	if err != nil {
-		return fmt.Errorf("read hook input: %w", err)
-	}
-	if len(payload) == 0 {
-		payload = []byte(`{}`)
-	}
-	resolvedCWD := strings.TrimSpace(*cwd)
-	var hookInput map[string]any
-	if json.Unmarshal(payload, &hookInput) == nil && resolvedCWD == "" {
-		if value, ok := hookInput["cwd"].(string); ok {
-			resolvedCWD = strings.TrimSpace(value)
-		}
-	}
-	if resolvedCWD == "" {
-		resolvedCWD, _ = os.Getwd()
-	}
-	cfg := locald.ConfigFromEnvironment(*dataDir)
-	executionAttemptID := strings.TrimSpace(*attempt)
-	if isPromptSubmitEvent(*event) && executionAttemptID == "" {
-		preflightCtx, cancelPreflight := context.WithTimeout(context.Background(), 100*time.Millisecond)
-		response, preflightErr := locald.SendRequest(preflightCtx, cfg, locald.IPCRequest{
-			Version: 1,
-			Type:    "preflight",
-			CWD:     resolvedCWD,
-		})
-		cancelPreflight()
-		if preflightErr != nil || !response.OK {
-			reason := response.Message
-			if reason == "" && preflightErr != nil {
-				reason = preflightErr.Error()
-			}
-			if reason == "" {
-				reason = "Workspace handoff is not ready."
-			}
-			return json.NewEncoder(os.Stdout).Encode(map[string]any{"decision": "block", "reason": reason})
-		}
-		executionAttemptID = response.ExecutionAttemptID
-	}
-	hookCtx, cancelHook := context.WithTimeout(context.Background(), 100*time.Millisecond)
-	defer cancelHook()
-	_, sendErr := locald.SendHook(hookCtx, cfg, locald.IPCRequest{
-		Version:            1,
-		Provider:           strings.TrimSpace(*provider),
-		ProviderVersion:    strings.TrimSpace(*providerVersion),
-		Event:              strings.TrimSpace(*event),
-		CWD:                resolvedCWD,
-		ExecutionAttemptID: executionAttemptID,
-		Payload:            json.RawMessage(payload),
-	})
-	return sendErr
-}
-
-func isPromptSubmitEvent(event string) bool {
-	normalized := strings.ToLower(strings.TrimSpace(event))
-	return strings.Contains(normalized, "userpromptsubmit") || strings.Contains(normalized, "user_prompt_submit") || normalized == "input" || normalized == "prompt_submitted"
-}
-
 func runConfigure(args []string) error {
 	flags := flag.NewFlagSet("configure", flag.ContinueOnError)
 	flags.SetOutput(io.Discard)
@@ -192,7 +107,6 @@ func runConfigure(args []string) error {
 	fingerprint := flags.String("root-fingerprint", "", "root fingerprint")
 	policyVersion := flags.Int64("policy-version", 1, "workspace policy version")
 	integrationVersion := flags.Int64("integration-policy-version", 1, "integration policy version")
-	mirrorMode := flags.String("session-mirror-mode", "disabled", "session mirror mode")
 	initialChoice := flags.String("initial-choice", "", "initial reconciliation choice")
 	if err := flags.Parse(args); err != nil {
 		return err
@@ -208,40 +122,7 @@ func runConfigure(args []string) error {
 		RootFingerprint:    *fingerprint,
 		PolicyVersion:      *policyVersion,
 		IntegrationVersion: *integrationVersion,
-		MirrorMode:         *mirrorMode,
 		InitialChoice:      *initialChoice,
-	})
-	if err != nil {
-		return err
-	}
-	return json.NewEncoder(os.Stdout).Encode(response)
-}
-
-func runCollectPI(args []string) error {
-	flags := flag.NewFlagSet("collect-pi", flag.ContinueOnError)
-	flags.SetOutput(io.Discard)
-	dataDir := flags.String("data-dir", "", "locald data directory")
-	cwd := flags.String("cwd", "", "provider current working directory")
-	if err := flags.Parse(args); err != nil {
-		return err
-	}
-	resolvedCWD := strings.TrimSpace(*cwd)
-	if resolvedCWD == "" {
-		resolvedCWD, _ = os.Getwd()
-	}
-	payload, err := io.ReadAll(io.LimitReader(os.Stdin, 64*1024*1024))
-	if err != nil {
-		return err
-	}
-	if len(payload) == 0 {
-		return errors.New("Pi collector input is required")
-	}
-	cfg := locald.ConfigFromEnvironment(*dataDir)
-	response, err := locald.SendRequest(context.Background(), cfg, locald.IPCRequest{
-		Version: 1,
-		Type:    "collect_pi",
-		CWD:     resolvedCWD,
-		Payload: json.RawMessage(payload),
 	})
 	if err != nil {
 		return err
@@ -354,8 +235,6 @@ func runPermit(args []string) error {
 	attemptID := flags.String("execution-attempt-id", "", "execution attempt id")
 	baseSnapshotID := flags.String("base-snapshot-id", "", "base snapshot id")
 	leaseEpoch := flags.Int64("lease-epoch", 0, "lease epoch")
-	leaseHolderKind := flags.String("holder-kind", "local_agent", "lease holder kind")
-	leaseHolderID := flags.String("holder-id", "", "lease holder id")
 	expiresAt := flags.String("expires-at", "", "RFC3339 expiry")
 	if err := flags.Parse(args); err != nil {
 		return err
@@ -369,8 +248,6 @@ func runPermit(args []string) error {
 		ExecutionAttemptID: *attemptID,
 		BaseSnapshotID:     *baseSnapshotID,
 		LeaseEpoch:         *leaseEpoch,
-		LeaseHolderKind:    *leaseHolderKind,
-		LeaseHolderID:      *leaseHolderID,
 		ExpiresAt:          *expiresAt,
 	})
 	if err != nil {
@@ -445,5 +322,5 @@ func runSimpleIPC(kind string, args []string) error {
 
 func usage() {
 	fmt.Fprintf(os.Stderr, "cohub-locald %s (%s/%s)\n", buildVersion, runtime.GOOS, runtime.GOARCH)
-	fmt.Fprintln(os.Stderr, "usage: cohub-locald daemon|hook|collect-pi|configure|credentials|credentials-status|fingerprint|permit|runtime|preflight|status|refresh|flush")
+	fmt.Fprintln(os.Stderr, "usage: cohub-locald daemon|configure|credentials|credentials-status|fingerprint|permit|runtime|preflight|status|refresh|flush")
 }

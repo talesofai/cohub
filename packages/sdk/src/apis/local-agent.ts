@@ -1,6 +1,4 @@
 import type {
-  NativeIngestCommitResponseV1,
-  NativeTurnBundleV1,
   WorkspaceManifestV1,
   WorkspaceSyncJobData,
 } from "@cohub/protocol";
@@ -95,32 +93,6 @@ export type WorkspaceReplicaOverviewResponse = {
   openConflictCount: number;
 };
 
-export type NativeIngestInlineInput = {
-  version: 1;
-  bindingId: string | null;
-  nativeAgentTurnId: string | null;
-  bundle: NativeTurnBundleV1;
-  payloadSha256: string;
-};
-
-export type NativeIngestPrepareInput = {
-  version: 1;
-  executionAttemptId: string;
-  bindingId: string | null;
-  nativeAgentTurnId: string | null;
-  bundleId: string;
-  payloadSha256: string;
-  payloadBytes: number;
-  provider: "pi" | "codex" | "claude_code";
-  providerVersion?: string;
-  adapterVersion?: string;
-  nativeSessionKey: string;
-  nativeTurnKey: string;
-  workspacePolicyVersion: number;
-  integrationPolicyVersion: number;
-  sessionMirrorMode: "full" | "metadata_only" | "disabled";
-};
-
 export class LocalAgentApi {
   constructor(private readonly transport: HttpTransport) {}
 
@@ -203,12 +175,7 @@ export class LocalAgentApi {
   }
 
   updatePolicy(spaceId: string, deviceId: string, input: Partial<{
-    sessionMirrorMode: "full" | "metadata_only" | "disabled";
     workspaceMode: "two_way_safe" | "one_way_to_cloud" | "one_way_to_local" | "handoff";
-    offlineEnabled: boolean;
-    attachmentMode: "workspace_only" | "approved_external" | "none";
-    maxBundleBytes: number;
-    maxArtifactBytes: number;
   }>, customFetch?: Fetch) {
     return this.transport.request<{ policy: Record<string, unknown> }>(`/api/local-agent/spaces/${spaceId}/devices/${deviceId}/policy`, {
       method: "PATCH",
@@ -256,7 +223,7 @@ export class LocalAgentApi {
     });
   }
 
-  acquireLease(spaceId: string, input: { holderKind?: string; holderId: string; replicaId?: string | null; baseSnapshotId?: string | null; durationSeconds?: number; offline?: boolean; confirmTakeover?: boolean }, customFetch?: Fetch) {
+  acquireLease(spaceId: string, input: { holderKind?: string; holderId: string; replicaId?: string | null; baseSnapshotId?: string | null; durationSeconds?: number }, customFetch?: Fetch) {
     return this.transport.request<Record<string, unknown>>(`/api/local-agent/spaces/${spaceId}/leases/acquire`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
@@ -281,32 +248,6 @@ export class LocalAgentApi {
       body: JSON.stringify(input),
       fetch: customFetch,
     });
-  }
-
-  ingestInline(spaceId: string, replicaId: string, input: NativeIngestInlineInput, customFetch?: Fetch) {
-    return this.transport.request<NativeIngestCommitResponseV1>(`/api/local-agent/spaces/${spaceId}/replicas/${replicaId}/ingests/inline`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(input),
-      fetch: customFetch,
-    });
-  }
-
-  prepareIngest(spaceId: string, replicaId: string, input: NativeIngestPrepareInput, customFetch?: Fetch) {
-    return this.transport.request<{ ingestId: string; objectKey: string; uploadUrl: string; headers: Record<string, string> | null; expiresAt: string; status: string }>(`/api/local-agent/spaces/${spaceId}/replicas/${replicaId}/ingests/prepare`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(input),
-      fetch: customFetch,
-    });
-  }
-
-  commitIngest(spaceId: string, replicaId: string, ingestId: string, customFetch?: Fetch) {
-    return this.transport.request<NativeIngestCommitResponseV1>(`/api/local-agent/spaces/${spaceId}/replicas/${replicaId}/ingests/${ingestId}/commit`, { method: "POST", fetch: customFetch });
-  }
-
-  ingestStatus(spaceId: string, ingestId: string, customFetch?: Fetch) {
-    return this.transport.request<NativeIngestCommitResponseV1>(`/api/local-agent/spaces/${spaceId}/ingests/${ingestId}`, { fetch: customFetch });
   }
 }
 

@@ -1,4 +1,4 @@
-import { and, asc, eq, inArray, ne, or, sql } from "drizzle-orm";
+import { and, asc, eq, inArray, ne, sql } from "drizzle-orm";
 import { localAgentRuntimes, localAgentDevices, localAgentRuntimeCommands, localAgentRuntimeSessions, sessionTurns, spaceLocalAgentPolicies, workspaceExecutionAttempts, workspaceReplicas, workspaceState, workspaceWriterLeases } from "@cohub/db";
 import {
   LocalAcpProviderSchema,
@@ -112,13 +112,11 @@ export async function registerLocalAcpRuntime(input: {
     ne(workspaceReplicas.status, "detached"),
   )).limit(1);
   if (!replica?.deviceId) throw new LocalAgentServiceError("local workspace replica is unavailable", "replica_not_found", 404);
-  const [integrationPolicy] = await db.select({ sessionMirrorMode: spaceLocalAgentPolicies.sessionMirrorMode, workspaceMode: spaceLocalAgentPolicies.workspaceMode }).from(spaceLocalAgentPolicies).where(and(
+  const [integrationPolicy] = await db.select({ workspaceMode: spaceLocalAgentPolicies.workspaceMode }).from(spaceLocalAgentPolicies).where(and(
     eq(spaceLocalAgentPolicies.spaceId, input.spaceId),
     eq(spaceLocalAgentPolicies.deviceId, deviceId),
   )).limit(1);
-  if (integrationPolicy?.sessionMirrorMode !== "full") {
-    throw new LocalAgentServiceError("full session mirror consent is required for ACP runtime execution", "runtime_transcript_consent_required", 403);
-  }
+  if (!integrationPolicy) throw new LocalAgentServiceError("local agent policy is unavailable", "policy_unavailable", 409);
   if (integrationPolicy.workspaceMode === "one_way_to_local") {
     throw new LocalAgentServiceError("local workspace is read-only under the current policy", "workspace_write_disabled", 403);
   }
@@ -248,11 +246,8 @@ export async function revokeLocalAcpRuntime(input: { actor: LocalAgentActor; spa
       }).where(inArray(workspaceExecutionAttempts.id, attemptIds));
       await tx.update(workspaceWriterLeases).set({ expiresAt: revokedAt, lastHeartbeatAt: revokedAt, updatedAt: revokedAt }).where(and(
         eq(workspaceWriterLeases.spaceId, input.spaceId),
-        or(eq(workspaceWriterLeases.holderKind, "local_agent"), eq(workspaceWriterLeases.holderKind, "local_offline_reservation")),
-        or(
-          inArray(workspaceWriterLeases.holderId, attemptIds),
-          eq(workspaceWriterLeases.holderId, runtime.id),
-        ),
+        eq(workspaceWriterLeases.holderKind, "local_agent"),
+        inArray(workspaceWriterLeases.holderId, attemptIds),
       ));
       await tx.update(workspaceState).set({ activeExecutionAttemptId: null, updatedAt: revokedAt }).where(and(
         eq(workspaceState.spaceId, input.spaceId),
@@ -291,102 +286,141 @@ export async function revokeLocalAcpRuntime(input: { actor: LocalAgentActor; spa
   return serialize(result);
 }
 
-export async function fenceLocalAcpRuntimesForPolicy(input: {
+type PolicyTransaction = Parameters<Parameters<typeof db.transaction>[0]>[0];
+
+async function fenceLocalAcpRuntimesInTransaction(tx: PolicyTransaction, input: {
   spaceId: string;
   deviceId: string;
   errorMessage: string;
 }) {
-  assertUuid(input.spaceId, "spaceId");
-  assertUuid(input.deviceId, "deviceId");
-  const errorMessage = bounded(input.errorMessage, "errorMessage", 2000);
-  let abortRequests: Array<{ sessionId: string; turnId: string }> = [];
-  await db.transaction(async (tx) => {
-    const runtimes = await tx.select({ id: localAgentRuntimes.id }).from(localAgentRuntimes).where(and(
-      eq(localAgentRuntimes.spaceId, input.spaceId),
-      eq(localAgentRuntimes.deviceId, input.deviceId),
-      ne(localAgentRuntimes.status, "revoked"),
-    )).for("update");
-    const runtimeIds = runtimes.map((runtime) => runtime.id);
-    if (runtimeIds.length === 0) return;
-    const fencedAt = new Date();
-    await tx.update(localAgentRuntimes).set({
-      status: "offline",
-      connectionEpoch: sql`${localAgentRuntimes.connectionEpoch} + 1`,
-      disconnectedAt: fencedAt,
-      lastError: errorMessage,
-      updatedAt: fencedAt,
-    }).where(inArray(localAgentRuntimes.id, runtimeIds));
-    const attempts = await tx.select({
-      id: workspaceExecutionAttempts.id,
-      sessionId: workspaceExecutionAttempts.sessionId,
-      turnId: workspaceExecutionAttempts.turnId,
-      status: workspaceExecutionAttempts.status,
-    }).from(workspaceExecutionAttempts).where(and(
-      eq(workspaceExecutionAttempts.spaceId, input.spaceId),
-      inArray(workspaceExecutionAttempts.runtimeId, runtimeIds),
-      inArray(workspaceExecutionAttempts.status, ["queued", "prepared", "running", "workspace_sealed", "transcript_sealed", "awaiting_recovery"]),
-    )).for("update");
-    const attemptIds = attempts.map((attempt) => attempt.id);
-    const turnIds = attempts.map((attempt) => attempt.turnId).filter((turnId): turnId is string => typeof turnId === "string");
-    abortRequests = attempts
-      .filter((attempt) => ["running", "workspace_sealed", "transcript_sealed", "awaiting_recovery"].includes(attempt.status) && typeof attempt.sessionId === "string" && typeof attempt.turnId === "string")
-      .map((attempt) => ({ sessionId: attempt.sessionId as string, turnId: attempt.turnId as string }));
-    await tx.update(localAgentRuntimeSessions).set({ status: "error", updatedAt: fencedAt }).where(and(
-      inArray(localAgentRuntimeSessions.runtimeId, runtimeIds),
-      ne(localAgentRuntimeSessions.status, "revoked"),
-    ));
-    await tx.update(localAgentRuntimeCommands).set({
-      status: "unknown",
-      errorMessage,
-      updatedAt: fencedAt,
-    }).where(and(
-      inArray(localAgentRuntimeCommands.runtimeId, runtimeIds),
-      eq(localAgentRuntimeCommands.status, "sent"),
-    ));
-    await tx.update(localAgentRuntimeCommands).set({
+  const runtimes = await tx.select({ id: localAgentRuntimes.id }).from(localAgentRuntimes).where(and(
+    eq(localAgentRuntimes.spaceId, input.spaceId),
+    eq(localAgentRuntimes.deviceId, input.deviceId),
+    ne(localAgentRuntimes.status, "revoked"),
+  )).for("update");
+  const runtimeIds = runtimes.map((runtime) => runtime.id);
+  const abortRequests: Array<{ sessionId: string; turnId: string }> = [];
+  if (runtimeIds.length === 0) return abortRequests;
+  const fencedAt = new Date();
+  await tx.update(localAgentRuntimes).set({
+    status: "offline",
+    connectionEpoch: sql`${localAgentRuntimes.connectionEpoch} + 1`,
+    disconnectedAt: fencedAt,
+    lastError: input.errorMessage,
+    updatedAt: fencedAt,
+  }).where(inArray(localAgentRuntimes.id, runtimeIds));
+  const attempts = await tx.select({
+    id: workspaceExecutionAttempts.id,
+    sessionId: workspaceExecutionAttempts.sessionId,
+    turnId: workspaceExecutionAttempts.turnId,
+    status: workspaceExecutionAttempts.status,
+  }).from(workspaceExecutionAttempts).where(and(
+    eq(workspaceExecutionAttempts.spaceId, input.spaceId),
+    inArray(workspaceExecutionAttempts.runtimeId, runtimeIds),
+    inArray(workspaceExecutionAttempts.status, ["queued", "prepared", "running", "workspace_sealed", "transcript_sealed", "awaiting_recovery"]),
+  )).for("update");
+  const attemptIds = attempts.map((attempt) => attempt.id);
+  const turnIds = attempts.map((attempt) => attempt.turnId).filter((turnId): turnId is string => typeof turnId === "string");
+  for (const attempt of attempts) {
+    if (["running", "workspace_sealed", "transcript_sealed", "awaiting_recovery"].includes(attempt.status) && typeof attempt.sessionId === "string" && typeof attempt.turnId === "string") {
+      abortRequests.push({ sessionId: attempt.sessionId, turnId: attempt.turnId });
+    }
+  }
+  await tx.update(localAgentRuntimeSessions).set({ status: "error", updatedAt: fencedAt }).where(and(
+    inArray(localAgentRuntimeSessions.runtimeId, runtimeIds),
+    ne(localAgentRuntimeSessions.status, "revoked"),
+  ));
+  await tx.update(localAgentRuntimeCommands).set({
+    status: "unknown",
+    errorMessage: input.errorMessage,
+    updatedAt: fencedAt,
+  }).where(and(
+    inArray(localAgentRuntimeCommands.runtimeId, runtimeIds),
+    eq(localAgentRuntimeCommands.status, "sent"),
+  ));
+  await tx.update(localAgentRuntimeCommands).set({
+    status: "failed",
+    errorCode: -32005,
+    errorMessage: input.errorMessage,
+    updatedAt: fencedAt,
+  }).where(and(
+    inArray(localAgentRuntimeCommands.runtimeId, runtimeIds),
+    eq(localAgentRuntimeCommands.status, "prepared"),
+  ));
+  if (attemptIds.length === 0) return abortRequests;
+  await tx.update(workspaceExecutionAttempts).set({
+    status: "aborted",
+    errorCode: "runtime_policy_changed",
+    errorMessage: input.errorMessage,
+    completedAt: fencedAt,
+    updatedAt: fencedAt,
+  }).where(inArray(workspaceExecutionAttempts.id, attemptIds));
+  await tx.update(workspaceWriterLeases).set({ expiresAt: fencedAt, lastHeartbeatAt: fencedAt, updatedAt: fencedAt }).where(and(
+    eq(workspaceWriterLeases.spaceId, input.spaceId),
+    eq(workspaceWriterLeases.holderKind, "local_agent"),
+    inArray(workspaceWriterLeases.holderId, attemptIds),
+  ));
+  await tx.update(workspaceState).set({ activeExecutionAttemptId: null, updatedAt: fencedAt }).where(and(
+    eq(workspaceState.spaceId, input.spaceId),
+    inArray(workspaceState.activeExecutionAttemptId, attemptIds),
+  ));
+  await tx.update(workspaceReplicas).set({ activeExecutionAttemptId: null, updatedAt: fencedAt }).where(and(
+    eq(workspaceReplicas.spaceId, input.spaceId),
+    eq(workspaceReplicas.kind, "local"),
+    inArray(workspaceReplicas.activeExecutionAttemptId, attemptIds),
+  ));
+  if (turnIds.length > 0) {
+    await tx.update(sessionTurns).set({
       status: "failed",
-      errorCode: -32005,
-      errorMessage,
-      updatedAt: fencedAt,
-    }).where(and(
-      inArray(localAgentRuntimeCommands.runtimeId, runtimeIds),
-      eq(localAgentRuntimeCommands.status, "prepared"),
-    ));
-    if (attemptIds.length === 0) return;
-    await tx.update(workspaceExecutionAttempts).set({
-      status: "aborted",
-      errorCode: "runtime_policy_changed",
-      errorMessage,
+      errorMessage: input.errorMessage,
+      summary: { finishReason: "failed", reason: "runtime_policy_changed" },
       completedAt: fencedAt,
       updatedAt: fencedAt,
-    }).where(inArray(workspaceExecutionAttempts.id, attemptIds));
-    await tx.update(workspaceWriterLeases).set({ expiresAt: fencedAt, lastHeartbeatAt: fencedAt, updatedAt: fencedAt }).where(and(
-      eq(workspaceWriterLeases.spaceId, input.spaceId),
-      eq(workspaceWriterLeases.holderKind, "local_agent"),
-      inArray(workspaceWriterLeases.holderId, attemptIds),
+    }).where(and(
+      inArray(sessionTurns.id, turnIds),
+      inArray(sessionTurns.status, ["queued", "running", "abort_requested"]),
     ));
-    await tx.update(workspaceState).set({ activeExecutionAttemptId: null, updatedAt: fencedAt }).where(and(
-      eq(workspaceState.spaceId, input.spaceId),
-      inArray(workspaceState.activeExecutionAttemptId, attemptIds),
-    ));
-    await tx.update(workspaceReplicas).set({ activeExecutionAttemptId: null, updatedAt: fencedAt }).where(and(
-      eq(workspaceReplicas.spaceId, input.spaceId),
-      eq(workspaceReplicas.kind, "local"),
-      inArray(workspaceReplicas.activeExecutionAttemptId, attemptIds),
-    ));
-    if (turnIds.length > 0) {
-      await tx.update(sessionTurns).set({
-        status: "failed",
-        errorMessage,
-        summary: { finishReason: "failed", reason: "runtime_policy_changed" },
-        completedAt: fencedAt,
-        updatedAt: fencedAt,
-      }).where(and(
-        inArray(sessionTurns.id, turnIds),
-        inArray(sessionTurns.status, ["queued", "running", "abort_requested"]),
-      ));
-    }
+  }
+  return abortRequests;
+}
+
+/**
+ * Change a device's workspace policy and fence every connected runtime for
+ * that device in the same transaction. A runtime that reconnects afterwards
+ * re-authorizes against the new policy version; there is no window in which it
+ * can submit work under the previous policy.
+ */
+export async function updateLocalAgentPolicy(input: {
+  spaceId: string;
+  deviceId: string;
+  expectedVersion: number;
+  workspaceMode: typeof spaceLocalAgentPolicies.$inferSelect["workspaceMode"];
+  updatedBy: string;
+  fenceMessage: string;
+}) {
+  assertUuid(input.spaceId, "spaceId");
+  assertUuid(input.deviceId, "deviceId");
+  const fenceMessage = bounded(input.fenceMessage, "fenceMessage", 2000);
+  let abortRequests: Array<{ sessionId: string; turnId: string }> = [];
+  const updated = await db.transaction(async (tx) => {
+    const [row] = await tx.select().from(spaceLocalAgentPolicies).where(and(
+      eq(spaceLocalAgentPolicies.spaceId, input.spaceId),
+      eq(spaceLocalAgentPolicies.deviceId, input.deviceId),
+    )).for("update").limit(1);
+    if (!row || row.integrationPolicyVersion !== input.expectedVersion) return null;
+    abortRequests = await fenceLocalAcpRuntimesInTransaction(tx, { spaceId: input.spaceId, deviceId: input.deviceId, errorMessage: fenceMessage });
+    const [next] = await tx.update(spaceLocalAgentPolicies).set({
+      workspaceMode: input.workspaceMode,
+      integrationPolicyVersion: row.integrationPolicyVersion + 1,
+      updatedBy: input.updatedBy,
+      updatedAt: new Date(),
+    }).where(and(
+      eq(spaceLocalAgentPolicies.id, row.id),
+      eq(spaceLocalAgentPolicies.integrationPolicyVersion, row.integrationPolicyVersion),
+    )).returning();
+    return next ?? null;
   });
+  if (!updated) return null;
   for (const request of abortRequests) {
     void requestAgentTurnAbort({
       spaceId: input.spaceId,
@@ -396,6 +430,7 @@ export async function fenceLocalAcpRuntimesForPolicy(input: {
     }).catch(() => undefined);
   }
   void notifyWorkspaceState({ spaceId: input.spaceId, reason: "runtime_policy_changed" }).catch(() => undefined);
+  return updated;
 }
 
 export async function authorizeLocalAcpRuntime(input: {
@@ -426,13 +461,11 @@ export async function authorizeLocalAcpRuntime(input: {
     )).for("update").limit(1);
     if (!row) throw new LocalAgentServiceError("local ACP runtime is not registered for this Space", "runtime_not_found", 404);
     if (!providerEnabled(row.provider)) throw new LocalAgentServiceError(`${row.provider} local ACP runtime is disabled`, "provider_not_enabled", 403);
-    const [integrationPolicy] = await tx.select({ sessionMirrorMode: spaceLocalAgentPolicies.sessionMirrorMode, workspaceMode: spaceLocalAgentPolicies.workspaceMode }).from(spaceLocalAgentPolicies).where(and(
+    const [integrationPolicy] = await tx.select({ workspaceMode: spaceLocalAgentPolicies.workspaceMode }).from(spaceLocalAgentPolicies).where(and(
       eq(spaceLocalAgentPolicies.spaceId, input.spaceId),
       eq(spaceLocalAgentPolicies.deviceId, input.actor.deviceId as string),
     )).limit(1);
-    if (integrationPolicy?.sessionMirrorMode !== "full") {
-      throw new LocalAgentServiceError("full session mirror consent is required for ACP runtime execution", "runtime_transcript_consent_required", 403);
-    }
+    if (!integrationPolicy) throw new LocalAgentServiceError("local agent policy is unavailable", "policy_unavailable", 409);
     if (integrationPolicy.workspaceMode === "one_way_to_local") {
       throw new LocalAgentServiceError("local workspace is read-only under the current policy", "workspace_write_disabled", 403);
     }
@@ -494,7 +527,6 @@ export async function touchLocalAcpRuntime(input: { runtimeId: string; connectio
       select 1 from v2.space_local_agent_policies policy
       where policy.space_id = ${localAgentRuntimes.spaceId}
         and policy.device_id = ${localAgentRuntimes.deviceId}
-        and policy.session_mirror_mode = 'full'
         and policy.workspace_mode <> 'one_way_to_local'
     )`,
   )).returning({ id: localAgentRuntimes.id });

@@ -139,8 +139,6 @@ export async function acquireCloudCommandLease(input: { spaceId: string; holderI
       baseSnapshotId: workspace.canonicalSnapshotId,
       expiresAt: new Date(now.getTime() + 30_000),
       lastHeartbeatAt: now,
-      maximumDurationAt: null,
-      takeoverRequiresConfirmation: false,
       updatedAt: now,
     }).onConflictDoUpdate({
       target: workspaceWriterLeases.spaceId,
@@ -152,8 +150,6 @@ export async function acquireCloudCommandLease(input: { spaceId: string; holderI
         baseSnapshotId: workspace.canonicalSnapshotId,
         expiresAt: new Date(now.getTime() + 30_000),
         lastHeartbeatAt: now,
-        maximumDurationAt: null,
-        takeoverRequiresConfirmation: false,
         updatedAt: now,
       },
     }).returning();

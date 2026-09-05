@@ -12,14 +12,6 @@ export type WorkspaceReplicationReplica = {
 	lastCommonSnapshotId: string | null;
 	lastSeenAt?: string | null;
 	updatedAt: string;
-	nativeMirror?: {
-		status: string;
-		provider: string | null;
-		fidelity: string | null;
-		completeness: string | null;
-		lastSeenAt: string | null;
-		lastMirroredTurnId: string | null;
-	} | null;
 };
 
 export type WorkspaceReplicationWorkspace = {
@@ -38,8 +30,6 @@ export type WorkspaceReplicationLease = {
 	baseSnapshotId: string | null;
 	expiresAt: string;
 	lastHeartbeatAt: string;
-	maximumDurationAt: string | null;
-	takeoverRequiresConfirmation: boolean;
 	updatedAt: string;
 };
 
@@ -64,10 +54,6 @@ type OverviewResponse = {
 
 const asNullableString = (value: unknown) =>
 	typeof value === "string" && value ? value : null;
-const asRecord = (value: unknown): Record<string, unknown> | null =>
-	value && typeof value === "object" && !Array.isArray(value)
-		? (value as Record<string, unknown>)
-		: null;
 
 function parseReplica(
 	value: Record<string, unknown>,
@@ -80,7 +66,6 @@ function parseReplica(
 		typeof value.updatedAt !== "string"
 	)
 		return null;
-	const mirror = asRecord(value.nativeMirror);
 	return {
 		id: value.id,
 		kind,
@@ -91,16 +76,6 @@ function parseReplica(
 		lastCommonSnapshotId: asNullableString(value.lastCommonSnapshotId),
 		lastSeenAt: asNullableString(value.lastSeenAt),
 		updatedAt: value.updatedAt,
-		nativeMirror: mirror
-			? {
-					status: typeof mirror.status === "string" ? mirror.status : "unknown",
-					provider: asNullableString(mirror.provider),
-					fidelity: asNullableString(mirror.fidelity),
-					completeness: asNullableString(mirror.completeness),
-					lastSeenAt: asNullableString(mirror.lastSeenAt),
-					lastMirroredTurnId: asNullableString(mirror.lastMirroredTurnId),
-				}
-			: null,
 	};
 }
 
@@ -143,8 +118,6 @@ function parseLease(
 			typeof value.lastHeartbeatAt === "string"
 				? value.lastHeartbeatAt
 				: value.updatedAt,
-		maximumDurationAt: asNullableString(value.maximumDurationAt),
-		takeoverRequiresConfirmation: value.takeoverRequiresConfirmation === true,
 		updatedAt: value.updatedAt,
 	};
 }
@@ -277,7 +250,6 @@ export function createWorkspaceReplicationController(options: {
 						...replica,
 						displayName: replica.displayName ?? existingReplica.displayName,
 						lastSeenAt: replica.lastSeenAt ?? existingReplica.lastSeenAt,
-						nativeMirror: replica.nativeMirror ?? existingReplica.nativeMirror,
 					}
 				: replica;
 		const current =

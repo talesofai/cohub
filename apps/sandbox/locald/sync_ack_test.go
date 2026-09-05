@@ -18,7 +18,7 @@ func TestSyncReplicaReplaysAppliedAckAfterNetworkLoss(t *testing.T) {
 	root := t.TempDir()
 	if err := store.UpsertReplica(ReplicaState{
 		SpaceID: "space", ReplicaID: "replica", Root: root, RootFingerprint: "fingerprint",
-		DeviceID: "device", PolicyVersion: 1, IntegrationPolicyVersion: 1, MirrorMode: "disabled",
+		DeviceID: "device", PolicyVersion: 1, IntegrationPolicyVersion: 1,
 		InitialChoice: "use-cloud", CanonicalSnapshotID: "canonical", AppliedSnapshotID: "canonical",
 		Generation: 7, Status: "ready", Manifest: []byte(`{"version":1}`), UpdatedAt: time.Now().UTC().Format(time.RFC3339Nano),
 	}); err != nil {
@@ -44,7 +44,7 @@ func TestSyncReplicaReplaysAppliedAckAfterNetworkLoss(t *testing.T) {
 					"sensitiveContentMode": "exclude_with_warning", "limits": map[string]any{},
 				},
 				"integrationPolicy": map[string]any{
-					"integrationPolicyVersion": 1, "sessionMirrorMode": "disabled",
+					"integrationPolicyVersion": 1,
 				},
 			})
 		case http.MethodPost:

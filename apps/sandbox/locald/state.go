@@ -16,7 +16,7 @@ import (
 	_ "modernc.org/sqlite"
 )
 
-const stateSchemaVersion = 3
+const stateSchemaVersion = 4
 const acpRuntimePermitHolderPrefix = "acp:"
 
 func acpRuntimePermitHolderID(executionAttemptID string) string {
@@ -100,7 +100,6 @@ func (s *StateStore) configure() error {
 			device_id TEXT NOT NULL,
 			policy_version INTEGER NOT NULL,
 			integration_policy_version INTEGER NOT NULL,
-			mirror_mode TEXT NOT NULL,
 			canonical_snapshot_id TEXT,
 			applied_snapshot_id TEXT,
 			generation INTEGER NOT NULL DEFAULT 0,
@@ -139,17 +138,6 @@ func (s *StateStore) configure() error {
 			status TEXT NOT NULL DEFAULT 'prepared',
 			created_at TEXT NOT NULL
 		)`,
-		`CREATE TABLE IF NOT EXISTS provider_attempts (
-			provider TEXT NOT NULL,
-			native_session_id TEXT NOT NULL,
-			native_turn_id TEXT NOT NULL,
-			execution_attempt_id TEXT NOT NULL,
-			status TEXT NOT NULL DEFAULT 'active',
-			created_at TEXT NOT NULL,
-			updated_at TEXT NOT NULL,
-			PRIMARY KEY(provider, native_session_id, native_turn_id)
-		)`,
-		`CREATE INDEX IF NOT EXISTS provider_attempts_execution_idx ON provider_attempts(execution_attempt_id, status)`,
 		`CREATE TABLE IF NOT EXISTS applied_journal (
 			cycle_id TEXT PRIMARY KEY,
 			root TEXT NOT NULL,
@@ -212,7 +200,6 @@ type ReplicaState struct {
 	DeviceID                 string `json:"deviceId"`
 	PolicyVersion            int64  `json:"policyVersion"`
 	IntegrationPolicyVersion int64  `json:"integrationPolicyVersion"`
-	MirrorMode               string `json:"mirrorMode"`
 	CanonicalSnapshotID      string `json:"canonicalSnapshotId,omitempty"`
 	AppliedSnapshotID        string `json:"appliedSnapshotId,omitempty"`
 	Generation               int64  `json:"generation"`
@@ -263,8 +250,8 @@ func (s *StateStore) UpsertReplica(replica ReplicaState) error {
 		return errors.New("cannot rebind a replica while a workspace candidate is pending")
 	}
 	_, err = s.db.Exec(`
-		INSERT INTO replicas(space_id, replica_id, root, root_fingerprint, device_id, policy_version, integration_policy_version, mirror_mode, canonical_snapshot_id, applied_snapshot_id, generation, status, manifest, candidate_snapshot_id, candidate_tree_hash, candidate_generation, candidate_manifest, candidate_base_snapshot_id, candidate_source, initial_choice, updated_at)
-		VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+		INSERT INTO replicas(space_id, replica_id, root, root_fingerprint, device_id, policy_version, integration_policy_version, canonical_snapshot_id, applied_snapshot_id, generation, status, manifest, candidate_snapshot_id, candidate_tree_hash, candidate_generation, candidate_manifest, candidate_base_snapshot_id, candidate_source, initial_choice, updated_at)
+		VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 		ON CONFLICT(space_id) DO UPDATE SET
 			replica_id=excluded.replica_id,
 			root=excluded.root,
@@ -272,7 +259,6 @@ func (s *StateStore) UpsertReplica(replica ReplicaState) error {
 			device_id=excluded.device_id,
 			policy_version=excluded.policy_version,
 			integration_policy_version=excluded.integration_policy_version,
-			mirror_mode=excluded.mirror_mode,
 			canonical_snapshot_id=CASE WHEN replicas.replica_id=excluded.replica_id AND replicas.device_id=excluded.device_id THEN replicas.canonical_snapshot_id ELSE excluded.canonical_snapshot_id END,
 			applied_snapshot_id=CASE WHEN replicas.replica_id=excluded.replica_id AND replicas.device_id=excluded.device_id THEN replicas.applied_snapshot_id ELSE excluded.applied_snapshot_id END,
 			generation=CASE WHEN replicas.replica_id=excluded.replica_id AND replicas.device_id=excluded.device_id THEN replicas.generation ELSE excluded.generation END,
@@ -293,7 +279,6 @@ func (s *StateStore) UpsertReplica(replica ReplicaState) error {
 		replica.DeviceID,
 		replica.PolicyVersion,
 		replica.IntegrationPolicyVersion,
-		replica.MirrorMode,
 		nullString(replica.CanonicalSnapshotID),
 		nullString(replica.AppliedSnapshotID),
 		replica.Generation,
@@ -312,7 +297,7 @@ func (s *StateStore) UpsertReplica(replica ReplicaState) error {
 }
 
 func (s *StateStore) ReplicaForPath(path string) (*ReplicaState, error) {
-	rows, err := s.db.Query(`SELECT space_id, replica_id, root, root_fingerprint, device_id, policy_version, integration_policy_version, mirror_mode, COALESCE(canonical_snapshot_id, ''), COALESCE(applied_snapshot_id, ''), generation, status, COALESCE(manifest, X''), COALESCE(candidate_snapshot_id, ''), COALESCE(candidate_tree_hash, ''), COALESCE(candidate_generation, 0), COALESCE(candidate_manifest, X''), COALESCE(candidate_base_snapshot_id, ''), COALESCE(candidate_source, ''), COALESCE(initial_choice, ''), updated_at FROM replicas`)
+	rows, err := s.db.Query(`SELECT space_id, replica_id, root, root_fingerprint, device_id, policy_version, integration_policy_version, COALESCE(canonical_snapshot_id, ''), COALESCE(applied_snapshot_id, ''), generation, status, COALESCE(manifest, X''), COALESCE(candidate_snapshot_id, ''), COALESCE(candidate_tree_hash, ''), COALESCE(candidate_generation, 0), COALESCE(candidate_manifest, X''), COALESCE(candidate_base_snapshot_id, ''), COALESCE(candidate_source, ''), COALESCE(initial_choice, ''), updated_at FROM replicas`)
 	if err != nil {
 		return nil, err
 	}
@@ -320,7 +305,7 @@ func (s *StateStore) ReplicaForPath(path string) (*ReplicaState, error) {
 	var best *ReplicaState
 	for rows.Next() {
 		var item ReplicaState
-		if err := rows.Scan(&item.SpaceID, &item.ReplicaID, &item.Root, &item.RootFingerprint, &item.DeviceID, &item.PolicyVersion, &item.IntegrationPolicyVersion, &item.MirrorMode, &item.CanonicalSnapshotID, &item.AppliedSnapshotID, &item.Generation, &item.Status, &item.Manifest, &item.CandidateSnapshotID, &item.CandidateTreeHash, &item.CandidateGeneration, &item.CandidateManifest, &item.CandidateBaseSnapshotID, &item.CandidateSource, &item.InitialChoice, &item.UpdatedAt); err != nil {
+		if err := rows.Scan(&item.SpaceID, &item.ReplicaID, &item.Root, &item.RootFingerprint, &item.DeviceID, &item.PolicyVersion, &item.IntegrationPolicyVersion, &item.CanonicalSnapshotID, &item.AppliedSnapshotID, &item.Generation, &item.Status, &item.Manifest, &item.CandidateSnapshotID, &item.CandidateTreeHash, &item.CandidateGeneration, &item.CandidateManifest, &item.CandidateBaseSnapshotID, &item.CandidateSource, &item.InitialChoice, &item.UpdatedAt); err != nil {
 			return nil, err
 		}
 		if sameOrBelowRoot(item.Root, path) && (best == nil || len(item.Root) > len(best.Root)) {
@@ -344,14 +329,11 @@ func sameOrBelowRoot(root, path string) bool {
 	return err == nil && rel != ".." && !strings.HasPrefix(rel, ".."+string(os.PathSeparator)) && !filepath.IsAbs(rel)
 }
 
-func (s *StateStore) UpdateReplicaPolicy(spaceID string, policyVersion, integrationPolicyVersion int64, mirrorMode string) error {
+func (s *StateStore) UpdateReplicaPolicy(spaceID string, policyVersion, integrationPolicyVersion int64) error {
 	if spaceID == "" || policyVersion < 1 || integrationPolicyVersion < 1 {
 		return errors.New("replica policy state is incomplete")
 	}
-	if mirrorMode != "full" && mirrorMode != "metadata_only" && mirrorMode != "disabled" {
-		return errors.New("replica mirror mode is unsupported")
-	}
-	result, err := s.db.Exec(`UPDATE replicas SET policy_version = ?, integration_policy_version = ?, mirror_mode = ?, updated_at = ? WHERE space_id = ?`, policyVersion, integrationPolicyVersion, mirrorMode, time.Now().UTC().Format(time.RFC3339Nano), spaceID)
+	result, err := s.db.Exec(`UPDATE replicas SET policy_version = ?, integration_policy_version = ?, updated_at = ? WHERE space_id = ?`, policyVersion, integrationPolicyVersion, time.Now().UTC().Format(time.RFC3339Nano), spaceID)
 	if err != nil {
 		return err
 	}
@@ -483,7 +465,7 @@ func (s *StateStore) SetReplicaAppliedWithJournal(spaceID, snapshotID string, ge
 
 func (s *StateStore) ReplicaForSpace(spaceID string) (*ReplicaState, error) {
 	var item ReplicaState
-	err := s.db.QueryRow(`SELECT space_id, replica_id, root, root_fingerprint, device_id, policy_version, integration_policy_version, mirror_mode, COALESCE(canonical_snapshot_id, ''), COALESCE(applied_snapshot_id, ''), generation, status, COALESCE(manifest, X''), COALESCE(candidate_snapshot_id, ''), COALESCE(candidate_tree_hash, ''), COALESCE(candidate_generation, 0), COALESCE(candidate_manifest, X''), COALESCE(candidate_base_snapshot_id, ''), COALESCE(candidate_source, ''), COALESCE(initial_choice, ''), updated_at FROM replicas WHERE space_id = ?`, spaceID).Scan(&item.SpaceID, &item.ReplicaID, &item.Root, &item.RootFingerprint, &item.DeviceID, &item.PolicyVersion, &item.IntegrationPolicyVersion, &item.MirrorMode, &item.CanonicalSnapshotID, &item.AppliedSnapshotID, &item.Generation, &item.Status, &item.Manifest, &item.CandidateSnapshotID, &item.CandidateTreeHash, &item.CandidateGeneration, &item.CandidateManifest, &item.CandidateBaseSnapshotID, &item.CandidateSource, &item.InitialChoice, &item.UpdatedAt)
+	err := s.db.QueryRow(`SELECT space_id, replica_id, root, root_fingerprint, device_id, policy_version, integration_policy_version, COALESCE(canonical_snapshot_id, ''), COALESCE(applied_snapshot_id, ''), generation, status, COALESCE(manifest, X''), COALESCE(candidate_snapshot_id, ''), COALESCE(candidate_tree_hash, ''), COALESCE(candidate_generation, 0), COALESCE(candidate_manifest, X''), COALESCE(candidate_base_snapshot_id, ''), COALESCE(candidate_source, ''), COALESCE(initial_choice, ''), updated_at FROM replicas WHERE space_id = ?`, spaceID).Scan(&item.SpaceID, &item.ReplicaID, &item.Root, &item.RootFingerprint, &item.DeviceID, &item.PolicyVersion, &item.IntegrationPolicyVersion, &item.CanonicalSnapshotID, &item.AppliedSnapshotID, &item.Generation, &item.Status, &item.Manifest, &item.CandidateSnapshotID, &item.CandidateTreeHash, &item.CandidateGeneration, &item.CandidateManifest, &item.CandidateBaseSnapshotID, &item.CandidateSource, &item.InitialChoice, &item.UpdatedAt)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, nil
 	}
@@ -574,43 +556,6 @@ func (s *StateStore) MarkSpoolResult(sequence int64, success bool, message strin
 	}
 	attemptAt := time.Now().UTC().Add(delay).Format(time.RFC3339Nano)
 	_, err := s.db.Exec(`UPDATE spool SET attempt_count = attempt_count + 1, next_attempt_at = ?, last_error = ? WHERE sequence = ? AND status = 'pending'`, attemptAt, message, sequence)
-	return err
-}
-
-func (s *StateStore) MapProviderAttempt(provider, nativeSessionID, nativeTurnID, executionAttemptID string) error {
-	if provider == "" || nativeSessionID == "" || nativeTurnID == "" || executionAttemptID == "" {
-		return errors.New("provider attempt identity is incomplete")
-	}
-	now := time.Now().UTC().Format(time.RFC3339Nano)
-	_, err := s.db.Exec(`INSERT INTO provider_attempts(provider, native_session_id, native_turn_id, execution_attempt_id, status, created_at, updated_at) VALUES(?, ?, ?, ?, 'active', ?, ?) ON CONFLICT(provider, native_session_id, native_turn_id) DO UPDATE SET execution_attempt_id=excluded.execution_attempt_id, status='active', updated_at=excluded.updated_at`, provider, nativeSessionID, nativeTurnID, executionAttemptID, now, now)
-	return err
-}
-
-func (s *StateStore) ResolveProviderAttempt(provider, nativeSessionID, nativeTurnID string) (string, error) {
-	var executionAttemptID string
-	err := s.db.QueryRow(`SELECT execution_attempt_id FROM provider_attempts WHERE provider = ? AND native_session_id = ? AND native_turn_id = ? AND status = 'active'`, provider, nativeSessionID, nativeTurnID).Scan(&executionAttemptID)
-	if errors.Is(err, sql.ErrNoRows) {
-		return "", nil
-	}
-	return executionAttemptID, err
-}
-
-func (s *StateStore) ResolveLatestProviderAttempt(provider, nativeSessionID string) (string, error) {
-	var executionAttemptID string
-	err := s.db.QueryRow(`SELECT execution_attempt_id FROM provider_attempts WHERE provider = ? AND native_session_id = ? AND status = 'active' ORDER BY updated_at DESC LIMIT 1`, provider, nativeSessionID).Scan(&executionAttemptID)
-	if errors.Is(err, sql.ErrNoRows) {
-		return "", nil
-	}
-	return executionAttemptID, err
-}
-
-func (s *StateStore) CompleteProviderAttempt(provider, nativeSessionID, nativeTurnID string) error {
-	_, err := s.db.Exec(`UPDATE provider_attempts SET status='completed', updated_at=? WHERE provider=? AND native_session_id=? AND native_turn_id=?`, time.Now().UTC().Format(time.RFC3339Nano), provider, nativeSessionID, nativeTurnID)
-	return err
-}
-
-func (s *StateStore) CompleteProviderAttemptsByExecution(executionAttemptID string) error {
-	_, err := s.db.Exec(`UPDATE provider_attempts SET status='completed', updated_at=? WHERE execution_attempt_id=? AND status='active'`, time.Now().UTC().Format(time.RFC3339Nano), executionAttemptID)
 	return err
 }
 

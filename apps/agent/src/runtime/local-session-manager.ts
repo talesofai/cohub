@@ -75,18 +75,6 @@ export type SessionInfoEntry = SessionEntryBase & {
   name?: string;
 };
 
-export type TranscriptCommitMarkerEntry = SessionEntryBase & {
-  type: "custom";
-  customType: "cohub_transcript_commit";
-  data: {
-    protocolVersion: 1;
-    ingestId: string;
-    entryIds: string[];
-    finalEntryHash: string;
-    previousVisibleLeafId: string | null;
-  };
-};
-
 export type SessionEntry =
   | SessionMessageEntry
   | ThinkingLevelChangeEntry
@@ -328,18 +316,8 @@ export class SessionManager {
     }
   }
 
-  /** Physical entries include hidden native batches and internal markers. */
   getEntries(): SessionEntry[] {
     return [...this.entries];
-  }
-
-  /** Product/model callers must use the visibility-filtered branch. */
-  getVisibleEntries(): SessionEntry[] {
-    return this.getBranch();
-  }
-
-  hasTranscriptCommitMarker(ingestId: string): boolean {
-    return this.entries.some((entry) => isCommitMarker(entry) && entry.data.ingestId === ingestId);
   }
 
   getMessageMetaValues(key: string, role?: string): Set<string> {
@@ -589,10 +567,10 @@ export class SessionManager {
     return entry.id;
   }
 
-  appendCustomEntry(customType: string, data?: unknown, options?: { id?: string }): string {
+  appendCustomEntry(customType: string, data?: unknown): string {
     const entry: CustomEntry = {
       type: "custom",
-      id: options?.id && !this.byId.has(options.id) ? options.id : generateEntryId(this.byId),
+      id: generateEntryId(this.byId),
       parentId: this.leafId,
       timestamp: nowIso(),
       customType,
@@ -768,7 +746,7 @@ export class SessionManager {
 
   async createBranchedSession(leafId: string, options?: { id?: string; filePath?: string; parentSession?: string }): Promise<string | undefined> {
     await this.flush();
-    let pathEntries = this.getCommittedPhysicalBranch(leafId);
+    let pathEntries = this.getBranch(leafId);
 
     // If the entry was removed by compaction, try to recover from the archive chain.
     // Each compaction archives the full pre-compaction file; the entry may exist there.
@@ -932,30 +910,6 @@ export class SessionManager {
   }
 
   private getBranch(fromId?: string): SessionEntry[] {
-    const committedPhysical = this.getCommittedPhysicalBranch(fromId);
-    const visible = committedPhysical.filter((entry) => !isCommitMarker(entry));
-    // Internal markers remain in the committed physical chain. Re-parent the
-    // logical view so model/UI traversal never depends on an internal marker.
-    return reparentEntries(visible);
-  }
-
-  private getCommittedPhysicalBranch(fromId?: string): SessionEntry[] {
-    const physical = this.getPhysicalBranch(fromId);
-    if (physical.length === 0) return [];
-    const committedEntryIds = new Set<string>();
-    for (const entry of physical) {
-      if (!isCommitMarker(entry)) continue;
-      for (const entryId of entry.data.entryIds) committedEntryIds.add(entryId);
-    }
-    const committed = physical.filter((entry) => {
-      if (isCommitMarker(entry)) return true;
-      const ingestId = nativeIngestId(entry);
-      return ingestId === null || committedEntryIds.has(entry.id);
-    });
-    return reparentEntries(committed);
-  }
-
-  private getPhysicalBranch(fromId?: string): SessionEntry[] {
     const targetId = fromId ?? this.leafId;
     if (!targetId) return [];
     const path: SessionEntry[] = [];
@@ -966,30 +920,4 @@ export class SessionManager {
     }
     return path.reverse();
   }
-}
-
-function reparentEntries(entries: SessionEntry[]): SessionEntry[] {
-  return entries.map((entry, index) => ({
-    ...entry,
-    parentId: index === 0 ? null : (entries[index - 1]?.id ?? null),
-  }));
-}
-
-function nativeIngestId(entry: SessionEntry): string | null {
-  if (entry.type !== "message") return null;
-  const meta = (entry.message as unknown as { meta?: unknown }).meta;
-  if (!meta || typeof meta !== "object" || Array.isArray(meta)) return null;
-  const ingestId = (meta as Record<string, unknown>).cohubNativeIngestId;
-  return typeof ingestId === "string" && ingestId.trim() ? ingestId : null;
-}
-
-function isCommitMarker(entry: SessionEntry): entry is TranscriptCommitMarkerEntry {
-  if (entry.type !== "custom" || entry.customType !== "cohub_transcript_commit") return false;
-  const data = entry.data;
-  if (!data || typeof data !== "object" || Array.isArray(data)) return false;
-  const value = data as Record<string, unknown>;
-  return value.protocolVersion === 1
-    && typeof value.ingestId === "string"
-    && Array.isArray(value.entryIds)
-    && value.entryIds.every((id) => typeof id === "string");
 }

@@ -7,8 +7,6 @@ import (
 	"errors"
 	"fmt"
 	"time"
-
-	"github.com/google/uuid"
 )
 
 func SendRequest(ctx context.Context, cfg Config, request IPCRequest) (IPCResponse, error) {
@@ -37,42 +35,4 @@ func SendRequest(ctx context.Context, cfg Config, request IPCRequest) (IPCRespon
 		return response, errors.New(response.Message)
 	}
 	return response, nil
-}
-
-func SendHook(ctx context.Context, cfg Config, request IPCRequest) (IPCResponse, error) {
-	request.Type = "hook"
-	response, err := SendRequest(ctx, cfg, request)
-	if err == nil {
-		return response, nil
-	}
-	// The hook process must remain useful when the daemon is stopped. It writes
-	// an immutable local spool record and returns success; no network is attempted.
-	state, stateErr := OpenState(cfg.DataDir)
-	if stateErr != nil {
-		return IPCResponse{}, fmt.Errorf("daemon unavailable and emergency spool failed: %w", stateErr)
-	}
-	defer state.Close()
-	sanitized, sanitizeErr := sanitizePayload(request.Payload)
-	if sanitizeErr != nil {
-		return IPCResponse{}, fmt.Errorf("daemon unavailable and emergency hook redaction failed: %w", sanitizeErr)
-	}
-	eventID := randomEventID()
-	payload := mustJSON(map[string]any{
-		"kind":     "emergency_hook",
-		"version":  protocolVersion,
-		"eventId":  eventID,
-		"provider": request.Provider,
-		"event":    request.Event,
-		"cwd":      request.CWD,
-		"payload":  json.RawMessage(sanitized),
-	})
-	sequence, spoolErr := state.AppendSpool(eventID, payload)
-	if spoolErr != nil {
-		return IPCResponse{}, fmt.Errorf("daemon unavailable and emergency spool failed: %w", spoolErr)
-	}
-	return IPCResponse{Version: protocolVersion, OK: true, Code: "spooled", EventID: eventID, LocalReceiptSeq: sequence}, nil
-}
-
-func randomEventID() string {
-	return uuid.NewString()
 }

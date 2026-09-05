@@ -1,6 +1,6 @@
 # Worker deployment
 
-The user worker owns `cohub-workspace-sync`. It requires the shared Space PVC plus private object storage used by API snapshot presigns and Agent native payload reads.
+The user worker owns `cohub-workspace-sync`. It requires the shared Space PVC plus private object storage used by API snapshot presigns.
 
 Required workspace replication values:
 

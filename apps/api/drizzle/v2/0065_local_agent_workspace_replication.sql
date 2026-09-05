@@ -84,145 +84,6 @@ CREATE TABLE "v2"."local_agent_runtimes" (
 	"updated_at" timestamp with time zone DEFAULT now() NOT NULL
 );
 --> statement-breakpoint
-CREATE TABLE "v2"."native_agent_event_receipts" (
-	"id" uuid PRIMARY KEY DEFAULT gen_random_uuid() NOT NULL,
-	"binding_id" uuid NOT NULL,
-	"event_id" varchar(255) NOT NULL,
-	"execution_attempt_id" uuid,
-	"native_agent_turn_id" uuid,
-	"event_sha256" varchar(64) NOT NULL,
-	"event_sequence" bigint,
-	"event_type" varchar(40) NOT NULL,
-	"first_ingest_id" uuid,
-	"created_at" timestamp with time zone DEFAULT now() NOT NULL
-);
---> statement-breakpoint
-CREATE TABLE "v2"."native_agent_ingests" (
-	"id" uuid PRIMARY KEY DEFAULT gen_random_uuid() NOT NULL,
-	"binding_id" uuid NOT NULL,
-	"native_agent_turn_id" uuid NOT NULL,
-	"space_id" uuid NOT NULL,
-	"replica_id" uuid NOT NULL,
-	"execution_attempt_id" uuid NOT NULL,
-	"workspace_policy_version" bigint NOT NULL,
-	"integration_policy_version" bigint NOT NULL,
-	"session_mirror_mode" varchar(30) NOT NULL,
-	"native_turn_key" varchar(255) NOT NULL,
-	"bundle_id" varchar(255) NOT NULL,
-	"kind" varchar(40) NOT NULL,
-	"policy_version" integer DEFAULT 1 NOT NULL,
-	"policy_mode" varchar(30) NOT NULL,
-	"payload_inline" jsonb,
-	"payload_object_key" text,
-	"payload_sha256" varchar(64) NOT NULL,
-	"payload_bytes" bigint NOT NULL,
-	"payload_transport_sha256" varchar(64),
-	"payload_transport_bytes" bigint,
-	"base_cohub_cursor" jsonb,
-	"result_cohub_cursor" jsonb,
-	"base_workspace_snapshot_id" uuid,
-	"result_workspace_snapshot_id" uuid,
-	"cohub_session_id" uuid,
-	"cohub_turn_id" uuid,
-	"transcript_entry_ids" uuid[],
-	"transcript_marker_entry_id" uuid,
-	"transcript_visibility" varchar(20) DEFAULT 'hidden' NOT NULL,
-	"status" varchar(30) DEFAULT 'prepared' NOT NULL,
-	"attempt_count" integer DEFAULT 0 NOT NULL,
-	"next_attempt_at" timestamp with time zone,
-	"error_code" varchar(80),
-	"error_message" text,
-	"created_at" timestamp with time zone DEFAULT now() NOT NULL,
-	"updated_at" timestamp with time zone DEFAULT now() NOT NULL
-);
---> statement-breakpoint
-CREATE TABLE "v2"."native_agent_sessions" (
-	"id" uuid PRIMARY KEY DEFAULT gen_random_uuid() NOT NULL,
-	"space_id" uuid NOT NULL,
-	"replica_id" uuid NOT NULL,
-	"device_id" uuid NOT NULL,
-	"user_uuid" varchar(255) NOT NULL,
-	"provider" varchar(40) NOT NULL,
-	"native_session_key" varchar(255) NOT NULL,
-	"cohub_session_id" uuid,
-	"provider_version" varchar(120) NOT NULL,
-	"adapter_version" varchar(120) NOT NULL,
-	"mirror_fidelity" varchar(30) NOT NULL,
-	"mirror_completeness" varchar(40) NOT NULL,
-	"status" varchar(30) DEFAULT 'active' NOT NULL,
-	"binding_generation" bigint DEFAULT 0 NOT NULL,
-	"native_cursor" jsonb,
-	"cohub_cursor" jsonb,
-	"last_mirrored_turn_id" uuid,
-	"workspace_snapshot_id" uuid,
-	"relative_cwd" text,
-	"last_seen_at" timestamp with time zone,
-	"created_at" timestamp with time zone DEFAULT now() NOT NULL,
-	"updated_at" timestamp with time zone DEFAULT now() NOT NULL
-);
---> statement-breakpoint
-CREATE TABLE "v2"."native_agent_turns" (
-	"id" uuid PRIMARY KEY DEFAULT gen_random_uuid() NOT NULL,
-	"binding_id" uuid NOT NULL,
-	"space_id" uuid NOT NULL,
-	"replica_id" uuid NOT NULL,
-	"execution_attempt_id" uuid NOT NULL,
-	"native_turn_key" varchar(255) NOT NULL,
-	"provider_turn_key" varchar(255),
-	"cohub_session_id" uuid,
-	"cohub_turn_id" uuid,
-	"status" varchar(30) DEFAULT 'pending' NOT NULL,
-	"terminal_event_kind" varchar(40) DEFAULT 'none' NOT NULL,
-	"recovery_deadline_at" timestamp with time zone,
-	"base_cohub_cursor" jsonb,
-	"result_cohub_cursor" jsonb,
-	"base_workspace_snapshot_id" uuid,
-	"result_workspace_snapshot_id" uuid,
-	"relative_cwd" text,
-	"first_event_sequence" bigint,
-	"last_event_sequence" bigint,
-	"final_ingest_id" uuid,
-	"fork_operation_key" varchar(255),
-	"started_at" timestamp with time zone,
-	"stopped_at" timestamp with time zone,
-	"created_at" timestamp with time zone DEFAULT now() NOT NULL,
-	"updated_at" timestamp with time zone DEFAULT now() NOT NULL
-);
---> statement-breakpoint
-CREATE TABLE "v2"."session_realtime_outbox" (
-	"id" uuid PRIMARY KEY DEFAULT gen_random_uuid() NOT NULL,
-	"delivery_key" varchar(500) NOT NULL,
-	"ingest_id" uuid,
-	"space_id" uuid NOT NULL,
-	"session_id" uuid,
-	"event_type" varchar(120) NOT NULL,
-	"entity_id" varchar(255) NOT NULL,
-	"revision" bigint NOT NULL,
-	"envelope" jsonb NOT NULL,
-	"status" varchar(20) DEFAULT 'ready' NOT NULL,
-	"attempt_count" integer DEFAULT 0 NOT NULL,
-	"next_attempt_at" timestamp with time zone,
-	"published_at" timestamp with time zone,
-	"created_at" timestamp with time zone DEFAULT now() NOT NULL,
-	"updated_at" timestamp with time zone DEFAULT now() NOT NULL
-);
---> statement-breakpoint
-CREATE TABLE "v2"."session_transcript_state" (
-	"session_id" uuid PRIMARY KEY NOT NULL,
-	"branch_epoch" uuid DEFAULT gen_random_uuid() NOT NULL,
-	"visible_leaf_entry_id" text,
-	"visible_leaf_hash" varchar(64) DEFAULT '' NOT NULL,
-	"physical_leaf_entry_id" text,
-	"physical_leaf_hash" varchar(64) DEFAULT '' NOT NULL,
-	"logical_entry_count" bigint DEFAULT 0 NOT NULL,
-	"last_turn_sequence" integer DEFAULT 0 NOT NULL,
-	"indexed_file_size" bigint DEFAULT 0 NOT NULL,
-	"indexed_file_mtime" timestamp with time zone,
-	"sidecar_checksum" varchar(64),
-	"status" varchar(20) DEFAULT 'ready' NOT NULL,
-	"updated_at" timestamp with time zone DEFAULT now() NOT NULL
-);
---> statement-breakpoint
 CREATE TABLE "v2"."session_writer_leases" (
 	"session_id" uuid PRIMARY KEY NOT NULL,
 	"holder_kind" varchar(30) NOT NULL,
@@ -239,12 +100,7 @@ CREATE TABLE "v2"."space_local_agent_policies" (
 	"device_id" uuid NOT NULL,
 	"user_uuid" varchar(255) NOT NULL,
 	"integration_policy_version" bigint DEFAULT 1 NOT NULL,
-	"session_mirror_mode" varchar(30) DEFAULT 'disabled' NOT NULL,
 	"workspace_mode" varchar(30) DEFAULT 'handoff' NOT NULL,
-	"offline_enabled" boolean DEFAULT false NOT NULL,
-	"attachment_mode" varchar(30) DEFAULT 'workspace_only' NOT NULL,
-	"max_bundle_bytes" bigint DEFAULT 268435456 NOT NULL,
-	"max_artifact_bytes" bigint DEFAULT 5368709120 NOT NULL,
 	"updated_by" varchar(255) NOT NULL,
 	"created_at" timestamp with time zone DEFAULT now() NOT NULL,
 	"updated_at" timestamp with time zone DEFAULT now() NOT NULL
@@ -284,23 +140,18 @@ CREATE TABLE "v2"."workspace_execution_attempts" (
 	"idempotency_key" varchar(255) NOT NULL,
 	"executor_kind" varchar(40) NOT NULL,
 	"provider" varchar(40),
-	"session_mirror_mode" varchar(30),
 	"integration_policy_version" bigint,
 	"workspace_required" boolean DEFAULT true NOT NULL,
 	"transcript_required" boolean DEFAULT true NOT NULL,
 	"session_id" uuid,
 	"turn_id" uuid,
-	"native_agent_turn_id" uuid,
 	"relative_cwd" text,
 	"base_canonical_snapshot_id" uuid,
-	"base_transcript_cursor" jsonb,
 	"workspace_lease_epoch" bigint,
 	"workspace_policy_version" bigint,
 	"status" varchar(30) DEFAULT 'prepared' NOT NULL,
 	"workspace_cycle_id" uuid,
-	"native_ingest_id" uuid,
 	"result_snapshot_id" uuid,
-	"result_transcript_cursor" jsonb,
 	"started_at" timestamp with time zone,
 	"completed_at" timestamp with time zone,
 	"error_code" varchar(80),
@@ -432,8 +283,6 @@ CREATE TABLE "v2"."workspace_writer_leases" (
 	"base_snapshot_id" uuid,
 	"expires_at" timestamp with time zone NOT NULL,
 	"last_heartbeat_at" timestamp with time zone NOT NULL,
-	"maximum_duration_at" timestamp with time zone,
-	"takeover_requires_confirmation" boolean DEFAULT false NOT NULL,
 	"updated_at" timestamp with time zone DEFAULT now() NOT NULL
 );
 --> statement-breakpoint
@@ -448,38 +297,6 @@ ALTER TABLE "v2"."local_agent_runtime_sessions" ADD CONSTRAINT "local_agent_runt
 ALTER TABLE "v2"."local_agent_runtimes" ADD CONSTRAINT "local_agent_runtimes_space_id_spaces_id_fk" FOREIGN KEY ("space_id") REFERENCES "v2"."spaces"("id") ON DELETE restrict ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "v2"."local_agent_runtimes" ADD CONSTRAINT "local_agent_runtimes_device_id_local_agent_devices_id_fk" FOREIGN KEY ("device_id") REFERENCES "v2"."local_agent_devices"("id") ON DELETE restrict ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "v2"."local_agent_runtimes" ADD CONSTRAINT "local_agent_runtimes_replica_id_workspace_replicas_id_fk" FOREIGN KEY ("replica_id") REFERENCES "v2"."workspace_replicas"("id") ON DELETE restrict ON UPDATE no action;--> statement-breakpoint
-ALTER TABLE "v2"."native_agent_event_receipts" ADD CONSTRAINT "native_agent_event_receipts_binding_id_native_agent_sessions_id_fk" FOREIGN KEY ("binding_id") REFERENCES "v2"."native_agent_sessions"("id") ON DELETE restrict ON UPDATE no action;--> statement-breakpoint
-ALTER TABLE "v2"."native_agent_event_receipts" ADD CONSTRAINT "native_agent_event_receipts_execution_attempt_id_workspace_execution_attempts_id_fk" FOREIGN KEY ("execution_attempt_id") REFERENCES "v2"."workspace_execution_attempts"("id") ON DELETE restrict ON UPDATE no action;--> statement-breakpoint
-ALTER TABLE "v2"."native_agent_event_receipts" ADD CONSTRAINT "native_agent_event_receipts_native_agent_turn_id_native_agent_turns_id_fk" FOREIGN KEY ("native_agent_turn_id") REFERENCES "v2"."native_agent_turns"("id") ON DELETE restrict ON UPDATE no action;--> statement-breakpoint
-ALTER TABLE "v2"."native_agent_event_receipts" ADD CONSTRAINT "native_agent_event_receipts_first_ingest_id_native_agent_ingests_id_fk" FOREIGN KEY ("first_ingest_id") REFERENCES "v2"."native_agent_ingests"("id") ON DELETE restrict ON UPDATE no action;--> statement-breakpoint
-ALTER TABLE "v2"."native_agent_ingests" ADD CONSTRAINT "native_agent_ingests_binding_id_native_agent_sessions_id_fk" FOREIGN KEY ("binding_id") REFERENCES "v2"."native_agent_sessions"("id") ON DELETE restrict ON UPDATE no action;--> statement-breakpoint
-ALTER TABLE "v2"."native_agent_ingests" ADD CONSTRAINT "native_agent_ingests_native_agent_turn_id_native_agent_turns_id_fk" FOREIGN KEY ("native_agent_turn_id") REFERENCES "v2"."native_agent_turns"("id") ON DELETE restrict ON UPDATE no action;--> statement-breakpoint
-ALTER TABLE "v2"."native_agent_ingests" ADD CONSTRAINT "native_agent_ingests_space_id_spaces_id_fk" FOREIGN KEY ("space_id") REFERENCES "v2"."spaces"("id") ON DELETE restrict ON UPDATE no action;--> statement-breakpoint
-ALTER TABLE "v2"."native_agent_ingests" ADD CONSTRAINT "native_agent_ingests_replica_id_workspace_replicas_id_fk" FOREIGN KEY ("replica_id") REFERENCES "v2"."workspace_replicas"("id") ON DELETE restrict ON UPDATE no action;--> statement-breakpoint
-ALTER TABLE "v2"."native_agent_ingests" ADD CONSTRAINT "native_agent_ingests_execution_attempt_id_workspace_execution_attempts_id_fk" FOREIGN KEY ("execution_attempt_id") REFERENCES "v2"."workspace_execution_attempts"("id") ON DELETE restrict ON UPDATE no action;--> statement-breakpoint
-ALTER TABLE "v2"."native_agent_ingests" ADD CONSTRAINT "native_agent_ingests_base_workspace_snapshot_id_workspace_snapshots_id_fk" FOREIGN KEY ("base_workspace_snapshot_id") REFERENCES "v2"."workspace_snapshots"("id") ON DELETE restrict ON UPDATE no action;--> statement-breakpoint
-ALTER TABLE "v2"."native_agent_ingests" ADD CONSTRAINT "native_agent_ingests_result_workspace_snapshot_id_workspace_snapshots_id_fk" FOREIGN KEY ("result_workspace_snapshot_id") REFERENCES "v2"."workspace_snapshots"("id") ON DELETE restrict ON UPDATE no action;--> statement-breakpoint
-ALTER TABLE "v2"."native_agent_ingests" ADD CONSTRAINT "native_agent_ingests_cohub_session_id_space_sessions_id_fk" FOREIGN KEY ("cohub_session_id") REFERENCES "v2"."space_sessions"("id") ON DELETE restrict ON UPDATE no action;--> statement-breakpoint
-ALTER TABLE "v2"."native_agent_ingests" ADD CONSTRAINT "native_agent_ingests_cohub_turn_id_session_turns_id_fk" FOREIGN KEY ("cohub_turn_id") REFERENCES "v2"."session_turns"("id") ON DELETE restrict ON UPDATE no action;--> statement-breakpoint
-ALTER TABLE "v2"."native_agent_sessions" ADD CONSTRAINT "native_agent_sessions_space_id_spaces_id_fk" FOREIGN KEY ("space_id") REFERENCES "v2"."spaces"("id") ON DELETE restrict ON UPDATE no action;--> statement-breakpoint
-ALTER TABLE "v2"."native_agent_sessions" ADD CONSTRAINT "native_agent_sessions_replica_id_workspace_replicas_id_fk" FOREIGN KEY ("replica_id") REFERENCES "v2"."workspace_replicas"("id") ON DELETE restrict ON UPDATE no action;--> statement-breakpoint
-ALTER TABLE "v2"."native_agent_sessions" ADD CONSTRAINT "native_agent_sessions_device_id_local_agent_devices_id_fk" FOREIGN KEY ("device_id") REFERENCES "v2"."local_agent_devices"("id") ON DELETE restrict ON UPDATE no action;--> statement-breakpoint
-ALTER TABLE "v2"."native_agent_sessions" ADD CONSTRAINT "native_agent_sessions_cohub_session_id_space_sessions_id_fk" FOREIGN KEY ("cohub_session_id") REFERENCES "v2"."space_sessions"("id") ON DELETE restrict ON UPDATE no action;--> statement-breakpoint
-ALTER TABLE "v2"."native_agent_sessions" ADD CONSTRAINT "native_agent_sessions_last_mirrored_turn_id_session_turns_id_fk" FOREIGN KEY ("last_mirrored_turn_id") REFERENCES "v2"."session_turns"("id") ON DELETE restrict ON UPDATE no action;--> statement-breakpoint
-ALTER TABLE "v2"."native_agent_sessions" ADD CONSTRAINT "native_agent_sessions_workspace_snapshot_id_workspace_snapshots_id_fk" FOREIGN KEY ("workspace_snapshot_id") REFERENCES "v2"."workspace_snapshots"("id") ON DELETE restrict ON UPDATE no action;--> statement-breakpoint
-ALTER TABLE "v2"."native_agent_turns" ADD CONSTRAINT "native_agent_turns_binding_id_native_agent_sessions_id_fk" FOREIGN KEY ("binding_id") REFERENCES "v2"."native_agent_sessions"("id") ON DELETE restrict ON UPDATE no action;--> statement-breakpoint
-ALTER TABLE "v2"."native_agent_turns" ADD CONSTRAINT "native_agent_turns_space_id_spaces_id_fk" FOREIGN KEY ("space_id") REFERENCES "v2"."spaces"("id") ON DELETE restrict ON UPDATE no action;--> statement-breakpoint
-ALTER TABLE "v2"."native_agent_turns" ADD CONSTRAINT "native_agent_turns_replica_id_workspace_replicas_id_fk" FOREIGN KEY ("replica_id") REFERENCES "v2"."workspace_replicas"("id") ON DELETE restrict ON UPDATE no action;--> statement-breakpoint
-ALTER TABLE "v2"."native_agent_turns" ADD CONSTRAINT "native_agent_turns_execution_attempt_id_workspace_execution_attempts_id_fk" FOREIGN KEY ("execution_attempt_id") REFERENCES "v2"."workspace_execution_attempts"("id") ON DELETE restrict ON UPDATE no action;--> statement-breakpoint
-ALTER TABLE "v2"."native_agent_turns" ADD CONSTRAINT "native_agent_turns_cohub_session_id_space_sessions_id_fk" FOREIGN KEY ("cohub_session_id") REFERENCES "v2"."space_sessions"("id") ON DELETE restrict ON UPDATE no action;--> statement-breakpoint
-ALTER TABLE "v2"."native_agent_turns" ADD CONSTRAINT "native_agent_turns_cohub_turn_id_session_turns_id_fk" FOREIGN KEY ("cohub_turn_id") REFERENCES "v2"."session_turns"("id") ON DELETE restrict ON UPDATE no action;--> statement-breakpoint
-ALTER TABLE "v2"."native_agent_turns" ADD CONSTRAINT "native_agent_turns_base_workspace_snapshot_id_workspace_snapshots_id_fk" FOREIGN KEY ("base_workspace_snapshot_id") REFERENCES "v2"."workspace_snapshots"("id") ON DELETE restrict ON UPDATE no action;--> statement-breakpoint
-ALTER TABLE "v2"."native_agent_turns" ADD CONSTRAINT "native_agent_turns_result_workspace_snapshot_id_workspace_snapshots_id_fk" FOREIGN KEY ("result_workspace_snapshot_id") REFERENCES "v2"."workspace_snapshots"("id") ON DELETE restrict ON UPDATE no action;--> statement-breakpoint
-ALTER TABLE "v2"."native_agent_turns" ADD CONSTRAINT "native_agent_turns_final_ingest_id_native_agent_ingests_id_fk" FOREIGN KEY ("final_ingest_id") REFERENCES "v2"."native_agent_ingests"("id") ON DELETE restrict ON UPDATE no action;--> statement-breakpoint
-ALTER TABLE "v2"."session_realtime_outbox" ADD CONSTRAINT "session_realtime_outbox_ingest_id_native_agent_ingests_id_fk" FOREIGN KEY ("ingest_id") REFERENCES "v2"."native_agent_ingests"("id") ON DELETE restrict ON UPDATE no action;--> statement-breakpoint
-ALTER TABLE "v2"."session_realtime_outbox" ADD CONSTRAINT "session_realtime_outbox_space_id_spaces_id_fk" FOREIGN KEY ("space_id") REFERENCES "v2"."spaces"("id") ON DELETE restrict ON UPDATE no action;--> statement-breakpoint
-ALTER TABLE "v2"."session_realtime_outbox" ADD CONSTRAINT "session_realtime_outbox_session_id_space_sessions_id_fk" FOREIGN KEY ("session_id") REFERENCES "v2"."space_sessions"("id") ON DELETE restrict ON UPDATE no action;--> statement-breakpoint
-ALTER TABLE "v2"."session_transcript_state" ADD CONSTRAINT "session_transcript_state_session_id_space_sessions_id_fk" FOREIGN KEY ("session_id") REFERENCES "v2"."space_sessions"("id") ON DELETE restrict ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "v2"."session_writer_leases" ADD CONSTRAINT "session_writer_leases_session_id_space_sessions_id_fk" FOREIGN KEY ("session_id") REFERENCES "v2"."space_sessions"("id") ON DELETE restrict ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "v2"."space_local_agent_policies" ADD CONSTRAINT "space_local_agent_policies_space_id_spaces_id_fk" FOREIGN KEY ("space_id") REFERENCES "v2"."spaces"("id") ON DELETE restrict ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "v2"."space_local_agent_policies" ADD CONSTRAINT "space_local_agent_policies_device_id_local_agent_devices_id_fk" FOREIGN KEY ("device_id") REFERENCES "v2"."local_agent_devices"("id") ON DELETE restrict ON UPDATE no action;--> statement-breakpoint
@@ -490,10 +307,8 @@ ALTER TABLE "v2"."workspace_execution_attempts" ADD CONSTRAINT "workspace_execut
 ALTER TABLE "v2"."workspace_execution_attempts" ADD CONSTRAINT "workspace_execution_attempts_runtime_id_local_agent_runtimes_id_fk" FOREIGN KEY ("runtime_id") REFERENCES "v2"."local_agent_runtimes"("id") ON DELETE restrict ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "v2"."workspace_execution_attempts" ADD CONSTRAINT "workspace_execution_attempts_session_id_space_sessions_id_fk" FOREIGN KEY ("session_id") REFERENCES "v2"."space_sessions"("id") ON DELETE restrict ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "v2"."workspace_execution_attempts" ADD CONSTRAINT "workspace_execution_attempts_turn_id_session_turns_id_fk" FOREIGN KEY ("turn_id") REFERENCES "v2"."session_turns"("id") ON DELETE restrict ON UPDATE no action;--> statement-breakpoint
-ALTER TABLE "v2"."workspace_execution_attempts" ADD CONSTRAINT "workspace_execution_attempts_native_agent_turn_id_native_agent_turns_id_fk" FOREIGN KEY ("native_agent_turn_id") REFERENCES "v2"."native_agent_turns"("id") ON DELETE restrict ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "v2"."workspace_execution_attempts" ADD CONSTRAINT "workspace_execution_attempts_base_canonical_snapshot_id_workspace_snapshots_id_fk" FOREIGN KEY ("base_canonical_snapshot_id") REFERENCES "v2"."workspace_snapshots"("id") ON DELETE restrict ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "v2"."workspace_execution_attempts" ADD CONSTRAINT "workspace_execution_attempts_workspace_cycle_id_workspace_sync_cycles_id_fk" FOREIGN KEY ("workspace_cycle_id") REFERENCES "v2"."workspace_sync_cycles"("id") ON DELETE restrict ON UPDATE no action;--> statement-breakpoint
-ALTER TABLE "v2"."workspace_execution_attempts" ADD CONSTRAINT "workspace_execution_attempts_native_ingest_id_native_agent_ingests_id_fk" FOREIGN KEY ("native_ingest_id") REFERENCES "v2"."native_agent_ingests"("id") ON DELETE restrict ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "v2"."workspace_execution_attempts" ADD CONSTRAINT "workspace_execution_attempts_result_snapshot_id_workspace_snapshots_id_fk" FOREIGN KEY ("result_snapshot_id") REFERENCES "v2"."workspace_snapshots"("id") ON DELETE restrict ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "v2"."workspace_replicas" ADD CONSTRAINT "workspace_replicas_space_id_spaces_id_fk" FOREIGN KEY ("space_id") REFERENCES "v2"."spaces"("id") ON DELETE restrict ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "v2"."workspace_replicas" ADD CONSTRAINT "workspace_replicas_device_id_local_agent_devices_id_fk" FOREIGN KEY ("device_id") REFERENCES "v2"."local_agent_devices"("id") ON DELETE restrict ON UPDATE no action;--> statement-breakpoint
@@ -545,26 +360,6 @@ CREATE INDEX "v2_idx_local_agent_runtime_sessions_space_status" ON "v2"."local_a
 CREATE UNIQUE INDEX "v2_uq_local_agent_runtimes_space_device_provider" ON "v2"."local_agent_runtimes" USING btree ("space_id","device_id","provider") WHERE "v2"."local_agent_runtimes"."status" <> 'revoked';--> statement-breakpoint
 CREATE INDEX "v2_idx_local_agent_runtimes_space_status" ON "v2"."local_agent_runtimes" USING btree ("space_id","status","updated_at");--> statement-breakpoint
 CREATE INDEX "v2_idx_local_agent_runtimes_device" ON "v2"."local_agent_runtimes" USING btree ("device_id","status");--> statement-breakpoint
-CREATE UNIQUE INDEX "v2_uq_native_agent_event_receipts_binding_event" ON "v2"."native_agent_event_receipts" USING btree ("binding_id","event_id");--> statement-breakpoint
-CREATE INDEX "v2_idx_native_agent_event_receipts_turn_sequence" ON "v2"."native_agent_event_receipts" USING btree ("native_agent_turn_id","event_sequence");--> statement-breakpoint
-CREATE INDEX "v2_idx_native_agent_event_receipts_attempt" ON "v2"."native_agent_event_receipts" USING btree ("execution_attempt_id");--> statement-breakpoint
-CREATE UNIQUE INDEX "v2_uq_native_agent_ingests_replica_bundle" ON "v2"."native_agent_ingests" USING btree ("replica_id","bundle_id");--> statement-breakpoint
-CREATE INDEX "v2_idx_native_agent_ingests_turn_status" ON "v2"."native_agent_ingests" USING btree ("native_agent_turn_id","status","updated_at");--> statement-breakpoint
-CREATE INDEX "v2_idx_native_agent_ingests_attempt" ON "v2"."native_agent_ingests" USING btree ("execution_attempt_id");--> statement-breakpoint
-CREATE INDEX "v2_idx_native_agent_ingests_hidden" ON "v2"."native_agent_ingests" USING btree ("cohub_session_id","transcript_visibility","status");--> statement-breakpoint
-CREATE UNIQUE INDEX "v2_uq_native_agent_sessions_binding_identity" ON "v2"."native_agent_sessions" USING btree ("space_id","device_id","provider","native_session_key");--> statement-breakpoint
-CREATE INDEX "v2_idx_native_agent_sessions_space_device" ON "v2"."native_agent_sessions" USING btree ("space_id","device_id","status");--> statement-breakpoint
-CREATE INDEX "v2_idx_native_agent_sessions_cohub_session" ON "v2"."native_agent_sessions" USING btree ("cohub_session_id");--> statement-breakpoint
-CREATE UNIQUE INDEX "v2_uq_native_agent_turns_binding_turn" ON "v2"."native_agent_turns" USING btree ("binding_id","native_turn_key");--> statement-breakpoint
-CREATE UNIQUE INDEX "v2_uq_native_agent_turns_binding_attempt" ON "v2"."native_agent_turns" USING btree ("binding_id","execution_attempt_id");--> statement-breakpoint
-CREATE UNIQUE INDEX "v2_uq_native_agent_turns_fork_operation" ON "v2"."native_agent_turns" USING btree ("fork_operation_key") WHERE "v2"."native_agent_turns"."fork_operation_key" is not null;--> statement-breakpoint
-CREATE INDEX "v2_idx_native_agent_turns_session_status" ON "v2"."native_agent_turns" USING btree ("cohub_session_id","status","updated_at");--> statement-breakpoint
-CREATE INDEX "v2_idx_native_agent_turns_final_ingest" ON "v2"."native_agent_turns" USING btree ("final_ingest_id");--> statement-breakpoint
-CREATE UNIQUE INDEX "v2_uq_session_realtime_outbox_delivery_key" ON "v2"."session_realtime_outbox" USING btree ("delivery_key");--> statement-breakpoint
-CREATE INDEX "v2_idx_session_realtime_outbox_ready" ON "v2"."session_realtime_outbox" USING btree ("status","next_attempt_at","created_at");--> statement-breakpoint
-CREATE INDEX "v2_idx_session_realtime_outbox_session_revision" ON "v2"."session_realtime_outbox" USING btree ("session_id","revision");--> statement-breakpoint
-CREATE INDEX "v2_idx_session_realtime_outbox_ingest" ON "v2"."session_realtime_outbox" USING btree ("ingest_id");--> statement-breakpoint
-CREATE INDEX "v2_idx_session_transcript_state_status" ON "v2"."session_transcript_state" USING btree ("status","updated_at");--> statement-breakpoint
 CREATE INDEX "v2_idx_session_writer_leases_expiry" ON "v2"."session_writer_leases" USING btree ("expires_at");--> statement-breakpoint
 CREATE INDEX "v2_idx_session_writer_leases_holder" ON "v2"."session_writer_leases" USING btree ("holder_kind","holder_id");--> statement-breakpoint
 CREATE UNIQUE INDEX "v2_uq_space_local_agent_policies_space_device" ON "v2"."space_local_agent_policies" USING btree ("space_id","device_id");--> statement-breakpoint

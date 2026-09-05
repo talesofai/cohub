@@ -95,7 +95,7 @@ func TestReplicaAppliedPointerAndJournalCommitAreAtomic(t *testing.T) {
 	defer state.Close()
 	if err := state.UpsertReplica(ReplicaState{
 		SpaceID: "space", ReplicaID: "replica", Root: root, RootFingerprint: "fingerprint", DeviceID: "device",
-		PolicyVersion: 1, IntegrationPolicyVersion: 1, MirrorMode: "disabled", InitialChoice: "use-cloud",
+		PolicyVersion: 1, IntegrationPolicyVersion: 1, InitialChoice: "use-cloud",
 		Status: "ready", UpdatedAt: time.Now().UTC().Format(time.RFC3339Nano),
 	}); err != nil {
 		t.Fatal(err)

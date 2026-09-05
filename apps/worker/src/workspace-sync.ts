@@ -609,6 +609,41 @@ async function applyLocalPlan(input: {
   }
 }
 
+/**
+ * A sync cycle is only allowed to mutate or promote while the writer that
+ * produced it is still the current writer. Re-check this at every mutation
+ * boundary, not just at claim time: a lease that was taken over, an attempt
+ * that was aborted, or a canonical generation that moved while this worker
+ * was transferring blobs must all stop the cycle before it touches disk or the
+ * canonical pointer.
+ */
+async function assertCycleStillFenced(input: {
+  cycle: typeof workspaceSyncCycles.$inferSelect;
+  spaceId: string;
+  expectedGeneration: number;
+}) {
+  const { cycle, spaceId } = input;
+  const [state] = await db.select({ generation: workspaceState.generation, activeCycleId: workspaceState.activeCycleId }).from(workspaceState).where(eq(workspaceState.spaceId, spaceId)).limit(1);
+  if (!state) throw new Error("workspace state disappeared during sync");
+  if (state.generation !== input.expectedGeneration) throw new Error("workspace canonical generation changed during sync; the cycle must be re-planned");
+  if (cycle.executionAttemptId) {
+    const [attempt] = await db.select({ status: workspaceExecutionAttempts.status, workspaceLeaseEpoch: workspaceExecutionAttempts.workspaceLeaseEpoch }).from(workspaceExecutionAttempts).where(and(
+      eq(workspaceExecutionAttempts.id, cycle.executionAttemptId),
+      eq(workspaceExecutionAttempts.spaceId, spaceId),
+    )).limit(1);
+    if (!attempt || attempt.workspaceLeaseEpoch !== cycle.leaseEpoch) throw new Error("workspace cycle lease epoch does not match its execution attempt");
+    if (["aborted", "failed", "blocked"].includes(attempt.status)) throw new Error(`workspace execution attempt is ${attempt.status}; refusing to promote its candidate`);
+  }
+  if (cycle.leaseEpoch != null) {
+    // The epoch is monotonic per Space. Any newer epoch means another writer
+    // took over after this cycle was planned, whether or not the lease row is
+    // still live, and the candidate is stale.
+    const [lease] = await db.select({ epoch: workspaceWriterLeases.epoch }).from(workspaceWriterLeases).where(eq(workspaceWriterLeases.spaceId, spaceId)).limit(1);
+    if (lease && lease.epoch > cycle.leaseEpoch) throw new Error("workspace writer lease was taken over; the cycle candidate is stale");
+    if (!lease && !cycle.executionAttemptId) throw new Error("workspace cycle lease epoch is stale");
+  }
+}
+
 async function processWorkspaceSyncJobLocked(job: Job<WorkspaceSyncJobData>) {
   const { cycleId, spaceId } = job.data;
   const [cycle] = await db.select().from(workspaceSyncCycles).where(and(eq(workspaceSyncCycles.id, cycleId), eq(workspaceSyncCycles.spaceId, spaceId))).limit(1);
@@ -623,16 +658,7 @@ async function processWorkspaceSyncJobLocked(job: Job<WorkspaceSyncJobData>) {
   const [cloudReplica] = await db.select().from(workspaceReplicas).where(and(eq(workspaceReplicas.spaceId, spaceId), eq(workspaceReplicas.kind, "cloud"))).limit(1);
   const [state] = await db.select().from(workspaceState).where(eq(workspaceState.spaceId, spaceId)).limit(1);
   if (!policy || !cloudReplica || !state) throw new Error("workspace bootstrap state is incomplete");
-  if (cycle.executionAttemptId) {
-    const [attempt] = await db.select({ workspaceLeaseEpoch: workspaceExecutionAttempts.workspaceLeaseEpoch }).from(workspaceExecutionAttempts).where(and(
-      eq(workspaceExecutionAttempts.id, cycle.executionAttemptId),
-      eq(workspaceExecutionAttempts.spaceId, spaceId),
-    )).limit(1);
-    if (!attempt || attempt.workspaceLeaseEpoch !== cycle.leaseEpoch) throw new Error("workspace cycle lease epoch does not match its execution attempt");
-  } else if (cycle.leaseEpoch != null) {
-    const [lease] = await db.select({ epoch: workspaceWriterLeases.epoch }).from(workspaceWriterLeases).where(eq(workspaceWriterLeases.spaceId, spaceId)).limit(1);
-    if (!lease || lease.epoch !== cycle.leaseEpoch) throw new Error("workspace cycle lease epoch is stale");
-  }
+  await assertCycleStillFenced({ cycle, spaceId, expectedGeneration: state.generation });
 
   let scan: Awaited<ReturnType<typeof scanWorkspaceReplica>>;
   try {
@@ -717,6 +743,7 @@ async function processWorkspaceSyncJobLocked(job: Job<WorkspaceSyncJobData>) {
       await publishWorkspaceStateUpdated({ spaceId, replicaId: cycle.replicaId, reason: "cloud_snapshot_unchanged" }).catch((error) => logger.warn("workspace realtime publish failed", error));
       return { cycleId, status: "completed", unchanged: true, snapshotId: canonicalSnapshotId };
     }
+    await assertCycleStillFenced({ cycle, spaceId, expectedGeneration: currentGeneration });
     await db.transaction(async (tx) => {
       const changedAt = new Date();
       await tx.update(workspaceState).set({ canonicalSnapshotId: cloudSnapshot.id, cloudAppliedSnapshotId: cloudSnapshot.id, generation: currentGeneration + 1, status: "ready", activeCycleId: null, updatedAt: changedAt, lastWriterKind: "cloud_scan", lastWriterId: cloudSnapshot.id }).where(eq(workspaceState.spaceId, spaceId));
@@ -766,6 +793,7 @@ async function processWorkspaceSyncJobLocked(job: Job<WorkspaceSyncJobData>) {
 
   const joinRows = await db.select({ path: workspaceSnapshotBlobs.path, blob: workspaceBlobs }).from(workspaceSnapshotBlobs).innerJoin(workspaceBlobs, eq(workspaceBlobs.id, workspaceSnapshotBlobs.blobId)).where(eq(workspaceSnapshotBlobs.snapshotId, localSnapshotId));
   const pathBlobs = joinRows.map((row) => Object.assign(row.blob, { path: row.path }));
+  await assertCycleStillFenced({ cycle, spaceId, expectedGeneration: currentGeneration });
   await db.update(workspaceSyncCycles).set({ status: "applying_cloud", updatedAt: new Date() }).where(eq(workspaceSyncCycles.id, cycleId));
   const applyJournal = await applyLocalPlan({
     root: join(config.spaceStorageRoot, spaceId, "workspace"),
@@ -782,6 +810,7 @@ async function processWorkspaceSyncJobLocked(job: Job<WorkspaceSyncJobData>) {
     const expected = mergedManifest({ cloud: scan.manifest, local: localManifest, plan });
     const expectedTreeHash = await canonicalJsonSha256({ scanPolicyHash: expected.scanPolicyHash, entries: expected.entries, boundaries: expected.boundaries, portableGitState: expected.portableGitState });
     if (verified.treeHash !== expectedTreeHash) throw new Error("cloud workspace verification hash mismatch after apply");
+    await assertCycleStillFenced({ cycle, spaceId, expectedGeneration: currentGeneration });
     const resultSnapshotId = deterministicUuid("workspace-reconcile-result", cycle.id);
     const resultSnapshot = await persistCloudSnapshot({
       snapshotId: resultSnapshotId,
@@ -797,7 +826,8 @@ async function processWorkspaceSyncJobLocked(job: Job<WorkspaceSyncJobData>) {
       generation: nextCloudReplicaGeneration + 1,
     });
     await db.transaction(async (tx) => {
-      await tx.update(workspaceState).set({ canonicalSnapshotId: resultSnapshot.id, cloudAppliedSnapshotId: resultSnapshot.id, generation: currentGeneration + 1, status: "ready", activeCycleId: null, updatedAt: new Date(), lastWriterKind: "workspace_sync", lastWriterId: cycle.replicaId }).where(eq(workspaceState.spaceId, spaceId));
+      const promotedState = await tx.update(workspaceState).set({ canonicalSnapshotId: resultSnapshot.id, cloudAppliedSnapshotId: resultSnapshot.id, generation: currentGeneration + 1, status: "ready", activeCycleId: null, updatedAt: new Date(), lastWriterKind: "workspace_sync", lastWriterId: cycle.replicaId }).where(and(eq(workspaceState.spaceId, spaceId), eq(workspaceState.generation, currentGeneration))).returning({ spaceId: workspaceState.spaceId });
+      if (promotedState.length === 0) throw new Error("workspace canonical generation changed before promotion; the cycle must be re-planned");
       await tx.update(workspaceReplicas).set({ currentSnapshotId: resultSnapshot.id, appliedSnapshotId: resultSnapshot.id, lastCommonSnapshotId: resultSnapshot.id, status: "ready", updatedAt: new Date() }).where(eq(workspaceReplicas.id, cloudReplica.id));
       // The worker changed the cloud copy, not the local filesystem. Advance
       // only the participating local replica's server-side current pointer;

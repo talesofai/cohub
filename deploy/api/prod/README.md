@@ -36,7 +36,7 @@ vim secrets.yaml
 - `TURN_OBJECT_S3_ACCESS_KEY_ID` / `TURN_OBJECT_S3_SECRET_ACCESS_KEY` - Turn 中间消息 OSS 写入凭证
 - `PUBLIC_ASSET_OSS_ACCESS_KEY_ID` / `PUBLIC_ASSET_OSS_SECRET_ACCESS_KEY` - 公开资产 OSS 写入凭证（用于头像和旧客户端附件上传）
 - `USER_UPLOAD_S3_ACCESS_KEY_ID` / `USER_UPLOAD_S3_SECRET_ACCESS_KEY` - R2 用户上传凭证（用于聊天附件和 Space 临时上传）
-- `WORKSPACE_OBJECT_ACCESS_KEY_ID` / `WORKSPACE_OBJECT_SECRET_ACCESS_KEY` - private workspace snapshot/native payload object credentials; API, Worker, and Agent must use the same bucket authority
+- `WORKSPACE_OBJECT_ACCESS_KEY_ID` / `WORKSPACE_OBJECT_SECRET_ACCESS_KEY` - private workspace snapshot object credentials; API, Worker, and Agent must use the same bucket authority
 - `LOGTO_M2M_APP_ID` / `LOGTO_M2M_APP_SECRET` - Logto M2M 应用凭证
 
 可选字段：

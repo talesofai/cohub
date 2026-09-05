@@ -79,10 +79,6 @@ export type AppConfig = {
   /** Optional Meta Events Manager test code; omit in normal production traffic. */
   metaPromotionTestEventCode?: string;
   workspaceReplicationEnabled: boolean;
-  nativeAgentMirrorEnabled: boolean;
-  nativeAgentPiEnabled: boolean;
-  nativeAgentClaudeEnabled: boolean;
-  nativeAgentCodexEnabled: boolean;
   localAcpRuntimeEnabled: boolean;
   localAcpPiEnabled: boolean;
   localAcpClaudeEnabled: boolean;
@@ -270,10 +266,6 @@ export const config: AppConfig = {
   metaPromotionClientIpHeader: process.env.COHUB_META_CLIENT_IP_HEADER?.trim().toLowerCase() || undefined,
   metaPromotionTestEventCode: process.env.COHUB_META_TEST_EVENT_CODE?.trim() || undefined,
   workspaceReplicationEnabled: parseBoolean(process.env.WORKSPACE_REPLICATION_ENABLED, env === "dev", "WORKSPACE_REPLICATION_ENABLED"),
-  nativeAgentMirrorEnabled: parseBoolean(process.env.NATIVE_AGENT_MIRROR_ENABLED, env === "dev", "NATIVE_AGENT_MIRROR_ENABLED"),
-  nativeAgentPiEnabled: parseBoolean(process.env.NATIVE_AGENT_PI_ENABLED, env === "dev", "NATIVE_AGENT_PI_ENABLED"),
-  nativeAgentClaudeEnabled: parseBoolean(process.env.NATIVE_AGENT_CLAUDE_ENABLED, false, "NATIVE_AGENT_CLAUDE_ENABLED"),
-  nativeAgentCodexEnabled: parseBoolean(process.env.NATIVE_AGENT_CODEX_ENABLED, false, "NATIVE_AGENT_CODEX_ENABLED"),
   localAcpRuntimeEnabled: parseBoolean(process.env.LOCAL_ACP_RUNTIME_ENABLED, env === "dev", "LOCAL_ACP_RUNTIME_ENABLED"),
   localAcpPiEnabled: parseBoolean(process.env.LOCAL_ACP_PI_ENABLED, env === "dev", "LOCAL_ACP_PI_ENABLED"),
   localAcpClaudeEnabled: parseBoolean(process.env.LOCAL_ACP_CLAUDE_ENABLED, false, "LOCAL_ACP_CLAUDE_ENABLED"),

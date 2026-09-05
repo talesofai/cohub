@@ -91,7 +91,7 @@ pnpm dev
 
 ## Local Agent daemon
 
-`cmd/locald` builds the independent `cohub-locald` daemon used for workspace replicas and provider-native lifecycle spooling. It does not register a `space_sandboxes` record and never accesses Postgres, Redis, or `/sessions` directly.
+`cmd/locald` builds the independent `cohub-locald` daemon used for workspace replicas and the local ACP runtime. It does not register a `space_sandboxes` record and never accesses Postgres, Redis, or `/sessions` directly.
 
 ```bash
 cd apps/sandbox

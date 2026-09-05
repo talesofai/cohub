@@ -28,7 +28,6 @@ sessionsNamespace: cohub-sessions
 agentWorkerConcurrency: "8"
 agentLockDbPoolMax: "18"
 agentShutdownDrainTimeoutMs: "86400000"
-nativeAgentMirrorEnabled: "false"
 localAcpRuntimeEnabled: "false"
 localAcpPiEnabled: "false"
 localAcpClaudeEnabled: "false"

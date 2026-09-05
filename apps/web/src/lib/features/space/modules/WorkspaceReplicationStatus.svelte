@@ -100,19 +100,6 @@ function replicaStatus(replica: WorkspaceReplicationReplica) {
 	return replica.status === "attaching" ? "Preparing" : "Ready";
 }
 
-function mirrorLabel(replica: WorkspaceReplicationReplica) {
-	const mirror = replica.nativeMirror;
-	if (!mirror) return null;
-	if (mirror.status === "quarantined") return "Mirror quarantined";
-	if (mirror.status === "not_started" && mirror.completeness === "disabled")
-		return "Mirror disabled";
-	if (mirror.status === "not_started") return "Mirror ready";
-	if (mirror.completeness === "metadata_only") return "Mirror: metadata only";
-	if (mirror.fidelity === "hook_reconstructed")
-		return "Mirror: hook reconstruction";
-	return "Mirror: active";
-}
-
 function runtimeProviderLabel(provider: string) {
 	if (provider === "claude_code") return "Claude Code";
 	if (provider === "codex") return "Codex";
@@ -240,7 +227,7 @@ $effect(() => {
 					<div class="detail-row"><span>Canonical</span><code>{shortId(canonicalId)}</code></div>
 					<div class="detail-row"><span>Generation</span><strong>{replicationState.workspace?.generation ?? 0}</strong></div>
 					{#if activeLease}
-						<div class="detail-row"><span>Lease</span><strong>{activeLease.maximumDurationAt ? "Offline reservation" : "Active writer"}</strong></div>
+						<div class="detail-row"><span>Lease</span><strong>Active writer</strong></div>
 					{/if}
 				</div>
 
@@ -250,7 +237,7 @@ $effect(() => {
 							<div class="replica-icon" aria-hidden="true"><Laptop class="h-4 w-4" /></div>
 							<div class="replica-copy">
 								<strong>{replica.displayName || "Local workspace"}</strong>
-								<span>{replicaStatus(replica)}{#if mirrorLabel(replica)} · {mirrorLabel(replica)}{/if}</span>
+								<span>{replicaStatus(replica)}</span>
 							</div>
 							<ChevronRight class="replica-chevron h-4 w-4" aria-hidden="true" />
 						</div>

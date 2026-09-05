@@ -28,11 +28,6 @@ import type {
   SessionTurnSummary,
 } from "@cohub/protocol/model";
 import type {
-  MirrorCompleteness,
-  MirrorFidelity,
-  NativeIngestStatus,
-  NativeProvider,
-  SessionMirrorMode,
   LocalAcpProvider,
   LocalAcpRuntimeStatus,
 } from "@cohub/protocol";
@@ -1492,11 +1487,11 @@ export const resourceReferences = v2.table(
   }),
 );
 
-// ── Local native Agent and workspace replica state ──────────────────────────
+// ── Local ACP runtime and workspace replica state ───────────────────────────
 // These tables are intentionally separate from space_sandboxes and the legacy
 // session execution rows. They are durable coordination/provenance records;
-// filesystem bytes and native provider transcripts remain in their dedicated
-// object/session stores.
+// filesystem bytes remain in object storage and the transcript stays in the
+// session JSONL plus session_messages.
 
 export const localAgentDevices = v2.table(
   "local_agent_devices",
@@ -1550,12 +1545,7 @@ export const spaceLocalAgentPolicies = v2.table(
     deviceId: uuid("device_id").notNull().references(() => localAgentDevices.id, { onDelete: "restrict" }),
     userUuid: varchar("user_uuid", { length: 255 }).notNull(),
     integrationPolicyVersion: bigint("integration_policy_version", { mode: "number" }).notNull().default(1),
-    sessionMirrorMode: varchar("session_mirror_mode", { length: 30 }).$type<SessionMirrorMode>().notNull().default("disabled"),
     workspaceMode: varchar("workspace_mode", { length: 30 }).$type<WorkspaceSyncMode>().notNull().default("handoff"),
-    offlineEnabled: boolean("offline_enabled").notNull().default(false),
-    attachmentMode: varchar("attachment_mode", { length: 30 }).notNull().default("workspace_only"),
-    maxBundleBytes: bigint("max_bundle_bytes", { mode: "number" }).notNull().default(268435456),
-    maxArtifactBytes: bigint("max_artifact_bytes", { mode: "number" }).notNull().default(5368709120),
     updatedBy: varchar("updated_by", { length: 255 }).notNull(),
     createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
     updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
@@ -1627,23 +1617,18 @@ export const workspaceExecutionAttempts = v2.table(
     idempotencyKey: varchar("idempotency_key", { length: 255 }).notNull(),
     executorKind: varchar("executor_kind", { length: 40 }).notNull(),
     provider: varchar("provider", { length: 40 }),
-    sessionMirrorMode: varchar("session_mirror_mode", { length: 30 }).$type<SessionMirrorMode>(),
     integrationPolicyVersion: bigint("integration_policy_version", { mode: "number" }),
     workspaceRequired: boolean("workspace_required").notNull().default(true),
     transcriptRequired: boolean("transcript_required").notNull().default(true),
     sessionId: uuid("session_id").references(() => spaceSessions.id, { onDelete: "restrict" }),
     turnId: uuid("turn_id").references(() => sessionTurns.id, { onDelete: "restrict" }),
-    nativeAgentTurnId: uuid("native_agent_turn_id").references((): AnyPgColumn => nativeAgentTurns.id, { onDelete: "restrict" }),
     relativeCwd: text("relative_cwd"),
     baseCanonicalSnapshotId: uuid("base_canonical_snapshot_id").references((): AnyPgColumn => workspaceSnapshots.id, { onDelete: "restrict" }),
-    baseTranscriptCursor: jsonb("base_transcript_cursor").$type<Record<string, unknown> | null>(),
     workspaceLeaseEpoch: bigint("workspace_lease_epoch", { mode: "number" }),
     workspacePolicyVersion: bigint("workspace_policy_version", { mode: "number" }),
     status: varchar("status", { length: 30 }).notNull().default("prepared"),
     workspaceCycleId: uuid("workspace_cycle_id").references((): AnyPgColumn => workspaceSyncCycles.id, { onDelete: "restrict" }),
-    nativeIngestId: uuid("native_ingest_id").references((): AnyPgColumn => nativeAgentIngests.id, { onDelete: "restrict" }),
     resultSnapshotId: uuid("result_snapshot_id").references((): AnyPgColumn => workspaceSnapshots.id, { onDelete: "restrict" }),
-    resultTranscriptCursor: jsonb("result_transcript_cursor").$type<Record<string, unknown> | null>(),
     startedAt: timestamp("started_at", { withTimezone: true }),
     completedAt: timestamp("completed_at", { withTimezone: true }),
     errorCode: varchar("error_code", { length: 80 }),
@@ -1803,8 +1788,6 @@ export const workspaceWriterLeases = v2.table(
     baseSnapshotId: uuid("base_snapshot_id").references(() => workspaceSnapshots.id, { onDelete: "restrict" }),
     expiresAt: timestamp("expires_at", { withTimezone: true }).notNull(),
     lastHeartbeatAt: timestamp("last_heartbeat_at", { withTimezone: true }).notNull(),
-    maximumDurationAt: timestamp("maximum_duration_at", { withTimezone: true }),
-    takeoverRequiresConfirmation: boolean("takeover_requires_confirmation").notNull().default(false),
     updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
   },
   (table) => ({
@@ -1932,194 +1915,5 @@ export const sessionWriterLeases = v2.table(
   (table) => ({
     expiryIdx: index("v2_idx_session_writer_leases_expiry").on(table.expiresAt),
     holderIdx: index("v2_idx_session_writer_leases_holder").on(table.holderKind, table.holderId),
-  }),
-);
-
-export const nativeAgentSessions = v2.table(
-  "native_agent_sessions",
-  {
-    id: uuid("id").primaryKey().defaultRandom(),
-    spaceId: uuid("space_id").notNull().references(() => spaces.id, { onDelete: "restrict" }),
-    replicaId: uuid("replica_id").notNull().references(() => workspaceReplicas.id, { onDelete: "restrict" }),
-    deviceId: uuid("device_id").notNull().references(() => localAgentDevices.id, { onDelete: "restrict" }),
-    userUuid: varchar("user_uuid", { length: 255 }).notNull(),
-    provider: varchar("provider", { length: 40 }).$type<NativeProvider>().notNull(),
-    nativeSessionKey: varchar("native_session_key", { length: 255 }).notNull(),
-    cohubSessionId: uuid("cohub_session_id").references(() => spaceSessions.id, { onDelete: "restrict" }),
-    providerVersion: varchar("provider_version", { length: 120 }).notNull(),
-    adapterVersion: varchar("adapter_version", { length: 120 }).notNull(),
-    mirrorFidelity: varchar("mirror_fidelity", { length: 30 }).$type<MirrorFidelity>().notNull(),
-    mirrorCompleteness: varchar("mirror_completeness", { length: 40 }).$type<MirrorCompleteness>().notNull(),
-    status: varchar("status", { length: 30 }).notNull().default("active"),
-    bindingGeneration: bigint("binding_generation", { mode: "number" }).notNull().default(0),
-    nativeCursor: jsonb("native_cursor").$type<Record<string, unknown>>(),
-    cohubCursor: jsonb("cohub_cursor").$type<Record<string, unknown>>(),
-    lastMirroredTurnId: uuid("last_mirrored_turn_id").references(() => sessionTurns.id, { onDelete: "restrict" }),
-    workspaceSnapshotId: uuid("workspace_snapshot_id").references(() => workspaceSnapshots.id, { onDelete: "restrict" }),
-    relativeCwd: text("relative_cwd"),
-    lastSeenAt: timestamp("last_seen_at", { withTimezone: true }),
-    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
-    updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
-  },
-  (table) => ({
-    bindingIdentityUniqueIdx: uniqueIndex("v2_uq_native_agent_sessions_binding_identity").on(table.spaceId, table.deviceId, table.provider, table.nativeSessionKey),
-    spaceDeviceIdx: index("v2_idx_native_agent_sessions_space_device").on(table.spaceId, table.deviceId, table.status),
-    cohubSessionIdx: index("v2_idx_native_agent_sessions_cohub_session").on(table.cohubSessionId),
-  }),
-);
-
-export const nativeAgentTurns = v2.table(
-  "native_agent_turns",
-  {
-    id: uuid("id").primaryKey().defaultRandom(),
-    bindingId: uuid("binding_id").notNull().references(() => nativeAgentSessions.id, { onDelete: "restrict" }),
-    spaceId: uuid("space_id").notNull().references(() => spaces.id, { onDelete: "restrict" }),
-    replicaId: uuid("replica_id").notNull().references(() => workspaceReplicas.id, { onDelete: "restrict" }),
-    executionAttemptId: uuid("execution_attempt_id").notNull().references(() => workspaceExecutionAttempts.id, { onDelete: "restrict" }),
-    nativeTurnKey: varchar("native_turn_key", { length: 255 }).notNull(),
-    providerTurnKey: varchar("provider_turn_key", { length: 255 }),
-    cohubSessionId: uuid("cohub_session_id").references(() => spaceSessions.id, { onDelete: "restrict" }),
-    cohubTurnId: uuid("cohub_turn_id").references(() => sessionTurns.id, { onDelete: "restrict" }),
-    status: varchar("status", { length: 30 }).notNull().default("pending"),
-    terminalEventKind: varchar("terminal_event_kind", { length: 40 }).notNull().default("none"),
-    recoveryDeadlineAt: timestamp("recovery_deadline_at", { withTimezone: true }),
-    baseCohubCursor: jsonb("base_cohub_cursor").$type<Record<string, unknown> | null>(),
-    resultCohubCursor: jsonb("result_cohub_cursor").$type<Record<string, unknown> | null>(),
-    baseWorkspaceSnapshotId: uuid("base_workspace_snapshot_id").references(() => workspaceSnapshots.id, { onDelete: "restrict" }),
-    resultWorkspaceSnapshotId: uuid("result_workspace_snapshot_id").references(() => workspaceSnapshots.id, { onDelete: "restrict" }),
-    relativeCwd: text("relative_cwd"),
-    firstEventSequence: bigint("first_event_sequence", { mode: "number" }),
-    lastEventSequence: bigint("last_event_sequence", { mode: "number" }),
-    finalIngestId: uuid("final_ingest_id").references((): AnyPgColumn => nativeAgentIngests.id, { onDelete: "restrict" }),
-    forkOperationKey: varchar("fork_operation_key", { length: 255 }),
-    startedAt: timestamp("started_at", { withTimezone: true }),
-    stoppedAt: timestamp("stopped_at", { withTimezone: true }),
-    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
-    updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
-  },
-  (table) => ({
-    bindingTurnUniqueIdx: uniqueIndex("v2_uq_native_agent_turns_binding_turn").on(table.bindingId, table.nativeTurnKey),
-    bindingAttemptUniqueIdx: uniqueIndex("v2_uq_native_agent_turns_binding_attempt").on(table.bindingId, table.executionAttemptId),
-    forkOperationUniqueIdx: uniqueIndex("v2_uq_native_agent_turns_fork_operation").on(table.forkOperationKey).where(sql`${table.forkOperationKey} is not null`),
-    sessionStatusIdx: index("v2_idx_native_agent_turns_session_status").on(table.cohubSessionId, table.status, table.updatedAt),
-    ingestIdx: index("v2_idx_native_agent_turns_final_ingest").on(table.finalIngestId),
-  }),
-);
-
-export const nativeAgentIngests = v2.table(
-  "native_agent_ingests",
-  {
-    id: uuid("id").primaryKey().defaultRandom(),
-    bindingId: uuid("binding_id").notNull().references(() => nativeAgentSessions.id, { onDelete: "restrict" }),
-    nativeAgentTurnId: uuid("native_agent_turn_id").notNull().references(() => nativeAgentTurns.id, { onDelete: "restrict" }),
-    spaceId: uuid("space_id").notNull().references(() => spaces.id, { onDelete: "restrict" }),
-    replicaId: uuid("replica_id").notNull().references(() => workspaceReplicas.id, { onDelete: "restrict" }),
-    executionAttemptId: uuid("execution_attempt_id").notNull().references(() => workspaceExecutionAttempts.id, { onDelete: "restrict" }),
-    workspacePolicyVersion: bigint("workspace_policy_version", { mode: "number" }).notNull(),
-    integrationPolicyVersion: bigint("integration_policy_version", { mode: "number" }).notNull(),
-    sessionMirrorMode: varchar("session_mirror_mode", { length: 30 }).$type<SessionMirrorMode>().notNull(),
-    nativeTurnKey: varchar("native_turn_key", { length: 255 }).notNull(),
-    bundleId: varchar("bundle_id", { length: 255 }).notNull(),
-    kind: varchar("kind", { length: 40 }).notNull(),
-    policyVersion: integer("policy_version").notNull().default(1),
-    policyMode: varchar("policy_mode", { length: 30 }).notNull(),
-    payloadInline: jsonb("payload_inline").$type<Record<string, unknown>>(),
-    payloadObjectKey: text("payload_object_key"),
-    payloadSha256: varchar("payload_sha256", { length: 64 }).notNull(),
-    payloadBytes: bigint("payload_bytes", { mode: "number" }).notNull(),
-    payloadTransportSha256: varchar("payload_transport_sha256", { length: 64 }),
-    payloadTransportBytes: bigint("payload_transport_bytes", { mode: "number" }),
-    baseCohubCursor: jsonb("base_cohub_cursor").$type<Record<string, unknown> | null>(),
-    resultCohubCursor: jsonb("result_cohub_cursor").$type<Record<string, unknown> | null>(),
-    baseWorkspaceSnapshotId: uuid("base_workspace_snapshot_id").references(() => workspaceSnapshots.id, { onDelete: "restrict" }),
-    resultWorkspaceSnapshotId: uuid("result_workspace_snapshot_id").references(() => workspaceSnapshots.id, { onDelete: "restrict" }),
-    cohubSessionId: uuid("cohub_session_id").references(() => spaceSessions.id, { onDelete: "restrict" }),
-    cohubTurnId: uuid("cohub_turn_id").references(() => sessionTurns.id, { onDelete: "restrict" }),
-    transcriptEntryIds: uuid("transcript_entry_ids").array(),
-    transcriptMarkerEntryId: uuid("transcript_marker_entry_id"),
-    transcriptVisibility: varchar("transcript_visibility", { length: 20 }).notNull().default("hidden"),
-    status: varchar("status", { length: 30 }).$type<NativeIngestStatus>().notNull().default("prepared"),
-    attemptCount: integer("attempt_count").notNull().default(0),
-    nextAttemptAt: timestamp("next_attempt_at", { withTimezone: true }),
-    errorCode: varchar("error_code", { length: 80 }),
-    errorMessage: text("error_message"),
-    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
-    updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
-  },
-  (table) => ({
-    replicaBundleUniqueIdx: uniqueIndex("v2_uq_native_agent_ingests_replica_bundle").on(table.replicaId, table.bundleId),
-    turnStatusIdx: index("v2_idx_native_agent_ingests_turn_status").on(table.nativeAgentTurnId, table.status, table.updatedAt),
-    attemptIdx: index("v2_idx_native_agent_ingests_attempt").on(table.executionAttemptId),
-    hiddenIdx: index("v2_idx_native_agent_ingests_hidden").on(table.cohubSessionId, table.transcriptVisibility, table.status),
-  }),
-);
-
-export const nativeAgentEventReceipts = v2.table(
-  "native_agent_event_receipts",
-  {
-    id: uuid("id").primaryKey().defaultRandom(),
-    bindingId: uuid("binding_id").notNull().references(() => nativeAgentSessions.id, { onDelete: "restrict" }),
-    eventId: varchar("event_id", { length: 255 }).notNull(),
-    executionAttemptId: uuid("execution_attempt_id").references(() => workspaceExecutionAttempts.id, { onDelete: "restrict" }),
-    nativeAgentTurnId: uuid("native_agent_turn_id").references(() => nativeAgentTurns.id, { onDelete: "restrict" }),
-    eventSha256: varchar("event_sha256", { length: 64 }).notNull(),
-    eventSequence: bigint("event_sequence", { mode: "number" }),
-    eventType: varchar("event_type", { length: 40 }).notNull(),
-    firstIngestId: uuid("first_ingest_id").references(() => nativeAgentIngests.id, { onDelete: "restrict" }),
-    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
-  },
-  (table) => ({
-    bindingEventUniqueIdx: uniqueIndex("v2_uq_native_agent_event_receipts_binding_event").on(table.bindingId, table.eventId),
-    turnSequenceIdx: index("v2_idx_native_agent_event_receipts_turn_sequence").on(table.nativeAgentTurnId, table.eventSequence),
-    attemptIdx: index("v2_idx_native_agent_event_receipts_attempt").on(table.executionAttemptId),
-  }),
-);
-
-export const sessionTranscriptState = v2.table(
-  "session_transcript_state",
-  {
-    sessionId: uuid("session_id").primaryKey().references(() => spaceSessions.id, { onDelete: "restrict" }),
-    branchEpoch: uuid("branch_epoch").notNull().defaultRandom(),
-    visibleLeafEntryId: text("visible_leaf_entry_id"),
-    visibleLeafHash: varchar("visible_leaf_hash", { length: 64 }).notNull().default(""),
-    physicalLeafEntryId: text("physical_leaf_entry_id"),
-    physicalLeafHash: varchar("physical_leaf_hash", { length: 64 }).notNull().default(""),
-    logicalEntryCount: bigint("logical_entry_count", { mode: "number" }).notNull().default(0),
-    lastTurnSequence: integer("last_turn_sequence").notNull().default(0),
-    indexedFileSize: bigint("indexed_file_size", { mode: "number" }).notNull().default(0),
-    indexedFileMtime: timestamp("indexed_file_mtime", { withTimezone: true }),
-    sidecarChecksum: varchar("sidecar_checksum", { length: 64 }),
-    status: varchar("status", { length: 20 }).notNull().default("ready"),
-    updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
-  },
-  (table) => ({
-    statusIdx: index("v2_idx_session_transcript_state_status").on(table.status, table.updatedAt),
-  }),
-);
-
-export const sessionRealtimeOutbox = v2.table(
-  "session_realtime_outbox",
-  {
-    id: uuid("id").primaryKey().defaultRandom(),
-    deliveryKey: varchar("delivery_key", { length: 500 }).notNull(),
-    ingestId: uuid("ingest_id").references(() => nativeAgentIngests.id, { onDelete: "restrict" }),
-    spaceId: uuid("space_id").notNull().references(() => spaces.id, { onDelete: "restrict" }),
-    sessionId: uuid("session_id").references(() => spaceSessions.id, { onDelete: "restrict" }),
-    eventType: varchar("event_type", { length: 120 }).notNull(),
-    entityId: varchar("entity_id", { length: 255 }).notNull(),
-    revision: bigint("revision", { mode: "number" }).notNull(),
-    envelope: jsonb("envelope").$type<Record<string, unknown>>().notNull(),
-    status: varchar("status", { length: 20 }).notNull().default("ready"),
-    attemptCount: integer("attempt_count").notNull().default(0),
-    nextAttemptAt: timestamp("next_attempt_at", { withTimezone: true }),
-    publishedAt: timestamp("published_at", { withTimezone: true }),
-    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
-    updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
-  },
-  (table) => ({
-    deliveryKeyUniqueIdx: uniqueIndex("v2_uq_session_realtime_outbox_delivery_key").on(table.deliveryKey),
-    readyIdx: index("v2_idx_session_realtime_outbox_ready").on(table.status, table.nextAttemptAt, table.createdAt),
-    sessionRevisionIdx: index("v2_idx_session_realtime_outbox_session_revision").on(table.sessionId, table.revision),
-    ingestIdx: index("v2_idx_session_realtime_outbox_ingest").on(table.ingestId),
   }),
 );

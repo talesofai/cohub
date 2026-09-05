@@ -96,13 +96,11 @@ async function allocateCloudWorkspaceAttempt(input: {
       )).for("update").limit(1);
       if (!runtimeRow) throw new LocalAgentServiceError("local ACP runtime is offline or unavailable", "runtime_unavailable", 409);
       if (!isLocalAcpProviderEnabled(runtimeRow.provider)) throw new LocalAgentServiceError(`${runtimeRow.provider} local ACP runtime is disabled`, "provider_not_enabled", 403);
-      const [integrationPolicy] = await tx.select({ sessionMirrorMode: spaceLocalAgentPolicies.sessionMirrorMode, workspaceMode: spaceLocalAgentPolicies.workspaceMode, integrationPolicyVersion: spaceLocalAgentPolicies.integrationPolicyVersion }).from(spaceLocalAgentPolicies).where(and(
+      const [integrationPolicy] = await tx.select({ workspaceMode: spaceLocalAgentPolicies.workspaceMode, integrationPolicyVersion: spaceLocalAgentPolicies.integrationPolicyVersion }).from(spaceLocalAgentPolicies).where(and(
         eq(spaceLocalAgentPolicies.spaceId, input.spaceId),
         eq(spaceLocalAgentPolicies.deviceId, runtimeRow.deviceId),
       )).limit(1);
-      if (integrationPolicy?.sessionMirrorMode !== "full") {
-        throw new LocalAgentServiceError("full session mirror consent is required for ACP runtime execution", "runtime_transcript_consent_required", 403);
-      }
+      if (!integrationPolicy) throw new LocalAgentServiceError("local agent policy is unavailable for this runtime", "policy_unavailable", 409);
       if (integrationPolicy.workspaceMode === "one_way_to_local") {
         throw new LocalAgentServiceError("local workspace is read-only under the current policy", "workspace_write_disabled", 403);
       }
@@ -144,7 +142,6 @@ async function allocateCloudWorkspaceAttempt(input: {
       idempotencyKey,
       executorKind: runtimeId ? "local_acp" : "cloud_agent",
       provider: runtime?.provider ?? null,
-      sessionMirrorMode: runtimeId ? "full" : null,
       integrationPolicyVersion: runtimeId ? integrationPolicyVersion : null,
       workspaceRequired: true,
       transcriptRequired: true,

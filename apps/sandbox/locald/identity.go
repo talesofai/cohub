@@ -134,19 +134,3 @@ func CanonicalWorkspaceRoot(root string) (string, error) {
 func RootFingerprint(identity []byte, spaceID, root string) string {
 	return ScopedIdentity(identity, "path", "workspace", scopedUploadIdentity(spaceID, "root", strings.TrimSpace(root)))
 }
-
-func NativeSessionKey(identity []byte, spaceID, replicaID, provider, homeNamespace, rawSessionID string) string {
-	return ScopedIdentity(identity, "session", provider, scopedUploadIdentity(spaceID, replicaID, homeNamespace+"\x00"+rawSessionID))
-}
-
-func NativeTurnKey(identity []byte, spaceID, replicaID, provider, rawTurnID string) string {
-	return ScopedIdentity(identity, "turn", provider, scopedUploadIdentity(spaceID, replicaID, rawTurnID))
-}
-
-func NativeMessageKey(identity []byte, spaceID, replicaID, provider, rawMessageID string) string {
-	return ScopedIdentity(identity, "message", provider, scopedUploadIdentity(spaceID, replicaID, rawMessageID))
-}
-
-func NativeToolKey(identity []byte, spaceID, replicaID, provider, rawToolID string) string {
-	return ScopedIdentity(identity, "tool", provider, scopedUploadIdentity(spaceID, replicaID, rawToolID))
-}

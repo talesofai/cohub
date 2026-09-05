@@ -82,7 +82,6 @@ function getUserMessageId(turn: TurnRow): string {
 function executionGroupKey(turn: TurnRow): string {
   const meta = asRecord(turn.meta);
   if (meta.executorKind === "local_acp") return `local_acp:${getMetaString(turn, "runtimeId") ?? "missing"}`;
-  if (meta.executorKind === "local_native") return `local_native:${getMetaString(turn, "executionAttemptId") ?? turn.id}`;
   return "cloud_agent";
 }
 
@@ -181,24 +180,22 @@ async function claimWorkspaceAttempt(tx: Transaction, spaceId: string, owner: Tu
       // The idempotent retry owns this lease and may refresh it below.
     } else if (expiresAt.getTime() > Date.now()) {
       throw new Error("workspace is held by another writer");
-    } else if (holderKind === "local_agent" || holderKind === "local_offline_reservation") {
+    } else if (holderKind === "local_agent") {
       const unresolvedRows = await tx.execute(sql`
         select id
         from v2.workspace_execution_attempts
         where space_id = ${spaceId}
           and status in ('running', 'workspace_sealed', 'transcript_sealed', 'awaiting_recovery')
-          and (${holderKind === "local_agent"
-            ? sql`id = ${holderId}`
-            : sql`true`})
+          and id = ${holderId}
         limit 1
       `);
-      if (unresolvedRows.length > 0) throw new Error("workspace takeover requires explicit confirmation");
+      if (unresolvedRows.length > 0) throw new Error("workspace is held by an unresolved local execution attempt");
     }
   }
   const leaseRows = await tx.execute(sql`
     insert into v2.workspace_writer_leases
-      (space_id, holder_kind, holder_id, holder_user_uuid, epoch, base_snapshot_id, expires_at, last_heartbeat_at, takeover_requires_confirmation, updated_at)
-    values (${spaceId}, ${leaseHolderKind}, ${attemptId}, ${owner.userUuid}, 1, ${typeof baseSnapshotId === "string" ? baseSnapshotId : null}, now() + interval '30 seconds', now(), false, now())
+      (space_id, holder_kind, holder_id, holder_user_uuid, epoch, base_snapshot_id, expires_at, last_heartbeat_at, updated_at)
+    values (${spaceId}, ${leaseHolderKind}, ${attemptId}, ${owner.userUuid}, 1, ${typeof baseSnapshotId === "string" ? baseSnapshotId : null}, now() + interval '30 seconds', now(), now())
     on conflict (space_id) do update set
       holder_kind = excluded.holder_kind,
       holder_id = excluded.holder_id,
@@ -207,7 +204,6 @@ async function claimWorkspaceAttempt(tx: Transaction, spaceId: string, owner: Tu
       base_snapshot_id = excluded.base_snapshot_id,
       expires_at = excluded.expires_at,
       last_heartbeat_at = now(),
-      takeover_requires_confirmation = false,
       updated_at = now()
     where v2.workspace_writer_leases.expires_at <= now()
        or (v2.workspace_writer_leases.holder_kind = excluded.holder_kind and v2.workspace_writer_leases.holder_id = excluded.holder_id)
@@ -318,7 +314,7 @@ export async function claimNextTurnBatch(input: Pick<AgentTurnJobData, "sessionI
           select 1 from v2.workspace_writer_leases wl
           where wl.space_id = ${spaceId}
             and wl.expires_at > now()
-            and wl.holder_kind in ('cloud_agent', 'local_agent', 'local_offline_reservation', 'cloud_file_api', 'cloud_command', 'sync_apply')
+            and wl.holder_kind in ('cloud_agent', 'local_agent', 'cloud_file_api', 'cloud_command', 'sync_apply')
             and not exists (
               select 1 from v2.session_turns own_turn
               where own_turn.session_id = ${input.sessionId}
@@ -334,7 +330,7 @@ export async function claimNextTurnBatch(input: Pick<AgentTurnJobData, "sessionI
               wa.status in ('prepared', 'running', 'workspace_sealed', 'transcript_sealed', 'awaiting_recovery')
               or (wa.executor_kind = 'local_acp' and wa.status = 'queued' and wa.session_id <> ${input.sessionId})
             )
-            and wa.executor_kind in ('local_native', 'local_acp')
+            and wa.executor_kind = 'local_acp'
         ) as has_local_attempt,
         exists (
           select 1
@@ -343,17 +339,6 @@ export async function claimNextTurnBatch(input: Pick<AgentTurnJobData, "sessionI
             on lr.space_id = lp.space_id and lr.device_id = lp.device_id and lr.kind = 'local' and lr.status <> 'detached'
           where lp.space_id = ${spaceId} and lp.workspace_mode = 'one_way_to_cloud'
         ) as has_local_authoritative_policy,
-        exists (
-          select 1 from v2.native_agent_ingests ni
-          where ni.cohub_session_id = ${input.sessionId}
-            and ni.transcript_visibility in ('hidden', 'orphaned')
-            and ni.status not in ('applied', 'quarantined', 'failed')
-        ) as has_hidden_ingest,
-        exists (
-          select 1 from v2.native_agent_turns nt
-          where nt.cohub_session_id = ${input.sessionId}
-            and nt.status in ('pending', 'running', 'sealed', 'awaiting_recovery', 'applying', 'forking')
-        ) as has_native_turn,
         exists (
           select 1
           from v2.workspace_execution_attempts local_attempt
@@ -368,7 +353,7 @@ export async function claimNextTurnBatch(input: Pick<AgentTurnJobData, "sessionI
           where local_turn.session_id = ${input.sessionId}
             and local_turn.execution_kind = 'agent'
             and local_turn.status = 'queued'
-            and local_turn.meta->>'executorKind' in ('local_native', 'local_acp')
+            and local_turn.meta->>'executorKind' = 'local_acp'
         ) as has_local_executor
       from v2.workspace_state ws
       where ws.space_id = ${spaceId}
@@ -388,11 +373,7 @@ export async function claimNextTurnBatch(input: Pick<AgentTurnJobData, "sessionI
                 ? "local_runtime_unavailable"
                 : gate.has_local_authoritative_policy === true && gate.has_local_executor !== true
                   ? "cloud_workspace_write_disabled"
-                  : gate.has_hidden_ingest === true
-                  ? "native_ingest_pending"
-                  : gate.has_native_turn === true
-                    ? "native_turn_active"
-                    : null;
+                  : null;
       if (reason) return { kind: "blocked" as const, reason, retryAfterMs: 1_000 };
     }
 
@@ -427,13 +408,13 @@ export async function claimNextTurnBatch(input: Pick<AgentTurnJobData, "sessionI
     const beforeGeneration = blockingSequence === null ? sql`true` : sql`sequence < ${blockingSequence}`;
 
     const steerExecutorFilter = gate?.has_local_authoritative_policy === true
-      ? sql`meta->>'executorKind' in ('local_native', 'local_acp')`
+      ? sql`meta->>'executorKind' = 'local_acp'`
       : sql`true`;
     const steerRows = await tx.execute(sql`
       select id, session_id, user_uuid, sequence, status, intent, user_content, user_text, meta, updated_at
       from v2.session_turns
       where session_id = ${input.sessionId} and execution_kind = 'agent' and status = 'queued' and intent = 'steer' and ${beforeGeneration} and ${steerExecutorFilter}
-      order by case when meta->>'executorKind' in ('local_native', 'local_acp') then 0 else 1 end, updated_at asc, sequence asc
+      order by case when meta->>'executorKind' = 'local_acp' then 0 else 1 end, updated_at asc, sequence asc
       limit 1
     `);
     const steer = steerRows[0] ? normalizeTurn(steerRows[0] as Record<string, unknown>) : null;
@@ -450,7 +431,7 @@ export async function claimNextTurnBatch(input: Pick<AgentTurnJobData, "sessionI
     `);
     const followups = followupRows.map((row) => normalizeTurn(row as Record<string, unknown>));
     const firstFollowup = gate?.has_local_authoritative_policy === true
-      ? followups.find((turn) => asRecord(turn.meta).executorKind === "local_acp" || asRecord(turn.meta).executorKind === "local_native") ?? followups[0]
+      ? followups.find((turn) => asRecord(turn.meta).executorKind === "local_acp") ?? followups[0]
       : followups[0];
     if (!firstFollowup) return { kind: "noop" as const };
     const firstGroup = executionGroupKey(firstFollowup);

@@ -14,7 +14,7 @@ func TestStateStorePersistsSpoolIdempotently(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer store.Close()
-	first, err := store.AppendSpool("event-1", []byte(`{"type":"hook"}`))
+	first, err := store.AppendSpool("event-1", []byte(`{"kind":"workspace_terminal"}`))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -50,10 +50,10 @@ func TestReplicaForPathChoosesDeepestRoot(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer store.Close()
-	if err := store.UpsertReplica(ReplicaState{SpaceID: "outer", ReplicaID: "outer-r", Root: "/tmp/project", RootFingerprint: "outer-f", DeviceID: "device", PolicyVersion: 1, IntegrationPolicyVersion: 1, MirrorMode: "disabled", Status: "ready", UpdatedAt: time.Now().UTC().Format(time.RFC3339Nano)}); err != nil {
+	if err := store.UpsertReplica(ReplicaState{SpaceID: "outer", ReplicaID: "outer-r", Root: "/tmp/project", RootFingerprint: "outer-f", DeviceID: "device", PolicyVersion: 1, IntegrationPolicyVersion: 1, Status: "ready", UpdatedAt: time.Now().UTC().Format(time.RFC3339Nano)}); err != nil {
 		t.Fatal(err)
 	}
-	if err := store.UpsertReplica(ReplicaState{SpaceID: "inner", ReplicaID: "inner-r", Root: "/tmp/project/packages", RootFingerprint: "inner-f", DeviceID: "device", PolicyVersion: 1, IntegrationPolicyVersion: 1, MirrorMode: "disabled", Status: "ready", UpdatedAt: time.Now().UTC().Format(time.RFC3339Nano)}); err != nil {
+	if err := store.UpsertReplica(ReplicaState{SpaceID: "inner", ReplicaID: "inner-r", Root: "/tmp/project/packages", RootFingerprint: "inner-f", DeviceID: "device", PolicyVersion: 1, IntegrationPolicyVersion: 1, Status: "ready", UpdatedAt: time.Now().UTC().Format(time.RFC3339Nano)}); err != nil {
 		t.Fatal(err)
 	}
 	result, err := store.ReplicaForPath("/tmp/project/packages/protocol")
@@ -79,10 +79,10 @@ func TestReplicaReconfigurePreservesAppliedAndCandidateState(t *testing.T) {
 		DeviceID:                 "device",
 		PolicyVersion:            1,
 		IntegrationPolicyVersion: 1,
-		MirrorMode:               "full",
-		InitialChoice:            "merge",
-		Status:                   "ready",
-		UpdatedAt:                time.Now().UTC().Format(time.RFC3339Nano),
+
+		InitialChoice: "merge",
+		Status:        "ready",
+		UpdatedAt:     time.Now().UTC().Format(time.RFC3339Nano),
 	}
 	if err := store.UpsertReplica(initial); err != nil {
 		t.Fatal(err)
@@ -95,7 +95,6 @@ func TestReplicaReconfigurePreservesAppliedAndCandidateState(t *testing.T) {
 	}
 	initial.PolicyVersion = 2
 	initial.IntegrationPolicyVersion = 3
-	initial.MirrorMode = "metadata_only"
 	if err := store.UpsertReplica(initial); err != nil {
 		t.Fatal(err)
 	}
@@ -112,7 +111,7 @@ func TestReplicaReconfigurePreservesAppliedAndCandidateState(t *testing.T) {
 	if result.CandidateSnapshotID != "candidate" || result.CandidateTreeHash != "tree" || result.CandidateGeneration != 8 || string(result.CandidateManifest) != `{"version":1,"candidate":true}` {
 		t.Fatalf("candidate state was overwritten: %#v", result)
 	}
-	if result.PolicyVersion != 2 || result.IntegrationPolicyVersion != 3 || result.MirrorMode != "metadata_only" || result.InitialChoice != "merge" {
+	if result.PolicyVersion != 2 || result.IntegrationPolicyVersion != 3 || result.InitialChoice != "merge" {
 		t.Fatalf("configuration was not updated: %#v", result)
 	}
 }
@@ -125,8 +124,7 @@ func TestReplicaRebindResetsServerPointersButKeepsWorkingTreeAttachment(t *testi
 	defer store.Close()
 	initial := ReplicaState{
 		SpaceID: "space", ReplicaID: "replica-old", Root: "/tmp/project", RootFingerprint: "fingerprint-old",
-		DeviceID: "device-old", PolicyVersion: 1, IntegrationPolicyVersion: 1, MirrorMode: "disabled",
-		InitialChoice: "use-cloud", Status: "ready", UpdatedAt: time.Now().UTC().Format(time.RFC3339Nano),
+		DeviceID: "device-old", PolicyVersion: 1, IntegrationPolicyVersion: 1, InitialChoice: "use-cloud", Status: "ready", UpdatedAt: time.Now().UTC().Format(time.RFC3339Nano),
 	}
 	if err := store.UpsertReplica(initial); err != nil {
 		t.Fatal(err)
@@ -165,8 +163,7 @@ func TestReplicaCandidateCannotBeReplacedBeforeResolution(t *testing.T) {
 	defer store.Close()
 	if err := store.UpsertReplica(ReplicaState{
 		SpaceID: "space", ReplicaID: "replica", Root: "/tmp/project", RootFingerprint: "fingerprint",
-		DeviceID: "device", PolicyVersion: 1, IntegrationPolicyVersion: 1, MirrorMode: "disabled",
-		InitialChoice: "merge", Status: "ready", UpdatedAt: time.Now().UTC().Format(time.RFC3339Nano),
+		DeviceID: "device", PolicyVersion: 1, IntegrationPolicyVersion: 1, InitialChoice: "merge", Status: "ready", UpdatedAt: time.Now().UTC().Format(time.RFC3339Nano),
 	}); err != nil {
 		t.Fatal(err)
 	}
@@ -178,8 +175,7 @@ func TestReplicaCandidateCannotBeReplacedBeforeResolution(t *testing.T) {
 	}
 	if err := store.UpsertReplica(ReplicaState{
 		SpaceID: "space", ReplicaID: "new-replica", Root: "/tmp/project", RootFingerprint: "new-fingerprint",
-		DeviceID: "new-device", PolicyVersion: 1, IntegrationPolicyVersion: 1, MirrorMode: "disabled",
-		InitialChoice: "merge", Status: "attaching", UpdatedAt: time.Now().UTC().Format(time.RFC3339Nano),
+		DeviceID: "new-device", PolicyVersion: 1, IntegrationPolicyVersion: 1, InitialChoice: "merge", Status: "attaching", UpdatedAt: time.Now().UTC().Format(time.RFC3339Nano),
 	}); err == nil {
 		t.Fatal("expected replica rebind with a pending candidate to fail")
 	}
@@ -192,7 +188,7 @@ func TestReplicaCandidateCannotBeReplacedBeforeResolution(t *testing.T) {
 	}
 }
 
-func TestReplicaPolicyRefreshPersistsRevokedMirrorConsent(t *testing.T) {
+func TestReplicaPolicyRefreshPersistsVersions(t *testing.T) {
 	store, err := OpenState(t.TempDir())
 	if err != nil {
 		t.Fatal(err)
@@ -200,20 +196,19 @@ func TestReplicaPolicyRefreshPersistsRevokedMirrorConsent(t *testing.T) {
 	defer store.Close()
 	if err := store.UpsertReplica(ReplicaState{
 		SpaceID: "space", ReplicaID: "replica", Root: "/tmp/project", RootFingerprint: "fingerprint",
-		DeviceID: "device", PolicyVersion: 1, IntegrationPolicyVersion: 1, MirrorMode: "full",
-		InitialChoice: "merge", Status: "ready", UpdatedAt: time.Now().UTC().Format(time.RFC3339Nano),
+		DeviceID: "device", PolicyVersion: 1, IntegrationPolicyVersion: 1, InitialChoice: "merge", Status: "ready", UpdatedAt: time.Now().UTC().Format(time.RFC3339Nano),
 	}); err != nil {
 		t.Fatal(err)
 	}
-	if err := store.UpdateReplicaPolicy("space", 2, 4, "disabled"); err != nil {
+	if err := store.UpdateReplicaPolicy("space", 2, 4); err != nil {
 		t.Fatal(err)
 	}
 	replica, err := store.ReplicaForSpace("space")
 	if err != nil {
 		t.Fatal(err)
 	}
-	if replica == nil || replica.PolicyVersion != 2 || replica.IntegrationPolicyVersion != 4 || replica.MirrorMode != "disabled" {
-		t.Fatalf("revoked mirror policy was not persisted: %#v", replica)
+	if replica == nil || replica.PolicyVersion != 2 || replica.IntegrationPolicyVersion != 4 {
+		t.Fatalf("policy refresh was not persisted: %#v", replica)
 	}
 }
 
@@ -225,7 +220,7 @@ func TestReplicaRootOverlapIsRejectedWithoutExplicitBoundary(t *testing.T) {
 	defer store.Close()
 	if err := store.UpsertReplica(ReplicaState{
 		SpaceID: "outer", ReplicaID: "outer-replica", Root: "/tmp/project", RootFingerprint: "outer-fingerprint",
-		DeviceID: "device", PolicyVersion: 1, IntegrationPolicyVersion: 1, MirrorMode: "disabled", Status: "ready", UpdatedAt: time.Now().UTC().Format(time.RFC3339Nano),
+		DeviceID: "device", PolicyVersion: 1, IntegrationPolicyVersion: 1, Status: "ready", UpdatedAt: time.Now().UTC().Format(time.RFC3339Nano),
 	}); err != nil {
 		t.Fatal(err)
 	}

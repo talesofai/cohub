@@ -22,7 +22,7 @@ import { registerTasks } from "./commands/tasks.js";
 import { registerDesktop, registerLegacyUi } from "./commands/desktop.js";
 import { registerApps } from "./commands/apps.js";
 import { registerWorkspace } from "./commands/workspace.js";
-import { registerAgentHooks } from "./commands/agent-hooks.js";
+import { registerAgentRuntime } from "./commands/agent-runtime.js";
 
 const VERSION = (() => {
   try {
@@ -92,7 +92,7 @@ registerTasks(program);
 registerCronJobs(program);
 registerApps(program);
 registerWorkspace(program);
-registerAgentHooks(program);
+registerAgentRuntime(program);
 registerDesktop(program);
 registerLegacyUi(program);
 

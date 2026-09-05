@@ -47,9 +47,7 @@ type remoteReplicaState struct {
 	} `json:"workspacePolicy"`
 	IntegrationPolicy struct {
 		IntegrationPolicyVersion int64  `json:"integrationPolicyVersion"`
-		SessionMirrorMode        string `json:"sessionMirrorMode"`
 		WorkspaceMode            string `json:"workspaceMode"`
-		OfflineEnabled           bool   `json:"offlineEnabled"`
 	} `json:"integrationPolicy"`
 	Lease *struct {
 		HolderKind string `json:"holderKind"`
@@ -239,7 +237,7 @@ func (d *Daemon) heartbeatActivePermits(ctx context.Context) {
 		return
 	}
 	for _, permit := range permits {
-		if permit.LeaseEpoch <= 0 || permit.ExpiresAt.Before(time.Now().UTC()) || permit.HolderKind == "local_offline_reservation" || isAcpRuntimePermit(permit.HolderID) {
+		if permit.LeaseEpoch <= 0 || permit.ExpiresAt.Before(time.Now().UTC()) || isAcpRuntimePermit(permit.HolderID) {
 			continue
 		}
 		payload := mustJSON(map[string]any{
@@ -266,7 +264,7 @@ func (d *Daemon) heartbeatActivePermits(ctx context.Context) {
 }
 
 func (d *Daemon) localReplicas() ([]*ReplicaState, error) {
-	rows, err := d.state.db.Query(`SELECT space_id, replica_id, root, root_fingerprint, device_id, policy_version, integration_policy_version, mirror_mode, COALESCE(canonical_snapshot_id, ''), COALESCE(applied_snapshot_id, ''), generation, status, COALESCE(manifest, X''), COALESCE(candidate_snapshot_id, ''), COALESCE(candidate_tree_hash, ''), COALESCE(candidate_generation, 0), COALESCE(candidate_manifest, X''), COALESCE(candidate_base_snapshot_id, ''), COALESCE(candidate_source, ''), COALESCE(initial_choice, ''), updated_at FROM replicas`)
+	rows, err := d.state.db.Query(`SELECT space_id, replica_id, root, root_fingerprint, device_id, policy_version, integration_policy_version, COALESCE(canonical_snapshot_id, ''), COALESCE(applied_snapshot_id, ''), generation, status, COALESCE(manifest, X''), COALESCE(candidate_snapshot_id, ''), COALESCE(candidate_tree_hash, ''), COALESCE(candidate_generation, 0), COALESCE(candidate_manifest, X''), COALESCE(candidate_base_snapshot_id, ''), COALESCE(candidate_source, ''), COALESCE(initial_choice, ''), updated_at FROM replicas`)
 	if err != nil {
 		return nil, err
 	}
@@ -274,7 +272,7 @@ func (d *Daemon) localReplicas() ([]*ReplicaState, error) {
 	var result []*ReplicaState
 	for rows.Next() {
 		item := &ReplicaState{}
-		if err := rows.Scan(&item.SpaceID, &item.ReplicaID, &item.Root, &item.RootFingerprint, &item.DeviceID, &item.PolicyVersion, &item.IntegrationPolicyVersion, &item.MirrorMode, &item.CanonicalSnapshotID, &item.AppliedSnapshotID, &item.Generation, &item.Status, &item.Manifest, &item.CandidateSnapshotID, &item.CandidateTreeHash, &item.CandidateGeneration, &item.CandidateManifest, &item.CandidateBaseSnapshotID, &item.CandidateSource, &item.InitialChoice, &item.UpdatedAt); err != nil {
+		if err := rows.Scan(&item.SpaceID, &item.ReplicaID, &item.Root, &item.RootFingerprint, &item.DeviceID, &item.PolicyVersion, &item.IntegrationPolicyVersion, &item.CanonicalSnapshotID, &item.AppliedSnapshotID, &item.Generation, &item.Status, &item.Manifest, &item.CandidateSnapshotID, &item.CandidateTreeHash, &item.CandidateGeneration, &item.CandidateManifest, &item.CandidateBaseSnapshotID, &item.CandidateSource, &item.InitialChoice, &item.UpdatedAt); err != nil {
 			return nil, err
 		}
 		result = append(result, item)
@@ -302,10 +300,7 @@ func (d *Daemon) syncReplica(ctx context.Context, replica *ReplicaState) error {
 	if state.WorkspacePolicy.PolicyVersion < 1 || state.IntegrationPolicy.IntegrationPolicyVersion < 1 {
 		return errors.New("workspace or integration policy is unavailable")
 	}
-	if state.IntegrationPolicy.SessionMirrorMode != "full" && state.IntegrationPolicy.SessionMirrorMode != "metadata_only" && state.IntegrationPolicy.SessionMirrorMode != "disabled" {
-		return errors.New("integration policy has an unsupported session mirror mode")
-	}
-	if err := d.state.UpdateReplicaPolicy(replica.SpaceID, state.WorkspacePolicy.PolicyVersion, state.IntegrationPolicy.IntegrationPolicyVersion, state.IntegrationPolicy.SessionMirrorMode); err != nil {
+	if err := d.state.UpdateReplicaPolicy(replica.SpaceID, state.WorkspacePolicy.PolicyVersion, state.IntegrationPolicy.IntegrationPolicyVersion); err != nil {
 		return err
 	}
 	if state.Lease != nil {
@@ -319,7 +314,6 @@ func (d *Daemon) syncReplica(ctx context.Context, replica *ReplicaState) error {
 	}
 	replica.PolicyVersion = state.WorkspacePolicy.PolicyVersion
 	replica.IntegrationPolicyVersion = state.IntegrationPolicy.IntegrationPolicyVersion
-	replica.MirrorMode = state.IntegrationPolicy.SessionMirrorMode
 	canonicalID := state.Workspace.CanonicalSnapshotID
 	if canonicalID == "" {
 		canonicalID = state.Replica.CanonicalSnapshot
@@ -607,18 +601,16 @@ func (d *Daemon) finalizeExecutionWorkspace(ctx context.Context, spaceID, replic
 	if err := json.Unmarshal(stateBody, &state); err != nil {
 		return err
 	}
-	if err := d.state.UpdateReplicaPolicy(spaceID, state.WorkspacePolicy.PolicyVersion, state.IntegrationPolicy.IntegrationPolicyVersion, state.IntegrationPolicy.SessionMirrorMode); err != nil {
+	if err := d.state.UpdateReplicaPolicy(spaceID, state.WorkspacePolicy.PolicyVersion, state.IntegrationPolicy.IntegrationPolicyVersion); err != nil {
 		return err
 	}
 	replica.PolicyVersion = state.WorkspacePolicy.PolicyVersion
 	replica.IntegrationPolicyVersion = state.IntegrationPolicy.IntegrationPolicyVersion
-	replica.MirrorMode = state.IntegrationPolicy.SessionMirrorMode
 	registerPayload := mustJSON(map[string]any{
 		"leaseEpoch":               permit.LeaseEpoch,
 		"baseSnapshotId":           nullableString(permit.BaseSnapshotID),
 		"workspacePolicyVersion":   replica.PolicyVersion,
 		"integrationPolicyVersion": replica.IntegrationPolicyVersion,
-		"sessionMirrorMode":        replica.MirrorMode,
 	})
 	registerBody, err := d.request(ctx, http.MethodPost, fmt.Sprintf("%s/api/local-agent/spaces/%s/replicas/%s/attempts/%s/register", d.apiBaseURL(), spaceID, replicaID, executionAttemptID), registerPayload, 2*1024*1024)
 	if err != nil {

@@ -8,12 +8,6 @@ import {
   reconcileWorkspaceManifests,
   validateManifest,
 } from "./src/workspace-replication/index.js";
-import {
-  LOCAL_AGENT_INLINE_INGEST_MAX_BYTES,
-  NativeTurnBundleSchema,
-  validateLocalAgentHookEnvelope,
-  validateNativeTurnBundleInlineSize,
-} from "./src/local-agent/index.js";
 
 const hashA = "a".repeat(64);
 const hashB = "b".repeat(64);
@@ -108,70 +102,6 @@ test("builds a deterministic three-way plan and preserves conflicts", () => {
       expectedBase: { path: "changed.txt", type: "file", size: 1, sha256: hashA, executable: false },
     },
   ]);
-});
-
-test("rejects oversized inline native hooks and bundles", () => {
-  const oversizedText = "x".repeat(LOCAL_AGENT_INLINE_INGEST_MAX_BYTES);
-  const hook = {
-    version: 1,
-    executionAttemptId: null,
-    eventId: "event-1",
-    observedAt: "2026-08-28T00:00:00.000Z",
-    deviceId: "device-1",
-    replicaId: "replica-1",
-    provider: "pi",
-    providerVersion: "0.81.1",
-    adapterVersion: "locald-pi-v1",
-    identityKeyVersion: 1,
-    workspacePolicyVersion: 1,
-    integrationPolicyVersion: 1,
-    sessionMirrorMode: "full",
-    nativeSessionKey: "session-1",
-    nativeTurnKey: "turn-1",
-    nativeEventSequence: 1,
-    localReceiptSequence: 1,
-    type: "message_finished",
-    workspace: {
-      relativeCwd: ".",
-      baseCanonicalSnapshotId: null,
-      localSnapshotId: null,
-      leaseEpoch: null,
-    },
-    payload: { text: oversizedText },
-  } as const;
-  assert.throws(() => validateLocalAgentHookEnvelope(hook), /hook_payload_too_large/);
-
-  const bundle = NativeTurnBundleSchema.parse({
-    version: 1,
-    executionAttemptId: "attempt-1",
-    workspacePolicyVersion: 1,
-    integrationPolicyVersion: 1,
-    sessionMirrorMode: "metadata_only",
-    bundleId: "bundle-1",
-    provider: "pi",
-    providerVersion: "0.81.1",
-    adapterVersion: "locald-pi-v1",
-    nativeSessionKey: "session-1",
-    nativeTurnKey: "turn-1",
-    previousNativeCursor: null,
-    nextNativeCursor: {},
-    cohubTranscriptBase: null,
-    workspaceExecutionBase: {
-      executionAttemptId: "attempt-1",
-      canonicalSnapshotId: null,
-      localSnapshotId: null,
-      leaseEpoch: null,
-    },
-    events: [],
-    historyDelta: [{
-      nativeMessageKey: "message-1",
-      role: "assistant",
-      content: [{ type: "text", text: oversizedText }],
-    }],
-    fidelityHint: "exact",
-    diagnostics: {},
-  });
-  assert.throws(() => validateNativeTurnBundleInlineSize(bundle), /native_inline_bundle_too_large/);
 });
 
 test("produces stable tree hashes independent of input entry order", async () => {

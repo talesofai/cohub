@@ -1,5 +1,4 @@
 import { Hono, type Context } from "hono";
-import { bodyLimit } from "hono/body-limit";
 import { ZodError } from "zod";
 import { LocalAgentPolicySchema } from "@cohub/protocol";
 import { and, eq } from "drizzle-orm";
@@ -8,17 +7,12 @@ import { useAccountPrincipal, getLocalAgentPrincipal, authzDenied, requireValidI
 import { hasPermission } from "../permissions.js";
 import { db } from "../db/index.js";
 import { config } from "../config.js";
-import { enqueueNativeAgentIngestJob } from "../agent-turn-queue.js";
 import { enqueueWorkspaceSyncJob } from "../workspace-sync-queue.js";
 import {
   LocalAgentServiceError,
-  acceptNativeHook,
-  acceptNativeIngestInline,
   acquireWorkspaceWriterLease,
-  commitNativeIngestObject,
   commitWorkspaceSnapshot,
   enrollLocalAgentDevice,
-  getNativeIngest,
   getWorkspaceReplicaState,
   getWorkspaceSnapshot,
   ackWorkspaceReplicaApplied,
@@ -28,7 +22,6 @@ import {
   listWorkspaceConflicts,
   resolveWorkspaceConflict,
   listWorkspaceReplicaStates,
-  prepareNativeIngest,
   prepareWorkspaceSnapshot,
   releaseWorkspaceWriterLease,
   registerLocalWorkspaceAttempt,
@@ -37,21 +30,17 @@ import {
   type LocalAgentActor,
 } from "../local-agent-service.js";
 import {
-  fenceLocalAcpRuntimesForPolicy,
   getLocalAcpRuntime,
   listLocalAcpRuntimes,
   registerLocalAcpRuntime,
   revokeLocalAcpRuntime,
+  updateLocalAgentPolicy,
 } from "../local-acp-runtime-service.js";
 
 const router = new Hono();
 
 router.use("*", async (c, next) => {
   if (!config.workspaceReplicationEnabled) return c.json({ code: "not_found", message: "not found" }, 404);
-  const path = c.req.path;
-  if (!config.nativeAgentMirrorEnabled && (path.includes("/events/") || path.includes("/ingests/"))) {
-    return c.json({ code: "not_found", message: "not found" }, 404);
-  }
   await next();
 });
 
@@ -385,7 +374,7 @@ router.post("/spaces/:spaceId/leases/acquire", async (c) => {
   try {
     const body = await c.req.json<JsonRecord>().catch(() => ({} as JsonRecord));
     const holderKind = typeof body.holderKind === "string" ? body.holderKind : "local_agent";
-    if (holderKind !== "local_agent" && holderKind !== "local_offline_reservation") {
+    if (holderKind !== "local_agent") {
       return c.json({ code: "invalid_holder_kind", message: "holderKind is not available on the public local-agent API" }, 400);
     }
     return c.json(await acquireWorkspaceWriterLease({
@@ -396,8 +385,6 @@ router.post("/spaces/:spaceId/leases/acquire", async (c) => {
       replicaId: typeof body.replicaId === "string" ? body.replicaId : null,
       baseSnapshotId: body.baseSnapshotId as string | null | undefined,
       durationSeconds: typeof body.durationSeconds === "number" ? body.durationSeconds : undefined,
-      offline: body.offline === true,
-      confirmTakeover: body.confirmTakeover === true,
     }));
   } catch (error) {
     return errorResponse(c, error);
@@ -411,7 +398,7 @@ router.post("/spaces/:spaceId/leases/heartbeat", async (c) => {
   if (!requireValidId(spaceId)) return c.json({ code: "space_not_found", message: "space not found" }, 404);
   try {
     const body = await c.req.json<JsonRecord>();
-    if (body.holderKind !== "local_agent" && body.holderKind !== "local_offline_reservation") return c.json({ code: "invalid_holder_kind", message: "holderKind is not available on the public local-agent API" }, 400);
+    if (body.holderKind !== "local_agent") return c.json({ code: "invalid_holder_kind", message: "holderKind is not available on the public local-agent API" }, 400);
     return c.json(await heartbeatWorkspaceWriterLease({
       actor,
       spaceId,
@@ -432,7 +419,7 @@ router.post("/spaces/:spaceId/leases/release", async (c) => {
   if (!requireValidId(spaceId)) return c.json({ code: "space_not_found", message: "space not found" }, 404);
   try {
     const body = await c.req.json<JsonRecord>();
-    if (body.holderKind !== "local_agent" && body.holderKind !== "local_offline_reservation") return c.json({ code: "invalid_holder_kind", message: "holderKind is not available on the public local-agent API" }, 400);
+    if (body.holderKind !== "local_agent") return c.json({ code: "invalid_holder_kind", message: "holderKind is not available on the public local-agent API" }, 400);
     return c.json(await releaseWorkspaceWriterLease({
       actor,
       spaceId,
@@ -457,8 +444,6 @@ router.post("/spaces/:spaceId/replicas/:replicaId/attempts/:attemptId/register",
   if (permissionError) return permissionError;
   try {
     const body = await c.req.json<JsonRecord>();
-    const mirrorMode = body.sessionMirrorMode;
-    if (mirrorMode !== "full" && mirrorMode !== "metadata_only" && mirrorMode !== "disabled") return c.json({ code: "invalid_request", message: "sessionMirrorMode is invalid" }, 400);
     return c.json(await registerLocalWorkspaceAttempt({
       actor,
       spaceId,
@@ -468,97 +453,7 @@ router.post("/spaces/:spaceId/replicas/:replicaId/attempts/:attemptId/register",
       baseSnapshotId: typeof body.baseSnapshotId === "string" ? body.baseSnapshotId : null,
       workspacePolicyVersion: body.workspacePolicyVersion as number,
       integrationPolicyVersion: body.integrationPolicyVersion as number,
-      sessionMirrorMode: mirrorMode,
     }));
-  } catch (error) {
-    return errorResponse(c, error);
-  }
-});
-
-const LOCAL_AGENT_INLINE_REQUEST_MAX_BYTES = 512 * 1024;
-
-router.post("/spaces/:spaceId/replicas/:replicaId/events/inline", bodyLimit({
-  maxSize: LOCAL_AGENT_INLINE_REQUEST_MAX_BYTES,
-  onError: (c) => c.json({ code: "request_too_large", message: "inline native event exceeds the request size limit" }, 413),
-}), async (c) => {
-  const actor = await actorFromContext(c);
-  if (actor instanceof Response) return actor;
-  const spaceId = c.req.param("spaceId");
-  const replicaId = c.req.param("replicaId");
-  if (!requireValidId(spaceId) || !requireValidId(replicaId)) return c.json({ code: "replica_not_found", message: "replica not found" }, 404);
-  if (actor.principal !== "device") return c.json({ code: "device_required", message: "a local device credential is required" }, 401);
-  const permissionError = await requireSpacePermission(c, actor, spaceId, "file.edit");
-  if (permissionError) return permissionError;
-  try {
-    return c.json(await acceptNativeHook({ actor, spaceId, replicaId, value: await c.req.json() }), 202);
-  } catch (error) {
-    return errorResponse(c, error);
-  }
-});
-
-router.post("/spaces/:spaceId/replicas/:replicaId/ingests/inline", bodyLimit({
-  maxSize: LOCAL_AGENT_INLINE_REQUEST_MAX_BYTES,
-  onError: (c) => c.json({ code: "request_too_large", message: "inline native ingest exceeds the request size limit" }, 413),
-}), async (c) => {
-  const actor = await actorFromContext(c);
-  if (actor instanceof Response) return actor;
-  const spaceId = c.req.param("spaceId");
-  const replicaId = c.req.param("replicaId");
-  if (!requireValidId(spaceId) || !requireValidId(replicaId)) return c.json({ code: "replica_not_found", message: "replica not found" }, 404);
-  const permissionError = await requireSpacePermission(c, actor, spaceId, "file.edit");
-  if (permissionError) return permissionError;
-  try {
-    const result = await acceptNativeIngestInline({ actor, spaceId, replicaId, value: await c.req.json(), requestId: c.req.header("x-request-id") });
-    await enqueueNativeAgentIngestJob({ ingestId: result.ingestId, spaceId, replicaId, requestId: c.req.header("x-request-id") }).catch(() => undefined);
-    return c.json(result, 202);
-  } catch (error) {
-    return errorResponse(c, error);
-  }
-});
-
-router.post("/spaces/:spaceId/replicas/:replicaId/ingests/prepare", async (c) => {
-  const actor = await actorFromContext(c);
-  if (actor instanceof Response) return actor;
-  const spaceId = c.req.param("spaceId");
-  const replicaId = c.req.param("replicaId");
-  if (!requireValidId(spaceId) || !requireValidId(replicaId)) return c.json({ code: "replica_not_found", message: "replica not found" }, 404);
-  const permissionError = await requireSpacePermission(c, actor, spaceId, "file.edit");
-  if (permissionError) return permissionError;
-  try {
-    return c.json(await prepareNativeIngest({ actor, spaceId, replicaId, value: await c.req.json() }), 201);
-  } catch (error) {
-    return errorResponse(c, error);
-  }
-});
-
-router.post("/spaces/:spaceId/replicas/:replicaId/ingests/:ingestId/commit", async (c) => {
-  const actor = await actorFromContext(c);
-  if (actor instanceof Response) return actor;
-  const spaceId = c.req.param("spaceId");
-  const replicaId = c.req.param("replicaId");
-  const ingestId = c.req.param("ingestId");
-  if (!requireValidId(spaceId) || !requireValidId(replicaId) || !requireValidId(ingestId)) return c.json({ code: "ingest_not_found", message: "ingest not found" }, 404);
-  const permissionError = await requireSpacePermission(c, actor, spaceId, "file.edit");
-  if (permissionError) return permissionError;
-  try {
-    const result = await commitNativeIngestObject({ actor, spaceId, replicaId, ingestId });
-    await enqueueNativeAgentIngestJob({ ingestId, spaceId, replicaId, requestId: c.req.header("x-request-id") }).catch(() => undefined);
-    return c.json(result, 202);
-  } catch (error) {
-    return errorResponse(c, error);
-  }
-});
-
-router.get("/spaces/:spaceId/ingests/:ingestId", async (c) => {
-  const actor = await actorFromContext(c);
-  if (actor instanceof Response) return actor;
-  const spaceId = c.req.param("spaceId");
-  const ingestId = c.req.param("ingestId");
-  if (!requireValidId(spaceId) || !requireValidId(ingestId)) return c.json({ code: "ingest_not_found", message: "ingest not found" }, 404);
-  const permissionError = await requireSpacePermission(c, actor, spaceId, "file.view");
-  if (permissionError) return permissionError;
-  try {
-    return c.json(await getNativeIngest({ actor, spaceId, ingestId }));
   } catch (error) {
     return errorResponse(c, error);
   }
@@ -575,46 +470,29 @@ router.patch("/spaces/:spaceId/devices/:deviceId/policy", async (c) => {
   if (!(await hasPermission(user, permission, { spaceId }))) return authzDenied(c);
   try {
     const body = await c.req.json<JsonRecord>();
-    const allowedKeys = new Set(["sessionMirrorMode", "workspaceMode", "offlineEnabled", "attachmentMode", "maxBundleBytes", "maxArtifactBytes"]);
+    const allowedKeys = new Set(["workspaceMode"]);
     if (Object.keys(body).some((key) => !allowedKeys.has(key))) return c.json({ code: "invalid_request", message: "unknown policy field" }, 400);
-    const currentDevice = await db.select().from(spaceLocalAgentPolicies).where(eq(spaceLocalAgentPolicies.deviceId, deviceId)).limit(1);
-    const row = currentDevice.find((item) => item.spaceId === spaceId);
+    const [row] = await db.select().from(spaceLocalAgentPolicies).where(and(
+      eq(spaceLocalAgentPolicies.spaceId, spaceId),
+      eq(spaceLocalAgentPolicies.deviceId, deviceId),
+    )).limit(1);
     if (!row) return c.json({ code: "policy_not_found", message: "local agent policy not found" }, 404);
     const candidate = LocalAgentPolicySchema.safeParse({
       version: 1,
-      sessionMirrorMode: body.sessionMirrorMode ?? row.sessionMirrorMode,
       workspaceMode: body.workspaceMode ?? row.workspaceMode,
-      offlineEnabled: body.offlineEnabled ?? row.offlineEnabled,
-      attachmentMode: body.attachmentMode ?? row.attachmentMode,
-      maxBundleBytes: body.maxBundleBytes ?? row.maxBundleBytes,
-      maxArtifactBytes: body.maxArtifactBytes ?? row.maxArtifactBytes,
     });
     if (!candidate.success) return c.json({ code: "invalid_policy", message: "policy values are invalid" }, 400);
-    if (candidate.data.maxBundleBytes < 1 || candidate.data.maxBundleBytes > 256 * 1024 * 1024) return c.json({ code: "invalid_policy", message: "maxBundleBytes must be between 1 and 268435456" }, 400);
-    if (candidate.data.maxArtifactBytes < 1 || candidate.data.maxArtifactBytes > 5 * 1024 * 1024 * 1024) return c.json({ code: "invalid_policy", message: "maxArtifactBytes is outside the allowed range" }, 400);
-    // Fence existing ACP connections before committing a new policy. If the
-    // policy write then fails, the safer state is a disconnected runtime rather
-    // than an active provider using stale consent.
-    await fenceLocalAcpRuntimesForPolicy({
+    if (candidate.data.workspaceMode === row.workspaceMode) return c.json({ policy: row });
+    // Fence connected runtimes and bump the policy version in one transaction
+    // so a runtime cannot reconnect under the old policy between the two steps.
+    const updated = await updateLocalAgentPolicy({
       spaceId,
       deviceId,
-      errorMessage: candidate.data.sessionMirrorMode === "full" ? "policy changed; runtime must reconnect" : "full session mirror consent was revoked",
-    });
-    const updatedAt = new Date();
-    const [updated] = await db.update(spaceLocalAgentPolicies).set({
-      sessionMirrorMode: candidate.data.sessionMirrorMode,
+      expectedVersion: row.integrationPolicyVersion,
       workspaceMode: candidate.data.workspaceMode,
-      offlineEnabled: candidate.data.offlineEnabled,
-      attachmentMode: candidate.data.attachmentMode,
-      maxBundleBytes: candidate.data.maxBundleBytes,
-      maxArtifactBytes: candidate.data.maxArtifactBytes,
-      integrationPolicyVersion: row.integrationPolicyVersion + 1,
       updatedBy: user.uuid,
-      updatedAt,
-    }).where(and(
-      eq(spaceLocalAgentPolicies.id, row.id),
-      eq(spaceLocalAgentPolicies.integrationPolicyVersion, row.integrationPolicyVersion),
-    )).returning();
+      fenceMessage: "workspace policy changed; runtime must reconnect",
+    });
     if (!updated) return c.json({ code: "policy_changed", message: "local agent policy changed; reload and retry" }, 409);
     return c.json({ policy: updated });
   } catch (error) {

@@ -636,8 +636,6 @@ export type WorkspaceStateUpdatedEvent = {
       baseSnapshotId: string | null;
       expiresAt: string;
       lastHeartbeatAt: string;
-      maximumDurationAt: string | null;
-      takeoverRequiresConfirmation: boolean;
       updatedAt: string;
     } | null;
     reason?: string | null;

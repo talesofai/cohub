@@ -42,8 +42,6 @@ export async function dispatchWorkspaceStateUpdated(input: {
         baseSnapshotId: input.lease.baseSnapshotId,
         expiresAt: input.lease.expiresAt,
         lastHeartbeatAt: input.lease.lastHeartbeatAt,
-        maximumDurationAt: input.lease.maximumDurationAt,
-        takeoverRequiresConfirmation: input.lease.takeoverRequiresConfirmation,
         updatedAt: input.lease.updatedAt,
       }
     : null;
