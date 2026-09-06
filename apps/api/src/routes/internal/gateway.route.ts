@@ -9,9 +9,10 @@ import { getSpacePresenceSnapshot } from "../../space-presence.js";
 import { Hono } from "hono";
 import { bindAllActiveSpaceChannelsToGateway, handleInboundEvent, resolveChannelInboundForEventWithLock } from "../../channels.js";
 import { hasPermission } from "../../permissions.js";
-import { ensureInternalRequest, getOptionalAuth, getAppSessionPrincipal, requireValidId } from "../../lib/middleware.js";
+import { ensureInternalRequest, getLocalAgentPrincipal, getOptionalAuth, getAppSessionPrincipal, requireValidId } from "../../lib/middleware.js";
 import { getSpaceById } from "../../space-sessions.js";
 import { getSpaceSandboxBySpaceId, updateSpaceSandbox } from "../../space-sandboxes.js";
+import { authorizeLocalAcpRuntime, reportLocalAcpRuntimeStatus, touchLocalAcpRuntime } from "../../local-acp-runtime-service.js";
 import { normalizeSandboxLifecycleStatus, normalizeSandboxRuntimeStatus } from "@cohub/sandbox-controller";
 import {
   PublicAssetConfigError,
@@ -254,6 +255,106 @@ router.post("/authorize-board-awareness", async (c) => {
   });
   if (!allowed) return c.json({ ok: false, message: `missing ${requiredPermission} permission` }, 403);
   return c.json({ ok: true, boardId, spaceId, permission });
+});
+
+// POST /internal/gateway/local-acp-runtime/authorize
+// Called by the Gateway when a registered local ACP runtime opens its control
+// connection. The device token is validated by the normal API auth middleware.
+router.post("/local-acp-runtime/authorize", async (c) => {
+  const forbidden = ensureInternalRequest(c);
+  if (forbidden) return forbidden;
+  const principal = getLocalAgentPrincipal(c);
+  if (!principal) return c.json({ ok: false, message: "a local device credential is required" }, 401);
+  const body = await c.req.json<{ runtimeId?: string; spaceId?: string; gatewayNodeId?: string; gatewayWsEndpoint?: string }>().catch(() => null);
+  const runtimeId = typeof body?.runtimeId === "string" ? body.runtimeId.trim() : "";
+  const spaceId = typeof body?.spaceId === "string" ? body.spaceId.trim() : "";
+  if (!runtimeId || !spaceId || !requireValidId(runtimeId) || !requireValidId(spaceId)) {
+    return c.json({ ok: false, message: "runtimeId and spaceId are required" }, 400);
+  }
+  const allowed = await hasPermission({ uuid: principal.userUuid }, "file.edit", { spaceId }).catch((error) => {
+    logger.warn("[LocalAcpRuntime] failed to authorize runtime connect", { runtimeId, spaceId, error });
+    return false;
+  });
+  if (!allowed) return c.json({ ok: false, message: "missing workspace edit permission" }, 403);
+  try {
+    const result = await authorizeLocalAcpRuntime({
+      runtimeId,
+      spaceId,
+      actor: {
+        userUuid: principal.userUuid,
+        deviceId: principal.deviceId,
+        credentialVersion: principal.credentialVersion,
+        principal: "device",
+      },
+      gatewayNodeId: typeof body?.gatewayNodeId === "string" ? body.gatewayNodeId : null,
+      gatewayWsEndpoint: typeof body?.gatewayWsEndpoint === "string" ? body.gatewayWsEndpoint : null,
+    });
+    return c.json({ ok: true, ...result });
+  } catch (error) {
+    const status = error instanceof Error && "status" in error && typeof (error as { status?: unknown }).status === "number"
+      ? (error as { status: number }).status
+      : 500;
+    return c.json({ ok: false, message: error instanceof Error ? error.message : "runtime authorization failed" }, status as never);
+  }
+});
+
+// POST /internal/gateway/local-acp-runtime/heartbeat
+router.post("/local-acp-runtime/heartbeat", async (c) => {
+  const forbidden = ensureInternalRequest(c);
+  if (forbidden) return forbidden;
+  const principal = getLocalAgentPrincipal(c);
+  if (!principal) return c.json({ ok: false, message: "a local device credential is required" }, 401);
+  const body = await c.req.json<{ runtimeId?: string; connectionEpoch?: number }>().catch(() => null);
+  const runtimeId = typeof body?.runtimeId === "string" ? body.runtimeId.trim() : "";
+  const connectionEpoch = typeof body?.connectionEpoch === "number" ? body.connectionEpoch : 0;
+  if (!runtimeId || !requireValidId(runtimeId) || !Number.isSafeInteger(connectionEpoch) || connectionEpoch < 1) {
+    return c.json({ ok: false, message: "runtimeId and connectionEpoch are required" }, 400);
+  }
+  const touched = await touchLocalAcpRuntime({
+    runtimeId,
+    connectionEpoch,
+    actor: {
+      userUuid: principal.userUuid,
+      deviceId: principal.deviceId,
+      credentialVersion: principal.credentialVersion,
+      principal: "device",
+    },
+  }).catch((error) => {
+    logger.warn("[LocalAcpRuntime] failed to touch runtime heartbeat", { runtimeId, connectionEpoch, error });
+    return false;
+  });
+  if (!touched) return c.json({ ok: false, message: "runtime is stale or revoked" }, 409);
+  return c.json({ ok: true });
+});
+
+// POST /internal/gateway/local-acp-runtime/status
+router.post("/local-acp-runtime/status", async (c) => {
+  const forbidden = ensureInternalRequest(c);
+  if (forbidden) return forbidden;
+  const body = await c.req.json<{
+    runtimeId?: string;
+    connectionEpoch?: number;
+    status?: "ready" | "offline" | "error";
+    error?: string | null;
+  }>().catch(() => null);
+  const runtimeId = typeof body?.runtimeId === "string" ? body.runtimeId.trim() : "";
+  const connectionEpoch = typeof body?.connectionEpoch === "number" ? body.connectionEpoch : 0;
+  if (body?.status !== "ready" && body?.status !== "offline" && body?.status !== "error") {
+    return c.json({ ok: false, message: "status must be ready, offline, or error" }, 400);
+  }
+  const status = body.status;
+  if (!runtimeId || !requireValidId(runtimeId) || !Number.isSafeInteger(connectionEpoch) || connectionEpoch < 1) {
+    return c.json({ ok: false, message: "runtimeId and connectionEpoch are required" }, 400);
+  }
+  if (body?.error != null && typeof body.error !== "string") {
+    return c.json({ ok: false, message: "error must be a string" }, 400);
+  }
+  const updated = await reportLocalAcpRuntimeStatus({ runtimeId, connectionEpoch, status, error: body?.error ?? null }).catch((error) => {
+    logger.warn("[LocalAcpRuntime] failed to record runtime status", { runtimeId, connectionEpoch, error });
+    return null;
+  });
+  if (!updated) return c.json({ ok: false, message: "runtime is stale or revoked" }, 409);
+  return c.json({ ok: true });
 });
 
 // POST /internal/gateway/local-sandbox/authorize

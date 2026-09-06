@@ -342,7 +342,15 @@ async function persistMessageNode(input: PersistMessageInput & { message: Persis
   if (messageRole === "assistant" && content.length === 0 && !text?.trim() && !isUnsuccessful) throw new Error("Refusing to persist empty assistant message");
 
   const requestedMessageKind = input.message.meta?.messageKind;
-  const messageKind = messageRole !== "assistant" ? messageRole : isUnsuccessful ? "assistant_error" : requestedMessageKind === "shell_command_result" ? "assistant_final" : (countToolCallsInContent(content) > 0 || input.message.stopReason === "tool_use") ? "assistant_intermediate" : "assistant_final";
+  const messageKind = messageRole !== "assistant"
+    ? messageRole
+    : isUnsuccessful
+      ? "assistant_error"
+      : requestedMessageKind === "assistant_final" || requestedMessageKind === "shell_command_result"
+        ? "assistant_final"
+        : (countToolCallsInContent(content) > 0 || input.message.stopReason === "tool_use")
+          ? "assistant_intermediate"
+          : "assistant_final";
   const completedAt = toDateOrNull(input.message.completedAt) ?? new Date();
   const startedAt = toDateOrNull(input.message.startedAt) ?? completedAt;
   const durationMs = typeof input.message.durationMs === "number" ? Math.max(0, Math.floor(input.message.durationMs)) : Math.max(0, completedAt.getTime() - startedAt.getTime());

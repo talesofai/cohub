@@ -1,21 +1,12 @@
 import { CohubModelRegistry } from "../src/runtime/model-registry.js";
-import { loadPlatformPromptResources, SANDBOX_PLATFORM_SKILLS_ROOT, SANDBOX_WORKSPACE_ROOT } from "../src/runtime/resources.js";
-import { buildCohubSystemPrompt } from "../src/runtime/system-prompt.js";
+import { SANDBOX_PLATFORM_SKILLS_PATH, SANDBOX_WORKSPACE_PATH } from "../src/runtime/paths.js";
+import { buildCohubSystemPrompt } from "../src/runtime/system-prompt-builder.js";
 
 async function main() {
   const models = new CohubModelRegistry();
-  const resources = loadPlatformPromptResources();
-
-  console.log("[smoke] model registry error:", models.getError() ?? null);
-  console.log("[smoke] available models:", models.getAvailable().map((m) => `${m.provider}/${m.id}`));
-  console.log("[smoke] skill count:", resources.skills.length);
-  console.log("[smoke] skill locations:", resources.skills.map((s) => s.sandboxFilePath));
-  console.log("[smoke] cwd:", SANDBOX_WORKSPACE_ROOT);
-  console.log("[smoke] skills root:", SANDBOX_PLATFORM_SKILLS_ROOT);
-
-  const prompt = buildCohubSystemPrompt({
-    customPrompt: resources.systemPrompt,
-    appendSystemPrompt: resources.appendSystemPrompt,
+  const cwd = process.env.SMOKE_WORKSPACE_PATH?.trim() || process.cwd();
+  const prompt = await buildCohubSystemPrompt({
+    cwd,
     selectedTools: ["read", "bash", "edit", "write", "grep", "find", "ls"],
     toolSnippets: {
       read: "Read file contents",
@@ -26,9 +17,14 @@ async function main() {
       find: "Search files by glob pattern",
       ls: "List directory contents",
     },
-    skills: resources.skills,
   });
 
+  console.log("[smoke] model registry error:", models.getError() ?? null);
+  console.log("[smoke] available models:", models.getAvailable().map((model) => `${model.provider}/${model.id}`));
+  console.log("[smoke] workspace source:", cwd);
+  console.log("[smoke] sandbox cwd:", SANDBOX_WORKSPACE_PATH);
+  console.log("[smoke] sandbox skills root:", SANDBOX_PLATFORM_SKILLS_PATH);
+  console.log("[smoke] prompt length:", prompt.length);
   console.log("[smoke] prompt preview:\n");
   console.log(prompt.slice(0, 4000));
 }

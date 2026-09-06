@@ -43,3 +43,6 @@ export * from "./app-catalog.js";
 export * from "./navigation.js";
 export * from "./app-view-stats.js";
 export * from "./app-promotion-stats.js";
+export * from "./workspace-replication/index.js";
+export * from "./local-agent/index.js";
+export * from "./acp-runtime/index.js";

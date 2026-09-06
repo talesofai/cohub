@@ -6,6 +6,9 @@
     "noEmit": true,
     "rootDir": "../..",
     "paths": {
+      "@cohub/infra/lock-db-pool": [
+        "../../packages/infra/src/lock-db-pool.ts"
+      ],
       "@cohub/billing": [
         "../../packages/billing/src/index.ts"
       ],

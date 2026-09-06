@@ -36,12 +36,15 @@ import { env } from "./env.js";
 import { logger } from "./logger.js";
 import { getPromptAuthScopes, parsePromptEnv, type PromptAccessMode } from "@cohub/core/sessions";
 import { createAgentExecutionToken } from "./execution-grants.js";
+import { sealCloudWorkspaceAttempt, startWorkspaceAttemptHeartbeat, workspaceAttemptFromMeta } from "./workspace-attempt.js";
+import { acquireWorkspacePhysicalLock, type WorkspacePhysicalLock } from "./workspace-physical-lock.js";
+import { runSerializedLocalAcpTurn } from "./local-acp-client.js";
 
 
 const sessionHandles = new Map<string, SessionHandle>();
 const tools = createSandboxCodingTools();
 const agentTracer = getAgentTracer();
-type RetryReason = "session_busy";
+type RetryReason = "session_busy" | "workspace_wait";
 
 const retryAttemptsByKey = new Map<string, number>();
 const BUSY_RETRY_BASE_DELAY_MS = env.AGENT_BUSY_RETRY_BASE_DELAY_MS;
@@ -59,6 +62,7 @@ function nextRetryDelayMs(key: string) {
 
 function clearRetryState(data: AgentTurnJobData) {
   retryAttemptsByKey.delete(getRetryKey(data, "session_busy"));
+  retryAttemptsByKey.delete(getRetryKey(data, "workspace_wait"));
 }
 
 async function requeueTurnJob(data: AgentTurnJobData, reason: RetryReason, job?: Job<AgentTurnJobData>, meta?: Record<string, unknown>) {
@@ -815,20 +819,33 @@ export async function processAgentTurnJob(job: Job<AgentTurnJobData>) {
   }, parentCtx, async (jobSpan) => {
     setRequestContextAttributes(jobSpan, getActiveTraceIdentifiers(requestId, trace.setSpan(context.active(), jobSpan)));
     if (queueWaitMs != null) jobSpan.addEvent("agent.queue.dequeued", { "agent.queue.wait_ms": queueWaitMs });
-    const lock = await acquireSessionLock(data.sessionId);
+    let activeTurn: { id: string; controller: AbortController } | null = null;
+    let sessionLockError: Error | null = null;
+    const lock = await acquireSessionLock(data.sessionId, {
+      onLost: (error) => {
+        sessionLockError = error;
+        activeTurn?.controller.abort();
+      },
+    });
     if (!lock) {
       logger.info(`[Agent] session locked; skipped wakeup sessionId=${data.sessionId} reason=${data.reason ?? "prompt"}`);
       return { skipped: "session_locked", jobId: job.id ?? null };
     }
-    let activeTurn: { id: string; controller: AbortController } | null = null;
     let claimedBatch: ClaimedTurnBatch | null = null;
     let handle: SessionHandle | null = null;
     let handleSettled = false;
     let terminalHandled = false;
     let caughtError: unknown = null;
     let drainAfterRelease: PostReleaseDrain = null;
+    let stopWorkspaceHeartbeat: (() => Promise<void>) | null = null;
+    let workspaceLeaseError: Error | null = null;
+    let workspacePhysicalLock: WorkspacePhysicalLock | null = null;
 
     try {
+      workspacePhysicalLock = await acquireWorkspacePhysicalLock(data.spaceId);
+      if (!workspacePhysicalLock) {
+        return requeueTurnJob(data, "workspace_wait", job, { reason: "workspace_physical_writer_active", retryAfterMs: 1_000 });
+      }
       const claim = await claimNextTurnBatch(data);
       if (claim.kind === "noop") {
         clearRetryState(data);
@@ -845,10 +862,45 @@ export async function processAgentTurnJob(job: Job<AgentTurnJobData>) {
         }
         return result;
       }
+      if (claim.kind === "blocked") {
+        return requeueTurnJob(data, "workspace_wait", job, {
+          reason: claim.reason,
+          retryAfterMs: claim.retryAfterMs,
+        });
+      }
 
       clearRetryState(data);
+      lock.assertHealthy();
       const { batch } = claim;
       claimedBatch = batch;
+      const claimedMeta = batch.ownerTurn.meta && typeof batch.ownerTurn.meta === "object" && !Array.isArray(batch.ownerTurn.meta)
+        ? batch.ownerTurn.meta as Record<string, unknown>
+        : {};
+      const localAcpAttemptId = typeof claimedMeta.executionAttemptId === "string" && claimedMeta.executorKind === "local_acp"
+        ? claimedMeta.executionAttemptId
+        : null;
+      if (localAcpAttemptId) {
+        lock.assertHealthy();
+        const localResult = await runSerializedLocalAcpTurn(localAcpAttemptId);
+        terminalHandled = true;
+        drainAfterRelease = { spaceId: data.spaceId, sessionId: data.sessionId, reason: "turn_complete" };
+        return localResult;
+      }
+      const workspaceAttempt = workspaceAttemptFromMeta(batch.ownerTurn.meta);
+      if (workspaceAttempt) {
+        stopWorkspaceHeartbeat = await startWorkspaceAttemptHeartbeat({
+          spaceId: data.spaceId,
+          attemptId: workspaceAttempt.attemptId,
+          leaseEpoch: workspaceAttempt.leaseEpoch,
+          onLost: (error) => {
+            workspaceLeaseError = error;
+            activeTurn?.controller.abort();
+          },
+        });
+      }
+      if (sessionLockError) throw sessionLockError;
+      if (workspaceLeaseError) throw workspaceLeaseError;
+      lock.assertHealthy();
       await publishSessionTurnsUpdated({
         sessionId: data.sessionId,
         turnIds: batch.turns.map((turn) => turn.id),
@@ -955,6 +1007,7 @@ export async function processAgentTurnJob(job: Job<AgentTurnJobData>) {
       const assistantMessageTiming = { startedAt: null as string | null };
       const abortController = new AbortController();
       activeTurn = { id: batch.ownerTurn.id, controller: abortController };
+      if (workspaceLeaseError) abortController.abort();
       setActiveAbortController(batch.ownerTurn.id, abortController);
       const pendingAbortEvent = await getAbortEvent(batch.ownerTurn.id);
       if (pendingAbortEvent) {
@@ -1036,6 +1089,8 @@ export async function processAgentTurnJob(job: Job<AgentTurnJobData>) {
           turnSpan.setAttribute("agent.outcome", "ok");
         });
 
+        if (workspaceLeaseError) throw workspaceLeaseError;
+        lock.assertHealthy();
         await settleSessionHandle(activeHandle, "strict");
         handleSettled = true;
         if (!abortController.signal.aborted) terminalHandled = true;
@@ -1165,6 +1220,8 @@ export async function processAgentTurnJob(job: Job<AgentTurnJobData>) {
         turnSpan.setAttribute("agent.outcome", "ok");
       });
 
+      if (workspaceLeaseError) throw workspaceLeaseError;
+      lock.assertHealthy();
       await settleSessionHandle(activeHandle, "strict");
       handleSettled = true;
       if (!abortController.signal.aborted) terminalHandled = true;
@@ -1229,7 +1286,25 @@ export async function processAgentTurnJob(job: Job<AgentTurnJobData>) {
           await settleSessionHandle(handle, terminalHandled ? "strict" : "best_effort");
         }
       }
+      await stopWorkspaceHeartbeat?.();
+      const claimedOwnerMeta = claimedBatch?.ownerTurn.meta && typeof claimedBatch.ownerTurn.meta === "object" && !Array.isArray(claimedBatch.ownerTurn.meta)
+        ? claimedBatch.ownerTurn.meta as Record<string, unknown>
+        : {};
+      const isLocalAcpAttempt = claimedOwnerMeta.executorKind === "local_acp";
+      const workspaceAttempt = !isLocalAcpAttempt && claimedBatch ? workspaceAttemptFromMeta(claimedBatch.ownerTurn.meta) : null;
+      if (workspaceAttempt && claimedBatch) {
+        await sealCloudWorkspaceAttempt({
+          spaceId: data.spaceId,
+          sessionId: data.sessionId,
+          turnId: claimedBatch.ownerTurn.id,
+          attemptId: workspaceAttempt.attemptId,
+          leaseEpoch: workspaceAttempt.leaseEpoch,
+        }).catch((error) => logger.error("[WorkspaceAttempt] failed to seal cloud attempt", { turnId: claimedBatch?.ownerTurn.id, error }));
+      }
       if (claimedBatch) clearRetryState(data);
+      await workspacePhysicalLock?.release().catch((error) => {
+        logger.error("[WorkspaceLock] failed to release physical workspace lock", { spaceId: data.spaceId, error });
+      });
       await lock.release();
       if (drainAfterRelease) await drainNextQueuedTurn(drainAfterRelease);
     }

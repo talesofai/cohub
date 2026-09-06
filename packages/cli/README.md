@@ -79,6 +79,45 @@ cohub -s <spaceId> spaces prompt "message" --json
 COHUB_SPACE_ID=<spaceId> cohub spaces prompt "message" --json
 ```
 
+## Local workspace replicas
+
+Install the pinned, checksummed local runtime, attach a folder, then register and start an ACP runtime for the provider you use:
+
+```bash
+cohub agent runtime install
+cohub workspace attach <spaceId> ./project --merge
+cohub agent runtime register <spaceId> <replicaId> pi
+cohub agent runtime start <spaceId> <replicaId> pi --root ./project
+cohub agent doctor
+```
+
+`cohub agent doctor` reports the installed `cohub-locald` binary and the ACP adapter for each provider. A non-empty folder requires exactly one initial strategy: `--merge`, `--use-cloud`, or `--use-local`. `--use-cloud` creates a verified local recovery backup before replacing managed content. Empty folders default to `--use-cloud`.
+
+Inspect and resolve retained workspace conflicts without materializing conflict files into the project:
+
+```bash
+cohub workspace conflicts --space <spaceId>
+cohub workspace resolve <conflictId> --space <spaceId> --use-local
+```
+
+`COHUB_LOCALD_BIN` overrides the runtime path for development. `COHUB_LOCALD_VERSION` and `COHUB_LOCALD_CDN_BASE_URL` select a released version and mirror. ACP runtime control uses locald and the Gateway relay; network transfer and retries happen in the daemon.
+
+For ACP execution, install the official adapter for the provider separately so it can keep using its own configuration and credentials, then register and start a runtime:
+
+```bash
+npm install -g pi-acp
+# Or install the adapter matching the selected provider:
+# npm install -g @agentclientprotocol/codex-acp
+# npm install -g @agentclientprotocol/claude-agent-acp
+cohub agent runtime register <spaceId> <replicaId> pi
+cohub agent runtime start <spaceId> <replicaId> pi --root ./project
+cohub agent runtime list <spaceId>
+cohub agent runtime get <spaceId> <runtimeId>
+cohub agent runtime revoke <spaceId> <runtimeId>
+```
+
+The official adapter commands are `pi-acp`, `codex-acp`, and `claude-agent-acp`. Runtime prompts are selected in the Web composer or sent by SDK callers with `runtimeId`; they run immediately and do not accept a Cohub model override. Provider MCP configuration remains provider-owned and is not registered by Cohub.
+
 ## Chats and prompts
 
 Use `spaces prompt` for immediate sends, delayed sends, one-time schedules, recurring schedules, new Chats, and existing Chats.
@@ -93,6 +132,9 @@ cat prompt.md | cohub -s <spaceId> spaces prompt --json
 
 # Send to an existing Chat
 cohub -s <spaceId> spaces prompt --session <sessionId> "message" --json
+
+# Send immediately through a registered local ACP runtime
+cohub -s <spaceId> spaces prompt --runtime-id <runtimeId> "message" --json
 
 # Create a new Chat and send
 cohub -s <spaceId> spaces prompt --title "<chat title>" "message" --json

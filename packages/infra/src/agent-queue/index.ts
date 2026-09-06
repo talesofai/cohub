@@ -11,6 +11,11 @@ export const AGENT_SANDBOX_FS_MUTATION_JOB_NAME = "sandbox_fs_mutation" as const
 
 export type AgentSandboxBashUploadJobData = {
   spaceId: string;
+  workspaceLease?: {
+    holderKind: "cloud_file_api";
+    holderId: string;
+    epoch: number;
+  } | null;
   sessionId: string;
   uploadId: string;
   destinationRoot: string;
@@ -179,6 +184,11 @@ export type AgentSandboxFsMutationOperation =
 
 export type AgentSandboxFsMutationJobData = {
   spaceId: string;
+  workspaceLease?: {
+    holderKind: "cloud_file_api";
+    holderId: string;
+    epoch: number;
+  } | null;
   mutationId: string;
   mutation: AgentSandboxFsMutationOperation;
   requestId?: string | null;

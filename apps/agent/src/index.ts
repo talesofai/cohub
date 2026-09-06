@@ -24,6 +24,7 @@ import { logger } from "./logger.js";
 import { invalidateSandboxConnection, closeSandboxPool } from "./sandbox-pool.js";
 import { closeSandboxLifecycleEventSubscriber, subscribeSandboxLifecycleEvents } from "./sandbox-events.js";
 import { SandboxRpcError } from "@cohub/sandbox-client";
+import { closeLocalAcpConnections } from "./local-acp-client.js";
 
 export const __test = {
   runInSessionOperation: async <T>(_handle: unknown, fn: () => Promise<T>) => fn(),
@@ -162,6 +163,7 @@ async function shutdown(signal: string, options?: { exitCode?: number }) {
     pauseBeforeClose: true,
   });
   await disposeAllSessionHandles();
+  await closeLocalAcpConnections().catch(() => undefined);
   closeSandboxPool();
   await closeAbortSubscriber().catch(() => undefined);
   await closeSandboxLifecycleEventSubscriber().catch(() => undefined);

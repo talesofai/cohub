@@ -26,6 +26,8 @@ import { isComposingKeyboardEvent } from "$lib/keyboard";
 import { m } from "$lib/paraglide/messages.js";
 import { uiState } from "$lib/stores/ui.svelte";
 import SpacePresenceStack from "./SpacePresenceStack.svelte";
+import WorkspaceReplicationStatus from "./WorkspaceReplicationStatus.svelte";
+import type { WorkspaceReplicationSnapshot } from "./workspace-replication-controller.svelte";
 
 type HeaderRouteView =
 	| "space"
@@ -60,6 +62,7 @@ export type SpaceWorkspaceHeaderContext = {
 	spaceHasMinimalAccess: boolean;
 	rightSidebarAvailable: boolean;
 	rightSidebarCollapsed: boolean;
+	workspaceReplication: WorkspaceReplicationSnapshot;
 };
 
 export type SessionRenameState = {
@@ -84,6 +87,7 @@ export type SpaceWorkspaceHeaderActions = {
 	labelHeaderResource: (anchorEl?: HTMLElement | null) => void | Promise<void>;
 	insertHeaderReference: () => void;
 	toggleRightSidebar: () => void | Promise<void>;
+	refreshWorkspaceReplication: () => void | Promise<void>;
 };
 
 type Props = {
@@ -241,6 +245,12 @@ function handleSessionRenameKeydown(event: KeyboardEvent) {
 				<PanelRightClose class="h-4 w-4 shrink-0" />
 			{/if}
 		</button>
+	{/if}
+	{#if context.workspaceReplication.replicas.some((replica) => replica.kind === "local")}
+		<WorkspaceReplicationStatus
+			replicationState={context.workspaceReplication}
+			onRefresh={actions.refreshWorkspaceReplication}
+		/>
 	{/if}
 {/snippet}
 

@@ -31,7 +31,7 @@
 ### Minor Changes
 
 - f9b6156: Board CLI improvements:
-  
+
   - `boards create` now reports the created Board file path (including in JSON output).
   - `boards items list/get` show derived layout columns (x/y/width/height) for draw and arrow items.
   - Board example templates are updated to the normalized geometry authoring format.
@@ -46,7 +46,7 @@
 ### Minor Changes
 
 - 6685de4: Streamline Board CLI commands:
-  
+
   - Add `boards batch` to apply an atomic batch of semantic Board changes in one round-trip.
   - Add `boards connections` (list/get) for managing typed connections between Board items.
   - Split effect, composition, animation, and item commands into `list`/`get` subcommands with consistent JSON and table output.

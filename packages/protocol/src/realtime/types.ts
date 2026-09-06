@@ -25,7 +25,7 @@ export const REALTIME_OUTBOUND_CHANNEL = "pubsub:realtime:outbound";
 export const AGENT_REALTIME_PATCH_CHANNEL = "pubsub:realtime:agent_patches";
 export const REALTIME_ROOM_KEY_PREFIX = "cohub:realtime-room:v1";
 
-export const REALTIME_DOMAINS = ["system", "session", "space", "label", "room", "ui", "desktop"] as const;
+export const REALTIME_DOMAINS = ["system", "session", "space", "workspace", "label", "room", "ui", "desktop"] as const;
 export type RealtimeDomain = (typeof REALTIME_DOMAINS)[number];
 
 export const isRealtimeDomain = (value: unknown): value is RealtimeDomain =>
@@ -80,7 +80,7 @@ export type WsClientEvent =
   | { type: "auth"; requestId?: string; payload: { token: string; capabilities?: string[] } }
   | { type: "subscribe"; requestId?: string; payload: { rooms: string[] } }
   | { type: "unsubscribe"; requestId?: string; payload: { rooms: string[] } }
-  | { type: "session.message.create"; requestId?: string; payload: { spaceId: string; sessionId: string; clientMessageId?: string; content: ContentBlock[]; model?: string; provider?: string; thinkingLevel?: ModelThinkingLevel } }
+  | { type: "session.message.create"; requestId?: string; payload: { spaceId: string; sessionId: string; clientMessageId?: string; runtimeId?: string; content: ContentBlock[]; model?: string; provider?: string; thinkingLevel?: ModelThinkingLevel } }
   | { type: "presence.update"; requestId?: string; payload: { spaceId: string; meta?: Record<string, unknown> | null } }
   | { type: "board.awareness.update"; requestId?: string; payload: BoardAwarenessClientPayload }
   | { type: "realtime.room.join"; requestId?: string; payload: { roomId: string; ticket: string } }
@@ -601,6 +601,47 @@ export type SessionMessagePersistedEvent = {
   payload: { message: RealtimeMessageRecord };
 };
 
+export type WorkspaceStateUpdatedEvent = {
+  id: string;
+  timestamp: number;
+  domain: "workspace";
+  type: "workspace.state.updated";
+  requestId?: string | null;
+  spaceId: string;
+  sessionId?: null;
+  rooms?: RealtimeRoom[];
+  payload: {
+    workspace: {
+      canonicalSnapshotId: string | null;
+      cloudAppliedSnapshotId: string | null;
+      generation: number;
+      status: string;
+      activeCycleId: string | null;
+      lastWriterKind: string | null;
+      updatedAt: string;
+    };
+    replica?: {
+      id: string;
+      kind: "cloud" | "local";
+      status: string;
+      currentSnapshotId: string | null;
+      appliedSnapshotId: string | null;
+      lastCommonSnapshotId: string | null;
+      updatedAt: string;
+    } | null;
+    openConflictCount?: number;
+    lease?: {
+      holderKind: string;
+      epoch: number;
+      baseSnapshotId: string | null;
+      expiresAt: string;
+      lastHeartbeatAt: string;
+      updatedAt: string;
+    } | null;
+    reason?: string | null;
+  };
+};
+
 export type SpaceFsChangedEvent = {
   id: string;
   timestamp: number;
@@ -869,6 +910,7 @@ export type RealtimeServerEvent =
   | SessionTurnFinalizedEvent
   | SessionTurnNotifyEvent
   | SessionMessagePersistedEvent
+  | WorkspaceStateUpdatedEvent
   | SpaceFsChangedEvent
   | SpacePortsChangedEvent
   | SpacePresenceUpdatedEvent

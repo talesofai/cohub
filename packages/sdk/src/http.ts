@@ -10,6 +10,7 @@ import { ReferencesApi } from "./apis/references.js";
 import { SessionAccessApi } from "./apis/session-access.js";
 import { SpaceClient, SpacesApi } from "./apis/spaces.js";
 import { TasksApi } from "./apis/tasks.js";
+import { LocalAgentApi } from "./apis/local-agent.js";
 
 import { UserApi } from "./apis/user.js";
 import { UsersApi } from "./apis/users.js";
@@ -40,6 +41,7 @@ export class CohubHttpClient {
   readonly referrals: ReferralsApi;
   readonly apps: AppsApi;
   readonly appCommerce: AppCommerceApi;
+  readonly localAgent: LocalAgentApi;
 
   /** @deprecated Use `apps`. */
   get works(): AppsApi {
@@ -88,6 +90,7 @@ export class CohubHttpClient {
     this.referrals = new ReferralsApi(this.transport);
     this.apps = new AppsApi(this.transport);
     this.appCommerce = new AppCommerceApi(this.transport);
+    this.localAgent = new LocalAgentApi(this.transport);
     this.desktop = new DesktopCommandsApi(this.transport);
   }
 

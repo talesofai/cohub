@@ -15,6 +15,8 @@ import { logger } from "./logger.js";
 import { AGENT_SANDBOX_BASH_ATOMIC_JOB_NAME, type AgentSandboxBashUploadJobData } from "./queue.js";
 import { loadSpaceEnvSnapshot } from "./runtime/env-cache.js";
 import { ensureSandboxConnection, recoverSandboxForUpgrade } from "./sandbox-pool.js";
+import { withAgentWorkspaceLease } from "./workspace-lease.js";
+import { acquireWorkspacePhysicalLock } from "./workspace-physical-lock.js";
 
 const SCRIPT_PATH = new URL("./jobs/sandbox-bash/upload-files.sh", import.meta.url);
 const tools = createSandboxCodingTools();
@@ -321,71 +323,89 @@ export async function processSandboxBashJob(job: Job<AgentSandboxBashUploadJobDa
     toolCallId,
     requestId: data.requestId ?? undefined,
   };
-  await runWithToolExecutionContext(executionContext, async () => wrapToolCall(tracer, {
-    toolName: "sandbox_bash",
-    input: { task: "upload_files", uploadId: data.uploadId, files: data.files.length },
-    spaceId: data.spaceId,
-    sessionId: data.sessionId,
-    llmRound: 0,
-    toolCallId,
-    requestId: data.requestId ?? undefined,
-  }, async () => {
-    const result = await bashTool.execute(
-      toolCallId,
-      { command, timeout: 3600 } as never,
-      undefined,
-      (partial) => {
-        const text = extractResultText(partial);
-        if (text) latestOutput = text;
-      },
-    );
-    latestOutput = extractRawOutput(result) || extractResultText(result) || latestOutput;
-    const exitCode = getExitCode(result);
-    if (exitCode !== 0) {
-      if (data.materialize === "atomic") {
-        await cleanupStagedFiles(data.spaceId, stagedSourcePaths(latestOutput));
-      }
-      const error = new Error(latestOutput || `sandbox_bash upload_files failed with exit code ${exitCode ?? "unknown"}`);
-      const failure = await recordJobFailure(job, error, {
-        reason: "sandbox_bash_command_failed",
-        meta: {
-          ...logMeta,
-          exitCode,
-          outputTail: latestOutput.slice(-2000),
-        },
-      });
-      logger.error("[SandboxBash] upload command failed", failure);
-      if (exitCode === 3) throw new UnrecoverableError(`upload_size_mismatch: ${error.message}`);
-      if (exitCode === 2 || exitCode === 127) throw new UnrecoverableError(error.message);
-      throw error;
-    }
-  }));
-
+  // A workspace-replicated Space hands the upload a cloud file lease. Hold the
+  // physical writer lock and keep the lease alive for the whole job so the
+  // staged command and the atomic materialization cannot interleave with a
+  // reconcile or another writer.
+  const workspacePhysicalLock = data.workspaceLease ? await acquireWorkspacePhysicalLock(data.spaceId) : null;
+  if (data.workspaceLease && !workspacePhysicalLock) throw new Error("workspace_physical_writer_active");
   try {
-    const uploaded = data.materialize === "atomic"
-      ? await runWithToolExecutionContext(executionContext, () => materializeAtomicUpload(data, latestOutput))
-      : parseUploadedLines(latestOutput, data);
-    await job.updateProgress({
-      stage: "completed",
-      ...logMeta,
-      uploadedCount: uploaded.length,
-      firstUploadedPath: uploaded[0]?.path,
-    });
-    return { ok: true, uploaded, output: latestOutput };
-  } catch (error) {
-    if (data.materialize === "atomic") {
-      await runWithToolExecutionContext(executionContext, () =>
-        cleanupStagedFiles(data.spaceId, stagedSourcePaths(latestOutput)),
+    return await withAgentWorkspaceLease({
+      spaceId: data.spaceId,
+    lease: data.workspaceLease ?? null,
+      run: async (leaseSignal) => {
+        await runWithToolExecutionContext(executionContext, async () => wrapToolCall(tracer, {
+     toolName: "sandbox_bash",
+    input: { task: "upload_files", uploadId: data.uploadId, files: data.files.length },
+          spaceId: data.spaceId,
+        sessionId: data.sessionId,
+     llmRound: 0,
+          toolCallId,
+          requestId: data.requestId ?? undefined,
+    }, async () => {
+          const result = await bashTool.execute(
+            toolCallId,
+       { command, timeout: 3600 } as never,
+        data.workspaceLease ? leaseSignal : undefined,
+    (partial) => {
+   const text = extractResultText(partial);
+   if (text) latestOutput = text;
+    },
       );
-    }
-    const failure = await recordJobFailure(job, error, {
-      reason: data.materialize === "atomic" ? "sandbox_bash_materialize_failed" : "sandbox_bash_result_parse_failed",
-      meta: {
-        ...logMeta,
-        outputTail: latestOutput.slice(-2000),
+   latestOutput = extractRawOutput(result) || extractResultText(result) || latestOutput;
+          const exitCode = getExitCode(result);
+      if (exitCode !== 0) {
+            if (data.materialize === "atomic") {
+       await cleanupStagedFiles(data.spaceId, stagedSourcePaths(latestOutput));
+        }
+            const error = new Error(latestOutput || `sandbox_bash upload_files failed with exit code ${exitCode ?? "unknown"}`);
+            const failure = await recordJobFailure(job, error, {
+        reason: "sandbox_bash_command_failed",
+            meta: {
+                ...logMeta,
+    exitCode,
+    outputTail: latestOutput.slice(-2000),
+     },
+      });
+         logger.error("[SandboxBash] upload command failed", failure);
+       if (exitCode === 3) throw new UnrecoverableError(`upload_size_mismatch: ${error.message}`);
+            if (exitCode === 2 || exitCode === 127) throw new UnrecoverableError(error.message);
+            throw error;
+   }
+        }));
+
+        try {
+    const uploaded = data.materialize === "atomic"
+            ? await runWithToolExecutionContext(executionContext, () => materializeAtomicUpload(data, latestOutput))
+            : parseUploadedLines(latestOutput, data);
+          await job.updateProgress({
+ stage: "completed",
+    ...logMeta,
+ uploadedCount: uploaded.length,
+          firstUploadedPath: uploaded[0]?.path,
+          });
+          return { ok: true, uploaded, output: latestOutput };
+        } catch (error) {
+       if (data.materialize === "atomic") {
+      await runWithToolExecutionContext(executionContext, () =>
+   cleanupStagedFiles(data.spaceId, stagedSourcePaths(latestOutput)),
+     );
+ }
+          const failure = await recordJobFailure(job, error, {
+        reason: data.materialize === "atomic" ? "sandbox_bash_materialize_failed" : "sandbox_bash_result_parse_failed",
+         meta: {
+              ...logMeta,
+    outputTail: latestOutput.slice(-2000),
+  },
+          });
+          logger.error("[SandboxBash] upload result parse failed", error, failure);
+          throw error;
+        }
       },
     });
-    logger.error("[SandboxBash] upload result parse failed", error, failure);
-    throw error;
+  } finally {
+    await workspacePhysicalLock?.release().catch((error) => {
+      logger.error("[WorkspaceLock] failed to release sandbox upload lock", { spaceId: data.spaceId, error });
+    });
   }
 }

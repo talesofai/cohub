@@ -24,6 +24,7 @@ import { ensureRealtimeConnected } from "./realtime.js";
 import { createWebsocketClient, type WebsocketEventPayload } from "./websocket.js";
 import { VoiceApi } from "./voice-input.js";
 import { AppSurfaceApi } from "./app-surface.js";
+import { LocalAgentApi } from "./apis/local-agent.js";
 import type { AppComposerChip } from "@cohub/protocol/app-surface";
 import {
   resolveApiBaseUrl,
@@ -64,6 +65,7 @@ export class CohubClient {
   readonly voice: VoiceApi;
   readonly apps: AppsApi;
   readonly appCommerce: AppCommerceApi;
+  readonly localAgent: LocalAgentApi;
   readonly navigation: {
     open: (
       target: import("@cohub/protocol/app-navigation").AppNavigationTarget | string,
@@ -158,6 +160,7 @@ export class CohubClient {
     this.referrals = new ReferralsApi(this.transport);
     this.apps = new AppsApi(this.transport);
     this.appCommerce = new AppCommerceApi(this.transport);
+    this.localAgent = new LocalAgentApi(this.transport);
     this.navigation = {
       open: (target, options) =>
         this.appRuntime.navigationOpen(

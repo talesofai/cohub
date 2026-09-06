@@ -39,9 +39,23 @@ export interface WorkerConfig {
   env: "dev" | "prod";
   /** Author email for checkpoint git commits. */
   checkpointGitAuthorEmail: string;
+  workspaceObjectEndpoint?: string;
+  workspaceObjectRegion: string;
+  workspaceObjectBucket?: string;
+  workspaceObjectAccessKeyId?: string;
+  workspaceObjectSecretAccessKey?: string;
+  workspaceReplicationEnabled: boolean;
 }
 
 const env = (process.env.ENV === "prod" ? "prod" : "dev") as "dev" | "prod";
+
+const parseBoolean = (value: string | undefined, fallback: boolean, name: string) => {
+  if (value == null || value.trim() === "") return fallback;
+  const normalized = value.trim().toLowerCase();
+  if (["1", "true", "yes", "on"].includes(normalized)) return true;
+  if (["0", "false", "no", "off"].includes(normalized)) return false;
+  throw new Error(`${name} must be true or false`);
+};
 
 const assertRedisUrl = (value: string, envName: string) => {
   if (!value) throw new Error(`Missing required env: ${envName}`);
@@ -95,6 +109,19 @@ export const config: WorkerConfig = {
   talesofaiBillingAdminApiKey: process.env.TALESOFAI_BILLING_ADMIN_API_KEY,
   env,
   checkpointGitAuthorEmail: process.env.CHECKPOINT_GIT_AUTHOR_EMAIL?.trim() || "noreply@cohub.live",
+  workspaceObjectEndpoint: process.env.WORKSPACE_OBJECT_ENDPOINT ?? process.env.USER_UPLOAD_S3_ENDPOINT,
+  workspaceObjectRegion: process.env.WORKSPACE_OBJECT_REGION ?? process.env.USER_UPLOAD_S3_REGION ?? "auto",
+  workspaceObjectBucket: process.env.WORKSPACE_OBJECT_BUCKET ?? process.env.SPACE_UPLOAD_S3_BUCKET,
+  workspaceObjectAccessKeyId: process.env.WORKSPACE_OBJECT_ACCESS_KEY_ID ?? process.env.USER_UPLOAD_S3_ACCESS_KEY_ID,
+  workspaceObjectSecretAccessKey: process.env.WORKSPACE_OBJECT_SECRET_ACCESS_KEY ?? process.env.USER_UPLOAD_S3_SECRET_ACCESS_KEY,
+  // Replication needs private object storage. In dev it turns on by itself
+  // only when that storage is configured, so a checkout that follows
+  // .env.example still starts. Setting the flag explicitly is always honored.
+  workspaceReplicationEnabled: parseBoolean(
+    process.env.WORKSPACE_REPLICATION_ENABLED,
+    env === "dev" && Boolean((process.env.WORKSPACE_OBJECT_ENDPOINT ?? process.env.USER_UPLOAD_S3_ENDPOINT) && (process.env.WORKSPACE_OBJECT_BUCKET ?? process.env.SPACE_UPLOAD_S3_BUCKET) && (process.env.WORKSPACE_OBJECT_ACCESS_KEY_ID ?? process.env.USER_UPLOAD_S3_ACCESS_KEY_ID) && (process.env.WORKSPACE_OBJECT_SECRET_ACCESS_KEY ?? process.env.USER_UPLOAD_S3_SECRET_ACCESS_KEY)),
+    "WORKSPACE_REPLICATION_ENABLED",
+  ),
 };
 
 export const assertRequiredConfig = () => {
@@ -107,4 +134,10 @@ export const assertRequiredConfig = () => {
   if (!config.spaceStorageRoot) throw new Error("Missing required env: SPACE_STORAGE_ROOT");
   if (!config.spaceSystemRoot) throw new Error("Missing required env: SPACE_SYSTEM_ROOT");
   if (!config.checkpointCacheRoot) throw new Error("Missing required env: CHECKPOINT_CACHE_ROOT");
+  if (config.workspaceReplicationEnabled) {
+    if (!config.workspaceObjectEndpoint) throw new Error("Missing required env: WORKSPACE_OBJECT_ENDPOINT");
+    if (!config.workspaceObjectBucket) throw new Error("Missing required env: WORKSPACE_OBJECT_BUCKET");
+    if (!config.workspaceObjectAccessKeyId) throw new Error("Missing required env: WORKSPACE_OBJECT_ACCESS_KEY_ID");
+    if (!config.workspaceObjectSecretAccessKey) throw new Error("Missing required env: WORKSPACE_OBJECT_SECRET_ACCESS_KEY");
+  }
 };

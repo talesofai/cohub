@@ -21,6 +21,7 @@ import {
   spaceMembers,
   userProfiles,
   sessionTurns,
+  workspaceExecutionAttempts,
 } from "@cohub/db";
 import { eq, and, inArray, desc, lt, or, sql } from "drizzle-orm";
 import { useAuth, getOptionalAuth, getAppSessionPrincipal, getPreviewSessionPrincipal, getExecutionPrincipal, requireValidId, buildSpaceListItems, authzDenied, getSpacePublicProfile, normalizePublicAvatarUrl } from "../../lib/middleware.js";
@@ -71,7 +72,7 @@ import {
 } from "../../checkpoint-diff.js";
 import { checkpointFsJsonError, listCheckpointDirectory, readCheckpointFile } from "../../checkpoint-fs.js";
 import type { AuthUser } from "../../lib/middleware.js";
-import { submitSessionPrompt } from "../../session-prompts.js";
+import { buildPromptIdempotencyKey, submitSessionPrompt } from "../../session-prompts.js";
 import { ModelUnavailableError, parsePromptEnv, PromptEnvValidationError } from "@cohub/core/sessions";
 import { delegatedPromptAuthFromAppSession, promptAuthContextFromAppSession } from "../../prompt-auth-context.js";
 import { buildSessionTurnResponse } from "../../session-turn-response.js";
@@ -91,6 +92,7 @@ import { featureGateResponse } from "../../lib/feature-gate.js";
 import { billingBlockedResponse } from "../../lib/billing-blocked.js";
 import { applyRequestSourceToMeta, getRequestSource, resolveSessionSourceFromRequest } from "../../lib/request-source.js";
 import { validatePromptModel } from "../../llm/models.js";
+import { LocalAgentServiceError } from "../../local-agent-service.js";
 
 
 const logger = createLogger({ serviceName: "cohub-api" });
@@ -314,6 +316,7 @@ type SpacePromptInput = {
   content?: ContentBlock[];
   model?: string | null;
   provider?: string | null;
+  runtimeId?: string | null;
   thinkingLevel?: string | null;
   clientMessageId?: string | null;
   generationPolicy?: unknown;
@@ -513,7 +516,8 @@ function promptInputError(error: unknown): string | null {
     error.message.includes("Invalid image") ||
     error.message.includes("Invalid content block") ||
     error.message.includes("shell command is empty") ||
-    error.message.includes("shell_command is not allowed")
+    error.message.includes("shell_command is not allowed") ||
+    error.message.includes("local ACP runtime")
   ) {
     return error.message;
   }
@@ -1820,7 +1824,14 @@ router.post("/:id/prompt", async (c) => {
   if (!requireValidId(spaceId)) return c.json({ message: "space not found" }, 404);
 
   const body = await c.req.json<SpacePromptInput>().catch(() => null);
+  if (body && body.sessionId != null && typeof body.sessionId !== "string") {
+    return c.json({ message: "sessionId must be a string" }, 400);
+  }
+  if (body && body.clientMessageId != null && typeof body.clientMessageId !== "string") {
+    return c.json({ message: "clientMessageId must be a string" }, 400);
+  }
   if (body?.mode === "create") {
+    if (body.runtimeId) return c.json({ code: "runtime_mode_invalid", message: "local ACP runtime is only available for agent prompts" }, 400);
     const generation = body.generation;
     if (!generation?.model || !Array.isArray(generation.content) || generation.content.length === 0) {
       return c.json({ message: "generation.model and generation.content are required" }, 400);
@@ -1886,6 +1897,9 @@ router.post("/:id/prompt", async (c) => {
     promptSession = session;
   }
 
+  if (body.schedule != null && (typeof body.schedule !== "object" || Array.isArray(body.schedule))) {
+    return c.json({ message: "schedule must be an object" }, 400);
+  }
   const schedule = body.schedule ?? { mode: "immediate" as const };
   const mode = schedule.mode ?? "immediate";
   if (!["immediate", "delay", "at", "repeat"].includes(mode)) {
@@ -1899,9 +1913,85 @@ router.post("/:id/prompt", async (c) => {
     return c.json({ message: "generationPolicy is invalid" }, 400);
   }
 
+  if (body.runtimeId != null && typeof body.runtimeId !== "string") {
+    return c.json({ message: "runtimeId must be a string" }, 400);
+  }
+  if (body.model != null && typeof body.model !== "string") {
+    return c.json({ message: "model must be a string" }, 400);
+  }
+  if (body.provider != null && typeof body.provider !== "string") {
+    return c.json({ message: "provider must be a string" }, 400);
+  }
+  const runtimeId = body.runtimeId?.trim() || null;
+  if (runtimeId && !requireValidId(runtimeId)) return c.json({ message: "invalid runtimeId" }, 400);
   const requestedModel = body.model?.trim() || null;
   const requestedProvider = body.provider?.trim() || (requestedModel ? "cohub" : null);
+  if (runtimeId && (requestedModel || requestedProvider)) {
+    return c.json({ code: "runtime_model_invalid", message: "local ACP runtime uses its own provider configuration" }, 400);
+  }
+  if (runtimeId && promptThinkingLevel !== null && promptThinkingLevel !== undefined) {
+    return c.json({ code: "runtime_thinking_invalid", message: "local ACP runtime uses its provider's own thinking configuration" }, 400);
+  }
+  if (runtimeId && (generationPolicy || body.generation != null)) {
+    return c.json({ code: "runtime_generation_invalid", message: "local ACP runtime uses its provider's own generation configuration" }, 400);
+  }
+  if (runtimeId && mode !== "immediate") {
+    return c.json({ code: "runtime_schedule_invalid", message: "local ACP runtime prompts must run immediately" }, 400);
+  }
+  if (runtimeId && !(await hasPermission(user, "file.edit", { spaceId }))) {
+    return authzDenied(c);
+  }
+  let promptEnv: Record<string, string> | null = null;
+  try {
+    promptEnv = parsePromptEnv(body.env);
+  } catch (error) {
+    if (error instanceof PromptEnvValidationError) return c.json({ message: error.message }, 400);
+    throw error;
+  }
+  if (runtimeId && promptEnv && Object.keys(promptEnv).length > 0) {
+    return c.json({ code: "runtime_env_invalid", message: "local ACP runtime does not accept Cohub environment overrides" }, 400);
+  }
+  const source = resolveSessionSourceFromRequest(c, typeof body.source === "string" ? body.source : null);
+  if (runtimeId && source === "scheduled_task") {
+    return c.json({ code: "runtime_schedule_invalid", message: "local ACP runtime prompts must run immediately" }, 400);
+  }
+
+  const clientMessageId = body.clientMessageId?.trim() || crypto.randomUUID();
+  if (clientMessageId.length > 255) return c.json({ message: "clientMessageId is too long" }, 400);
+
+  const idempotencyKeys = [...new Set([
+    buildPromptIdempotencyKey(clientMessageId, runtimeId),
+    buildPromptIdempotencyKey(clientMessageId, null),
+  ])];
+  const [existingAttempt] = await db.select({
+    turnId: workspaceExecutionAttempts.turnId,
+    sessionId: workspaceExecutionAttempts.sessionId,
+    runtimeId: workspaceExecutionAttempts.runtimeId,
+    executorKind: workspaceExecutionAttempts.executorKind,
+    userUuid: sessionTurns.userUuid,
+    turnModel: sessionTurns.model,
+    turnProvider: sessionTurns.provider,
+  }).from(workspaceExecutionAttempts)
+    .innerJoin(sessionTurns, eq(sessionTurns.id, workspaceExecutionAttempts.turnId))
+    .where(and(
+      eq(workspaceExecutionAttempts.spaceId, spaceId),
+      inArray(workspaceExecutionAttempts.idempotencyKey, idempotencyKeys),
+    )).limit(1);
+  if (existingAttempt) {
+    const existingRuntimeId = existingAttempt.runtimeId ?? null;
+    const expectedExecutorKind = runtimeId ? "local_acp" : "cloud_agent";
+    if (existingAttempt.userUuid !== user.uuid || existingAttempt.executorKind !== expectedExecutorKind || (sessionId && existingAttempt.sessionId !== sessionId) || existingRuntimeId !== runtimeId || (!runtimeId && (existingAttempt.turnModel !== requestedModel || existingAttempt.turnProvider !== requestedProvider))) {
+      return c.json({ code: "prompt_idempotency_conflict", message: "clientMessageId is already bound to a different execution context" }, 409);
+    }
+    const existingSession = existingAttempt.sessionId ? await getSpaceSessionById(existingAttempt.sessionId) : null;
+    const existingResponse = existingSession && existingAttempt.turnId
+      ? await buildSpacePromptTurnResponse(existingSession, existingAttempt.turnId)
+      : null;
+    if (!existingResponse) return c.json({ code: "prompt_idempotency_unavailable", message: "the existing prompt result is unavailable; retry with a new client message ID" }, 409);
+    return c.json(existingResponse);
+  }
   if (
+    !runtimeId &&
     requestedModel &&
     requestedProvider &&
     !(await validatePromptModel({ userId: user.uuid, provider: requestedProvider, model: requestedModel }))
@@ -1923,17 +2013,7 @@ router.post("/:id/prompt", async (c) => {
     return c.json({ message: error instanceof Error ? error.message : String(error) }, 400);
   }
 
-  let promptEnv: Record<string, string> | null = null;
-  try {
-    promptEnv = parsePromptEnv(body.env);
-  } catch (error) {
-    if (error instanceof PromptEnvValidationError) return c.json({ message: error.message }, 400);
-    throw error;
-  }
-
   const content = body.content;
-  const clientMessageId = body.clientMessageId?.trim() || crypto.randomUUID();
-  const source = resolveSessionSourceFromRequest(c, typeof body.source === "string" ? body.source : null);
 
   const scheduledAuth = await getScheduledPromptAuthContext(c, spaceId, user.uuid);
   const taskData = {
@@ -1948,6 +2028,7 @@ router.post("/:id/prompt", async (c) => {
     ...(body.title ? { title: body.title } : {}),
     ...(body.model ? { model: body.model } : {}),
     ...(body.provider ? { provider: body.provider } : {}),
+    ...(runtimeId ? { runtimeId } : {}),
     ...(promptThinkingLevel ? { thinkingLevel: promptThinkingLevel } : {}),
     ...(promptLabelIds.length > 0 ? { labelIds: promptLabelIds } : {}),
     ...(scheduledAuth ? { auth: scheduledAuth } : {}),
@@ -1990,6 +2071,7 @@ router.post("/:id/prompt", async (c) => {
         sourceClientId: getRequestSource(c)?.clientId ?? null,
         model: requestedModel,
         provider: requestedProvider,
+        runtimeId,
         thinkingLevel: promptThinkingLevel ?? null,
         generationPolicy,
         intent: promptIntent,
@@ -2014,6 +2096,12 @@ router.post("/:id/prompt", async (c) => {
           return c.json({ ...body, sessionId: createdSessionId }, res.status as never);
         }
         return res;
+      }
+      if (error instanceof LocalAgentServiceError) {
+        return c.json(
+          { code: error.code, message: error.message, ...(createdSessionId ? { sessionId: createdSessionId } : {}) },
+          error.status as never,
+        );
       }
       if (error instanceof ModelUnavailableError) {
         return c.json(

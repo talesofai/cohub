@@ -1,5 +1,8 @@
 import { createLogger } from "@cohub/infra/logging";
 import { Hono } from "hono";
+import { and, eq, inArray } from "drizzle-orm";
+import { workspaceExecutionAttempts, sessionTurns } from "@cohub/db";
+import { db } from "../../db/index.js";
 import { BillingAccessBlockedError, serializeBillingBlocked } from "@cohub/billing";
 import { attachSandboxPublicEndpoints } from "../../sandbox-public-network.js";
 import type {
@@ -18,7 +21,7 @@ import {
 import { abortSessionTurn, failSessionTurn, interruptSessionTurn } from "../../session-turns.js";
 import { hasPermission } from "../../permissions.js";
 import { dispatchTurnFinalized } from "../../session-output.js";
-import { submitSessionPrompt, type PromptAccessMode, type SubmitSessionPromptContext } from "../../session-prompts.js";
+import { buildPromptIdempotencyKey, submitSessionPrompt, type PromptAccessMode, type SubmitSessionPromptContext } from "../../session-prompts.js";
 import { ModelUnavailableError, parsePromptEnv, PromptEnvValidationError } from "@cohub/core/sessions";
 import { verifyAppSessionToken } from "../../app-sessions.js";
 import { mergePromptContextAuth, promptAuthContextFromAppSession } from "../../prompt-auth-context.js";
@@ -385,6 +388,7 @@ router.post("/:spaceId/sessions/:sessionId/prompt", async (c) => {
       userId?: string | null;
       authToken?: string | null;
       clientMessageId?: string | null;
+      runtimeId?: string | null;
       source?: string | null;
       model?: string | null;
       provider?: string | null;
@@ -397,6 +401,8 @@ router.post("/:spaceId/sessions/:sessionId/prompt", async (c) => {
   if (!body || !Array.isArray(body.content) || body.content.length === 0) {
     return c.json({ message: "content is required" }, 400);
   }
+  if (body.userId != null && typeof body.userId !== "string") return c.json({ message: "userId must be a string" }, 400);
+  if (body.authToken != null && typeof body.authToken !== "string") return c.json({ message: "authToken must be a string" }, 400);
   const userId = body.userId?.trim();
   if (!userId) return c.json({ message: "userId is required" }, 400);
   const accessMode = body.accessMode ?? "full_access";
@@ -415,8 +421,35 @@ router.post("/:spaceId/sessions/:sessionId/prompt", async (c) => {
   if (!(await hasPermission(permissionSubject, promptPermission, { spaceId, sessionId }))) {
     return c.json({ message: "forbidden" }, 403);
   }
+  if (body.clientMessageId != null && typeof body.clientMessageId !== "string") return c.json({ message: "clientMessageId must be a string" }, 400);
   const clientMessageId = body.clientMessageId?.trim();
   if (!clientMessageId) return c.json({ message: "clientMessageId is required" }, 400);
+  if (clientMessageId.length > 255) return c.json({ message: "clientMessageId is too long" }, 400);
+  if (body.runtimeId != null && typeof body.runtimeId !== "string") return c.json({ message: "runtimeId must be a string" }, 400);
+  const runtimeId = body.runtimeId?.trim() || null;
+  if (runtimeId && !requireValidId(runtimeId)) return c.json({ message: "runtimeId must be a valid UUID" }, 400);
+  if (runtimeId && !(await hasPermission(permissionSubject, "file.edit", { spaceId }))) {
+    return c.json({ message: "forbidden" }, 403);
+  }
+  if (body.model != null && typeof body.model !== "string") return c.json({ message: "model must be a string" }, 400);
+  if (body.provider != null && typeof body.provider !== "string") return c.json({ message: "provider must be a string" }, 400);
+  const requestedModel = typeof body.model === "string" ? body.model.trim() : null;
+  const requestedProvider = typeof body.provider === "string" ? body.provider.trim() : null;
+  if (runtimeId && (requestedModel || requestedProvider)) {
+    return c.json({ code: "runtime_model_invalid", message: "local ACP runtime uses its own provider configuration" }, 400);
+  }
+  if (runtimeId && promptThinkingLevel) {
+    return c.json({ code: "runtime_thinking_invalid", message: "local ACP runtime uses its provider's own thinking configuration" }, 400);
+  }
+  if (runtimeId && body.content.some((block) => block && typeof block === "object" && !Array.isArray(block) && (block as { type?: unknown }).type === "shell_command")) {
+    return c.json({ message: "local ACP runtime does not accept Cohub shell commands" }, 400);
+  }
+  if (runtimeId && body.content.some((block) => {
+    const type = block && typeof block === "object" && !Array.isArray(block) ? (block as { type?: unknown }).type : null;
+    return type !== "text" && type !== "image" && type !== "thinking";
+  })) {
+    return c.json({ message: "local ACP runtime accepts only text and image prompt content" }, 400);
+  }
 
   let promptEnv: Record<string, string> | null = null;
   try {
@@ -424,6 +457,44 @@ router.post("/:spaceId/sessions/:sessionId/prompt", async (c) => {
   } catch (error) {
     if (error instanceof PromptEnvValidationError) return c.json({ message: error.message }, 400);
     throw error;
+  }
+  if (runtimeId && promptEnv && Object.keys(promptEnv).length > 0) {
+    return c.json({ code: "runtime_env_invalid", message: "local ACP runtime does not accept Cohub environment overrides" }, 400);
+  }
+  if (body.source != null && typeof body.source !== "string") return c.json({ message: "source must be a string" }, 400);
+  const source = body.source?.trim() || "scheduled_task";
+  if (runtimeId && source === "scheduled_task") {
+    return c.json({ code: "runtime_schedule_invalid", message: "local ACP runtime prompts must run immediately" }, 400);
+  }
+
+  const idempotencyKeys = [...new Set([
+    buildPromptIdempotencyKey(clientMessageId, runtimeId),
+    buildPromptIdempotencyKey(clientMessageId, null),
+  ])];
+  const [existingAttempt] = await db.select({
+    turnId: workspaceExecutionAttempts.turnId,
+    sessionId: workspaceExecutionAttempts.sessionId,
+    runtimeId: workspaceExecutionAttempts.runtimeId,
+    executorKind: workspaceExecutionAttempts.executorKind,
+    userUuid: sessionTurns.userUuid,
+    meta: sessionTurns.meta,
+  }).from(workspaceExecutionAttempts)
+    .innerJoin(sessionTurns, eq(sessionTurns.id, workspaceExecutionAttempts.turnId))
+    .where(and(
+      eq(workspaceExecutionAttempts.spaceId, spaceId),
+      inArray(workspaceExecutionAttempts.idempotencyKey, idempotencyKeys),
+    )).limit(1);
+  if (existingAttempt) {
+    const expectedExecutorKind = runtimeId ? "local_acp" : "cloud_agent";
+    if (existingAttempt.userUuid !== userId || existingAttempt.sessionId !== sessionId || existingAttempt.executorKind !== expectedExecutorKind || (existingAttempt.runtimeId ?? null) !== runtimeId) {
+      return c.json({ code: "prompt_idempotency_conflict", message: "clientMessageId is already bound to a different execution context" }, 409);
+    }
+    const existingMeta = existingAttempt.meta && typeof existingAttempt.meta === "object" && !Array.isArray(existingAttempt.meta)
+      ? existingAttempt.meta as Record<string, unknown>
+      : {};
+    const existingUserMessageId = typeof existingMeta.userMessageId === "string" ? existingMeta.userMessageId : null;
+    if (!existingAttempt.turnId || !existingUserMessageId) return c.json({ code: "prompt_idempotency_unavailable", message: "the existing prompt result is unavailable; retry with a new client message ID" }, 409);
+    return c.json({ ok: true, turnId: existingAttempt.turnId, userMessageId: existingUserMessageId });
   }
 
   try {
@@ -433,9 +504,10 @@ router.post("/:spaceId/sessions/:sessionId/prompt", async (c) => {
       userId,
       clientMessageId,
       content: body.content,
-      source: body.source?.trim() || "scheduled_task",
+      source,
       model: body.model ?? null,
       provider: body.provider ?? null,
+      runtimeId,
       thinkingLevel: promptThinkingLevel ?? null,
       accessMode,
       env: promptEnv,

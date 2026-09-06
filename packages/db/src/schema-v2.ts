@@ -15,6 +15,7 @@ import {
   unique,
   check,
   doublePrecision,
+  type AnyPgColumn,
 } from "drizzle-orm/pg-core";
 import type { ContentBlock } from "@cohub/protocol/core";
 import type { TaskPayload } from "@cohub/protocol/task";
@@ -26,6 +27,19 @@ import type {
   SessionTurnStatus,
   SessionTurnSummary,
 } from "@cohub/protocol/model";
+import type {
+  LocalAcpProvider,
+  LocalAcpRuntimeStatus,
+} from "@cohub/protocol";
+import type {
+  WorkspaceConflictKind,
+  WorkspaceConflictResolution,
+  WorkspaceConflictStatus,
+  WorkspaceReplicaKind,
+  WorkspaceReplicaStatus,
+  WorkspaceSnapshotStatus,
+  WorkspaceSyncMode,
+} from "@cohub/protocol";
 
 export type SpaceRole = "host" | "builder" | "guest";
 export type AccessPolicyRole = "builder" | "guest" | null;
@@ -1470,5 +1484,436 @@ export const resourceReferences = v2.table(
       table.sourceSessionId,
       table.kind,
     ),
+  }),
+);
+
+// ── Local ACP runtime and workspace replica state ───────────────────────────
+// These tables are intentionally separate from space_sandboxes and the legacy
+// session execution rows. They are durable coordination/provenance records;
+// filesystem bytes remain in object storage and the transcript stays in the
+// session JSONL plus session_messages.
+
+export const localAgentDevices = v2.table(
+  "local_agent_devices",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    userUuid: varchar("user_uuid", { length: 255 }).notNull(),
+    displayName: varchar("display_name", { length: 255 }).notNull(),
+    platform: varchar("platform", { length: 80 }).notNull(),
+    daemonVersion: varchar("daemon_version", { length: 120 }),
+    credentialVersion: integer("credential_version").notNull().default(1),
+    refreshTokenHash: text("refresh_token_hash").notNull(),
+    status: varchar("status", { length: 20 }).notNull().default("active"),
+    lastSeenAt: timestamp("last_seen_at", { withTimezone: true }),
+    revokedAt: timestamp("revoked_at", { withTimezone: true }),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+    updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (table) => ({
+    userStatusIdx: index("v2_idx_local_agent_devices_user_status").on(table.userUuid, table.status),
+    activeCredentialIdx: uniqueIndex("v2_uq_local_agent_devices_active_credential").on(
+      table.refreshTokenHash,
+    ).where(sql`${table.status} = 'active'`),
+  }),
+);
+
+export const spaceWorkspacePolicies = v2.table(
+  "space_workspace_policies",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    spaceId: uuid("space_id").notNull().references(() => spaces.id, { onDelete: "restrict" }),
+    policyVersion: bigint("policy_version", { mode: "number" }).notNull().default(1),
+    defaultExcludes: jsonb("default_excludes").$type<string[]>().notNull().default(sql`'[]'::jsonb`),
+    customExcludes: jsonb("custom_excludes").$type<string[]>().notNull().default(sql`'[]'::jsonb`),
+    sensitiveContentMode: varchar("sensitive_content_mode", { length: 40 }).notNull().default("exclude_with_warning"),
+    limits: jsonb("limits").$type<Record<string, unknown>>().notNull().default(sql`'{}'::jsonb`),
+    updatedBy: varchar("updated_by", { length: 255 }).notNull(),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+    updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (table) => ({
+    spaceUniqueIdx: uniqueIndex("v2_uq_space_workspace_policies_space").on(table.spaceId),
+    versionIdx: index("v2_idx_space_workspace_policies_version").on(table.spaceId, table.policyVersion),
+  }),
+);
+
+export const spaceLocalAgentPolicies = v2.table(
+  "space_local_agent_policies",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    spaceId: uuid("space_id").notNull().references(() => spaces.id, { onDelete: "restrict" }),
+    deviceId: uuid("device_id").notNull().references(() => localAgentDevices.id, { onDelete: "restrict" }),
+    userUuid: varchar("user_uuid", { length: 255 }).notNull(),
+    integrationPolicyVersion: bigint("integration_policy_version", { mode: "number" }).notNull().default(1),
+    workspaceMode: varchar("workspace_mode", { length: 30 }).$type<WorkspaceSyncMode>().notNull().default("handoff"),
+    updatedBy: varchar("updated_by", { length: 255 }).notNull(),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+    updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (table) => ({
+    spaceDeviceUniqueIdx: uniqueIndex("v2_uq_space_local_agent_policies_space_device").on(table.spaceId, table.deviceId),
+    deviceIdx: index("v2_idx_space_local_agent_policies_device").on(table.deviceId, table.updatedAt),
+  }),
+);
+
+export const workspaceReplicas = v2.table(
+  "workspace_replicas",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    spaceId: uuid("space_id").notNull().references(() => spaces.id, { onDelete: "restrict" }),
+    deviceId: uuid("device_id").references(() => localAgentDevices.id, { onDelete: "restrict" }),
+    userUuid: varchar("user_uuid", { length: 255 }),
+    kind: varchar("kind", { length: 20 }).$type<WorkspaceReplicaKind>().notNull(),
+    status: varchar("status", { length: 30 }).$type<WorkspaceReplicaStatus>().notNull().default("attaching"),
+    displayName: varchar("display_name", { length: 255 }).notNull(),
+    rootFingerprint: varchar("root_fingerprint", { length: 255 }),
+    parentReplicaId: uuid("parent_replica_id").references((): AnyPgColumn => workspaceReplicas.id, { onDelete: "restrict" }),
+    boundaryMode: varchar("boundary_mode", { length: 30 }),
+    protocolVersion: integer("protocol_version").notNull().default(1),
+    capabilities: jsonb("capabilities").$type<Record<string, unknown>>().notNull().default(sql`'{}'::jsonb`),
+    currentSnapshotId: uuid("current_snapshot_id").references((): AnyPgColumn => workspaceSnapshots.id, { onDelete: "restrict" }),
+    appliedSnapshotId: uuid("applied_snapshot_id").references((): AnyPgColumn => workspaceSnapshots.id, { onDelete: "restrict" }),
+    lastCommonSnapshotId: uuid("last_common_snapshot_id").references((): AnyPgColumn => workspaceSnapshots.id, { onDelete: "restrict" }),
+    activeExecutionAttemptId: uuid("active_execution_attempt_id").references((): AnyPgColumn => workspaceExecutionAttempts.id, { onDelete: "restrict" }),
+    lastSeenAt: timestamp("last_seen_at", { withTimezone: true }),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+    updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (table) => ({
+    spaceIdx: index("v2_idx_workspace_replicas_space").on(table.spaceId, table.kind, table.status),
+    deviceIdx: index("v2_idx_workspace_replicas_device").on(table.deviceId, table.status),
+    cloudUniqueIdx: uniqueIndex("v2_uq_workspace_replicas_cloud_space").on(table.spaceId).where(sql`${table.kind} = 'cloud'`),
+    localBindingUniqueIdx: uniqueIndex("v2_uq_workspace_replicas_local_binding").on(table.spaceId, table.deviceId, table.rootFingerprint).where(sql`${table.kind} = 'local' and ${table.status} <> 'detached'`),
+  }),
+);
+
+export const workspaceState = v2.table(
+  "workspace_state",
+  {
+    spaceId: uuid("space_id").primaryKey().references(() => spaces.id, { onDelete: "restrict" }),
+    canonicalSnapshotId: uuid("canonical_snapshot_id").references((): AnyPgColumn => workspaceSnapshots.id, { onDelete: "restrict" }),
+    cloudAppliedSnapshotId: uuid("cloud_applied_snapshot_id").references((): AnyPgColumn => workspaceSnapshots.id, { onDelete: "restrict" }),
+    generation: bigint("generation", { mode: "number" }).notNull().default(0),
+    status: varchar("status", { length: 30 }).notNull().default("initializing"),
+    activeCycleId: uuid("active_cycle_id").references((): AnyPgColumn => workspaceSyncCycles.id, { onDelete: "restrict" }),
+    activeExecutionAttemptId: uuid("active_execution_attempt_id").references((): AnyPgColumn => workspaceExecutionAttempts.id, { onDelete: "restrict" }),
+    lastWriterKind: varchar("last_writer_kind", { length: 40 }),
+    lastWriterId: varchar("last_writer_id", { length: 255 }),
+    updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (table) => ({
+    statusIdx: index("v2_idx_workspace_state_status").on(table.status, table.updatedAt),
+    generationIdx: index("v2_idx_workspace_state_generation").on(table.generation),
+  }),
+);
+
+export const workspaceExecutionAttempts = v2.table(
+  "workspace_execution_attempts",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    spaceId: uuid("space_id").notNull().references(() => spaces.id, { onDelete: "restrict" }),
+    replicaId: uuid("replica_id").references(() => workspaceReplicas.id, { onDelete: "restrict" }),
+    runtimeId: uuid("runtime_id").references((): AnyPgColumn => localAgentRuntimes.id, { onDelete: "restrict" }),
+    idempotencyKey: varchar("idempotency_key", { length: 255 }).notNull(),
+    executorKind: varchar("executor_kind", { length: 40 }).notNull(),
+    provider: varchar("provider", { length: 40 }),
+    integrationPolicyVersion: bigint("integration_policy_version", { mode: "number" }),
+    workspaceRequired: boolean("workspace_required").notNull().default(true),
+    transcriptRequired: boolean("transcript_required").notNull().default(true),
+    sessionId: uuid("session_id").references(() => spaceSessions.id, { onDelete: "restrict" }),
+    turnId: uuid("turn_id").references(() => sessionTurns.id, { onDelete: "restrict" }),
+    relativeCwd: text("relative_cwd"),
+    baseCanonicalSnapshotId: uuid("base_canonical_snapshot_id").references((): AnyPgColumn => workspaceSnapshots.id, { onDelete: "restrict" }),
+    workspaceLeaseEpoch: bigint("workspace_lease_epoch", { mode: "number" }),
+    workspacePolicyVersion: bigint("workspace_policy_version", { mode: "number" }),
+    status: varchar("status", { length: 30 }).notNull().default("prepared"),
+    workspaceCycleId: uuid("workspace_cycle_id").references((): AnyPgColumn => workspaceSyncCycles.id, { onDelete: "restrict" }),
+    resultSnapshotId: uuid("result_snapshot_id").references((): AnyPgColumn => workspaceSnapshots.id, { onDelete: "restrict" }),
+    startedAt: timestamp("started_at", { withTimezone: true }),
+    completedAt: timestamp("completed_at", { withTimezone: true }),
+    errorCode: varchar("error_code", { length: 80 }),
+    errorMessage: text("error_message"),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+    updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (table) => ({
+    idempotencyUniqueIdx: uniqueIndex("v2_uq_workspace_execution_attempts_space_idempotency").on(table.spaceId, table.idempotencyKey),
+    activeSpaceIdx: uniqueIndex("v2_uq_workspace_execution_attempts_active_space").on(table.spaceId).where(sql`${table.status} in ('prepared', 'running', 'workspace_sealed', 'transcript_sealed', 'awaiting_recovery')`),
+    spaceStatusIdx: index("v2_idx_workspace_execution_attempts_space_status").on(table.spaceId, table.status, table.updatedAt),
+    replicaIdx: index("v2_idx_workspace_execution_attempts_replica").on(table.replicaId, table.createdAt),
+    runtimeIdx: index("v2_idx_workspace_execution_attempts_runtime").on(table.runtimeId, table.createdAt),
+  }),
+);
+
+export const workspaceSnapshots = v2.table(
+  "workspace_snapshots",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    spaceId: uuid("space_id").notNull().references(() => spaces.id, { onDelete: "restrict" }),
+    replicaId: uuid("replica_id").notNull().references(() => workspaceReplicas.id, { onDelete: "restrict" }),
+    replicaGeneration: bigint("replica_generation", { mode: "number" }).notNull(),
+    parentSnapshotId: uuid("parent_snapshot_id").references((): AnyPgColumn => workspaceSnapshots.id, { onDelete: "restrict" }),
+    mergeParentSnapshotId: uuid("merge_parent_snapshot_id").references((): AnyPgColumn => workspaceSnapshots.id, { onDelete: "restrict" }),
+    baseCanonicalSnapshotId: uuid("base_canonical_snapshot_id").references((): AnyPgColumn => workspaceSnapshots.id, { onDelete: "restrict" }),
+    workspacePolicyVersion: bigint("workspace_policy_version", { mode: "number" }).notNull(),
+    manifestVersion: integer("manifest_version").notNull().default(1),
+    manifestObjectKey: text("manifest_object_key").notNull(),
+    manifestInline: jsonb("manifest_inline").$type<Record<string, unknown> | null>(),
+    manifestSha256: varchar("manifest_sha256", { length: 64 }).notNull(),
+    manifestTransportSha256: varchar("manifest_transport_sha256", { length: 64 }),
+    manifestTransportBytes: bigint("manifest_transport_bytes", { mode: "number" }),
+    treeHash: varchar("tree_hash", { length: 64 }).notNull(),
+    fileCount: bigint("file_count", { mode: "number" }).notNull().default(0),
+    totalBytes: bigint("total_bytes", { mode: "number" }).notNull().default(0),
+    source: varchar("source", { length: 40 }).notNull(),
+    sourceSessionId: uuid("source_session_id").references(() => spaceSessions.id, { onDelete: "restrict" }),
+    sourceTurnId: uuid("source_turn_id").references(() => sessionTurns.id, { onDelete: "restrict" }),
+    sourceExecutionAttemptId: uuid("source_execution_attempt_id").references(() => workspaceExecutionAttempts.id, { onDelete: "restrict" }),
+    leaseEpoch: bigint("lease_epoch", { mode: "number" }),
+    status: varchar("status", { length: 30 }).$type<WorkspaceSnapshotStatus>().notNull().default("uploading"),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+    updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (table) => ({
+    replicaGenerationUniqueIdx: uniqueIndex("v2_uq_workspace_snapshots_replica_generation").on(table.replicaId, table.replicaGeneration),
+    replicaTreeIdx: index("v2_idx_workspace_snapshots_replica_tree").on(table.replicaId, table.treeHash, table.manifestSha256),
+    spaceStatusIdx: index("v2_idx_workspace_snapshots_space_status").on(table.spaceId, table.status, table.createdAt),
+    attemptIdx: index("v2_idx_workspace_snapshots_attempt").on(table.sourceExecutionAttemptId),
+  }),
+);
+
+export const workspaceBlobs = v2.table(
+  "workspace_blobs",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    spaceId: uuid("space_id").notNull().references(() => spaces.id, { onDelete: "restrict" }),
+    sha256: varchar("sha256", { length: 64 }).notNull(),
+    size: bigint("size", { mode: "number" }).notNull(),
+    objectKey: text("object_key").notNull(),
+    contentType: varchar("content_type", { length: 255 }),
+    status: varchar("status", { length: 20 }).notNull().default("uploading"),
+    verifiedAt: timestamp("verified_at", { withTimezone: true }),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+    updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (table) => ({
+    spaceHashUniqueIdx: uniqueIndex("v2_uq_workspace_blobs_space_hash").on(table.spaceId, table.sha256),
+    statusIdx: index("v2_idx_workspace_blobs_status").on(table.spaceId, table.status, table.updatedAt),
+  }),
+);
+
+export const workspaceSnapshotBlobs = v2.table(
+  "workspace_snapshot_blobs",
+  {
+    snapshotId: uuid("snapshot_id").notNull().references(() => workspaceSnapshots.id, { onDelete: "restrict" }),
+    blobId: uuid("blob_id").notNull().references(() => workspaceBlobs.id, { onDelete: "restrict" }),
+    path: text("path").notNull(),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (table) => ({
+    snapshotPathUniqueIdx: uniqueIndex("v2_uq_workspace_snapshot_blobs_snapshot_path").on(table.snapshotId, table.path),
+    snapshotIdx: index("v2_idx_workspace_snapshot_blobs_snapshot").on(table.snapshotId),
+    blobIdx: index("v2_idx_workspace_snapshot_blobs_blob").on(table.blobId),
+  }),
+);
+
+export const workspaceSyncCycles = v2.table(
+  "workspace_sync_cycles",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    spaceId: uuid("space_id").notNull().references(() => spaces.id, { onDelete: "restrict" }),
+    replicaId: uuid("replica_id").notNull().references(() => workspaceReplicas.id, { onDelete: "restrict" }),
+    baseSnapshotId: uuid("base_snapshot_id").references((): AnyPgColumn => workspaceSnapshots.id, { onDelete: "restrict" }),
+    localSnapshotId: uuid("local_snapshot_id").references((): AnyPgColumn => workspaceSnapshots.id, { onDelete: "restrict" }),
+    cloudSnapshotId: uuid("cloud_snapshot_id").references((): AnyPgColumn => workspaceSnapshots.id, { onDelete: "restrict" }),
+    resultSnapshotId: uuid("result_snapshot_id").references((): AnyPgColumn => workspaceSnapshots.id, { onDelete: "restrict" }),
+    executionAttemptId: uuid("execution_attempt_id").references(() => workspaceExecutionAttempts.id, { onDelete: "restrict" }),
+    direction: varchar("direction", { length: 30 }).notNull(),
+    canonicalGenerationAtStart: bigint("canonical_generation_at_start", { mode: "number" }).notNull().default(0),
+    planObjectKey: text("plan_object_key"),
+    planSha256: varchar("plan_sha256", { length: 64 }),
+    leaseEpoch: bigint("lease_epoch", { mode: "number" }),
+    status: varchar("status", { length: 30 }).notNull().default("planned"),
+    stats: jsonb("stats").$type<Record<string, unknown>>(),
+    errorCode: varchar("error_code", { length: 80 }),
+    errorMessage: text("error_message"),
+    completedAt: timestamp("completed_at", { withTimezone: true }),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+    updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (table) => ({
+    activeSpaceIdx: uniqueIndex("v2_uq_workspace_sync_cycles_active_space").on(table.spaceId).where(sql`${table.status} in ('planned', 'transferring', 'applying_cloud', 'applying_local', 'verifying')`),
+    spaceStatusIdx: index("v2_idx_workspace_sync_cycles_space_status").on(table.spaceId, table.status, table.createdAt),
+    attemptIdx: index("v2_idx_workspace_sync_cycles_attempt").on(table.executionAttemptId),
+  }),
+);
+
+export const workspaceSyncConflicts = v2.table(
+  "workspace_sync_conflicts",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    cycleId: uuid("cycle_id").notNull().references(() => workspaceSyncCycles.id, { onDelete: "restrict" }),
+    spaceId: uuid("space_id").notNull().references(() => spaces.id, { onDelete: "restrict" }),
+    path: text("path").notNull(),
+    kind: varchar("kind", { length: 40 }).$type<WorkspaceConflictKind>().notNull(),
+    baseEntry: jsonb("base_entry").$type<Record<string, unknown> | null>(),
+    localEntry: jsonb("local_entry").$type<Record<string, unknown> | null>(),
+    cloudEntry: jsonb("cloud_entry").$type<Record<string, unknown> | null>(),
+    baseObjectKey: text("base_object_key"),
+    localObjectKey: text("local_object_key"),
+    cloudObjectKey: text("cloud_object_key"),
+    status: varchar("status", { length: 20 }).$type<WorkspaceConflictStatus>().notNull().default("open"),
+    resolution: varchar("resolution", { length: 30 }).$type<WorkspaceConflictResolution>(),
+    resolvedSnapshotId: uuid("resolved_snapshot_id").references(() => workspaceSnapshots.id, { onDelete: "restrict" }),
+    resolvedBy: varchar("resolved_by", { length: 255 }),
+    resolvedAt: timestamp("resolved_at", { withTimezone: true }),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+    updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (table) => ({
+    openCyclePathUniqueIdx: uniqueIndex("v2_uq_workspace_sync_conflicts_open_cycle_path").on(table.cycleId, table.path).where(sql`${table.status} = 'open'`),
+    spaceStatusIdx: index("v2_idx_workspace_sync_conflicts_space_status").on(table.spaceId, table.status, table.createdAt),
+    cycleIdx: index("v2_idx_workspace_sync_conflicts_cycle").on(table.cycleId, table.path),
+  }),
+);
+
+export const workspaceWriterLeases = v2.table(
+  "workspace_writer_leases",
+  {
+    spaceId: uuid("space_id").primaryKey().references(() => spaces.id, { onDelete: "restrict" }),
+    holderKind: varchar("holder_kind", { length: 40 }).notNull(),
+    holderId: varchar("holder_id", { length: 255 }).notNull(),
+    holderUserUuid: varchar("holder_user_uuid", { length: 255 }),
+    epoch: bigint("epoch", { mode: "number" }).notNull().default(0),
+    baseSnapshotId: uuid("base_snapshot_id").references(() => workspaceSnapshots.id, { onDelete: "restrict" }),
+    expiresAt: timestamp("expires_at", { withTimezone: true }).notNull(),
+    lastHeartbeatAt: timestamp("last_heartbeat_at", { withTimezone: true }).notNull(),
+    updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (table) => ({
+    expiryIdx: index("v2_idx_workspace_writer_leases_expiry").on(table.expiresAt),
+    holderIdx: index("v2_idx_workspace_writer_leases_holder").on(table.holderKind, table.holderId),
+  }),
+);
+
+export const localAgentRuntimes = v2.table(
+  "local_agent_runtimes",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    spaceId: uuid("space_id").notNull().references(() => spaces.id, { onDelete: "restrict" }),
+    deviceId: uuid("device_id").notNull().references(() => localAgentDevices.id, { onDelete: "restrict" }),
+    replicaId: uuid("replica_id").notNull().references(() => workspaceReplicas.id, { onDelete: "restrict" }),
+    userUuid: varchar("user_uuid", { length: 255 }).notNull(),
+    provider: varchar("provider", { length: 40 }).$type<LocalAcpProvider>().notNull(),
+    displayName: varchar("display_name", { length: 255 }).notNull(),
+    providerVersion: varchar("provider_version", { length: 120 }).notNull().default("unknown"),
+    adapterVersion: varchar("adapter_version", { length: 120 }).notNull().default("unknown"),
+    protocolVersion: integer("protocol_version").notNull().default(1),
+    capabilities: jsonb("capabilities").$type<Record<string, unknown>>().notNull().default(sql`'{}'::jsonb`),
+    status: varchar("status", { length: 30 }).$type<LocalAcpRuntimeStatus>().notNull().default("offline"),
+    connectionEpoch: bigint("connection_epoch", { mode: "number" }).notNull().default(0),
+    gatewayNodeId: varchar("gateway_node_id", { length: 255 }),
+    gatewayWsEndpoint: text("gateway_ws_endpoint"),
+    lastSeenAt: timestamp("last_seen_at", { withTimezone: true }),
+    connectedAt: timestamp("connected_at", { withTimezone: true }),
+    disconnectedAt: timestamp("disconnected_at", { withTimezone: true }),
+    lastError: text("last_error"),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+    updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (table) => ({
+    spaceDeviceProviderUniqueIdx: uniqueIndex("v2_uq_local_agent_runtimes_space_device_provider").on(table.spaceId, table.deviceId, table.provider).where(sql`${table.status} <> 'revoked'`),
+    spaceStatusIdx: index("v2_idx_local_agent_runtimes_space_status").on(table.spaceId, table.status, table.updatedAt),
+    deviceIdx: index("v2_idx_local_agent_runtimes_device").on(table.deviceId, table.status),
+  }),
+);
+
+export const localAgentRuntimeSessions = v2.table(
+  "local_agent_runtime_sessions",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    runtimeId: uuid("runtime_id").notNull().references(() => localAgentRuntimes.id, { onDelete: "restrict" }),
+    spaceId: uuid("space_id").notNull().references(() => spaces.id, { onDelete: "restrict" }),
+    cohubSessionId: uuid("cohub_session_id").notNull().references(() => spaceSessions.id, { onDelete: "restrict" }),
+    acpSessionId: varchar("acp_session_id", { length: 255 }).notNull(),
+    connectionEpoch: bigint("connection_epoch", { mode: "number" }).notNull(),
+    status: varchar("status", { length: 30 }).notNull().default("active"),
+    lastEventSequence: bigint("last_event_sequence", { mode: "number" }).notNull().default(0),
+    lastEventHash: varchar("last_event_hash", { length: 64 }),
+    lastSeenAt: timestamp("last_seen_at", { withTimezone: true }),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+    updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (table) => ({
+    runtimeAcpSessionUniqueIdx: uniqueIndex("v2_uq_local_agent_runtime_sessions_runtime_acp").on(table.runtimeId, table.acpSessionId),
+    runtimeCohubSessionUniqueIdx: uniqueIndex("v2_uq_local_agent_runtime_sessions_runtime_cohub").on(table.runtimeId, table.cohubSessionId),
+    spaceStatusIdx: index("v2_idx_local_agent_runtime_sessions_space_status").on(table.spaceId, table.status, table.updatedAt),
+  }),
+);
+
+export const localAgentRuntimeCommands = v2.table(
+  "local_agent_runtime_commands",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    runtimeId: uuid("runtime_id").notNull().references(() => localAgentRuntimes.id, { onDelete: "restrict" }),
+    runtimeSessionId: uuid("runtime_session_id").notNull().references(() => localAgentRuntimeSessions.id, { onDelete: "restrict" }),
+    executionAttemptId: uuid("execution_attempt_id").references((): AnyPgColumn => workspaceExecutionAttempts.id, { onDelete: "restrict" }),
+    cohubSessionId: uuid("cohub_session_id").notNull().references(() => spaceSessions.id, { onDelete: "restrict" }),
+    commandId: varchar("command_id", { length: 255 }).notNull(),
+    sequence: bigint("sequence", { mode: "number" }).notNull(),
+    method: varchar("method", { length: 120 }).notNull(),
+    params: jsonb("params").notNull().$type<Record<string, unknown>>(),
+    paramsHash: varchar("params_hash", { length: 64 }).notNull(),
+    status: varchar("status", { length: 30 }).notNull().default("prepared"),
+    response: jsonb("response").$type<Record<string, unknown> | null>(),
+    errorCode: integer("error_code"),
+    errorMessage: text("error_message"),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+    updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (table) => ({
+    runtimeCommandUniqueIdx: uniqueIndex("v2_uq_local_agent_runtime_commands_session_command").on(table.runtimeSessionId, table.commandId),
+    runtimeSequenceUniqueIdx: uniqueIndex("v2_uq_local_agent_runtime_commands_session_sequence").on(table.runtimeSessionId, table.sequence),
+    runtimeAttemptIdx: index("v2_idx_local_agent_runtime_commands_attempt").on(table.executionAttemptId, table.createdAt),
+    runtimeStatusIdx: index("v2_idx_local_agent_runtime_commands_runtime_status").on(table.runtimeId, table.status, table.updatedAt),
+  }),
+);
+
+export const localAgentRuntimeEvents = v2.table(
+  "local_agent_runtime_events",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    runtimeSessionId: uuid("runtime_session_id").notNull().references(() => localAgentRuntimeSessions.id, { onDelete: "restrict" }),
+    eventId: varchar("event_id", { length: 255 }).notNull(),
+    sequence: bigint("sequence", { mode: "number" }).notNull(),
+    direction: varchar("direction", { length: 20 }).notNull(),
+    method: varchar("method", { length: 120 }).notNull(),
+    commandId: varchar("command_id", { length: 255 }),
+    payload: jsonb("payload").notNull().$type<Record<string, unknown>>(),
+    payloadHash: varchar("payload_hash", { length: 64 }).notNull(),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (table) => ({
+    runtimeEventUniqueIdx: uniqueIndex("v2_uq_local_agent_runtime_events_session_event").on(table.runtimeSessionId, table.eventId),
+    runtimeSequenceUniqueIdx: uniqueIndex("v2_uq_local_agent_runtime_events_session_sequence").on(table.runtimeSessionId, table.sequence),
+    sessionCreatedIdx: index("v2_idx_local_agent_runtime_events_session_created").on(table.runtimeSessionId, table.createdAt),
+    commandIdx: index("v2_idx_local_agent_runtime_events_command").on(table.runtimeSessionId, table.commandId, table.sequence),
+  }),
+);
+
+export const sessionWriterLeases = v2.table(
+  "session_writer_leases",
+  {
+    sessionId: uuid("session_id").primaryKey().references(() => spaceSessions.id, { onDelete: "restrict" }),
+    holderKind: varchar("holder_kind", { length: 30 }).notNull(),
+    holderId: varchar("holder_id", { length: 255 }).notNull(),
+    epoch: bigint("epoch", { mode: "number" }).notNull().default(0),
+    expiresAt: timestamp("expires_at", { withTimezone: true }).notNull(),
+    lastHeartbeatAt: timestamp("last_heartbeat_at", { withTimezone: true }).notNull(),
+    updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (table) => ({
+    expiryIdx: index("v2_idx_session_writer_leases_expiry").on(table.expiresAt),
+    holderIdx: index("v2_idx_session_writer_leases_holder").on(table.holderKind, table.holderId),
   }),
 );

@@ -2,3 +2,12 @@ Cohub
 Copyright 2026 Viscept Limited
 
 This product includes software developed by Viscept Limited and contributors.
+
+The cohub-locald binary includes the following directly used third-party software:
+
+- github.com/zalando/go-keyring, Copyright 2016 Zalando SE, MIT License.
+- modernc.org/sqlite, Copyright 2017 The SQLite Authors, BSD 3-Clause License.
+- github.com/cyberphone/json-canonicalization, Copyright 2018 Anders Rundgren, Apache License 2.0.
+- golang.org/x/text, Copyright 2009 The Go Authors, BSD 3-Clause License.
+
+Complete license texts and transitive dependency notices are available in the corresponding source distributions and module metadata.

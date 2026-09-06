@@ -27,6 +27,7 @@ export class BoardItemValidationError extends Error {
 		super(diagnostics[0]?.message ?? "invalid Board item");
 		this.diagnostics = diagnostics;
 		this.name = "BoardItemValidationError";
+		this.diagnostics = diagnostics;
 	}
 }
 

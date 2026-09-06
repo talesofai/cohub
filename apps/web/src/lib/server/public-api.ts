@@ -1,12 +1,13 @@
-import type {
-	AppDetailResponse,
-	PublicUserPageResponse,
+import {
+	type AppDetailResponse,
+	type PublicUserPageResponse,
+	resolveApiBaseUrl,
 } from "@neta-art/cohub";
 import { PUBLIC_API_ORIGIN } from "$env/static/public";
 import type { PublicAppPath } from "$lib/app-pwa";
 
 function apiUrl(path: string) {
-	const base = (PUBLIC_API_ORIGIN ?? "").replace(/\/$/, "");
+	const base = (PUBLIC_API_ORIGIN || resolveApiBaseUrl()).replace(/\/$/, "");
 	return `${base}${path.startsWith("/") ? path : `/${path}`}`;
 }
 
@@ -20,11 +21,16 @@ async function readJson(response: Response): Promise<unknown> {
 
 function asAppDetail(value: unknown): AppDetailResponse | null {
 	if (!isRecord(value)) return null;
-	if (!isRecord(value.app) || typeof value.app.id !== "string") return null;
+	const app = isRecord(value.app)
+		? value.app
+		: isRecord(value.work)
+			? value.work
+			: null;
+	if (!app || typeof app.id !== "string") return null;
 	if (!isRecord(value.space) || typeof value.space.id !== "string") return null;
 	if (!isRecord(value.owner) || typeof value.owner.userUuid !== "string")
 		return null;
-	return value as AppDetailResponse;
+	return { ...value, app } as AppDetailResponse;
 }
 
 function asPublicUserPage(value: unknown): PublicUserPageResponse | null {

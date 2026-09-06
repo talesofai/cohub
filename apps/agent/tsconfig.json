@@ -58,6 +58,9 @@
       "@cohub/infra/bullmq": [
         "../../packages/infra/src/bullmq/index.ts"
       ],
+      "@cohub/infra/lock-db-pool": [
+        "../../packages/infra/src/lock-db-pool.ts"
+      ],
       "@cohub/infra/space-hooks": [
         "../../packages/infra/src/space-hooks/index.ts"
       ],

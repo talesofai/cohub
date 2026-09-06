@@ -19,6 +19,7 @@ import type { ChannelEnvelope } from "@cohub/protocol/realtime";
 import {
 	extractBillingPayload,
 	HttpError,
+	type LocalAcpRuntimeRecord,
 	type SessionRecord,
 } from "@neta-art/cohub";
 import { tick, untrack } from "svelte";
@@ -190,6 +191,7 @@ export type SessionChatHostOptions = SessionChatEnvironment & {
 		| "error";
 	canManageSessionAccess?: () => boolean;
 	hasSpace?: () => boolean;
+	getLocalRuntimes?: () => LocalAcpRuntimeRecord[];
 };
 
 // Wire generation store reset once for process-wide leases.
@@ -330,12 +332,32 @@ export function createSessionChatHost(options: SessionChatHostOptions) {
 
 	const modelsCatalog = $derived(modelsCatalogStore.items);
 	const visibleModelsCatalog = $derived(modelsCatalogStore.visibleItems);
+	const localRuntimes = $derived(options.getLocalRuntimes?.() ?? []);
 	const generationModelsCatalog = $derived(generationPolicy.modelsCatalog);
 	let composerSelection = $state<SessionComposerSelection>({
 		mode: "agent",
 		model: null,
+		runtimeId: null,
 	});
+	let runtimeIdBySessionId = $state<Record<string, string | null>>({});
+	let draftRuntimeId = $state<string | null>(null);
 	const composerMode = $derived(composerSelection.mode);
+	const activeRuntimeId = $derived.by(() => {
+		if (composerSelection.mode !== "agent") return null;
+		if (
+			activeSessionId &&
+			Object.hasOwn(runtimeIdBySessionId, activeSessionId)
+		) {
+			return runtimeIdBySessionId[activeSessionId] ?? null;
+		}
+		return draftRuntimeId;
+	});
+	const activeRuntime = $derived(
+		localRuntimes.find((runtime) => runtime.id === activeRuntimeId) ?? null,
+	);
+	const activeRuntimeLabel = $derived(
+		activeRuntime?.displayName?.trim() || "Cloud",
+	);
 	let createModelId = $state<string | null>(null);
 	let createModelPreferenceRequest = 0;
 	const activeSessionLastGenerationModelId = $derived.by(() => {
@@ -441,10 +463,18 @@ export function createSessionChatHost(options: SessionChatHostOptions) {
 		untrack(() => {
 			restoredComposerModeKey = modeKey;
 			if (activeSessionId && latestTurn) {
-				composerSelection = resolveComposerSelectionFromTurn(
+				const restoredSelection = resolveComposerSelectionFromTurn(
 					latestTurn,
 					visibleModelsCatalog,
 				);
+				composerSelection = restoredSelection;
+				if (restoredSelection.mode === "agent") {
+					runtimeIdBySessionId = {
+						...runtimeIdBySessionId,
+						[activeSessionId]: restoredSelection.runtimeId,
+					};
+					draftRuntimeId = null;
+				}
 			}
 		});
 	});
@@ -536,9 +566,11 @@ export function createSessionChatHost(options: SessionChatHostOptions) {
 		);
 	});
 	const activeSessionModel = $derived(
-		composerSelection.mode === "agent" && composerSelection.model
-			? composerSelection.model
-			: restoredSessionModel,
+		activeRuntimeId
+			? null
+			: composerSelection.mode === "agent" && composerSelection.model
+				? composerSelection.model
+				: restoredSessionModel,
 	);
 	// Explicit choices remain sticky across turns. Effective model defaults are
 	// never promoted into a request, and a pending null explicitly resets to default.
@@ -1338,8 +1370,13 @@ export function createSessionChatHost(options: SessionChatHostOptions) {
 			name: catalogItem?.model.name as string | undefined,
 		} satisfies SelectedModel;
 		const thinkingLevel = model.thinkingLevel ?? null;
-		composerSelection = { mode: "agent", model: selected };
+		composerSelection = {
+			mode: "agent",
+			model: selected,
+			runtimeId: null,
+		};
 		if (!activeSessionId) {
+			draftRuntimeId = null;
 			draftSessionModel = selected;
 			draftSessionModelManuallySelected = true;
 			draftThinkingLevel = thinkingLevel;
@@ -1347,6 +1384,10 @@ export function createSessionChatHost(options: SessionChatHostOptions) {
 			focusComposerSoon();
 			return;
 		}
+		runtimeIdBySessionId = {
+			...runtimeIdBySessionId,
+			[activeSessionId]: null,
+		};
 		sessionModelById = {
 			...sessionModelById,
 			[activeSessionId]: selected,
@@ -1356,6 +1397,30 @@ export function createSessionChatHost(options: SessionChatHostOptions) {
 			[activeSessionId]: thinkingLevel,
 		};
 		showModelSelector = false;
+		focusComposerSoon();
+	}
+
+	function handleRuntimeSelect(runtimeId: string | null) {
+		if (runtimeId) {
+			const runtime = localRuntimes.find((item) => item.id === runtimeId);
+			if (runtime?.status !== "ready") return;
+		}
+		composerSelection = {
+			mode: "agent",
+			model:
+				composerSelection.mode === "agent" ? composerSelection.model : null,
+			runtimeId,
+		};
+		showModelSelector = false;
+		if (!activeSessionId) {
+			draftRuntimeId = runtimeId;
+			focusComposerSoon();
+			return;
+		}
+		runtimeIdBySessionId = {
+			...runtimeIdBySessionId,
+			[activeSessionId]: runtimeId,
+		};
 		focusComposerSoon();
 	}
 
@@ -2801,7 +2866,11 @@ export function createSessionChatHost(options: SessionChatHostOptions) {
 		composerSelection =
 			mode === "create"
 				? { mode, modelId: activeCreateModelId }
-				: { mode: "agent", model: restoredSessionModel };
+				: {
+						mode: "agent",
+						model: restoredSessionModel,
+						runtimeId: activeRuntimeId,
+					};
 		showModelSelector = false;
 		clearComposerError();
 		if (mode === "agent") void loadModelsCatalog();
@@ -2847,8 +2916,17 @@ export function createSessionChatHost(options: SessionChatHostOptions) {
 			!(options.hasSpace?.() ?? Boolean(spaceId))
 		)
 			return;
+		const selectedRuntimeId = activeRuntimeId;
+		const selectedRuntime = activeRuntime;
+		if (selectedRuntimeId && selectedRuntime?.status !== "ready") {
+			setComposerError(
+				"The selected local runtime is unavailable. Choose Cloud or wait for it to reconnect.",
+				null,
+			);
+			return;
+		}
 		composer.sending = true;
-		const model = activeSessionModel;
+		const model = selectedRuntimeId ? null : activeSessionModel;
 		clearComposerError();
 		// Snapshot identity for the whole send pipeline (multi-space host safe).
 		const opSpaceId = spaceId;
@@ -3054,8 +3132,8 @@ export function createSessionChatHost(options: SessionChatHostOptions) {
 					userText: text,
 					assistantContent: null,
 					assistantText: null,
-					provider: model?.provider ?? null,
-					model: model?.id ?? null,
+					provider: selectedRuntime?.provider ?? model?.provider ?? null,
+					model: selectedRuntimeId ? null : (model?.id ?? null),
 					stopReason: null,
 					errorMessage: null,
 					finalUsage: null,
@@ -3067,6 +3145,7 @@ export function createSessionChatHost(options: SessionChatHostOptions) {
 						optimistic: true,
 						userId: currentUser.uuid,
 						clientMessageId,
+						...(selectedRuntimeId ? { runtimeId: selectedRuntimeId } : {}),
 					},
 					authorProfile: currentUser.profile,
 					startedAt: now,
@@ -3099,13 +3178,21 @@ export function createSessionChatHost(options: SessionChatHostOptions) {
 				// Omit sessionId for new chat — server creates it.
 				...(sessionId ? { sessionId } : {}),
 				content,
-				model: model?.id,
-				provider: model?.provider,
-				...(activeSessionThinkingLevel
-					? { thinkingLevel: activeSessionThinkingLevel }
-					: {}),
+				...(selectedRuntimeId
+					? { runtimeId: selectedRuntimeId }
+					: {
+							...(model?.id ? { model: model.id } : {}),
+							...(model?.provider ? { provider: model.provider } : {}),
+						}),
+				...(selectedRuntimeId
+					? {}
+					: activeSessionThinkingLevel
+						? { thinkingLevel: activeSessionThinkingLevel }
+						: {}),
 				clientMessageId,
-				generationPolicy: buildTurnGenerationPolicy(),
+				...(selectedRuntimeId
+					? {}
+					: { generationPolicy: buildTurnGenerationPolicy() }),
 				accessMode: "full_access",
 				intent: "followup",
 				schedule: { mode: "immediate" },
@@ -3124,6 +3211,13 @@ export function createSessionChatHost(options: SessionChatHostOptions) {
 			const acceptedTurn = sendResult.turn;
 			const acceptedSession = sendResult.session;
 			if (!acceptedSession) throw new Error("Prompt response missing session");
+			if (selectedRuntimeId) {
+				runtimeIdBySessionId = {
+					...runtimeIdBySessionId,
+					[acceptedSession.id]: selectedRuntimeId,
+				};
+				draftRuntimeId = null;
+			}
 			const acceptedTurnWithProfile = {
 				...acceptedTurn,
 				userUuid: acceptedTurn.userUuid ?? currentUser.uuid,
@@ -4019,6 +4113,8 @@ export function createSessionChatHost(options: SessionChatHostOptions) {
 			share.reset();
 			tasks.reset();
 			sessionModelById = {};
+			runtimeIdBySessionId = {};
+			draftRuntimeId = null;
 			draftSessionModel = null;
 			draftSessionModelManuallySelected = false;
 			route = { kind: "none" };
@@ -4059,6 +4155,8 @@ export function createSessionChatHost(options: SessionChatHostOptions) {
 		share.reset();
 		tasks.reset();
 		sessionModelById = {};
+		runtimeIdBySessionId = {};
+		draftRuntimeId = null;
 		draftSessionModel = null;
 		draftSessionModelManuallySelected = false;
 		promptTemplatesCtrl.restore(nextSpaceId);
@@ -4100,6 +4198,9 @@ export function createSessionChatHost(options: SessionChatHostOptions) {
 		}
 
 		if (route.kind === "session") {
+			// A draft runtime choice belongs only to the /new composer. Existing
+			// sessions restore their executor from the persisted turn metadata.
+			if (route.sessionId !== "new") draftRuntimeId = null;
 			if (
 				shouldClearResolvedNewSessionOnRoute({
 					nextKind: "session",
@@ -4348,6 +4449,15 @@ export function createSessionChatHost(options: SessionChatHostOptions) {
 		get activeSessionModel() {
 			return activeSessionModel;
 		},
+		get localRuntimes() {
+			return localRuntimes;
+		},
+		get activeRuntimeId() {
+			return activeRuntimeId;
+		},
+		get activeRuntimeLabel() {
+			return activeRuntimeLabel;
+		},
 		get activeGenerationModel() {
 			return activeGenerationModel;
 		},
@@ -4552,6 +4662,7 @@ export function createSessionChatHost(options: SessionChatHostOptions) {
 		dispose,
 		handleSend,
 		setComposerMode,
+		handleRuntimeSelect,
 		handleAbort,
 		handleForkTurn,
 		handleSteerFollowup,

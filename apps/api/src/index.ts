@@ -15,6 +15,7 @@ import { applyTraceResponseHeaders, getActiveTraceIdentifiers, getOrCreateReques
 import { verifyUserAccessToken } from "@cohub/identity";
 
 import { getTokenFromRequest, type AuthUserProfile, consumeExecutionAuthFromToken, type ExecutionAuthPrincipal } from "./auth.js";
+import { verifyLocalAgentToken, type LocalAgentAuthPrincipal } from "./local-agent-auth.js";
 import { describeUserAccessTokenFailure } from "./auth-failure.js";
 import { recordAuthTrace } from "./auth-observability.js";
 import { verifyPreviewSessionToken, type PreviewSessionPrincipal } from "./preview-sessions.js";
@@ -33,7 +34,8 @@ const app = new Hono<{
     executionAuth: ExecutionAuthPrincipal | null;
     previewSession: PreviewSessionPrincipal | null;
     appSession: AppSessionPrincipal | null;
-    principal: { type: "user"; user: AuthUserProfile } | { type: "execution"; execution: ExecutionAuthPrincipal } | { type: "preview_session"; previewSession: PreviewSessionPrincipal } | { type: "app_session"; appSession: AppSessionPrincipal } | null;
+    localAgent: LocalAgentAuthPrincipal | null;
+    principal: { type: "user"; user: AuthUserProfile } | { type: "execution"; execution: ExecutionAuthPrincipal } | { type: "preview_session"; previewSession: PreviewSessionPrincipal } | { type: "app_session"; appSession: AppSessionPrincipal } | { type: "local_agent"; localAgent: LocalAgentAuthPrincipal } | null;
     requestId: string;
     traceId: string | null;
   };
@@ -103,6 +105,7 @@ app.use(async (c, next) => {
   c.set("executionAuth", null);
   c.set("previewSession", null);
   c.set("appSession", null);
+  c.set("localAgent", null);
   c.set("principal", null);
 
   if (token) {
@@ -135,6 +138,19 @@ app.use(async (c, next) => {
         await next();
         return;
       }
+    }
+
+    const localAgent = verifyLocalAgentToken(token);
+    if (localAgent) {
+      c.set("localAgent", localAgent);
+      c.set("principal", { type: "local_agent", localAgent });
+      recordAuthTrace(trace.getActiveSpan(), {
+        credentialPresent: true,
+        principalType: "local_agent",
+        outcome: "authenticated",
+      });
+      await next();
+      return;
     }
 
     const appSession = verifyAppSessionToken(token);

@@ -234,6 +234,7 @@ export const submitInternalSessionPrompt = async (input: {
   clientMessageId: string;
   content: ContentBlock[];
   source: string;
+  runtimeId?: string | null;
   model?: string | null;
   provider?: string | null;
   thinkingLevel?: string | null;
@@ -253,6 +254,7 @@ export const submitInternalSessionPrompt = async (input: {
       authToken: input.authToken ?? null,
       clientMessageId: input.clientMessageId,
       source: input.source,
+      runtimeId: input.runtimeId ?? null,
       model: input.model ?? null,
       provider: input.provider ?? null,
       thinkingLevel: input.thinkingLevel ?? null,
@@ -366,6 +368,18 @@ export type LocalSandboxAuthorizeResult =
   | { ok: true; spaceId: string; userId: string }
   | { ok: false; status: number; message: string };
 
+export type LocalAcpRuntimeAuthorizeResult =
+  | {
+      ok: true;
+      runtimeId: string;
+      spaceId: string;
+      replicaId: string | null;
+      provider: string;
+      connectionEpoch: number;
+      capabilities: Record<string, unknown>;
+    }
+  | { ok: false; status: number; message: string };
+
 // Authorize a local sandbox runner's control connection. The user's access
 // token is forwarded so the API can verify sandbox.manage on the target space.
 export const authorizeLocalSandbox = async (input: {
@@ -391,6 +405,98 @@ export const authorizeLocalSandbox = async (input: {
 
 // Report a local sandbox connection state transition (ready on connect,
 // stopped on disconnect). The gateway is the sole reporter for local sandboxes.
+export const authorizeLocalAcpRuntime = async (input: {
+  authToken: string;
+  runtimeId: string;
+  spaceId: string;
+  gatewayNodeId?: string;
+  gatewayWsEndpoint?: string;
+}): Promise<LocalAcpRuntimeAuthorizeResult> => {
+  const response = await fetch(`${gatewayConfig.apiBaseUrl}/internal/gateway/local-acp-runtime/authorize`, {
+    method: "POST",
+    headers: {
+      "content-type": "application/json",
+      "x-worker-secret": gatewayConfig.workerSecret,
+      authorization: `Bearer ${input.authToken}`,
+      ...buildTraceHeaders(),
+    },
+    body: JSON.stringify({
+      runtimeId: input.runtimeId,
+      spaceId: input.spaceId,
+      gatewayNodeId: input.gatewayNodeId,
+      gatewayWsEndpoint: input.gatewayWsEndpoint,
+    }),
+  });
+  const data = await parseJson<{
+    ok?: boolean;
+    runtimeId?: string;
+    spaceId?: string;
+    replicaId?: string | null;
+    provider?: string;
+    connectionEpoch?: number;
+    capabilities?: Record<string, unknown>;
+    message?: string;
+  }>(response);
+  if (!response.ok || !data?.ok || !data.runtimeId || !data.spaceId || !data.provider || !Number.isSafeInteger(data.connectionEpoch)) {
+    return { ok: false, status: response.status, message: data?.message ?? "runtime authorization failed" };
+  }
+  const runtimeId = data.runtimeId;
+  const spaceId = data.spaceId;
+  const provider = data.provider;
+  const connectionEpoch = data.connectionEpoch;
+  if (!runtimeId || !spaceId || !provider || !Number.isSafeInteger(connectionEpoch)) {
+    return { ok: false, status: 502, message: "runtime authorization returned an invalid identity" };
+  }
+  return {
+    ok: true,
+    runtimeId,
+    spaceId,
+    replicaId: data.replicaId ?? null,
+    provider,
+    connectionEpoch: connectionEpoch as number,
+    capabilities: data.capabilities ?? {},
+  };
+};
+
+export const touchLocalAcpRuntime = async (input: {
+  runtimeId: string;
+  connectionEpoch: number;
+  authToken: string;
+}): Promise<void> => {
+  const response = await fetch(`${gatewayConfig.apiBaseUrl}/internal/gateway/local-acp-runtime/heartbeat`, {
+    method: "POST",
+    headers: {
+      "content-type": "application/json",
+      "x-worker-secret": gatewayConfig.workerSecret,
+      authorization: `Bearer ${input.authToken}`,
+      ...buildTraceHeaders(),
+    },
+    body: JSON.stringify({ runtimeId: input.runtimeId, connectionEpoch: input.connectionEpoch }),
+  });
+  if (!response.ok) throw new Error(`Local ACP runtime heartbeat failed ${response.status}`);
+};
+
+export const reportLocalAcpRuntimeStatus = async (input: {
+  runtimeId: string;
+  connectionEpoch: number;
+  status: "ready" | "offline" | "error";
+  error?: string | null;
+}): Promise<void> => {
+  const response = await fetch(`${gatewayConfig.apiBaseUrl}/internal/gateway/local-acp-runtime/status`, {
+    method: "POST",
+    headers: {
+      "content-type": "application/json",
+      "x-worker-secret": gatewayConfig.workerSecret,
+      ...buildTraceHeaders(),
+    },
+    body: JSON.stringify(input),
+  });
+  if (!response.ok) {
+    const text = await response.text().catch(() => "");
+    throw new Error(`Local ACP runtime status report failed ${response.status}: ${text}`);
+  }
+};
+
 export const reportLocalSandboxStatus = async (input: {
   spaceId: string;
   status: "ready" | "stopped";

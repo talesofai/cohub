@@ -6,10 +6,14 @@ import type {
 } from "@cohub/protocol/app-navigation";
 import type { AppComposerChip } from "@cohub/protocol/app-surface";
 import type { SpaceFsChangedPayload } from "@cohub/protocol/fs";
-import type { ChannelEnvelope } from "@cohub/protocol/realtime";
+import type {
+	ChannelEnvelope,
+	WorkspaceStateUpdatedEvent,
+} from "@cohub/protocol/realtime";
 import type {
 	AppRecord,
 	AppRuntimeShellContext,
+	LocalAcpRuntimeRecord,
 	Permission,
 	SpaceRecord,
 	TaskRunRecord,
@@ -186,6 +190,7 @@ import {
 } from "./modules/windows";
 import type { WorkspaceAppOpenContext } from "./modules/workspace-app-context";
 import { createWorkspaceLayoutController } from "./modules/workspace-layout-controller.svelte";
+import { createWorkspaceReplicationController } from "./modules/workspace-replication-controller.svelte";
 import { displayUserName, fallbackUserName } from "./space-utils";
 
 type Props = {
@@ -320,6 +325,9 @@ const spaceSlug = $derived(space?.slug ?? null);
 let connectionStateBox: {
 	current: "idle" | "connecting" | "reconnecting" | "open" | "closed" | "error";
 } = { current: "idle" };
+// The replication controller is initialized below the chat host, so keep a
+// small reactive bridge for the host's runtime picker.
+let localRuntimeOptions = $state<LocalAcpRuntimeRecord[]>([]);
 
 const sessionChat = createSessionChatHost({
 	openPath: (target) => openLinkedInlineFile(target),
@@ -363,6 +371,7 @@ const sessionChat = createSessionChatHost({
 	getConnectionState: () => connectionStateBox.current,
 	canManageSessionAccess: () => canManageSessionAccess,
 	hasSpace: () => Boolean(space),
+	getLocalRuntimes: () => localRuntimeOptions,
 });
 
 // Host is the unique owner of chat controllers and session records.
@@ -1088,6 +1097,7 @@ const spaceRealtime = createSpaceRealtimeController({
 	},
 	onConnectionRecovered: () => {
 		void sessionChat.onConnectionRecovered();
+		void workspaceReplication.load();
 		previewAppsLoadedFor = null;
 		dispatchAppsChanged({ spaceId });
 		scheduleDanmakuCatchup();
@@ -1113,11 +1123,39 @@ const spaceRealtime = createSpaceRealtimeController({
 const pageVisible = $derived(spaceRealtime.pageVisible);
 const pageOnline = $derived(spaceRealtime.pageOnline);
 const wsConnectionState = $derived(spaceRealtime.connectionState);
+const workspaceReplication = createWorkspaceReplicationController({
+	getSpaceId: () => spaceId,
+	getPageVisible: () => pageVisible,
+	getPageOnline: () => pageOnline,
+	getPageMounted: () => pageMounted,
+});
+$effect(() => {
+	localRuntimeOptions = workspaceReplication.snapshot.runtimes;
+});
 const onlineUsers = $derived(
 	spacePresence.users.filter((user) => user.userId !== authStore.userUuid),
 );
 $effect(() => {
 	connectionStateBox.current = wsConnectionState;
+});
+
+// Workspace replication is an optional surface. Load it after the cached space
+// shell is visible, then let realtime and a slow polling loop repair missed
+// events without delaying chat or the file tree.
+$effect(() => {
+	const currentSpaceId = spaceId;
+	const loadedFor = workspaceReplication.snapshot.loadedFor;
+	if (!pageMounted || !space || isBlockingAccess) return;
+	if (loadedFor === currentSpaceId) {
+		workspaceReplication.scheduleRefresh();
+		return;
+	}
+	untrack(() => {
+		void workspaceReplication.load();
+	});
+});
+$effect(() => {
+	if (wsConnectionState === "open") workspaceReplication.scheduleRefresh();
 });
 // Keep host access/route context in sync with shell route.
 $effect(() => {
@@ -1704,6 +1742,11 @@ async function refreshSpaceFsBatch(batch: SpaceFsRefreshBatch) {
 
 async function handleWsEvent(payload: ChannelEnvelope) {
 	try {
+		// Workspace state has its own reducer; it is not a chat event.
+		if (payload.type === "workspace.state.updated") {
+			workspaceReplication.applyRealtime(payload as WorkspaceStateUpdatedEvent);
+			return;
+		}
 		// Shell consumers only. Chat kernel is a single fan-out below so we never
 		// double-apply session/task semantics against the same host state.
 		if (payload.type === "space.ports.changed") {
@@ -2566,6 +2609,7 @@ onMount(() => {
 		offDanmakuPrefs();
 		danmakuController.dispose();
 		spaceStatus.dispose();
+		workspaceReplication.dispose();
 		boardPreview.dispose();
 		fileWorkspace.dispose();
 		portPreview.dispose();
@@ -2612,6 +2656,7 @@ function resetSpaceScopedState(currentSpaceId: string) {
 	spaceConfig = null;
 	activateSpaceConfig(currentSpaceId);
 	spaceStatus.reset();
+	workspaceReplication.reset();
 	newChatProfileExpanded = false;
 	newChatProfileCanExpand = false;
 	newChatProfileBodyMaxHeight = 320;
@@ -3000,6 +3045,7 @@ const headerContext = $derived({
 	wsConnectionState,
 	onlineUsers,
 	activeRouteDetailHeader,
+	workspaceReplication: workspaceReplication.snapshot,
 	activeSessionId,
 	canManageSessionAccess,
 	isActiveSessionPublic: activeSessionId
@@ -3041,6 +3087,7 @@ const headerActions = {
 	},
 	insertHeaderReference,
 	toggleRightSidebar,
+	refreshWorkspaceReplication: () => workspaceReplication.load(),
 };
 </script>
 

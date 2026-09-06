@@ -1,6 +1,7 @@
 <script lang="ts">
 import type { ViewportContext } from "@cohub/protocol";
 import type {
+	LocalAcpRuntimeRecord,
 	PromptTemplateCatalogEntry,
 	SkillCatalogEntry,
 	VoiceInputClient,
@@ -16,6 +17,7 @@ import {
 } from "lucide-svelte";
 import { onMount } from "svelte";
 import ComposerModelTrigger from "$lib/components/composer/ComposerModelTrigger.svelte";
+import ComposerRuntimeSelector from "$lib/components/composer/ComposerRuntimeSelector.svelte";
 import ComposerSubmitButton from "$lib/components/composer/ComposerSubmitButton.svelte";
 import ComposerSurface from "$lib/components/composer/ComposerSurface.svelte";
 import { mediaLightbox } from "$lib/components/media-lightbox.svelte";
@@ -113,6 +115,9 @@ type Props = {
 	onremoveattachment?: (id: string) => void;
 	onremoveviewport?: (id: string) => void;
 	onModelSelect?: () => void;
+	localRuntimes?: LocalAcpRuntimeRecord[];
+	selectedRuntimeId?: string | null;
+	onRuntimeSelect?: (runtimeId: string | null) => void;
 };
 
 let {
@@ -145,6 +150,9 @@ let {
 	onremoveattachment,
 	onremoveviewport,
 	onModelSelect,
+	localRuntimes = [],
+	selectedRuntimeId = null,
+	onRuntimeSelect,
 }: Props = $props();
 
 const locale = $derived(getLocale());
@@ -1510,6 +1518,15 @@ $effect(() => {
 										</div>
 									{/if}
 								</div>
+							{/if}
+
+							{#if onRuntimeSelect}
+								<ComposerRuntimeSelector
+									runtimes={localRuntimes}
+									selectedRuntimeId={selectedRuntimeId}
+									disabled={disabled || sending}
+									onSelect={onRuntimeSelect}
+								/>
 							{/if}
 
 							{#if onModelSelect}
