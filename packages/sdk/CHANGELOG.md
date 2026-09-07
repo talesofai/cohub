@@ -1,5 +1,11 @@
 # @neta-art/cohub
 
+## 8.10.0
+
+### Minor Changes
+
+- 6f9d3d5: Publish local app sources from the CLI: upload your app source to the server and have the worker publish its assets. The SDK execution context and task waiting APIs are hardened accordingly, with new public-assets helpers for app source publishing.
+
 ## 8.9.0
 
 ### Minor Changes
