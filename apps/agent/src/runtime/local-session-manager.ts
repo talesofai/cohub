@@ -708,6 +708,81 @@ export class SessionManager {
     return `archives/${archiveName}`;
   }
 
+  /**
+   * Overflow-recovery degradation: replace every inline image block on the
+   * visible branch with placeholder text, then rewrite the session file.
+   * The pre-strip file is archived first and the header archive pointer is
+   * updated, so fork recovery and later archive numbering stay consistent.
+   * Returns null when the branch carries no image payloads to strip.
+   */
+  async omitBranchImages(input: { reason: string }): Promise<{ omittedImages: number; archivePath: string } | null> {
+    if (!this.sessionFile || !this.header) return null;
+    await this.flush();
+
+    const branchIds = new Set(this.getBranch().map((entry) => entry.id));
+    const placeholder = "Image omitted from context to recover from overflow; re-read the source file if the image is needed again.";
+    let omittedImages = 0;
+    const nextEntries = this.entries.map((entry) => {
+      if (entry.type !== "message" || !branchIds.has(entry.id)) return entry;
+      const message = entry.message as { content?: unknown };
+      if (!Array.isArray(message.content)) return entry;
+      let changed = false;
+      const nextContent = (message.content as unknown[]).map((block) => {
+        const record = block as Record<string, unknown> | null;
+        if (record && typeof record === "object" && !Array.isArray(record)
+          && record.type === "image" && typeof record.data === "string" && record.data) {
+          changed = true;
+          omittedImages += 1;
+          return { type: "text", text: placeholder };
+        }
+        return block;
+      });
+      if (!changed) return entry;
+      return { ...entry, message: { ...entry.message, content: nextContent } } as SessionMessageEntry;
+    });
+
+    if (omittedImages === 0) return null;
+
+    // Archive the pre-strip file before rewriting so the images stay recoverable.
+    // Sanitize header.id to prevent path traversal (it comes from file parsing).
+    const safeId = this.header.id.replace(/[^a-zA-Z0-9-]/g, "");
+    const archiveName = `${safeId}.${this.nextArchiveNumber()}.jsonl`;
+    const archiveDir = join(this.sessionDir, "archives");
+    await mkdir(archiveDir, { recursive: true });
+    await copyFile(this.sessionFile, join(archiveDir, archiveName));
+
+    const savedHeader = this.header;
+    const savedEntries = this.entries;
+    this.header = { ...this.header, compactionArchive: `archives/${archiveName}` };
+    this.entries = nextEntries;
+    this.rebuildIndex();
+    this.fileReady = false;
+    this.rewriteFile();
+    try {
+      await this.flush();
+    } catch (flushError) {
+      this.header = savedHeader;
+      this.entries = savedEntries;
+      this.rebuildIndex();
+      this.fileReady = false;
+      this.writeError = null;
+      this.rewriteFile();
+      throw flushError;
+    }
+
+    this.appendCustomMessageEntry(
+      "cohub_image_omission",
+      [{
+        type: "text",
+        text: `[context recovery] ${omittedImages} inline image(s) removed from history after compaction could not recover from context overflow (${input.reason}). Images remain in the session archive; re-read the source files if needed.`,
+      }],
+      true,
+      { omittedImages, reason: input.reason, archivePath: `archives/${archiveName}` },
+    );
+
+    return { omittedImages, archivePath: `archives/${archiveName}` };
+  }
+
   private nextArchiveNumber(): number {
     const match = this.header?.compactionArchive?.match(/\.(\d+)\.jsonl$/);
     return match ? Number(match[1]) + 1 : 1;

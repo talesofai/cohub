@@ -323,6 +323,92 @@ try {
     ["native-entry", "visible-root"],
     ["cloud-after-marker", "native-entry"],
   ]);
+
+  // ── omitBranchImages: overflow-recovery image strip ──
+  const stripFile = join(sessionsDir, "image-strip.jsonl");
+  const strip = SessionManager.create(root, sessionsDir);
+  strip.newSession({ id: "image-strip" });
+  strip.setSessionFile(stripFile);
+  strip.appendMessage({
+    role: "user",
+    content: [{ type: "text", text: "look at these" }, { type: "image", data: "aGVsbG8=", mimeType: "image/webp" }],
+    timestamp: Date.now(),
+  } as never);
+  strip.appendMessage({
+    role: "assistant",
+    content: [
+      { type: "thinking", thinking: "compare" },
+      { type: "toolCall", toolCallId: "t1", name: "read", arguments: { path: "/tmp/sheet_0.jpg" } },
+    ] as never,
+    timestamp: Date.now(),
+  } as never);
+  strip.appendMessage({
+    role: "toolResult",
+    content: [
+      { type: "text", text: "Read image file [image/jpeg]" },
+      { type: "image", data: "aGVsbG8=", mimeType: "image/jpeg" },
+    ] as never,
+    timestamp: Date.now(),
+  } as never);
+  strip.appendMessage({
+    role: "user",
+    content: [{ type: "text", text: "thanks" }],
+    timestamp: Date.now(),
+  } as never);
+  await strip.flush();
+
+  const stripResult = await strip.omitBranchImages({ reason: "nothing_to_summarize" });
+  assert.ok(stripResult);
+  assert.equal(stripResult.omittedImages, 2);
+
+  const stripContext = strip.buildSessionContext().messages;
+  const stripBlocks = stripContext.flatMap((message) => {
+    const content = (message as { content?: unknown }).content;
+    return Array.isArray(content) ? content as Array<Record<string, unknown>> : [];
+  });
+  assert.equal(stripBlocks.filter((block) => block.type === "image").length, 0);
+  assert.equal(stripBlocks.filter((block) => block.type === "text" && typeof block.text === "string" && block.text.includes("Image omitted")).length, 2);
+  // Non-image blocks (thinking, toolCall, original text) survive untouched.
+  assert.equal(stripBlocks.filter((block) => block.type === "thinking").length, 1);
+  assert.equal(stripBlocks.filter((block) => block.type === "toolCall").length, 1);
+  assert.equal(stripContext[0] && (stripContext[0] as { content?: Array<{ text?: string }> }).content?.[0]?.text, "look at these");
+
+  // Marker entry appended and visible in context.
+  const omissionEntries = strip.getVisibleEntries().filter(
+    (entry) => entry.type === "custom_message" && entry.customType === "cohub_image_omission",
+  );
+  assert.equal(omissionEntries.length, 1);
+  const omissionEntry = omissionEntries[0];
+  assert.equal(omissionEntry && omissionEntry.type === "custom_message" && (omissionEntry.details as { omittedImages: number }).omittedImages, 2);
+
+  // Archive was written and contains the original images.
+  const stripArchivePath = join(sessionsDir, stripResult.archivePath);
+  const stripArchiveRaw = await readFile(stripArchivePath, "utf-8");
+  assert.equal((stripArchiveRaw.match(/"type":"image"/g) ?? []).length, 2);
+
+  // Reopened file keeps the stripped state; second strip is a no-op (null).
+  await strip.close();
+  const stripReopened = await SessionManager.open(stripFile, sessionsDir);
+  const reopenedBlocks = stripReopened.buildSessionContext().messages.flatMap((message) => {
+    const content = (message as { content?: unknown }).content;
+    return Array.isArray(content) ? content as Array<Record<string, unknown>> : [];
+  });
+  assert.equal(reopenedBlocks.filter((block) => block.type === "image").length, 0);
+  assert.equal(await stripReopened.omitBranchImages({ reason: "retry" }), null);
+
+  // Text-only branch returns null without touching the file.
+  const noImageFile = join(sessionsDir, "no-image.jsonl");
+  const noImage = SessionManager.create(root, sessionsDir);
+  noImage.newSession({ id: "no-image" });
+  noImage.setSessionFile(noImageFile);
+  noImage.appendMessage({
+    role: "user",
+    content: [{ type: "text", text: "plain" }],
+    timestamp: Date.now(),
+  } as never);
+  await noImage.flush();
+  assert.equal(await noImage.omitBranchImages({ reason: "nothing_to_summarize" }), null);
+  assert.equal((await readdir(sessionsDir)).filter((name) => name.startsWith("no-image")).length, 1);
 } finally {
   await rm(root, { recursive: true, force: true });
 }
