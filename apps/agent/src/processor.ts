@@ -20,6 +20,7 @@ import { loadRuntimeModelsConfigs } from "./runtime/models-loader.js";
 import { loadImageToTextConfig } from "./runtime/image-to-text-config.js";
 import { loadSpaceEnvSnapshot } from "./runtime/env-cache.js";
 import { CompactionStateRecoveryError, maybeAutoCompact, OverflowRecoveryError, type CompactionOutcome } from "./runtime/compaction.js";
+import { isContextOverflowErrorText, isRetryableProviderErrorMessage } from "./runtime/session-runtime.js";
 import { clearCurrentSessionExecutionAuth, setCurrentSessionExecutionAuth } from "./runtime/session-execution-auth.js";
 import { resolveSpaceFileVisibility } from "./runtime/cross-space-query-access.js";
 import { normalizeGenerationPolicy } from "@cohub/protocol/generation";
@@ -275,6 +276,21 @@ function clearActiveTurnContext(handle: SessionHandle, sessionId: string) {
   handle.lastActiveAt = Date.now();
 }
 
+/** Compaction failure reasons that image-omission can plausibly recover from. */
+const IMAGE_OMISSIBLE_COMPACTION_FAILURES = new Set([
+  "nothing_to_summarize",
+  "compaction_no_effect",
+  "compaction_still_over_budget",
+]);
+
+function isOmissibleCompactionFailure(reason: string): boolean {
+  if (IMAGE_OMISSIBLE_COMPACTION_FAILURES.has(reason)) return true;
+  // The summarization call itself may hit the same provider-side overflow
+  // (its request carries the history too). compact_failed: <provider error>
+  const detail = reason.startsWith("compact_failed: ") ? reason.slice("compact_failed: ".length) : "";
+  return detail ? isRetryableProviderErrorMessage(detail) && isContextOverflowErrorText(detail) : false;
+}
+
 async function runWithRoundAutoCompaction<T>(
   handle: SessionHandle,
   input: {
@@ -305,10 +321,34 @@ async function runWithRoundAutoCompaction<T>(
         if (compactOutcome.compacted) {
           input.onCompacted?.(compactOutcome);
         } else if (force) {
-          logger.warn(
-            `[Agent] overflow-compact did not compact sessionId=${handle.sessionId} reason=${compactOutcome.reason}`,
-          );
-          throw new OverflowRecoveryError(compactOutcome.reason);
+          // Degradation path: when overflow compaction cannot shrink the context
+          // (image-dominated tails upstream proxies bill as raw base64 text),
+          // persistently strip inline images from the session branch and let
+          // this request proceed with the shrunk context instead of failing the
+          // turn. The pre-strip file is archived; images stay re-readable.
+          if (isOmissibleCompactionFailure(compactOutcome.reason)) {
+            const stripOutcome = await handle.sessionManager.omitBranchImages({ reason: compactOutcome.reason }).catch((error) => {
+              logger.warn(`[Agent] image-omission recovery failed sessionId=${handle.sessionId}:`, error);
+              return null;
+            });
+            if (stripOutcome) {
+              logger.info(
+                `[Agent] omitted ${stripOutcome.omittedImages} image(s) from session branch to recover from overflow sessionId=${handle.sessionId} archive=${stripOutcome.archivePath}`,
+              );
+              handle.session.agent.state.messages = handle.sessionManager.buildSessionContext().messages;
+              await refreshSessionHandleFileSignature(handle);
+            } else {
+              logger.warn(
+                `[Agent] overflow-compact did not compact and no images to omit sessionId=${handle.sessionId} reason=${compactOutcome.reason}`,
+              );
+              throw new OverflowRecoveryError(compactOutcome.reason);
+            }
+          } else {
+            logger.warn(
+              `[Agent] overflow-compact did not compact sessionId=${handle.sessionId} reason=${compactOutcome.reason}`,
+            );
+            throw new OverflowRecoveryError(compactOutcome.reason);
+          }
         }
       } finally {
         compacting = false;
