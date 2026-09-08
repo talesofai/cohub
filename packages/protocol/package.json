@@ -139,6 +139,10 @@
       "types": "./dist/app-navigation.d.ts",
       "default": "./dist/app-navigation.js"
     },
+    "./app-embed": {
+      "types": "./dist/app-embed.d.ts",
+      "default": "./dist/app-embed.js"
+    },
     "./navigation": {
       "types": "./dist/navigation.d.ts",
       "default": "./dist/navigation.js"

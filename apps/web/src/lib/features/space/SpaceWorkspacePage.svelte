@@ -16,7 +16,6 @@ import type {
 	UserProfile,
 } from "@neta-art/cohub";
 import type { BoardDocument } from "@neta-art/cohub/board";
-import { resolveAppNavigation } from "$lib/features/app/app-open";
 import {
 	Check,
 	Copy,
@@ -62,6 +61,7 @@ import ResourceLabelPicker from "$lib/components/ResourceLabelPicker.svelte";
 import UserIdentity from "$lib/components/UserIdentity.svelte";
 import { createDeferredMount } from "$lib/deferred-mount.svelte";
 import { invalidateInstalledApps } from "$lib/features/app/app-center";
+import { resolveAppNavigation } from "$lib/features/app/app-open";
 import {
 	APPS_CHANGED_EVENT,
 	createAppMutationBuffer,

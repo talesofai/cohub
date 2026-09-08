@@ -24,6 +24,7 @@ import { ensureRealtimeConnected } from "./realtime.js";
 import { createWebsocketClient, type WebsocketEventPayload } from "./websocket.js";
 import { VoiceApi } from "./voice-input.js";
 import { AppSurfaceApi } from "./app-surface.js";
+import { attachAppEmbed } from "./app-embed.js";
 import type { AppComposerChip } from "@cohub/protocol/app-surface";
 import {
   resolveApiBaseUrl,
@@ -190,6 +191,12 @@ export class CohubClient {
     /** Expose callable methods from inside a published app. */
     surface: new AppSurfaceApi(),
     onContextChanged: (listener: AppContextChangedListener) => this.appRuntime.onContextChanged(listener),
+    /** Ask the host to close this App's surface. */
+    requestClose: () => this.appRuntime.requestClose(),
+    embed: {
+      /** Host another App's public page in an iframe and forward the shell location to it. */
+      attach: attachAppEmbed,
+    },
     composer: {
       /** Attach or update context from this app in the Cohub composer. */
       setChip: (chip: AppComposerChip) => this.app.surface.setComposerChip(chip),

@@ -361,6 +361,56 @@ cannot touch another user's browser. An App also answers only a Cohub app origin
 so embedding it elsewhere cannot invoke its methods. Native file and Board apps can
 be previewed but expose no callable surface.
 
+## Embed Other Apps
+
+A published App can host other Apps by rendering their public pages in
+iframes — a launcher, a dashboard, or a window manager are all ordinary Apps.
+The public page keeps owning the embedded App's runtime: its bridge, consent
+dialogs, commerce, and Cohub bar work exactly as they do standalone, and the
+embedder never sees the embedded App's tokens or messages.
+
+```html
+<iframe
+  src="https://cohub.live/alice/studio/w/notes"
+  sandbox="allow-scripts allow-same-origin allow-forms allow-popups allow-modals"
+></iframe>
+```
+
+Attach the SDK to the frame to forward your shell location and receive the
+embedded App's close intent:
+
+```js
+const embed = cohub.app.embed.attach(frame, {
+  appId: context.app.id,
+  shell: context.shell ?? null,
+  onCloseRequest: () => frame.remove(),
+});
+
+cohub.app.onContextChanged((next) => embed.setShell(next.shell ?? null));
+embed.dispose();
+```
+
+The embedded App sees the forwarded location as `context.shell` with
+`surface: "embed"` and learns who hosts it from
+`context.invocation.embedder` (`{ appId, slug }`). The embedder names itself;
+Cohub resolves the id to a public App for display but cannot verify who sent
+it, so treat it — like the forwarded Space and Session ids — as a navigation
+hint, never as an authorization input. Reading a Space or Session still
+requires the embedded App's own grants.
+
+Any App can ask its host to close the surface it runs in:
+
+```js
+cohub.app.requestClose();
+```
+
+A workspace tab closes, an embedded page relays the request to its embedder's
+`onCloseRequest`, and a standalone page closes the browser tab or, when the
+browser forbids that, navigates back.
+
+See `docs/examples/app-capability-lab/embed-demo.html` for a minimal window
+manager built this way.
+
 ## Promote an App
 
 Editors can create immutable promotion links for paid or owned traffic. `generic` records local landing and readiness analytics without loading third-party code. `meta` adds the deployment-configured Meta Pixel and Conversions API provider.

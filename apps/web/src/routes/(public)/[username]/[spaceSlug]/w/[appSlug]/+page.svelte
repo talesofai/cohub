@@ -1,15 +1,23 @@
 <script lang="ts">
-import { isUuid } from "@cohub/protocol/identifiers";
-import type { AppDetailResponse, AppRuntimeInvocationContext, AppRuntimeShellContext } from "@neta-art/cohub";
+import type {
+	AppDetailResponse,
+	AppRuntimeInvocationContext,
+	AppRuntimeShellContext,
+} from "@neta-art/cohub";
 import { onMount } from "svelte";
 import { page } from "$app/state";
 import { buildAppPageMeta } from "$lib/app-page-meta";
 import { reportAppPromotionReady, startAppPromotion } from "$lib/app-promotion";
 import AppPageHead from "$lib/components/app/AppPageHead.svelte";
 import AppSurface from "$lib/components/app/AppSurface.svelte";
+import {
+	type AppEmbedConnection,
+	type AppEmbedState,
+	connectAppEmbed,
+	resolveEmbedderOrigin,
+} from "$lib/features/app/app-embed";
+import { loadAppPreview } from "$lib/features/app/app-open";
 import { sdk } from "$lib/sdk";
-import { authStore } from "$lib/stores/auth.svelte";
-import { subscribeDesktopContext } from "$lib/features/app/desktop-context";
 
 type ReadyData = {
 	mode: "ready";
@@ -47,41 +55,73 @@ let surfaceLoaded = false;
 let promotionReadyReported = false;
 let promotionRuntime: ReturnType<typeof startAppPromotion> | null = null;
 let activePromotionKey = "";
-let desktopShell = $state<AppRuntimeShellContext | undefined>();
-let standaloneShell = $state<AppRuntimeShellContext | undefined>();
-let hostNotice = $state("");
-const shell = $derived(desktopShell ?? standaloneShell);
-// Navigation hints only. Identity, home Space and grants stay in the local App bridge.
-const invocation = $derived<AppRuntimeInvocationContext | undefined>(shell?.space ? {
-	surface: "app", source: "user", spaceId: shell.space.id,
-	...(shell.session ? { sessionId: shell.session.id } : {}),
-	...(shell.turn ? { turnId: shell.turn.id } : {}),
-} : undefined);
+/**
+ * Another App embeds this page. Its hints shape the embedded App's shell and
+ * invocation context only; identity and grants stay in the local bridge.
+ */
+let embed = $state<AppEmbedState | null>(null);
+let embedder = $state<{ appId: string; slug: string } | null>(null);
+let embedConnection: AppEmbedConnection | null = null;
+
+const shell = $derived<AppRuntimeShellContext | undefined>(
+	embed
+		? {
+				surface: "embed",
+				...(embed.shell ?? { space: null, session: null, turn: null }),
+			}
+		: undefined,
+);
+const invocation = $derived<AppRuntimeInvocationContext | undefined>(
+	embedder
+		? {
+				surface: "page",
+				source: "embed",
+				embedder,
+				...(embed?.shell?.space ? { spaceId: embed.shell.space.id } : {}),
+				...(embed?.shell?.session ? { sessionId: embed.shell.session.id } : {}),
+				...(embed?.shell?.turn ? { turnId: embed.shell.turn.id } : {}),
+			}
+		: undefined,
+);
 
 $effect(() => {
-	desktopShell = undefined;
-	// Opt in to location hints only; this is not an embed or presentation mode.
-	if (!surfaceReady || page.url.searchParams.get("cohub_desktop") !== "1") return;
-	return subscribeDesktopContext(value => { desktopShell = value; });
+	if (!surfaceReady) return;
+	const origin = resolveEmbedderOrigin();
+	if (!origin) return;
+	embedConnection = connectAppEmbed(origin, (state) => {
+		embed = state;
+	});
+	return () => {
+		embedConnection?.dispose();
+		embedConnection = null;
+		embed = null;
+	};
 });
 
-// An independently opened Desktop may opt into a verified working Space.
+// The embedder names itself by id. Resolve it to a public App for display; it is
+// self-reported and never used for authorization.
+const embedderAppId = $derived(embed?.embedder.appId ?? null);
 $effect(() => {
-	void authStore.userUuid;
-	const spaceId = page.url.searchParams.get("cohub_space");
-	standaloneShell = undefined;
-	hostNotice = "";
-	if (!surfaceReady || !spaceId || !isUuid(spaceId)) return;
+	const appId = embedderAppId;
+	embedder = null;
+	if (!appId) return;
 	let cancelled = false;
-	void sdk.space(spaceId).get().then(space => {
-		if (!cancelled) standaloneShell = { surface: "workspace", space: { id: space.id, name: space.name }, session: null, turn: null };
-	}).catch(() => { if (!cancelled) hostNotice = "Space context is unavailable."; });
-	return () => { cancelled = true; };
+	void loadAppPreview(sdk.apps, appId).then(
+		({ app }) => {
+			if (!cancelled) embedder = { appId: app.id, slug: app.slug };
+		},
+		() => undefined,
+	);
+	return () => {
+		cancelled = true;
+	};
 });
 
-function closeStandalone() {
+function handleCloseRequest() {
+	if (embedConnection) return embedConnection.requestClose();
+	// Browsers only let scripts close tabs they opened; otherwise leave the App.
 	window.close();
-	if (!window.closed) hostNotice = "You can close this tab.";
+	if (!window.closed) history.back();
 }
 
 const promotionId = $derived(page.url.searchParams.get("cohub_campaign"));
@@ -205,10 +245,7 @@ $effect(() => {
 
 <AppPageHead meta={pageMeta} />
 
-{#if hostNotice}<p class="fixed left-3 top-3 z-50 rounded bg-bg-surface p-3 text-sm text-text-secondary" role="status">{hostNotice}</p>{/if}
-
 {#if ready && surfaceReady}
-	{#key ready.app.id}
 	<AppSurface
 		app={ready.app}
 		space={ready.space}
@@ -217,10 +254,9 @@ $effect(() => {
 		{launchState}
 		{shell}
 		{invocation}
-		onCloseSelf={closeStandalone}
+		onCloseRequest={handleCloseRequest}
 		onReady={handleSurfaceReady}
 	/>
-	{/key}
 {:else if ready}
 	<!-- SSR / first paint: head already has share meta; surface hydrates client-side. -->
 	<div class="min-h-screen bg-bg-primary" aria-hidden="true"></div>

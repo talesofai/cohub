@@ -5,8 +5,8 @@ import {
 } from "@cohub/protocol/app-surface";
 import type { AppDetailResponse } from "@neta-art/cohub";
 import { appDisplayTitle } from "$lib/app-page-meta";
-import { isNewerAppSnapshot } from "$lib/features/app/app-realtime";
 import { loadAppPreview } from "$lib/features/app/app-open";
+import { isNewerAppSnapshot } from "$lib/features/app/app-realtime";
 import { createRequestDedupe } from "./request-dedupe";
 import {
 	createWorkspaceAppInvocation,
@@ -89,7 +89,10 @@ export function createAppPreviewController(
 	 * back to the public one rather than showing a permission error.
 	 */
 	async function loadDetailFor(appId: string): Promise<AppDetailResponse> {
-		return loadAppPreview({ get: loadApp, getPublicById: loadPublicApp }, appId);
+		return loadAppPreview(
+			{ get: loadApp, getPublicById: loadPublicApp },
+			appId,
+		);
 	}
 
 	function patch(appId: string, next: Partial<InlineAppPreview>) {

@@ -1,0 +1,96 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Embed Demo</title>
+  <style>
+    :root { color-scheme: light dark; font: 13px/1.4 system-ui, sans-serif; }
+    body { margin: 0; min-height: 100vh; background: #1d2430; color: #e6e9ef; overflow: hidden; }
+    #dock { position: fixed; inset: auto 0 0 0; display: flex; gap: 8px; padding: 10px 14px; background: rgba(0,0,0,.35); backdrop-filter: blur(8px); }
+    #dock input { flex: 1; padding: 6px 10px; border: 1px solid #3a4658; border-radius: 6px; background: #121821; color: inherit; }
+    #dock button { padding: 6px 12px; border: 0; border-radius: 6px; background: #4c8dff; color: #fff; cursor: pointer; }
+    .win { position: absolute; display: flex; flex-direction: column; width: 720px; height: 520px; border-radius: 10px; overflow: hidden; background: #0f141b; box-shadow: 0 20px 60px rgba(0,0,0,.5); }
+    .bar { display: flex; align-items: center; gap: 8px; height: 32px; padding: 0 8px 0 12px; background: #262f3d; cursor: grab; user-select: none; }
+    .bar span { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .bar button { border: 0; background: transparent; color: inherit; cursor: pointer; font-size: 14px; }
+    .win iframe { flex: 1; border: 0; background: #fff; }
+    .win.dragging iframe { pointer-events: none; }
+  </style>
+</head>
+<body>
+  <form id="dock">
+    <input id="ref" placeholder="Public App URL or username/space/app" required />
+    <button>Open</button>
+  </form>
+
+  <script type="module">
+    const SDK_URL = "https://esm.sh/@neta-art/cohub?bundle&target=es2022";
+    const { createCohubClient } = await import(SDK_URL);
+    const cohub = createCohubClient();
+
+    // Published Apps only: the runtime bridge supplies our identity and the shell we forward.
+    let context = await cohub.context();
+    if (!context) throw new Error("Publish this page as an App to use it.");
+    const embeds = new Set();
+    cohub.app.onContextChanged((next) => {
+      context = next;
+      for (const embed of embeds) embed.setShell(next.shell ?? null);
+    });
+
+    const toUrl = (ref) => {
+      if (/^https?:/.test(ref)) return ref;
+      const [user, space, app] = ref.split("/");
+      return `${location.origin}/${user}/${space}/w/${app}`;
+    };
+
+    let z = 1;
+    function open(ref) {
+      const win = document.createElement("section");
+      win.className = "win";
+      win.style.left = `${40 + embeds.size * 32}px`;
+      win.style.top = `${40 + embeds.size * 32}px`;
+      win.style.zIndex = String(++z);
+      win.innerHTML = `<div class="bar"><span>${ref}</span><button type="button" aria-label="Close">×</button></div><iframe title="${ref}" sandbox="allow-scripts allow-same-origin allow-forms allow-popups allow-modals" allow="clipboard-read; clipboard-write"></iframe>`;
+      const frame = win.querySelector("iframe");
+      frame.src = toUrl(ref);
+
+      const close = () => { embed.dispose(); embeds.delete(embed); win.remove(); };
+      const embed = cohub.app.embed.attach(frame, {
+        appId: context.app.id,
+        shell: context.shell ?? null,
+        onCloseRequest: close,
+      });
+      embeds.add(embed);
+      win.querySelector("button").onclick = close;
+
+      // Plain DOM dragging; the iframe is inert while the bar is held.
+      const bar = win.querySelector(".bar");
+      bar.onpointerdown = (down) => {
+        if (down.target.tagName === "BUTTON") return;
+        win.classList.add("dragging");
+        win.style.zIndex = String(++z);
+        const { left, top } = win.getBoundingClientRect();
+        const move = (e) => {
+          win.style.left = `${left + e.clientX - down.clientX}px`;
+          win.style.top = `${top + e.clientY - down.clientY}px`;
+        };
+        const up = () => {
+          win.classList.remove("dragging");
+          window.removeEventListener("pointermove", move);
+          window.removeEventListener("pointerup", up);
+        };
+        window.addEventListener("pointermove", move);
+        window.addEventListener("pointerup", up);
+      };
+      document.body.append(win);
+    }
+
+    document.getElementById("dock").onsubmit = (event) => {
+      event.preventDefault();
+      open(event.target.ref.value.trim());
+      event.target.reset();
+    };
+  </script>
+</body>
+</html>

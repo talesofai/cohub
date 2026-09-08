@@ -1,4 +1,4 @@
-import { buildAppRuntimeReady } from "@cohub/protocol/app-runtime";
+import { buildAppRuntimeCloseRequest, buildAppRuntimeReady } from "@cohub/protocol/app-runtime";
 import {
   buildAppNavigationOpenMessage,
   type AppNavigationOpenResponse,
@@ -10,16 +10,22 @@ import type { CreateSpaceInput, Permission } from "./types.js";
 
 export type AppRuntimeInvocationContext = {
   surface: "page" | "app" | "background" | "broker";
-  source?: "desktop_command" | "user" | "route";
+  source?: "desktop_command" | "user" | "route" | "embed";
   spaceId?: string;
   sessionId?: string;
   turnId?: string;
   toolCallId?: string;
+  /**
+   * The App whose page embeds this one, when `source` is `embed`. Self-reported
+   * by the embedder and resolved to a public App record for display; do not
+   * use it for authorization.
+   */
+  embedder?: { appId: string; slug: string };
 };
 
 /** Current navigation context supplied by the embedding Cohub shell. */
 export type AppRuntimeShellContext = {
-  surface: "workspace" | "background" | "broker";
+  surface: "workspace" | "background" | "broker" | "embed";
   space: { id: string; name?: string | null } | null;
   session: { id: string } | null;
   /** The Turn currently in view, not necessarily the Turn being generated. */
@@ -94,6 +100,8 @@ export interface AppRuntimeTransport {
   subscribeContextChanged?: (listener: AppContextChangedListener) => () => void;
   /** Whether this transport can address the embedding Cohub workspace. */
   supportsNavigation?: boolean;
+  /** Posts a one-way message to the host; no reply is expected. */
+  notify?: (message: Record<string, unknown>) => void;
 }
 
 const isBrowser = () => typeof window !== "undefined" && typeof window.parent !== "undefined";
@@ -153,6 +161,15 @@ export class ParentBridgeTransport implements AppRuntimeTransport {
         this.contextListener = null;
       }
     };
+  }
+
+  notify(message: Record<string, unknown>) {
+    if (!hasParent()) return;
+    try {
+      window.parent.postMessage(message, this.trustedParentOrigin ?? getParentOrigin() ?? "*");
+    } catch {
+      // The host may have been disposed.
+    }
   }
 
   request<T>(
@@ -566,6 +583,14 @@ export class AppRuntimeApi {
         reason: response === null ? "timeout" : "unsupported",
       }
     );
+  }
+
+  /**
+   * Asks the host to close this App: a workspace tab closes, an embedded page
+   * forwards the request to its embedder, a standalone page closes the tab.
+   */
+  requestClose() {
+    this.transport.notify?.(buildAppRuntimeCloseRequest());
   }
 
   async getAccessToken(options?: { forceRefresh?: boolean }) {
