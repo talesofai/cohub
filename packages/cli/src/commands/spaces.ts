@@ -302,8 +302,8 @@ async function sendPrompt(command: Command, words: string[], opts: PromptOptions
   const scheduleFlags = [opts.delayMs, opts.at, opts.cron].filter((value) => value !== undefined);
   const runtimeId = opts.runtimeId?.trim() || undefined;
   if (scheduleFlags.length > 1) return error("Conflicting schedule", "Use only one of --delay-ms, --at, or --cron");
-  if (runtimeId && scheduleFlags.length > 0) return error("Invalid runtime schedule", "Local ACP runtime prompts must run immediately");
-  if (runtimeId && (opts.model || opts.provider)) return error("Invalid runtime model", "A local ACP runtime uses its provider's own configuration");
+  if (runtimeId && scheduleFlags.length > 0) return error("Invalid runtime schedule", "Local runtime prompts must run immediately");
+  if (runtimeId && (opts.model || opts.provider)) return error("Invalid runtime model", "A local runtime uses its provider's own configuration");
   if (opts.cron && !opts.timezone) return error("Missing timezone", "--timezone is required with --cron");
 
   const thinkingLevel = opts.thinkingLevel?.trim() || undefined;
@@ -463,7 +463,7 @@ export function registerPrompt(program: Command): void {
     .option("--title <title>", "Title for a newly created session or schedule")
     .option("-m, --model <model>", "Model name")
     .option("-p, --provider <provider>", "Provider name")
-    .option("--runtime-id <id>", "Use a registered local ACP runtime")
+    .option("--runtime-id <id>", "Use a registered local runtime")
     .option("--thinking-level <level>", "Thinking level: off|minimal|low|medium|high|xhigh|max")
     .option("--read-only", "Use read-only tools")
     .option("--steer", "Interrupt the current turn and run immediately")
@@ -694,7 +694,7 @@ export function registerSpaces(program: Command): void {
     .option("--title <title>", "Title for a newly created session or schedule")
     .option("-m, --model <model>", "Model name")
     .option("-p, --provider <provider>", "Provider name")
-    .option("--runtime-id <id>", "Use a registered local ACP runtime")
+    .option("--runtime-id <id>", "Use a registered local runtime")
     .option("--thinking-level <level>", "Thinking level: off|minimal|low|medium|high|xhigh|max")
     .option("--read-only", "Use read-only tools")
     .option("--steer", "Interrupt the current turn and run immediately")

@@ -1,5 +1,5 @@
 <script lang="ts">
-import type { LocalAcpRuntimeRecord } from "@neta-art/cohub";
+import type { LocalRuntimeRecord } from "@neta-art/cohub";
 import {
 	AlertCircle,
 	Check,
@@ -10,7 +10,7 @@ import {
 } from "lucide-svelte";
 
 type Props = {
-	runtimes?: LocalAcpRuntimeRecord[];
+	runtimes?: LocalRuntimeRecord[];
 	selectedRuntimeId?: string | null;
 	disabled?: boolean;
 	onSelect: (runtimeId: string | null) => void;
@@ -31,13 +31,13 @@ const selectedRuntime = $derived(
 );
 const label = $derived(selectedRuntime?.displayName?.trim() || "Cloud");
 
-function providerLabel(provider: LocalAcpRuntimeRecord["provider"]) {
+function providerLabel(provider: LocalRuntimeRecord["provider"]) {
 	if (provider === "claude_code") return "Claude Code";
 	if (provider === "codex") return "Codex";
 	return "Pi";
 }
 
-function statusLabel(status: LocalAcpRuntimeRecord["status"]) {
+function statusLabel(status: LocalRuntimeRecord["status"]) {
 	if (status === "ready") return "Ready";
 	if (status === "connecting") return "Connecting";
 	if (status === "busy") return "Busy";
@@ -46,7 +46,7 @@ function statusLabel(status: LocalAcpRuntimeRecord["status"]) {
 	return "Offline";
 }
 
-function canSelect(runtime: LocalAcpRuntimeRecord) {
+function canSelect(runtime: LocalRuntimeRecord) {
 	return runtime.status === "ready";
 }
 

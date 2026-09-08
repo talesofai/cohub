@@ -163,6 +163,8 @@ export async function revokeLocalAgentDevice(input: { userUuid: string; deviceId
     const revokedRuntimes = await tx.update(localAgentRuntimes).set({
       status: "revoked",
       connectionEpoch: sql`${localAgentRuntimes.connectionEpoch} + 1`,
+      gatewayNodeId: null,
+      gatewayWsEndpoint: null,
       disconnectedAt: revokedAt,
       lastError: "device revoked",
       updatedAt: revokedAt,
@@ -180,7 +182,7 @@ export async function revokeLocalAgentDevice(input: { userUuid: string; deviceId
     const activeAttempts = replicaIds.length > 0
       ? await tx.select({ id: workspaceExecutionAttempts.id, spaceId: workspaceExecutionAttempts.spaceId, sessionId: workspaceExecutionAttempts.sessionId, turnId: workspaceExecutionAttempts.turnId, status: workspaceExecutionAttempts.status }).from(workspaceExecutionAttempts).where(and(
           inArray(workspaceExecutionAttempts.replicaId, replicaIds),
-          eq(workspaceExecutionAttempts.executorKind, "local_acp"),
+          eq(workspaceExecutionAttempts.executorKind, "local_runtime"),
           inArray(workspaceExecutionAttempts.status, ["prepared", "running", "workspace_sealed", "transcript_sealed", "awaiting_recovery"]),
         ))
       : [];
@@ -419,11 +421,14 @@ const serializeReplica = (row: typeof workspaceReplicas.$inferSelect) => ({
 const serializeReplicaOverview = (row: typeof workspaceReplicas.$inferSelect) => ({
   id: row.id,
   spaceId: row.spaceId,
+  deviceId: row.deviceId,
+  rootFingerprint: row.rootFingerprint,
   kind: row.kind,
   status: row.status,
   displayName: row.displayName,
   boundaryMode: row.boundaryMode,
   protocolVersion: row.protocolVersion,
+  capabilities: row.capabilities,
   currentSnapshotId: row.currentSnapshotId,
   appliedSnapshotId: row.appliedSnapshotId,
   lastCommonSnapshotId: row.lastCommonSnapshotId,
@@ -439,6 +444,7 @@ const serializeWorkspaceState = (row: typeof workspaceState.$inferSelect) => ({
   generation: row.generation,
   status: row.status,
   activeCycleId: row.activeCycleId,
+  activeExecutionAttemptId: row.activeExecutionAttemptId,
   lastWriterKind: row.lastWriterKind,
   updatedAt: row.updatedAt.toISOString(),
 });
@@ -513,6 +519,93 @@ export async function getWorkspaceReplicaState(input: { actor: LocalAgentActor; 
     ? await db.select().from(spaceLocalAgentPolicies).where(and(eq(spaceLocalAgentPolicies.spaceId, input.spaceId), eq(spaceLocalAgentPolicies.deviceId, input.actor.deviceId))).limit(1)
     : [];
   const [lease] = await db.select().from(workspaceWriterLeases).where(eq(workspaceWriterLeases.spaceId, input.spaceId)).limit(1);
+  // Only a server-issued local-agent lease can authorize a provider channel.
+  // The denormalized active-attempt pointers are useful for UI state, but must
+  // never become an authorization source when they drift from the lease row.
+  const actorDeviceId = input.actor.deviceId;
+  const actorDeviceIdForQuery = actorDeviceId ?? "";
+  const activeAttemptID = actorDeviceId && lease?.holderKind === "local_agent"
+    ? lease.holderId
+    : null;
+  const [activeAttempt] = activeAttemptID && lease?.baseSnapshotId && lease.expiresAt > now() && state?.status === "ready" && state.canonicalSnapshotId === lease.baseSnapshotId
+    ? await db.select({
+      id: workspaceExecutionAttempts.id,
+      spaceId: workspaceExecutionAttempts.spaceId,
+      replicaId: workspaceExecutionAttempts.replicaId,
+      runtimeId: workspaceExecutionAttempts.runtimeId,
+      executorKind: workspaceExecutionAttempts.executorKind,
+      status: workspaceExecutionAttempts.status,
+      baseSnapshotId: workspaceExecutionAttempts.baseCanonicalSnapshotId,
+      leaseEpoch: workspaceExecutionAttempts.workspaceLeaseEpoch,
+      runtimeConnectionEpoch: localAgentRuntimes.connectionEpoch,
+      deviceId: workspaceReplicas.deviceId,
+    }).from(workspaceExecutionAttempts)
+      .innerJoin(workspaceReplicas, and(
+        eq(workspaceReplicas.id, workspaceExecutionAttempts.replicaId),
+        eq(workspaceReplicas.spaceId, input.spaceId),
+        eq(workspaceReplicas.id, input.replicaId),
+        eq(workspaceReplicas.kind, "local"),
+        ne(workspaceReplicas.status, "detached"),
+        eq(workspaceReplicas.deviceId, actorDeviceIdForQuery),
+        eq(workspaceReplicas.userUuid, input.actor.userUuid),
+        eq(workspaceReplicas.appliedSnapshotId, lease.baseSnapshotId),
+      ))
+      .innerJoin(localAgentRuntimes, and(
+        eq(localAgentRuntimes.id, workspaceExecutionAttempts.runtimeId),
+        eq(localAgentRuntimes.spaceId, input.spaceId),
+        eq(localAgentRuntimes.replicaId, workspaceReplicas.id),
+        eq(localAgentRuntimes.deviceId, actorDeviceIdForQuery),
+        eq(localAgentRuntimes.userUuid, input.actor.userUuid),
+        inArray(localAgentRuntimes.status, ["ready", "busy"]),
+      ))
+      .innerJoin(localAgentDevices, and(
+        eq(localAgentDevices.id, actorDeviceIdForQuery),
+        eq(localAgentDevices.userUuid, input.actor.userUuid),
+        eq(localAgentDevices.status, "active"),
+        input.actor.credentialVersion != null ? eq(localAgentDevices.credentialVersion, input.actor.credentialVersion) : sql`true`,
+      ))
+      .innerJoin(spaceLocalAgentPolicies, and(
+        eq(spaceLocalAgentPolicies.spaceId, input.spaceId),
+        eq(spaceLocalAgentPolicies.deviceId, actorDeviceIdForQuery),
+        ne(spaceLocalAgentPolicies.workspaceMode, "one_way_to_local"),
+      ))
+      .innerJoin(sessionTurns, and(
+        eq(sessionTurns.id, workspaceExecutionAttempts.turnId),
+        eq(sessionTurns.executionKind, "agent"),
+        inArray(sessionTurns.status, ["queued", "running", "abort_requested"]),
+      ))
+      .where(and(
+        eq(workspaceExecutionAttempts.id, activeAttemptID),
+        eq(workspaceExecutionAttempts.spaceId, input.spaceId),
+        eq(workspaceExecutionAttempts.replicaId, input.replicaId),
+        eq(workspaceExecutionAttempts.executorKind, "local_runtime"),
+        eq(workspaceExecutionAttempts.status, "running"),
+        eq(workspaceExecutionAttempts.runtimeId, localAgentRuntimes.id),
+        eq(workspaceExecutionAttempts.baseCanonicalSnapshotId, lease.baseSnapshotId),
+        eq(workspaceExecutionAttempts.workspaceLeaseEpoch, lease.epoch),
+      )).limit(1)
+    : [];
+  const executionAttempt = activeAttempt && lease && lease.holderKind === "local_agent" && lease.holderId === activeAttempt.id
+    && lease.baseSnapshotId === activeAttempt.baseSnapshotId
+    && lease.epoch === activeAttempt.leaseEpoch
+    // Both denormalized pointers are part of the server-issued handoff. An
+    // absent pointer is just as unsafe as a pointer to another attempt.
+    && state?.activeExecutionAttemptId === activeAttempt.id
+    && replica.activeExecutionAttemptId === activeAttempt.id
+    ? {
+      id: activeAttempt.id,
+      spaceId: activeAttempt.spaceId,
+      replicaId: activeAttempt.replicaId,
+      runtimeId: activeAttempt.runtimeId,
+      deviceId: activeAttempt.deviceId,
+      executorKind: activeAttempt.executorKind,
+      status: activeAttempt.status,
+      baseSnapshotId: activeAttempt.baseSnapshotId,
+      leaseEpoch: activeAttempt.leaseEpoch,
+      connectionEpoch: activeAttempt.runtimeConnectionEpoch,
+      leaseExpiresAt: lease.expiresAt.toISOString(),
+    }
+    : null;
   const [conflictCount] = await db.select({ count: count() }).from(workspaceSyncConflicts).where(and(eq(workspaceSyncConflicts.spaceId, input.spaceId), eq(workspaceSyncConflicts.status, "open")));
   return {
     replica: serializeReplica(replica),
@@ -520,6 +613,7 @@ export async function getWorkspaceReplicaState(input: { actor: LocalAgentActor; 
     workspacePolicy: policy ? serializeWorkspacePolicy(policy) : null,
     integrationPolicy: integrationPolicy ? serializeIntegrationPolicy(integrationPolicy) : null,
     lease: lease ? serializeLease(lease) : null,
+    executionAttempt,
     openConflictCount: Number(conflictCount?.count ?? 0),
   };
 }
@@ -527,6 +621,7 @@ export async function getWorkspaceReplicaState(input: { actor: LocalAgentActor; 
 const serializeLease = (row: typeof workspaceWriterLeases.$inferSelect) => ({
   spaceId: row.spaceId,
   holderKind: row.holderKind,
+  holderId: row.holderId,
   epoch: row.epoch,
   baseSnapshotId: row.baseSnapshotId,
   expiresAt: row.expiresAt.toISOString(),
@@ -555,6 +650,7 @@ async function assertLeaseActor(input: {
   spaceId: string;
   holderKind: string;
   holderId: string;
+  runtimeId?: string | null;
   epoch?: number;
 }) {
   const holderKind = normalizeLeaseHolderKind(input.holderKind);
@@ -567,20 +663,63 @@ async function assertLeaseActor(input: {
   const [lease] = await db.select().from(workspaceWriterLeases).where(and(...conditions)).limit(1);
   if (!lease) throw new LocalAgentServiceError("workspace lease not found", "workspace_lease_not_found", 404);
   if (holderKind === "local_agent") {
-    if (input.actor.principal === "user") {
-      if (lease.holderUserUuid !== input.actor.userUuid) {
-        throw new LocalAgentServiceError("workspace lease does not belong to this user", "lease_owner_mismatch", 403);
-      }
-      return lease;
+    if (!input.runtimeId) throw new LocalAgentServiceError("local workspace leases require a runtimeId", "runtime_identity_required", 400);
+    assertUuid(input.runtimeId, "runtimeId");
+    assertUuid(input.holderId, "holderId");
+    if (lease.holderUserUuid !== input.actor.userUuid) {
+      throw new LocalAgentServiceError("workspace lease does not belong to this user", "lease_owner_mismatch", 403);
     }
-    if (!input.actor.deviceId) {
+    if (input.actor.principal !== "user" && !input.actor.deviceId) {
       throw new LocalAgentServiceError("a device credential is required for this workspace lease", "device_required", 401);
     }
-    const [attempt] = await db.select({ deviceId: workspaceReplicas.deviceId }).from(workspaceExecutionAttempts)
-      .innerJoin(workspaceReplicas, eq(workspaceReplicas.id, workspaceExecutionAttempts.replicaId))
-      .where(and(eq(workspaceExecutionAttempts.id, input.holderId), eq(workspaceExecutionAttempts.spaceId, input.spaceId)))
+    if (!lease.baseSnapshotId) {
+      throw new LocalAgentServiceError("local workspace lease has no base snapshot", "lease_provenance_invalid", 409);
+    }
+    const [attempt] = await db.select({
+      deviceId: workspaceReplicas.deviceId,
+      userUuid: workspaceReplicas.userUuid,
+      runtimeId: workspaceExecutionAttempts.runtimeId,
+      baseSnapshotId: workspaceExecutionAttempts.baseCanonicalSnapshotId,
+      leaseEpoch: workspaceExecutionAttempts.workspaceLeaseEpoch,
+    }).from(workspaceExecutionAttempts)
+      .innerJoin(workspaceReplicas, and(
+        eq(workspaceReplicas.id, workspaceExecutionAttempts.replicaId),
+        eq(workspaceReplicas.spaceId, input.spaceId),
+        eq(workspaceReplicas.kind, "local"),
+        ne(workspaceReplicas.status, "detached"),
+        input.actor.deviceId
+          ? eq(workspaceReplicas.deviceId, input.actor.deviceId)
+          : eq(workspaceReplicas.userUuid, input.actor.userUuid),
+      ))
+      .innerJoin(localAgentRuntimes, and(
+        eq(localAgentRuntimes.id, workspaceExecutionAttempts.runtimeId),
+        eq(localAgentRuntimes.spaceId, input.spaceId),
+        eq(localAgentRuntimes.replicaId, workspaceReplicas.id),
+        eq(localAgentRuntimes.deviceId, workspaceReplicas.deviceId),
+        eq(localAgentRuntimes.userUuid, input.actor.userUuid),
+        ne(localAgentRuntimes.status, "revoked"),
+      ))
+      .innerJoin(localAgentDevices, and(
+        eq(localAgentDevices.id, workspaceReplicas.deviceId),
+        eq(localAgentDevices.userUuid, input.actor.userUuid),
+        eq(localAgentDevices.status, "active"),
+        input.actor.credentialVersion != null ? eq(localAgentDevices.credentialVersion, input.actor.credentialVersion) : sql`true`,
+      ))
+      .where(and(
+        eq(workspaceExecutionAttempts.id, input.holderId),
+        eq(workspaceExecutionAttempts.spaceId, input.spaceId),
+        eq(workspaceExecutionAttempts.replicaId, workspaceReplicas.id),
+        eq(workspaceExecutionAttempts.executorKind, "local_runtime"),
+        eq(workspaceExecutionAttempts.runtimeId, localAgentRuntimes.id),
+        eq(workspaceExecutionAttempts.runtimeId, input.runtimeId),
+        eq(workspaceExecutionAttempts.baseCanonicalSnapshotId, lease.baseSnapshotId),
+        eq(workspaceExecutionAttempts.workspaceLeaseEpoch, lease.epoch),
+      ))
       .limit(1);
-    if (attempt?.deviceId !== input.actor.deviceId) {
+    if (!attempt?.runtimeId || attempt.baseSnapshotId !== lease.baseSnapshotId || attempt.leaseEpoch !== lease.epoch) {
+      throw new LocalAgentServiceError("workspace lease provenance is invalid", "lease_provenance_invalid", 409);
+    }
+    if (input.actor.deviceId && attempt.deviceId !== input.actor.deviceId) {
       throw new LocalAgentServiceError("workspace lease does not belong to this device", "lease_owner_mismatch", 403);
     }
   } else {
@@ -609,6 +748,7 @@ export type PrepareSnapshotInput = {
   parentSnapshotId?: string | null;
   baseCanonicalSnapshotId?: string | null;
   executionAttemptId?: string | null;
+  runtimeId?: string | null;
   leaseEpoch?: number | null;
   source?: string;
   manifest: unknown;
@@ -633,6 +773,17 @@ export async function prepareWorkspaceSnapshot(input: { actor: LocalAgentActor; 
   if (input.value.parentSnapshotId) assertUuid(input.value.parentSnapshotId, "parentSnapshotId");
   if (input.value.baseCanonicalSnapshotId) assertUuid(input.value.baseCanonicalSnapshotId, "baseCanonicalSnapshotId");
   if (input.value.executionAttemptId) assertUuid(input.value.executionAttemptId, "executionAttemptId");
+  if (input.value.runtimeId) assertUuid(input.value.runtimeId, "runtimeId");
+  if (input.value.runtimeId && !input.value.executionAttemptId) {
+    throw new LocalAgentServiceError("runtimeId requires an executionAttemptId", "snapshot_runtime_invalid", 400);
+  }
+  if (input.value.executionAttemptId && !input.value.runtimeId) {
+    throw new LocalAgentServiceError("executionAttemptId requires a runtimeId", "snapshot_runtime_invalid", 400);
+  }
+  const requestedLeaseEpoch = input.value.leaseEpoch;
+  if (input.value.executionAttemptId && requestedLeaseEpoch == null) {
+    throw new LocalAgentServiceError("executionAttemptId requires a lease epoch", "snapshot_epoch_invalid", 400);
+  }
   if (input.value.leaseEpoch != null && (!Number.isSafeInteger(input.value.leaseEpoch) || input.value.leaseEpoch < 1)) {
     throw new LocalAgentServiceError("leaseEpoch must be a positive safe integer", "invalid_epoch", 400);
   }
@@ -663,6 +814,7 @@ export async function prepareWorkspaceSnapshot(input: { actor: LocalAgentActor; 
   if (input.value.manifestTransportSha256 && input.value.manifestTransportSha256 !== manifestSha256) throw new LocalAgentServiceError("manifest transport hash must match canonical manifest bytes", "manifest_transport_mismatch", 422);
   if (input.value.manifestTransportBytes != null && input.value.manifestTransportBytes !== canonicalBytes.byteLength) throw new LocalAgentServiceError("manifest transport size must match canonical manifest bytes", "manifest_transport_mismatch", 422);
   const manifestObjectKey = buildLocalAgentObjectKey({ spaceId: input.spaceId, kind: "manifest", identity: `${input.value.snapshotId}.json` });
+  const requestedRuntimeId = input.value.runtimeId ?? null;
   const inline = canonicalBytes.byteLength <= LOCAL_AGENT_MAX_MANIFEST_INLINE_BYTES;
   const declaredBlobsByPath = new Map<string, SnapshotBlobInput>();
   for (const blob of input.value.blobs ?? []) {
@@ -693,6 +845,19 @@ export async function prepareWorkspaceSnapshot(input: { actor: LocalAgentActor; 
   }
 
   const result = await db.transaction(async (tx) => {
+    const assertAttemptRuntime = async () => {
+      if (!requestedRuntimeId) throw new LocalAgentServiceError("executionAttemptId requires a runtimeId", "snapshot_runtime_invalid", 400);
+      const [runtime] = await tx.select({ id: localAgentRuntimes.id }).from(localAgentRuntimes).where(and(
+        eq(localAgentRuntimes.id, requestedRuntimeId),
+        eq(localAgentRuntimes.spaceId, input.spaceId),
+        eq(localAgentRuntimes.replicaId, replica.id),
+        eq(localAgentRuntimes.deviceId, replica.deviceId ?? ""),
+        eq(localAgentRuntimes.userUuid, input.actor.userUuid),
+        ne(localAgentRuntimes.status, "revoked"),
+      )).for("update").limit(1);
+      if (!runtime) throw new LocalAgentServiceError("runtime is not registered for this replica", "runtime_identity_mismatch", 409);
+      return runtime.id;
+    };
     const loadSnapshotBlobs = async (snapshotId: string) => tx.select({
       sha256: workspaceBlobs.sha256,
       size: workspaceBlobs.size,
@@ -703,6 +868,7 @@ export async function prepareWorkspaceSnapshot(input: { actor: LocalAgentActor; 
       .where(eq(workspaceSnapshotBlobs.snapshotId, snapshotId));
     const [existing] = await tx.select().from(workspaceSnapshots).where(and(eq(workspaceSnapshots.id, input.value.snapshotId), eq(workspaceSnapshots.replicaId, replica.id))).for("update").limit(1);
     if (existing) {
+      if (input.value.executionAttemptId) await assertAttemptRuntime();
       if (
         existing.manifestSha256 !== manifestSha256
         || existing.replicaGeneration !== input.value.replicaGeneration
@@ -716,8 +882,47 @@ export async function prepareWorkspaceSnapshot(input: { actor: LocalAgentActor; 
       if (new Set(existingBlobs.map((blob) => blob.sha256)).size !== uniqueBlobInputs.size) {
         throw new LocalAgentServiceError("existing snapshot blob mapping is incomplete", "snapshot_mapping_incomplete", 409);
       }
+      // A completed snapshot is immutable and can be read idempotently after
+      // the writer lease has been released. An in-flight upload still needs
+      // the original attempt's live lease before we return signed URLs.
+      if (input.value.executionAttemptId && existing.status !== "ready") {
+        if (requestedLeaseEpoch == null) {
+          throw new LocalAgentServiceError("executionAttemptId requires a lease epoch", "snapshot_epoch_invalid", 400);
+        }
+        const current = now();
+        const [lease] = await tx.select().from(workspaceWriterLeases).where(and(
+          eq(workspaceWriterLeases.spaceId, input.spaceId),
+          eq(workspaceWriterLeases.holderKind, "local_agent"),
+          eq(workspaceWriterLeases.holderId, input.value.executionAttemptId),
+          eq(workspaceWriterLeases.epoch, requestedLeaseEpoch),
+        )).for("update").limit(1);
+        if (!lease || lease.holderUserUuid !== input.actor.userUuid || !lease.expiresAt || lease.expiresAt <= current || (lease.baseSnapshotId ?? null) !== (input.value.baseCanonicalSnapshotId ?? null)) {
+          throw new LocalAgentServiceError("workspace writer lease was lost before snapshot upload resumed", "workspace_lease_lost", 409);
+        }
+        await assertAttemptRuntime();
+        const [attempt] = await tx.select({
+          id: workspaceExecutionAttempts.id,
+          replicaId: workspaceExecutionAttempts.replicaId,
+          executorKind: workspaceExecutionAttempts.executorKind,
+          baseSnapshotId: workspaceExecutionAttempts.baseCanonicalSnapshotId,
+          leaseEpoch: workspaceExecutionAttempts.workspaceLeaseEpoch,
+        }).from(workspaceExecutionAttempts).where(and(
+          eq(workspaceExecutionAttempts.id, input.value.executionAttemptId),
+          eq(workspaceExecutionAttempts.spaceId, input.spaceId),
+          eq(workspaceExecutionAttempts.replicaId, replica.id),
+          eq(workspaceExecutionAttempts.executorKind, "local_runtime"),
+          eq(workspaceExecutionAttempts.runtimeId, requestedRuntimeId as string),
+        )).for("update").limit(1);
+        if (!attempt || attempt.baseSnapshotId !== lease.baseSnapshotId || attempt.leaseEpoch !== lease.epoch) {
+          throw new LocalAgentServiceError("workspace lease provenance is stale", "workspace_lease_lost", 409);
+        }
+      }
       return { snapshot: existing, existing: true, blobs: existingBlobs };
     }
+    // Keep the lock order aligned with local runtime lease acquisition:
+    // workspace state -> replica -> writer lease -> execution attempt.
+    const [currentState] = await tx.select().from(workspaceState).where(eq(workspaceState.spaceId, input.spaceId)).for("update").limit(1);
+    if (!currentState) throw new LocalAgentServiceError("workspace state is unavailable", "workspace_state_unavailable", 409);
     const [lockedReplica] = await tx.select().from(workspaceReplicas).where(and(eq(workspaceReplicas.id, replica.id), eq(workspaceReplicas.spaceId, input.spaceId))).for("update").limit(1);
     if (!lockedReplica) throw new LocalAgentServiceError("replica not found", "replica_not_found", 404);
     const [integrationPolicy] = lockedReplica.deviceId
@@ -732,8 +937,6 @@ export async function prepareWorkspaceSnapshot(input: { actor: LocalAgentActor; 
     const [policy] = await tx.select().from(spaceWorkspacePolicies).where(eq(spaceWorkspacePolicies.spaceId, input.spaceId)).for("update").limit(1);
     if (!policy) throw new LocalAgentServiceError("workspace policy is not initialized", "policy_unavailable", 409);
     if (parsed.policyVersion !== policy.policyVersion) throw new LocalAgentServiceError("snapshot uses an outdated workspace policy", "policy_version_stale", 409);
-    const [currentState] = await tx.select().from(workspaceState).where(eq(workspaceState.spaceId, input.spaceId)).for("update").limit(1);
-    if (!currentState) throw new LocalAgentServiceError("workspace state is unavailable", "workspace_state_unavailable", 409);
     if ((input.value.parentSnapshotId ?? null) !== (lockedReplica.appliedSnapshotId ?? null)) {
       throw new LocalAgentServiceError("parentSnapshotId must match the snapshot applied to this replica", "snapshot_parent_stale", 409);
     }
@@ -753,13 +956,33 @@ export async function prepareWorkspaceSnapshot(input: { actor: LocalAgentActor; 
       if (!referenced) throw new LocalAgentServiceError("snapshot provenance references an unavailable snapshot", "snapshot_reference_invalid", 409);
     }
     if (input.value.executionAttemptId) {
-      const [attempt] = await tx.select({ id: workspaceExecutionAttempts.id, workspaceLeaseEpoch: workspaceExecutionAttempts.workspaceLeaseEpoch }).from(workspaceExecutionAttempts).where(and(
+      if (requestedLeaseEpoch == null) {
+        throw new LocalAgentServiceError("executionAttemptId requires a lease epoch", "snapshot_epoch_invalid", 400);
+      }
+      const current = now();
+      const [lease] = await tx.select().from(workspaceWriterLeases).where(and(
+        eq(workspaceWriterLeases.spaceId, input.spaceId),
+        eq(workspaceWriterLeases.holderKind, "local_agent"),
+        eq(workspaceWriterLeases.holderId, input.value.executionAttemptId),
+        eq(workspaceWriterLeases.epoch, requestedLeaseEpoch),
+      )).for("update").limit(1);
+      if (!lease || lease.holderUserUuid !== input.actor.userUuid || !lease.expiresAt || lease.expiresAt <= current || (lease.baseSnapshotId ?? null) !== (input.value.baseCanonicalSnapshotId ?? null)) {
+        throw new LocalAgentServiceError("workspace writer lease was lost before snapshot upload", "workspace_lease_lost", 409);
+      }
+      await assertAttemptRuntime();
+      const [attempt] = await tx.select({
+        id: workspaceExecutionAttempts.id,
+        workspaceLeaseEpoch: workspaceExecutionAttempts.workspaceLeaseEpoch,
+        baseSnapshotId: workspaceExecutionAttempts.baseCanonicalSnapshotId,
+        executorKind: workspaceExecutionAttempts.executorKind,
+      }).from(workspaceExecutionAttempts).where(and(
         eq(workspaceExecutionAttempts.id, input.value.executionAttemptId),
         eq(workspaceExecutionAttempts.spaceId, input.spaceId),
         eq(workspaceExecutionAttempts.replicaId, replica.id),
-      )).limit(1);
-      if (!attempt) throw new LocalAgentServiceError("executionAttemptId does not belong to this replica", "attempt_identity_mismatch", 409);
-      if ((attempt.workspaceLeaseEpoch ?? null) !== (input.value.leaseEpoch ?? null)) {
+        eq(workspaceExecutionAttempts.runtimeId, requestedRuntimeId as string),
+      )).for("update").limit(1);
+      if (attempt?.executorKind !== "local_runtime") throw new LocalAgentServiceError("executionAttemptId does not belong to this local replica", "attempt_identity_mismatch", 409);
+      if ((attempt.workspaceLeaseEpoch ?? null) !== requestedLeaseEpoch || (attempt.baseSnapshotId ?? null) !== (lease.baseSnapshotId ?? null)) {
         throw new LocalAgentServiceError("snapshot lease epoch does not match its execution attempt", "snapshot_epoch_stale", 409);
       }
     } else if (input.value.leaseEpoch != null) {
@@ -914,11 +1137,36 @@ export async function ackWorkspaceReplicaApplied(input: { actor: LocalAgentActor
   return serializeReplica(updated);
 }
 
-export async function commitWorkspaceSnapshot(input: { actor: LocalAgentActor; spaceId: string; replicaId: string; snapshotId: string }) {
+export async function commitWorkspaceSnapshot(input: { actor: LocalAgentActor; spaceId: string; replicaId: string; snapshotId: string; runtimeId?: string | null }) {
   const replica = await resolveReplicaForActor({ actor: input.actor, spaceId: input.spaceId, replicaId: input.replicaId });
   assertUuid(input.snapshotId, "snapshotId");
+  const requestedRuntimeId = input.runtimeId ?? null;
+  if (requestedRuntimeId) assertUuid(requestedRuntimeId, "runtimeId");
   const [snapshot] = await db.select().from(workspaceSnapshots).where(and(eq(workspaceSnapshots.id, input.snapshotId), eq(workspaceSnapshots.replicaId, replica.id), eq(workspaceSnapshots.spaceId, input.spaceId))).limit(1);
   if (!snapshot) throw new LocalAgentServiceError("snapshot not found", "snapshot_not_found", 404);
+  if (snapshot.sourceExecutionAttemptId) {
+    if (!requestedRuntimeId) throw new LocalAgentServiceError("local runtime snapshot commit requires a runtimeId", "snapshot_runtime_invalid", 400);
+    const [attempt] = await db.select({ id: workspaceExecutionAttempts.id }).from(workspaceExecutionAttempts)
+      .innerJoin(localAgentRuntimes, and(
+        eq(localAgentRuntimes.id, workspaceExecutionAttempts.runtimeId),
+        eq(localAgentRuntimes.id, requestedRuntimeId),
+        eq(localAgentRuntimes.spaceId, input.spaceId),
+        eq(localAgentRuntimes.replicaId, replica.id),
+        eq(localAgentRuntimes.deviceId, replica.deviceId ?? ""),
+        eq(localAgentRuntimes.userUuid, input.actor.userUuid),
+        ne(localAgentRuntimes.status, "revoked"),
+      ))
+      .where(and(
+        eq(workspaceExecutionAttempts.id, snapshot.sourceExecutionAttemptId),
+        eq(workspaceExecutionAttempts.spaceId, input.spaceId),
+        eq(workspaceExecutionAttempts.replicaId, replica.id),
+        eq(workspaceExecutionAttempts.runtimeId, requestedRuntimeId),
+        eq(workspaceExecutionAttempts.executorKind, "local_runtime"),
+      )).limit(1);
+    if (!attempt) throw new LocalAgentServiceError("runtime does not own this local snapshot", "runtime_identity_mismatch", 409);
+  } else if (requestedRuntimeId) {
+    throw new LocalAgentServiceError("runtimeId is only valid for local runtime snapshots", "snapshot_runtime_invalid", 400);
+  }
   if (snapshot.status === "ready") {
     const [cycle] = await db.select({ id: workspaceSyncCycles.id }).from(workspaceSyncCycles).where(eq(workspaceSyncCycles.localSnapshotId, snapshot.id)).orderBy(asc(workspaceSyncCycles.createdAt)).limit(1);
     return serializeSnapshotCommit(snapshot, cycle?.id ?? null);
@@ -958,26 +1206,97 @@ export async function commitWorkspaceSnapshot(input: { actor: LocalAgentActor; s
     const verifiedAt = now();
     const [currentState] = await tx.select().from(workspaceState).where(eq(workspaceState.spaceId, input.spaceId)).for("update").limit(1);
     if (!currentState) throw new LocalAgentServiceError("workspace state is unavailable", "workspace_state_unavailable", 409);
+    const [lockedSnapshot] = await tx.select().from(workspaceSnapshots).where(and(
+      eq(workspaceSnapshots.id, snapshot.id),
+      eq(workspaceSnapshots.spaceId, input.spaceId),
+      eq(workspaceSnapshots.replicaId, replica.id),
+    )).for("update").limit(1);
+    if (!lockedSnapshot) throw new LocalAgentServiceError("snapshot not found", "snapshot_not_found", 404);
+    if (lockedSnapshot.status === "ready") {
+      const [existingCycle] = await tx.select({ id: workspaceSyncCycles.id }).from(workspaceSyncCycles)
+        .where(eq(workspaceSyncCycles.localSnapshotId, lockedSnapshot.id))
+        .orderBy(asc(workspaceSyncCycles.createdAt)).limit(1);
+      return { snapshot: lockedSnapshot, cycleId: existingCycle?.id ?? null };
+    }
+    if (lockedSnapshot.status !== "uploading") {
+      throw new LocalAgentServiceError("snapshot is not uploadable", "snapshot_not_uploading", 409);
+    }
+    // Watcher and initial snapshots have no execution-attempt provenance. They
+    // must not cross an active writer lease just because the client observed
+    // an idle workspace before the lease was acquired. Both lease acquisition
+    // and this transaction lock workspaceState first, so this check closes
+    // that server-side race rather than relying on locald polling.
+    if (!lockedSnapshot.sourceExecutionAttemptId) {
+      const [activeLease] = await tx.select({
+        holderKind: workspaceWriterLeases.holderKind,
+        holderId: workspaceWriterLeases.holderId,
+      }).from(workspaceWriterLeases).where(and(
+        eq(workspaceWriterLeases.spaceId, input.spaceId),
+        gt(workspaceWriterLeases.expiresAt, verifiedAt),
+      )).for("update").limit(1);
+      if (activeLease) {
+        throw new LocalAgentServiceError("workspace is held by another writer", "workspace_lease_busy", 409);
+      }
+    }
+    // A local-runtime snapshot is still protected by its writer lease while
+    // objects are verified and published. Re-check the authoritative lease in
+    // the commit transaction so an expired/reassigned writer cannot commit a
+    // candidate after the upload window has elapsed.
+    if (lockedSnapshot.sourceExecutionAttemptId) {
+      if (lockedSnapshot.leaseEpoch == null || !lockedSnapshot.baseCanonicalSnapshotId) {
+        throw new LocalAgentServiceError("local snapshot lease provenance is incomplete", "workspace_lease_lost", 409);
+      }
+      const [lease] = await tx.select().from(workspaceWriterLeases).where(and(
+        eq(workspaceWriterLeases.spaceId, input.spaceId),
+        eq(workspaceWriterLeases.holderKind, "local_agent"),
+        eq(workspaceWriterLeases.holderId, lockedSnapshot.sourceExecutionAttemptId),
+        eq(workspaceWriterLeases.epoch, lockedSnapshot.leaseEpoch),
+      )).for("update").limit(1);
+      if (!lease || lease.holderUserUuid !== input.actor.userUuid || lease.expiresAt <= verifiedAt
+        || (lease.baseSnapshotId ?? null) !== lockedSnapshot.baseCanonicalSnapshotId
+        || currentState.status !== "ready"
+        || currentState.canonicalSnapshotId !== lease.baseSnapshotId) {
+        throw new LocalAgentServiceError("workspace writer lease was lost before snapshot commit", "workspace_lease_lost", 409);
+      }
+      const [attempt] = await tx.select({
+        id: workspaceExecutionAttempts.id,
+        replicaId: workspaceExecutionAttempts.replicaId,
+        executorKind: workspaceExecutionAttempts.executorKind,
+        baseSnapshotId: workspaceExecutionAttempts.baseCanonicalSnapshotId,
+        leaseEpoch: workspaceExecutionAttempts.workspaceLeaseEpoch,
+        status: workspaceExecutionAttempts.status,
+      }).from(workspaceExecutionAttempts).where(and(
+        eq(workspaceExecutionAttempts.id, lockedSnapshot.sourceExecutionAttemptId),
+        eq(workspaceExecutionAttempts.spaceId, input.spaceId),
+        eq(workspaceExecutionAttempts.replicaId, replica.id),
+        eq(workspaceExecutionAttempts.executorKind, "local_runtime"),
+        eq(workspaceExecutionAttempts.runtimeId, requestedRuntimeId as string),
+      )).for("update").limit(1);
+      if (!attempt || attempt.baseSnapshotId !== lease.baseSnapshotId || attempt.leaseEpoch !== lease.epoch
+        || !["running", "workspace_sealed", "transcript_sealed", "awaiting_recovery"].includes(attempt.status)) {
+        throw new LocalAgentServiceError("local snapshot lease provenance is stale", "workspace_lease_lost", 409);
+      }
+    }
     for (const { blob } of blobRows) {
       await tx.update(workspaceBlobs).set({ status: "ready", verifiedAt, updatedAt: verifiedAt }).where(and(eq(workspaceBlobs.id, blob.id), ne(workspaceBlobs.status, "ready")));
     }
-    const [updated] = await tx.update(workspaceSnapshots).set({ status: "ready", updatedAt: verifiedAt }).where(and(eq(workspaceSnapshots.id, snapshot.id), eq(workspaceSnapshots.status, "uploading"))).returning();
+    const [updated] = await tx.update(workspaceSnapshots).set({ status: "ready", updatedAt: verifiedAt }).where(and(eq(workspaceSnapshots.id, lockedSnapshot.id), eq(workspaceSnapshots.status, "uploading"))).returning();
     const [cycle] = await tx.insert(workspaceSyncCycles).values({
       spaceId: input.spaceId,
       replicaId: replica.id,
-      baseSnapshotId: updated?.baseCanonicalSnapshotId ?? snapshot.baseCanonicalSnapshotId,
-      localSnapshotId: updated?.id ?? snapshot.id,
+      baseSnapshotId: updated?.baseCanonicalSnapshotId ?? lockedSnapshot.baseCanonicalSnapshotId,
+      localSnapshotId: updated?.id ?? lockedSnapshot.id,
       direction: "reconcile",
       status: "planned",
       canonicalGenerationAtStart: currentState.generation,
-      executionAttemptId: updated?.sourceExecutionAttemptId ?? snapshot.sourceExecutionAttemptId,
-      leaseEpoch: updated?.leaseEpoch ?? snapshot.leaseEpoch,
+      executionAttemptId: updated?.sourceExecutionAttemptId ?? lockedSnapshot.sourceExecutionAttemptId,
+      leaseEpoch: updated?.leaseEpoch ?? lockedSnapshot.leaseEpoch,
     }).onConflictDoNothing().returning();
-    await tx.update(workspaceReplicas).set({ currentSnapshotId: updated?.id ?? snapshot.id, status: "syncing", updatedAt: verifiedAt }).where(eq(workspaceReplicas.id, replica.id));
+    await tx.update(workspaceReplicas).set({ currentSnapshotId: updated?.id ?? lockedSnapshot.id, status: "syncing", updatedAt: verifiedAt }).where(eq(workspaceReplicas.id, replica.id));
     if (cycle) {
       await tx.update(workspaceState).set({ status: "syncing", activeCycleId: cycle.id, updatedAt: verifiedAt }).where(eq(workspaceState.spaceId, input.spaceId));
     }
-    return { snapshot: updated ?? snapshot, cycleId: cycle?.id ?? null };
+    return { snapshot: updated ?? lockedSnapshot, cycleId: cycle?.id ?? null };
   });
   if (committed.cycleId) {
     void notifyWorkspaceState({ spaceId: input.spaceId, replica, reason: "snapshot_committed" }).catch(() => undefined);
@@ -1001,15 +1320,24 @@ export async function acquireWorkspaceWriterLease(input: {
   spaceId: string;
   holderKind: string;
   holderId: string;
+  runtimeId?: string | null;
   replicaId?: string | null;
   baseSnapshotId?: string | null;
   durationSeconds?: number;
+  /** Re-open an expired lease only after a terminal local runtime handoff. */
+  recovery?: boolean;
 }) {
   assertUuid(input.spaceId, "spaceId");
   const holderKind = normalizeLeaseHolderKind(input.holderKind);
+  if (input.recovery && holderKind !== "local_agent") {
+    throw new LocalAgentServiceError("lease recovery is only available to local runtimes", "invalid_recovery_holder", 400);
+  }
   const holderId = normalizeBounded(input.holderId, "holderId", 255);
+  const runtimeId = input.runtimeId ?? null;
   let localReplicaIdentity: { id: string; deviceId: string } | null = null;
   if (holderKind === "local_agent") {
+    if (!runtimeId) throw new LocalAgentServiceError("local workspace leases require a runtimeId", "runtime_identity_required", 400);
+    assertUuid(runtimeId, "runtimeId");
     if (input.replicaId) assertUuid(input.replicaId, "replicaId");
     const conditions = [
       eq(workspaceReplicas.spaceId, input.spaceId),
@@ -1030,6 +1358,7 @@ export async function acquireWorkspaceWriterLease(input: {
   if (input.baseSnapshotId) assertUuid(input.baseSnapshotId, "baseSnapshotId");
   const result = await db.transaction(async (tx) => {
     const current = now();
+    const recovery = input.recovery === true;
     const [workspace] = await tx.select().from(workspaceState).where(eq(workspaceState.spaceId, input.spaceId)).for("update").limit(1);
     if (workspace?.status !== "ready" || !workspace.canonicalSnapshotId) {
       throw new LocalAgentServiceError("workspace is not ready for a writer lease", "workspace_not_ready", 409);
@@ -1037,8 +1366,12 @@ export async function acquireWorkspaceWriterLease(input: {
     if (input.baseSnapshotId && input.baseSnapshotId !== workspace.canonicalSnapshotId) {
       throw new LocalAgentServiceError("lease base snapshot is not canonical", "lease_base_stale", 409);
     }
+    let integrationPolicyVersion: number | null = null;
     if (holderKind === "local_agent" && localReplicaIdentity) {
-      const [integrationPolicy] = await tx.select().from(spaceLocalAgentPolicies).where(and(
+      const [integrationPolicy] = await tx.select({
+        workspaceMode: spaceLocalAgentPolicies.workspaceMode,
+        integrationPolicyVersion: spaceLocalAgentPolicies.integrationPolicyVersion,
+      }).from(spaceLocalAgentPolicies).where(and(
         eq(spaceLocalAgentPolicies.spaceId, input.spaceId),
         eq(spaceLocalAgentPolicies.deviceId, localReplicaIdentity.deviceId),
       )).limit(1);
@@ -1046,6 +1379,7 @@ export async function acquireWorkspaceWriterLease(input: {
       if (integrationPolicy.workspaceMode === "one_way_to_local") {
         throw new LocalAgentServiceError("local workspace is read-only under the current policy", "workspace_write_disabled", 403);
       }
+      integrationPolicyVersion = integrationPolicy.integrationPolicyVersion;
     }
     const [existing] = await tx.select().from(workspaceWriterLeases).where(eq(workspaceWriterLeases.spaceId, input.spaceId)).for("update").limit(1);
     const sameHolder = existing?.holderId === holderId && existing.holderKind === holderKind;
@@ -1054,28 +1388,80 @@ export async function acquireWorkspaceWriterLease(input: {
     }
     if (holderKind === "local_agent") {
       assertUuid(holderId, "holderId");
-      // A local writer lease is only ever held by a registered ACP execution
+      // A local writer lease is only ever held by a registered local runtime execution
       // attempt. Refusing unknown holders keeps the lease table and the attempt
       // ledger consistent; there is no hook-driven attempt creation path.
-      const [attempt] = await tx.select({ deviceId: workspaceReplicas.deviceId }).from(workspaceExecutionAttempts)
+      const [attempt] = await tx.select({
+        deviceId: workspaceReplicas.deviceId,
+        replicaId: workspaceExecutionAttempts.replicaId,
+        runtimeId: workspaceExecutionAttempts.runtimeId,
+        status: workspaceExecutionAttempts.status,
+        baseSnapshotId: workspaceExecutionAttempts.baseCanonicalSnapshotId,
+        integrationPolicyVersion: workspaceExecutionAttempts.integrationPolicyVersion,
+        workspaceLeaseEpoch: workspaceExecutionAttempts.workspaceLeaseEpoch,
+        turnId: workspaceExecutionAttempts.turnId,
+      }).from(workspaceExecutionAttempts)
         .innerJoin(workspaceReplicas, eq(workspaceReplicas.id, workspaceExecutionAttempts.replicaId))
-        .where(and(eq(workspaceExecutionAttempts.id, holderId), eq(workspaceExecutionAttempts.spaceId, input.spaceId), eq(workspaceExecutionAttempts.executorKind, "local_acp")))
+        .innerJoin(localAgentRuntimes, and(
+          eq(localAgentRuntimes.id, workspaceExecutionAttempts.runtimeId),
+          eq(localAgentRuntimes.id, runtimeId as string),
+          eq(localAgentRuntimes.spaceId, input.spaceId),
+          eq(localAgentRuntimes.replicaId, localReplicaIdentity?.id ?? ""),
+          eq(localAgentRuntimes.deviceId, localReplicaIdentity?.deviceId ?? ""),
+          eq(localAgentRuntimes.userUuid, input.actor.userUuid),
+          ne(localAgentRuntimes.status, "revoked"),
+        ))
+        .where(and(eq(workspaceExecutionAttempts.id, holderId), eq(workspaceExecutionAttempts.spaceId, input.spaceId), eq(workspaceExecutionAttempts.executorKind, "local_runtime"), eq(workspaceExecutionAttempts.runtimeId, runtimeId as string)))
         .limit(1);
       if (!attempt) throw new LocalAgentServiceError("execution attempt is not registered for this workspace", "attempt_not_found", 404);
+      if (attempt.replicaId !== localReplicaIdentity?.id) {
+        throw new LocalAgentServiceError("execution attempt does not belong to this replica", "attempt_identity_mismatch", 403);
+      }
       if (attempt.deviceId !== localReplicaIdentity?.deviceId) {
         throw new LocalAgentServiceError("execution attempt does not belong to this device", "attempt_identity_mismatch", 403);
       }
+      if (recovery) {
+        if (!sameHolder || !existing) {
+          throw new LocalAgentServiceError("local runtime recovery requires its original writer lease", "workspace_lease_recovery_unavailable", 409);
+        }
+        if (existing.epoch !== attempt.workspaceLeaseEpoch) {
+          throw new LocalAgentServiceError("local runtime recovery lease provenance is stale", "workspace_lease_recovery_unavailable", 409);
+        }
+        if (attempt.integrationPolicyVersion == null || attempt.integrationPolicyVersion !== integrationPolicyVersion) {
+          throw new LocalAgentServiceError("local runtime recovery policy is stale", "policy_version_stale", 409);
+        }
+        if (!["transcript_sealed", "awaiting_recovery"].includes(attempt.status)) {
+          throw new LocalAgentServiceError("execution attempt is not ready for local runtime recovery", "attempt_not_recoverable", 409);
+        }
+        if (!attempt.turnId) {
+          throw new LocalAgentServiceError("local runtime recovery requires a terminal turn", "attempt_not_recoverable", 409);
+        }
+        const [turn] = await tx.select({ status: sessionTurns.status }).from(sessionTurns).where(eq(sessionTurns.id, attempt.turnId)).for("update").limit(1);
+        if (!turn || !["completed", "failed", "interrupted", "cancelled", "merged"].includes(turn.status)) {
+          throw new LocalAgentServiceError("local runtime recovery requires a terminal turn", "attempt_not_recoverable", 409);
+        }
+        if ((attempt.baseSnapshotId ?? null) !== (existing.baseSnapshotId ?? null)) {
+          throw new LocalAgentServiceError("local runtime recovery base snapshot is stale", "attempt_base_stale", 409);
+        }
+      } else if (!["queued", "prepared", "running"].includes(attempt.status)) {
+        throw new LocalAgentServiceError("execution attempt is no longer claimable", "attempt_not_claimable", 409);
+      }
     }
     const sameActiveHolder = sameHolder && Boolean(existing && existing.expiresAt > current);
-    const epoch = (existing?.epoch ?? 0) + (sameActiveHolder ? 0 : 1);
+    const recoverySameEpoch = recovery && sameHolder && Boolean(existing);
+    const epoch = recoverySameEpoch && existing ? existing.epoch : (existing?.epoch ?? 0) + (sameActiveHolder ? 0 : 1);
     const expiresAt = new Date(current.getTime() + requestedDuration * 1000);
+    const baseSnapshotId = input.baseSnapshotId ?? existing?.baseSnapshotId ?? workspace.canonicalSnapshotId;
+    if (recovery && (!existing || (existing.baseSnapshotId ?? null) !== (baseSnapshotId ?? null))) {
+      throw new LocalAgentServiceError("local runtime recovery base snapshot is stale", "attempt_base_stale", 409);
+    }
     const [lease] = await tx.insert(workspaceWriterLeases).values({
       spaceId: input.spaceId,
       holderKind,
       holderId,
       holderUserUuid: input.actor.userUuid,
       epoch,
-      baseSnapshotId: input.baseSnapshotId ?? existing?.baseSnapshotId ?? workspace.canonicalSnapshotId,
+      baseSnapshotId,
       expiresAt,
       lastHeartbeatAt: current,
       updatedAt: current,
@@ -1086,7 +1472,7 @@ export async function acquireWorkspaceWriterLease(input: {
         holderId,
         holderUserUuid: input.actor.userUuid,
         epoch,
-        baseSnapshotId: input.baseSnapshotId ?? existing?.baseSnapshotId ?? workspace.canonicalSnapshotId,
+        baseSnapshotId,
         expiresAt,
         lastHeartbeatAt: current,
         updatedAt: current,
@@ -1097,6 +1483,7 @@ export async function acquireWorkspaceWriterLease(input: {
       await tx.update(workspaceExecutionAttempts).set({ workspaceLeaseEpoch: lease.epoch, updatedAt: current }).where(and(
         eq(workspaceExecutionAttempts.id, holderId),
         eq(workspaceExecutionAttempts.spaceId, input.spaceId),
+        eq(workspaceExecutionAttempts.runtimeId, runtimeId as string),
       ));
     }
     if (holderKind === "local_agent" || holderKind === "cloud_agent") {
@@ -1113,11 +1500,11 @@ export async function acquireWorkspaceWriterLease(input: {
   return serializeLease(result);
 }
 
-export async function heartbeatWorkspaceWriterLease(input: { actor: LocalAgentActor; spaceId: string; holderKind: string; holderId: string; epoch: number; durationSeconds?: number }) {
+export async function heartbeatWorkspaceWriterLease(input: { actor: LocalAgentActor; spaceId: string; holderKind: string; holderId: string; runtimeId?: string | null; epoch: number; durationSeconds?: number }) {
   assertUuid(input.spaceId, "spaceId");
   const holderKind = normalizeLeaseHolderKind(input.holderKind);
   if (!Number.isSafeInteger(input.epoch) || input.epoch < 1) throw new LocalAgentServiceError("epoch is invalid", "invalid_epoch", 400);
-  await assertLeaseActor({ actor: input.actor, spaceId: input.spaceId, holderKind, holderId: input.holderId, epoch: input.epoch });
+  await assertLeaseActor({ actor: input.actor, spaceId: input.spaceId, holderKind, holderId: input.holderId, runtimeId: input.runtimeId, epoch: input.epoch });
   const seconds = Math.min(input.durationSeconds ?? LOCAL_AGENT_ONLINE_LEASE_SECONDS, LOCAL_AGENT_ONLINE_LEASE_SECONDS);
   if (!Number.isSafeInteger(seconds) || seconds <= 0) throw new LocalAgentServiceError("durationSeconds is invalid", "invalid_duration", 400);
   const current = now();
@@ -1131,12 +1518,12 @@ export async function heartbeatWorkspaceWriterLease(input: { actor: LocalAgentAc
   return serializeLease(lease);
 }
 
-export async function releaseWorkspaceWriterLease(input: { actor: LocalAgentActor; spaceId: string; holderKind: string; holderId: string; epoch: number }) {
+export async function releaseWorkspaceWriterLease(input: { actor: LocalAgentActor; spaceId: string; holderKind: string; holderId: string; runtimeId?: string | null; epoch: number }) {
   assertUuid(input.spaceId, "spaceId");
   const holderKind = normalizeLeaseHolderKind(input.holderKind);
   if (!Number.isSafeInteger(input.epoch) || input.epoch < 1) throw new LocalAgentServiceError("epoch is invalid", "invalid_epoch", 400);
   try {
-    await assertLeaseActor({ actor: input.actor, spaceId: input.spaceId, holderKind, holderId: input.holderId, epoch: input.epoch });
+    await assertLeaseActor({ actor: input.actor, spaceId: input.spaceId, holderKind, holderId: input.holderId, runtimeId: input.runtimeId, epoch: input.epoch });
   } catch (error) {
     if (!(error instanceof LocalAgentServiceError) || error.code !== "workspace_lease_not_found" || holderKind !== "local_agent" || !input.actor.deviceId) throw error;
     const [attempt] = await db.select({ id: workspaceExecutionAttempts.id, status: workspaceExecutionAttempts.status }).from(workspaceExecutionAttempts)
@@ -1144,6 +1531,7 @@ export async function releaseWorkspaceWriterLease(input: { actor: LocalAgentActo
       .where(and(
         eq(workspaceExecutionAttempts.id, input.holderId),
         eq(workspaceExecutionAttempts.spaceId, input.spaceId),
+        eq(workspaceExecutionAttempts.runtimeId, input.runtimeId as string),
         eq(workspaceReplicas.deviceId, input.actor.deviceId),
         eq(workspaceReplicas.kind, "local"),
       )).limit(1);
@@ -1171,7 +1559,170 @@ export async function releaseWorkspaceWriterLease(input: { actor: LocalAgentActo
 }
 
 /**
- * Seal a local ACP execution attempt from locald once the provider turn is
+ * Fail a local runtime attempt before its provider process has started.
+ *
+ * locald claims a local permit before spawning the native host so that no
+ * sync/apply operation can race the handoff. If spawning fails, there is no
+ * provider process to fence, so the device can atomically release the server
+ * lease, fail the attempt/turn, and clear the active pointers. Keeping this as
+ * one transaction avoids leaving a failed turn holding the workspace.
+ */
+export async function failLocalRuntimeAttemptBeforeStart(input: {
+  actor: LocalAgentActor;
+  spaceId: string;
+  replicaId: string;
+  attemptId: string;
+  runtimeId: string;
+  leaseEpoch: number;
+  errorMessage?: string | null;
+}) {
+  assertUuid(input.spaceId, "spaceId");
+  assertUuid(input.replicaId, "replicaId");
+  assertUuid(input.attemptId, "attemptId");
+  assertUuid(input.runtimeId, "runtimeId");
+  if (input.actor.principal !== "device" || !input.actor.deviceId) {
+    throw new LocalAgentServiceError("a local device credential is required", "device_required", 401);
+  }
+  const deviceId = input.actor.deviceId;
+  if (!Number.isSafeInteger(input.leaseEpoch) || input.leaseEpoch < 1) {
+    throw new LocalAgentServiceError("leaseEpoch is invalid", "invalid_epoch", 400);
+  }
+  const errorMessage = normalizeBounded(input.errorMessage ?? "local runtime provider failed to start", "errorMessage", 2_000);
+  const result = await db.transaction(async (tx) => {
+    const currentTime = now();
+    const [replica] = await tx.select({
+      id: workspaceReplicas.id,
+      deviceId: workspaceReplicas.deviceId,
+      userUuid: workspaceReplicas.userUuid,
+      kind: workspaceReplicas.kind,
+      status: workspaceReplicas.status,
+    }).from(workspaceReplicas).where(and(
+      eq(workspaceReplicas.id, input.replicaId),
+      eq(workspaceReplicas.spaceId, input.spaceId),
+      eq(workspaceReplicas.kind, "local"),
+      eq(workspaceReplicas.deviceId, deviceId),
+      ne(workspaceReplicas.status, "detached"),
+    )).limit(1);
+    if (!replica || replica.userUuid !== input.actor.userUuid) {
+      throw new LocalAgentServiceError("local workspace replica is not available to this device", "replica_not_found", 404);
+    }
+    const [runtime] = await tx.select({
+      id: localAgentRuntimes.id,
+      spaceId: localAgentRuntimes.spaceId,
+      replicaId: localAgentRuntimes.replicaId,
+      deviceId: localAgentRuntimes.deviceId,
+      userUuid: localAgentRuntimes.userUuid,
+      status: localAgentRuntimes.status,
+    }).from(localAgentRuntimes).where(and(
+      eq(localAgentRuntimes.id, input.runtimeId),
+      eq(localAgentRuntimes.spaceId, input.spaceId),
+      eq(localAgentRuntimes.replicaId, input.replicaId),
+      eq(localAgentRuntimes.deviceId, deviceId),
+      eq(localAgentRuntimes.userUuid, input.actor.userUuid),
+      ne(localAgentRuntimes.status, "revoked"),
+    )).limit(1);
+    if (!runtime) {
+      throw new LocalAgentServiceError("local runtime is not registered for this replica", "runtime_not_found", 404);
+    }
+    const [attempt] = await tx.select().from(workspaceExecutionAttempts).where(and(
+      eq(workspaceExecutionAttempts.id, input.attemptId),
+      eq(workspaceExecutionAttempts.spaceId, input.spaceId),
+      eq(workspaceExecutionAttempts.replicaId, input.replicaId),
+      eq(workspaceExecutionAttempts.runtimeId, input.runtimeId),
+      eq(workspaceExecutionAttempts.executorKind, "local_runtime"),
+    )).for("update").limit(1);
+    if (!attempt) {
+      throw new LocalAgentServiceError("execution attempt is not registered for this runtime", "attempt_not_found", 404);
+    }
+    if (!attempt.sessionId || !attempt.turnId) {
+      throw new LocalAgentServiceError("execution attempt has no session turn", "attempt_provenance_invalid", 409);
+    }
+    const sessionId = attempt.sessionId;
+    const turnId = attempt.turnId;
+    // Retries after a concurrent cleanup are safe and intentionally idempotent.
+    if (["failed", "aborted", "completed"].includes(attempt.status)) {
+      return {
+        attemptId: attempt.id,
+        sessionId,
+        turnId,
+        status: attempt.status,
+        changed: false,
+      };
+    }
+    if (!["queued", "prepared", "running"].includes(attempt.status)) {
+      throw new LocalAgentServiceError("execution attempt is not eligible for pre-start failure", "attempt_not_pre_startable", 409);
+    }
+    if (attempt.workspaceLeaseEpoch !== input.leaseEpoch) {
+      throw new LocalAgentServiceError("execution attempt lease epoch does not match", "workspace_lease_lost", 409);
+    }
+    const [lease] = await tx.select().from(workspaceWriterLeases).where(and(
+      eq(workspaceWriterLeases.spaceId, input.spaceId),
+      eq(workspaceWriterLeases.holderKind, "local_agent"),
+      eq(workspaceWriterLeases.holderId, input.attemptId),
+      eq(workspaceWriterLeases.epoch, input.leaseEpoch),
+    )).for("update").limit(1);
+    if (lease && (lease.baseSnapshotId ?? null) !== (attempt.baseCanonicalSnapshotId ?? null)) {
+      throw new LocalAgentServiceError("workspace lease provenance is invalid", "lease_provenance_invalid", 409);
+    }
+    await tx.update(workspaceExecutionAttempts).set({
+      status: "failed",
+      errorCode: "local_runtime_start_failed",
+      errorMessage,
+      completedAt: currentTime,
+      updatedAt: currentTime,
+    }).where(and(
+      eq(workspaceExecutionAttempts.id, attempt.id),
+      inArray(workspaceExecutionAttempts.status, ["queued", "prepared", "running"]),
+      eq(workspaceExecutionAttempts.workspaceLeaseEpoch, input.leaseEpoch),
+    ));
+    await tx.update(sessionTurns).set({
+      status: "failed",
+      errorMessage,
+      summary: { finishReason: "failed", text: errorMessage },
+      completedAt: currentTime,
+      durationMs: sql<number>`greatest(0, floor(extract(epoch from (${currentTime.toISOString()}::timestamptz - ${sessionTurns.startedAt})) * 1000)::int)`,
+      updatedAt: currentTime,
+    }).where(and(
+      eq(sessionTurns.id, turnId),
+      eq(sessionTurns.sessionId, sessionId),
+      inArray(sessionTurns.status, ["queued", "running", "abort_requested", "interrupted"]),
+    ));
+    if (lease) {
+      await tx.update(workspaceWriterLeases).set({
+        expiresAt: currentTime,
+        lastHeartbeatAt: currentTime,
+        updatedAt: currentTime,
+      }).where(and(
+        eq(workspaceWriterLeases.spaceId, input.spaceId),
+        eq(workspaceWriterLeases.holderKind, "local_agent"),
+        eq(workspaceWriterLeases.holderId, input.attemptId),
+        eq(workspaceWriterLeases.epoch, input.leaseEpoch),
+      ));
+    }
+    await tx.update(workspaceState).set({ activeExecutionAttemptId: null, updatedAt: currentTime }).where(and(
+      eq(workspaceState.spaceId, input.spaceId),
+      eq(workspaceState.activeExecutionAttemptId, input.attemptId),
+    ));
+    await tx.update(workspaceReplicas).set({ activeExecutionAttemptId: null, updatedAt: currentTime }).where(and(
+      eq(workspaceReplicas.id, input.replicaId),
+      eq(workspaceReplicas.activeExecutionAttemptId, input.attemptId),
+    ));
+    return {
+      attemptId: attempt.id,
+      sessionId,
+      turnId,
+      status: "failed" as const,
+      changed: true,
+    };
+  });
+  if (result.changed) {
+    void notifyWorkspaceState({ spaceId: input.spaceId, replica: null, reason: "local_runtime_start_failed" }).catch(() => undefined);
+  }
+  return result;
+}
+
+/**
+ * Seal a local runtime execution attempt from locald once the provider turn is
  * terminal. The workspace worker completes the attempt after the candidate
  * snapshot is reconciled; this only records that the transcript side is done.
  */
@@ -1180,40 +1731,63 @@ export async function registerLocalWorkspaceAttempt(input: {
   spaceId: string;
   replicaId: string;
   attemptId: string;
+  runtimeId: string;
   leaseEpoch: number;
   baseSnapshotId: string | null;
   workspacePolicyVersion: number;
   integrationPolicyVersion: number;
 }) {
   const replica = await resolveReplicaForActor({ actor: input.actor, spaceId: input.spaceId, replicaId: input.replicaId });
-  if (replica.kind !== "local" || !input.actor.deviceId) throw new LocalAgentServiceError("local execution attempts require a device replica", "invalid_replica", 400);
+  const actorDeviceId = input.actor.deviceId;
+  if (replica.kind !== "local" || !actorDeviceId) throw new LocalAgentServiceError("local execution attempts require a device replica", "invalid_replica", 400);
   assertUuid(input.attemptId, "attemptId");
+  assertUuid(input.runtimeId, "runtimeId");
   if (!Number.isSafeInteger(input.leaseEpoch) || input.leaseEpoch < 1) throw new LocalAgentServiceError("leaseEpoch is invalid", "invalid_epoch", 400);
-  const [policy] = await db.select().from(spaceLocalAgentPolicies).where(and(
-    eq(spaceLocalAgentPolicies.spaceId, input.spaceId),
-    eq(spaceLocalAgentPolicies.deviceId, input.actor.deviceId),
-  )).limit(1);
-  if (!policy || policy.integrationPolicyVersion !== input.integrationPolicyVersion) {
-    throw new LocalAgentServiceError("local execution attempt uses an outdated integration policy", "policy_version_stale", 409);
-  }
   const attempt = await db.transaction(async (tx) => {
+    const currentTime = now();
+    const [lease] = await tx.select().from(workspaceWriterLeases).where(and(
+      eq(workspaceWriterLeases.spaceId, input.spaceId),
+      eq(workspaceWriterLeases.holderKind, "local_agent"),
+      eq(workspaceWriterLeases.holderId, input.attemptId),
+      eq(workspaceWriterLeases.epoch, input.leaseEpoch),
+    )).for("update").limit(1);
+    if (!lease || lease.holderUserUuid !== input.actor.userUuid || !lease.expiresAt || lease.expiresAt <= currentTime) {
+      throw new LocalAgentServiceError("workspace writer lease is no longer active", "workspace_lease_lost", 409);
+    }
+    if ((lease.baseSnapshotId ?? null) !== (input.baseSnapshotId ?? null)) {
+      throw new LocalAgentServiceError("workspace writer lease base snapshot does not match", "attempt_base_stale", 409);
+    }
+    const [policy] = await tx.select().from(spaceLocalAgentPolicies).where(and(
+      eq(spaceLocalAgentPolicies.spaceId, input.spaceId),
+      eq(spaceLocalAgentPolicies.deviceId, actorDeviceId),
+    )).for("update").limit(1);
+    if (!policy || policy.integrationPolicyVersion !== input.integrationPolicyVersion) {
+      throw new LocalAgentServiceError("local execution attempt uses an outdated integration policy", "policy_version_stale", 409);
+    }
     let [current] = await tx.select().from(workspaceExecutionAttempts).where(and(
       eq(workspaceExecutionAttempts.id, input.attemptId),
       eq(workspaceExecutionAttempts.spaceId, input.spaceId),
       eq(workspaceExecutionAttempts.replicaId, replica.id),
-      eq(workspaceExecutionAttempts.executorKind, "local_acp"),
+      eq(workspaceExecutionAttempts.runtimeId, input.runtimeId),
+      eq(workspaceExecutionAttempts.executorKind, "local_runtime"),
     )).for("update").limit(1);
     if (!current) throw new LocalAgentServiceError("execution attempt is not registered for this replica", "attempt_identity_mismatch", 409);
-    if ((current.baseCanonicalSnapshotId ?? null) !== (input.baseSnapshotId ?? null)) {
-      throw new LocalAgentServiceError("execution attempt base snapshot does not match the workspace lease", "attempt_base_stale", 409);
-    }
-    if (current.workspaceLeaseEpoch !== input.leaseEpoch) {
+    const [runtime] = await tx.select({ id: localAgentRuntimes.id }).from(localAgentRuntimes).where(and(
+      eq(localAgentRuntimes.id, input.runtimeId),
+      eq(localAgentRuntimes.spaceId, input.spaceId),
+      eq(localAgentRuntimes.replicaId, replica.id),
+      eq(localAgentRuntimes.deviceId, actorDeviceId),
+      eq(localAgentRuntimes.userUuid, input.actor.userUuid),
+      ne(localAgentRuntimes.status, "revoked"),
+    )).for("update").limit(1);
+    if (!runtime) throw new LocalAgentServiceError("runtime is not registered for this execution attempt", "runtime_identity_mismatch", 409);
+    if ((current.baseCanonicalSnapshotId ?? null) !== (lease.baseSnapshotId ?? null) || current.workspaceLeaseEpoch !== lease.epoch) {
       throw new LocalAgentServiceError("execution attempt lease epoch does not match", "workspace_lease_lost", 409);
     }
     if (current.turnId) {
       const [turn] = await tx.select({ status: sessionTurns.status }).from(sessionTurns).where(eq(sessionTurns.id, current.turnId)).limit(1);
       if (!turn || !["completed", "failed", "interrupted", "cancelled", "merged"].includes(turn.status)) {
-        throw new LocalAgentServiceError("local ACP transcript is not terminal yet", "transcript_pending", 409);
+        throw new LocalAgentServiceError("local runtime transcript is not terminal yet", "transcript_pending", 409);
       }
     }
     if (["queued", "prepared", "running"].includes(current.status)) {

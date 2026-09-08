@@ -137,9 +137,11 @@ PY
 render_template "$MANIFESTS_DIR/configmap.tmpl.yaml" rendered/configmap.yaml
 render_template "$MANIFESTS_DIR/statefulset.tmpl.yaml" rendered/statefulset.yaml
 render_template "$MANIFESTS_DIR/service.tmpl.yaml" rendered/service.yaml
+render_template "$MANIFESTS_DIR/relay-service.tmpl.yaml" rendered/relay-service.yaml
 
 kubectl apply -f rendered/configmap.yaml
 kubectl apply -f rendered/service.yaml
+kubectl apply -f rendered/relay-service.yaml
 kubectl apply -f rendered/statefulset.yaml
 
 if [ "$ROUTE_ENABLED" = "true" ]; then

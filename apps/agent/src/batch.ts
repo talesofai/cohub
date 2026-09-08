@@ -81,7 +81,7 @@ function getUserMessageId(turn: TurnRow): string {
 
 function executionGroupKey(turn: TurnRow): string {
   const meta = asRecord(turn.meta);
-  if (meta.executorKind === "local_acp") return `local_acp:${getMetaString(turn, "runtimeId") ?? "missing"}`;
+  if (meta.executorKind === "local_runtime") return `local_runtime:${getMetaString(turn, "runtimeId") ?? "missing"}`;
   return "cloud_agent";
 }
 
@@ -118,13 +118,13 @@ function createExecutionBatch(queued: TurnRow[]): ExecutionBatchMeta {
 
 async function claimWorkspaceAttempt(tx: Transaction, spaceId: string, owner: TurnRow) {
   const originalMeta = asRecord(owner.meta);
-  const requestedExecutorKind = originalMeta.executorKind === "local_acp" ? "local_acp" : "cloud_agent";
+  const requestedExecutorKind = originalMeta.executorKind === "local_runtime" ? "local_runtime" : "cloud_agent";
   const requestedRuntimeId = typeof originalMeta.runtimeId === "string" && originalMeta.runtimeId.trim() ? originalMeta.runtimeId.trim() : null;
   const executionBase = asRecord(originalMeta.workspaceExecutionBase);
   const requestedReplicaId = typeof executionBase.replicaId === "string" && executionBase.replicaId.trim() ? executionBase.replicaId.trim() : null;
   const requestedProvider = typeof originalMeta.provider === "string" && originalMeta.provider.trim() ? originalMeta.provider.trim() : null;
-  if (requestedExecutorKind === "local_acp" && (!requestedRuntimeId || !requestedReplicaId)) {
-    throw new Error(`local ACP turn ${owner.id} is missing runtime or replica metadata`);
+  if (requestedExecutorKind === "local_runtime" && (!requestedRuntimeId || !requestedReplicaId)) {
+    throw new Error(`local runtime turn ${owner.id} is missing runtime or replica metadata`);
   }
   let attemptId = typeof originalMeta.executionAttemptId === "string" && originalMeta.executionAttemptId.trim()
     ? originalMeta.executionAttemptId.trim()
@@ -132,8 +132,15 @@ async function claimWorkspaceAttempt(tx: Transaction, spaceId: string, owner: Tu
   if (!attemptId) {
     const createdRows = await tx.execute(sql`
       insert into v2.workspace_execution_attempts
-        (space_id, runtime_id, replica_id, provider, idempotency_key, executor_kind, workspace_required, transcript_required, session_id, turn_id, base_canonical_snapshot_id, workspace_policy_version, status, created_at, updated_at)
-      select ws.space_id, ${requestedRuntimeId}, ${requestedReplicaId}, ${requestedProvider}, ${`${requestedExecutorKind === "local_acp" ? "local-acp" : "cloud"}-turn:${owner.id}`}, ${requestedExecutorKind}, true, true, ${owner.sessionId}, ${owner.id}, ws.canonical_snapshot_id, wp.policy_version, 'queued', now(), now()
+        (space_id, runtime_id, replica_id, provider, idempotency_key, executor_kind, workspace_required, transcript_required, session_id, turn_id, base_canonical_snapshot_id, workspace_policy_version, integration_policy_version, status, created_at, updated_at)
+      select ws.space_id, ${requestedRuntimeId}, ${requestedReplicaId}, ${requestedProvider}, ${`${requestedExecutorKind === "local_runtime" ? "local-runtime" : "cloud"}-turn:${owner.id}`}, ${requestedExecutorKind}, true, true, ${owner.sessionId}, ${owner.id}, ws.canonical_snapshot_id, wp.policy_version,
+        (select lap.integration_policy_version
+         from v2.workspace_replicas fallback_replica
+         join v2.space_local_agent_policies lap
+           on lap.space_id = ws.space_id and lap.device_id = fallback_replica.device_id
+         where fallback_replica.id = ${requestedReplicaId} and fallback_replica.kind = 'local'
+         limit 1),
+        'queued', now(), now()
       from v2.workspace_state ws
       left join v2.space_workspace_policies wp on wp.space_id = ws.space_id
       where ws.space_id = ${spaceId}
@@ -154,13 +161,13 @@ async function claimWorkspaceAttempt(tx: Transaction, spaceId: string, owner: Tu
   if (attemptRows.length === 0) throw new Error(`workspace attempt ${attemptId} is not claimable`);
   const attemptRecord = attemptRows[0] as Record<string, unknown>;
   const baseSnapshotId = attemptRecord.base_canonical_snapshot_id;
-  const executorKind = attemptRecord.executor_kind === "local_acp" ? "local_acp" : "cloud_agent";
+  const executorKind = attemptRecord.executor_kind === "local_runtime" ? "local_runtime" : "cloud_agent";
   const replicaId = typeof attemptRecord.replica_id === "string" ? attemptRecord.replica_id : null;
   const runtimeId = typeof attemptRecord.runtime_id === "string" ? attemptRecord.runtime_id : null;
-  if (executorKind === "local_acp" && (!replicaId || !runtimeId)) {
-    throw new Error(`local ACP execution attempt ${attemptId} is missing runtime or replica identity`);
+  if (executorKind === "local_runtime" && (!replicaId || !runtimeId)) {
+    throw new Error(`local runtime execution attempt ${attemptId} is missing runtime or replica identity`);
   }
-  const leaseHolderKind = executorKind === "local_acp" ? "local_agent" : "cloud_agent";
+  const leaseHolderKind = executorKind === "local_runtime" ? "local_agent" : "cloud_agent";
   const existingLeaseRows = await tx.execute(sql`
     select holder_kind, holder_id, epoch, expires_at
     from v2.workspace_writer_leases
@@ -224,14 +231,14 @@ async function claimWorkspaceAttempt(tx: Transaction, spaceId: string, owner: Tu
   const activatedReplicaRows = await tx.execute(sql`
     update v2.workspace_replicas
     set active_execution_attempt_id = ${attemptId}, updated_at = now()
-    where space_id = ${spaceId} and kind = ${executorKind === "local_acp" ? "local" : "cloud"}
-      and (${executorKind === "local_acp"
+    where space_id = ${spaceId} and kind = ${executorKind === "local_runtime" ? "local" : "cloud"}
+      and (${executorKind === "local_runtime"
         ? sql`id = ${replicaId} and applied_snapshot_id = ${typeof baseSnapshotId === "string" ? baseSnapshotId : null}`
         : sql`true`})
     returning id
   `);
-  if (executorKind === "local_acp" && activatedReplicaRows.length !== 1) {
-    throw new Error(`local ACP replica ${replicaId} is no longer applied to the attempt base snapshot`);
+  if (executorKind === "local_runtime" && activatedReplicaRows.length !== 1) {
+    throw new Error(`local runtime replica ${replicaId} is no longer applied to the attempt base snapshot`);
   }
   return {
     ...originalMeta,
@@ -246,8 +253,8 @@ async function claimQueuedTurns(tx: Transaction, spaceId: string, queued: TurnRo
   if (!owner) throw new Error("queued turns are required");
   const merged = queued.slice(0, -1);
   const ownerGroup = executionGroupKey(owner);
-  if (ownerGroup.startsWith("local_acp:") && merged.length > 0) {
-    throw new Error(`local ACP turn ${owner.id} cannot merge queued turns from another prompt`);
+  if (ownerGroup.startsWith("local_runtime:") && merged.length > 0) {
+    throw new Error(`local runtime turn ${owner.id} cannot merge queued turns from another prompt`);
   }
   if (merged.some((turn) => executionGroupKey(turn) !== ownerGroup)) {
     throw new Error(`queued turns for ${owner.id} use different executors`);
@@ -328,9 +335,9 @@ export async function claimNextTurnBatch(input: Pick<AgentTurnJobData, "sessionI
           where wa.space_id = ${spaceId}
             and (
               wa.status in ('prepared', 'running', 'workspace_sealed', 'transcript_sealed', 'awaiting_recovery')
-              or (wa.executor_kind = 'local_acp' and wa.status = 'queued' and wa.session_id <> ${input.sessionId})
+              or (wa.executor_kind = 'local_runtime' and wa.status = 'queued' and wa.session_id <> ${input.sessionId})
             )
-            and wa.executor_kind = 'local_acp'
+            and wa.executor_kind = 'local_runtime'
         ) as has_local_attempt,
         exists (
           select 1
@@ -344,7 +351,7 @@ export async function claimNextTurnBatch(input: Pick<AgentTurnJobData, "sessionI
           from v2.workspace_execution_attempts local_attempt
           join v2.local_agent_runtimes local_runtime on local_runtime.id = local_attempt.runtime_id
           where local_attempt.session_id = ${input.sessionId}
-            and local_attempt.executor_kind = 'local_acp'
+            and local_attempt.executor_kind = 'local_runtime'
             and local_attempt.status = 'queued'
             and local_runtime.status in ('offline', 'connecting', 'error', 'revoked')
         ) as has_local_runtime_wait,
@@ -353,7 +360,7 @@ export async function claimNextTurnBatch(input: Pick<AgentTurnJobData, "sessionI
           where local_turn.session_id = ${input.sessionId}
             and local_turn.execution_kind = 'agent'
             and local_turn.status = 'queued'
-            and local_turn.meta->>'executorKind' = 'local_acp'
+            and local_turn.meta->>'executorKind' = 'local_runtime'
         ) as has_local_executor
       from v2.workspace_state ws
       where ws.space_id = ${spaceId}
@@ -408,13 +415,13 @@ export async function claimNextTurnBatch(input: Pick<AgentTurnJobData, "sessionI
     const beforeGeneration = blockingSequence === null ? sql`true` : sql`sequence < ${blockingSequence}`;
 
     const steerExecutorFilter = gate?.has_local_authoritative_policy === true
-      ? sql`meta->>'executorKind' = 'local_acp'`
+      ? sql`meta->>'executorKind' = 'local_runtime'`
       : sql`true`;
     const steerRows = await tx.execute(sql`
       select id, session_id, user_uuid, sequence, status, intent, user_content, user_text, meta, updated_at
       from v2.session_turns
       where session_id = ${input.sessionId} and execution_kind = 'agent' and status = 'queued' and intent = 'steer' and ${beforeGeneration} and ${steerExecutorFilter}
-      order by case when meta->>'executorKind' = 'local_acp' then 0 else 1 end, updated_at asc, sequence asc
+      order by case when meta->>'executorKind' = 'local_runtime' then 0 else 1 end, updated_at asc, sequence asc
       limit 1
     `);
     const steer = steerRows[0] ? normalizeTurn(steerRows[0] as Record<string, unknown>) : null;
@@ -431,11 +438,11 @@ export async function claimNextTurnBatch(input: Pick<AgentTurnJobData, "sessionI
     `);
     const followups = followupRows.map((row) => normalizeTurn(row as Record<string, unknown>));
     const firstFollowup = gate?.has_local_authoritative_policy === true
-      ? followups.find((turn) => asRecord(turn.meta).executorKind === "local_acp") ?? followups[0]
+      ? followups.find((turn) => asRecord(turn.meta).executorKind === "local_runtime") ?? followups[0]
       : followups[0];
     if (!firstFollowup) return { kind: "noop" as const };
     const firstGroup = executionGroupKey(firstFollowup);
-    const compatibleFollowups = firstGroup.startsWith("local_acp:")
+    const compatibleFollowups = firstGroup.startsWith("local_runtime:")
       ? [firstFollowup]
       : followups.filter((turn) => executionGroupKey(turn) === firstGroup);
 

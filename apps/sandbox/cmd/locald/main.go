@@ -53,17 +53,12 @@ func main() {
 			fmt.Fprintln(os.Stderr, err)
 			os.Exit(1)
 		}
-	case "permit":
-		if err := runPermit(os.Args[2:]); err != nil {
-			fmt.Fprintln(os.Stderr, err)
-			os.Exit(1)
-		}
 	case "runtime":
 		if err := runRuntime(os.Args[2:]); err != nil {
 			fmt.Fprintln(os.Stderr, err)
 			os.Exit(1)
 		}
-	case "preflight", "status", "flush", "refresh":
+	case "status", "flush", "refresh":
 		if err := runSimpleIPC(os.Args[1], os.Args[2:]); err != nil {
 			fmt.Fprintln(os.Stderr, err)
 			os.Exit(1)
@@ -226,47 +221,17 @@ func runFingerprint(args []string) error {
 	return json.NewEncoder(os.Stdout).Encode(map[string]string{"rootFingerprint": locald.RootFingerprint(identity, *spaceID, canonicalRoot)})
 }
 
-func runPermit(args []string) error {
-	flags := flag.NewFlagSet("permit", flag.ContinueOnError)
-	flags.SetOutput(io.Discard)
-	dataDir := flags.String("data-dir", "", "locald data directory")
-	spaceID := flags.String("space-id", "", "Space id")
-	replicaID := flags.String("replica-id", "", "replica id")
-	attemptID := flags.String("execution-attempt-id", "", "execution attempt id")
-	baseSnapshotID := flags.String("base-snapshot-id", "", "base snapshot id")
-	leaseEpoch := flags.Int64("lease-epoch", 0, "lease epoch")
-	expiresAt := flags.String("expires-at", "", "RFC3339 expiry")
-	if err := flags.Parse(args); err != nil {
-		return err
-	}
-	cfg := locald.ConfigFromEnvironment(*dataDir)
-	response, err := locald.SendRequest(context.Background(), cfg, locald.IPCRequest{
-		Version:            1,
-		Type:               "permit",
-		SpaceID:            *spaceID,
-		ReplicaID:          *replicaID,
-		ExecutionAttemptID: *attemptID,
-		BaseSnapshotID:     *baseSnapshotID,
-		LeaseEpoch:         *leaseEpoch,
-		ExpiresAt:          *expiresAt,
-	})
-	if err != nil {
-		return err
-	}
-	return json.NewEncoder(os.Stdout).Encode(response)
-}
-
 func runRuntime(args []string) error {
 	flags := flag.NewFlagSet("runtime", flag.ContinueOnError)
 	flags.SetOutput(io.Discard)
 	dataDir := flags.String("data-dir", "", "locald data directory")
 	spaceID := flags.String("space-id", "", "Space id")
-	runtimeID := flags.String("runtime-id", "", "registered local ACP runtime id")
+	runtimeID := flags.String("runtime-id", "", "registered local runtime id")
 	replicaID := flags.String("replica-id", "", "attached workspace replica id")
 	provider := flags.String("provider", "", "provider name")
 	root := flags.String("root", "", "local workspace root")
 	relayURL := flags.String("relay", "", "Gateway runtime relay control url")
-	providerCommand := flags.String("provider-command", "", "ACP provider adapter command")
+	providerCommand := flags.String("provider-command", "", "local runtime host command (defaults to cohub-agent-runtime)")
 	if err := flags.Parse(args); err != nil {
 		return err
 	}
@@ -275,12 +240,12 @@ func runRuntime(args []string) error {
 		token = strings.TrimSpace(os.Getenv("COHUB_RUNTIME_TOKEN"))
 	}
 	if strings.TrimSpace(token) == "" {
-		return errors.New("local ACP runtime access token is unavailable; refresh device credentials first")
+		return errors.New("local runtime access token is unavailable; refresh device credentials first")
 	}
 	_ = os.Unsetenv("COHUB_RUNTIME_TOKEN")
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
-	return locald.RunAcpRuntime(ctx, locald.AcpRuntimeOptions{
+	return locald.RunLocalRuntime(ctx, locald.LocalRuntimeOptions{
 		RelayURL:        strings.TrimSpace(*relayURL),
 		RelayToken:      strings.TrimSpace(token),
 		DeviceID:        strings.TrimSpace(os.Getenv("COHUB_LOCAL_AGENT_DEVICE_ID")),
@@ -301,12 +266,11 @@ func runSimpleIPC(kind string, args []string) error {
 	flags.SetOutput(io.Discard)
 	dataDir := flags.String("data-dir", "", "locald data directory")
 	cwd := flags.String("cwd", "", "workspace current working directory")
-	attemptID := flags.String("execution-attempt-id", "", "execution attempt id")
 	if err := flags.Parse(args); err != nil {
 		return err
 	}
 	cfg := locald.ConfigFromEnvironment(*dataDir)
-	request := locald.IPCRequest{Version: 1, Type: kind, CWD: *cwd, ExecutionAttemptID: *attemptID}
+	request := locald.IPCRequest{Version: 1, Type: kind, CWD: *cwd}
 	var requestCtx context.Context = context.Background()
 	cancel := func() {}
 	if kind == "refresh" {
@@ -322,5 +286,5 @@ func runSimpleIPC(kind string, args []string) error {
 
 func usage() {
 	fmt.Fprintf(os.Stderr, "cohub-locald %s (%s/%s)\n", buildVersion, runtime.GOOS, runtime.GOARCH)
-	fmt.Fprintln(os.Stderr, "usage: cohub-locald daemon|configure|credentials|credentials-status|fingerprint|permit|runtime|preflight|status|refresh|flush")
+	fmt.Fprintln(os.Stderr, "usage: cohub-locald daemon|configure|credentials|credentials-status|fingerprint|runtime|status|refresh|flush")
 }

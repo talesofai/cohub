@@ -18,7 +18,7 @@ export type LocalAgentDevice = {
   updatedAt: string;
 };
 
-export type LocalAcpRuntimeRecord = {
+export type LocalRuntimeRecord = {
   id: string;
   spaceId: string;
   deviceId: string;
@@ -55,6 +55,7 @@ export type WorkspaceSnapshotPrepareInput = {
   parentSnapshotId?: string | null;
   baseCanonicalSnapshotId?: string | null;
   executionAttemptId?: string | null;
+  runtimeId?: string | null;
   leaseEpoch?: number | null;
   source?: string;
   manifest: WorkspaceManifestV1;
@@ -86,7 +87,7 @@ export type WorkspaceReplicaStateResponse = {
 
 export type WorkspaceReplicaOverviewResponse = {
   replicas: Array<Record<string, unknown>>;
-  runtimes?: LocalAcpRuntimeRecord[];
+  runtimes?: LocalRuntimeRecord[];
   workspace: Record<string, unknown> | null;
   workspacePolicy: Record<string, unknown> | null;
   lease: Record<string, unknown> | null;
@@ -130,9 +131,9 @@ export class LocalAgentApi {
     providerVersion?: string;
     adapterVersion?: string;
     capabilities?: Record<string, unknown>;
-    protocolVersion?: number;
+    protocolVersion: number;
   }, customFetch?: Fetch) {
-    return this.transport.request<LocalAcpRuntimeRecord>(`/api/local-agent/spaces/${spaceId}/runtimes`, {
+    return this.transport.request<LocalRuntimeRecord>(`/api/local-agent/spaces/${spaceId}/runtimes`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(input),
@@ -141,15 +142,15 @@ export class LocalAgentApi {
   }
 
   listRuntimes(spaceId: string, customFetch?: Fetch) {
-    return this.transport.request<{ runtimes: LocalAcpRuntimeRecord[] }>(`/api/local-agent/spaces/${spaceId}/runtimes`, { fetch: customFetch });
+    return this.transport.request<{ runtimes: LocalRuntimeRecord[] }>(`/api/local-agent/spaces/${spaceId}/runtimes`, { fetch: customFetch });
   }
 
   getRuntime(spaceId: string, runtimeId: string, customFetch?: Fetch) {
-    return this.transport.request<LocalAcpRuntimeRecord>(`/api/local-agent/spaces/${spaceId}/runtimes/${runtimeId}`, { fetch: customFetch });
+    return this.transport.request<LocalRuntimeRecord>(`/api/local-agent/spaces/${spaceId}/runtimes/${runtimeId}`, { fetch: customFetch });
   }
 
   revokeRuntime(spaceId: string, runtimeId: string, customFetch?: Fetch) {
-    return this.transport.request<{ runtime: LocalAcpRuntimeRecord }>(`/api/local-agent/spaces/${spaceId}/runtimes/${runtimeId}`, { method: "DELETE", fetch: customFetch });
+    return this.transport.request<{ runtime: LocalRuntimeRecord }>(`/api/local-agent/spaces/${spaceId}/runtimes/${runtimeId}`, { method: "DELETE", fetch: customFetch });
   }
 
   attach(spaceId: string, input: { deviceId?: string; rootFingerprint: string; displayName: string; capabilities?: Record<string, unknown>; protocolVersion?: number }, customFetch?: Fetch) {
@@ -216,14 +217,16 @@ export class LocalAgentApi {
     });
   }
 
-  commitSnapshot(spaceId: string, replicaId: string, snapshotId: string, customFetch?: Fetch) {
+  commitSnapshot(spaceId: string, replicaId: string, snapshotId: string, input?: { runtimeId?: string | null }, customFetch?: Fetch) {
     return this.transport.request<{ snapshotId: string; status: string; manifestSha256: string; treeHash: string; cycleId: string | null }>(`/api/local-agent/spaces/${spaceId}/replicas/${replicaId}/snapshots/${snapshotId}/commit`, {
       method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(input ?? {}),
       fetch: customFetch,
     });
   }
 
-  acquireLease(spaceId: string, input: { holderKind?: string; holderId: string; replicaId?: string | null; baseSnapshotId?: string | null; durationSeconds?: number }, customFetch?: Fetch) {
+  acquireLease(spaceId: string, input: { holderKind?: string; holderId: string; runtimeId?: string | null; replicaId?: string | null; baseSnapshotId?: string | null; durationSeconds?: number; recovery?: boolean }, customFetch?: Fetch) {
     return this.transport.request<Record<string, unknown>>(`/api/local-agent/spaces/${spaceId}/leases/acquire`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
@@ -232,7 +235,7 @@ export class LocalAgentApi {
     });
   }
 
-  heartbeatLease(spaceId: string, input: { holderKind: string; holderId: string; epoch: number; durationSeconds?: number }, customFetch?: Fetch) {
+  heartbeatLease(spaceId: string, input: { holderKind: string; holderId: string; runtimeId?: string | null; epoch: number; durationSeconds?: number }, customFetch?: Fetch) {
     return this.transport.request<Record<string, unknown>>(`/api/local-agent/spaces/${spaceId}/leases/heartbeat`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
@@ -241,7 +244,7 @@ export class LocalAgentApi {
     });
   }
 
-  releaseLease(spaceId: string, input: { holderKind: string; holderId: string; epoch: number }, customFetch?: Fetch) {
+  releaseLease(spaceId: string, input: { holderKind: string; holderId: string; runtimeId?: string | null; epoch: number }, customFetch?: Fetch) {
     return this.transport.request<{ released: true; epoch: number }>(`/api/local-agent/spaces/${spaceId}/leases/release`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },

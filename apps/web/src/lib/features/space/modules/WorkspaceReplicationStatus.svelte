@@ -245,8 +245,8 @@ $effect(() => {
 				</div>
 
 				{#if replicationState.runtimes.length > 0}
-					<div class="runtime-heading">ACP runtimes</div>
-					<div class="replica-list" role="list" aria-label="Local ACP runtimes">
+					<div class="runtime-heading">local runtimes</div>
+					<div class="replica-list" role="list" aria-label="Local runtimes">
 						{#each replicationState.runtimes as runtime (runtime.id)}
 							<div class="replica-row" role="listitem">
 								<div class="replica-icon" aria-hidden="true"><Laptop class="h-4 w-4" /></div>

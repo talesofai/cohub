@@ -16,19 +16,19 @@ import (
 	_ "modernc.org/sqlite"
 )
 
-const stateSchemaVersion = 4
-const acpRuntimePermitHolderPrefix = "acp:"
+const stateSchemaVersion = 5
+const localRuntimePermitHolderPrefix = "local-runtime:"
 
-func acpRuntimePermitHolderID(executionAttemptID string) string {
-	return acpRuntimePermitHolderPrefix + executionAttemptID
+func localRuntimePermitHolderID(executionAttemptID string) string {
+	return localRuntimePermitHolderPrefix + executionAttemptID
 }
 
-func isAcpRuntimePermit(holderID string) bool {
-	return strings.HasPrefix(holderID, acpRuntimePermitHolderPrefix)
+func isLocalRuntimePermit(holderID string) bool {
+	return strings.HasPrefix(holderID, localRuntimePermitHolderPrefix)
 }
 
 func serverPermitHolderID(holderID string) string {
-	return strings.TrimPrefix(holderID, acpRuntimePermitHolderPrefix)
+	return strings.TrimPrefix(holderID, localRuntimePermitHolderPrefix)
 }
 
 // StateStore contains only local daemon state. It is deliberately not a
@@ -71,6 +71,12 @@ func OpenState(dataDir string) (*StateStore, error) {
 	if err != nil {
 		return nil, fmt.Errorf("open locald state database: %w", err)
 	}
+	// State mutations are intentionally serialized within one locald process;
+	// runtime processes may still share the file, so each connection waits for a
+	// short bounded interval instead of failing immediately on SQLite's writer
+	// lock.
+	db.SetMaxOpenConns(1)
+	db.SetMaxIdleConns(1)
 	store := &StateStore{db: db}
 	if err := store.configure(); err != nil {
 		_ = db.Close()
@@ -85,6 +91,7 @@ func OpenState(dataDir string) (*StateStore, error) {
 
 func (s *StateStore) configure() error {
 	statements := []string{
+		"PRAGMA busy_timeout=5000",
 		"PRAGMA journal_mode=WAL",
 		"PRAGMA synchronous=FULL",
 		"PRAGMA foreign_keys=ON",
@@ -130,6 +137,7 @@ func (s *StateStore) configure() error {
 			execution_attempt_id TEXT PRIMARY KEY,
 			space_id TEXT NOT NULL,
 			replica_id TEXT NOT NULL,
+			runtime_id TEXT NOT NULL DEFAULT '',
 			base_snapshot_id TEXT,
 			lease_epoch INTEGER,
 			expires_at TEXT NOT NULL,
@@ -157,7 +165,7 @@ func (s *StateStore) configure() error {
 			return fmt.Errorf("upgrade locald replica state: %w", err)
 		}
 	}
-	for _, column := range []string{"holder_kind TEXT NOT NULL DEFAULT 'local_agent'", "holder_id TEXT NOT NULL DEFAULT ''"} {
+	for _, column := range []string{"holder_kind TEXT NOT NULL DEFAULT 'local_agent'", "holder_id TEXT NOT NULL DEFAULT ''", "runtime_id TEXT NOT NULL DEFAULT ''"} {
 		if _, err := s.db.Exec(`ALTER TABLE permits ADD COLUMN ` + column); err != nil && !strings.Contains(strings.ToLower(err.Error()), "duplicate column") {
 			return fmt.Errorf("upgrade locald permit state: %w", err)
 		}
@@ -213,6 +221,12 @@ type ReplicaState struct {
 	CandidateBaseSnapshotID  string `json:"candidateBaseSnapshotId,omitempty"`
 	CandidateSource          string `json:"candidateSource,omitempty"`
 	InitialChoice            string `json:"initialChoice,omitempty"`
+}
+
+type ReplicaRoot struct {
+	SpaceID   string `json:"spaceId"`
+	ReplicaID string `json:"replicaId"`
+	Root      string `json:"root"`
 }
 
 func (s *StateStore) AssertReplicaRootAvailable(spaceID, replicaID, root string) error {
@@ -317,6 +331,26 @@ func (s *StateStore) ReplicaForPath(path string) (*ReplicaState, error) {
 		return nil, err
 	}
 	return best, nil
+}
+
+func (s *StateStore) ReplicaRoots() ([]ReplicaRoot, error) {
+	rows, err := s.db.Query(`SELECT space_id, replica_id, root FROM replicas`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	result := make([]ReplicaRoot, 0)
+	for rows.Next() {
+		var item ReplicaRoot
+		if err := rows.Scan(&item.SpaceID, &item.ReplicaID, &item.Root); err != nil {
+			return nil, err
+		}
+		result = append(result, item)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return result, nil
 }
 
 func sameOrBelowRoot(root, path string) bool {
@@ -559,21 +593,26 @@ func (s *StateStore) MarkSpoolResult(sequence int64, success bool, message strin
 	return err
 }
 
-func (s *StateStore) PutPermit(executionAttemptID, spaceID, replicaID, baseSnapshotID string, leaseEpoch int64, expiresAt time.Time, holderKind, holderID string) error {
-	if holderKind == "" {
-		holderKind = "local_agent"
+func (s *StateStore) PutPermit(executionAttemptID, spaceID, replicaID, runtimeID, baseSnapshotID string, leaseEpoch int64, expiresAt time.Time, holderKind, holderID string) error {
+	if strings.TrimSpace(executionAttemptID) == "" || strings.TrimSpace(spaceID) == "" || strings.TrimSpace(replicaID) == "" || strings.TrimSpace(runtimeID) == "" {
+		return errors.New("local runtime execution permit identity is required")
 	}
-	if holderID == "" {
-		holderID = executionAttemptID
+	if leaseEpoch < 1 || !expiresAt.After(time.Now().UTC()) {
+		return errors.New("local runtime execution permit is invalid or expired")
 	}
-	_, err := s.db.Exec(`INSERT INTO permits(execution_attempt_id, space_id, replica_id, base_snapshot_id, lease_epoch, expires_at, holder_kind, holder_id, status, created_at) VALUES(?, ?, ?, ?, ?, ?, ?, ?, 'prepared', ?) ON CONFLICT(execution_attempt_id) DO UPDATE SET expires_at=excluded.expires_at, lease_epoch=excluded.lease_epoch, holder_kind=excluded.holder_kind, holder_id=excluded.holder_id, status='prepared'`, executionAttemptID, spaceID, replicaID, nullString(baseSnapshotID), leaseEpoch, expiresAt.UTC().Format(time.RFC3339Nano), holderKind, holderID, time.Now().UTC().Format(time.RFC3339Nano))
-	return err
-}
-
-func (s *StateStore) ClaimAcpRuntimePermit(executionAttemptID, spaceID, replicaID, baseSnapshotID string, leaseEpoch int64, expiresAt time.Time) error {
-	if executionAttemptID == "" || spaceID == "" || replicaID == "" || leaseEpoch < 1 || !expiresAt.After(time.Now().UTC()) {
-		return errors.New("ACP execution permit input is invalid or expired")
+	// Permit preparation is an authoritative server-to-local handoff. Do not
+	// accept caller-selected holder identities or kinds: a client-supplied IPC
+	// request must never be able to mint a permit for another execution.
+	if holderKind != "local_agent" || strings.TrimSpace(holderID) != strings.TrimSpace(executionAttemptID) {
+		return errors.New("local runtime execution permit holder is invalid")
 	}
+	executionAttemptID = strings.TrimSpace(executionAttemptID)
+	spaceID = strings.TrimSpace(spaceID)
+	replicaID = strings.TrimSpace(replicaID)
+	runtimeID = strings.TrimSpace(runtimeID)
+	holderID = executionAttemptID
+	expiresAt = expiresAt.UTC()
+	now := time.Now().UTC().Format(time.RFC3339Nano)
 	tx, err := s.db.Begin()
 	if err != nil {
 		return err
@@ -582,7 +621,80 @@ func (s *StateStore) ClaimAcpRuntimePermit(executionAttemptID, spaceID, replicaI
 		_ = tx.Rollback()
 		return cause
 	}
-	result, err := tx.Exec(`INSERT INTO permits(execution_attempt_id, space_id, replica_id, base_snapshot_id, lease_epoch, expires_at, holder_kind, holder_id, status, created_at) VALUES(?, ?, ?, ?, ?, ?, 'local_agent', ?, 'active', ?) ON CONFLICT(execution_attempt_id) DO NOTHING`, executionAttemptID, spaceID, replicaID, nullString(baseSnapshotID), leaseEpoch, expiresAt.UTC().Format(time.RFC3339Nano), acpRuntimePermitHolderID(executionAttemptID), time.Now().UTC().Format(time.RFC3339Nano))
+	var status, storedSpaceID, storedReplicaID, storedRuntimeID, storedHolderKind, storedHolderID string
+	err = tx.QueryRow(`SELECT status, space_id, replica_id, COALESCE(runtime_id, ''), holder_kind, holder_id FROM permits WHERE execution_attempt_id = ?`, executionAttemptID).Scan(&status, &storedSpaceID, &storedReplicaID, &storedRuntimeID, &storedHolderKind, &storedHolderID)
+	if errors.Is(err, sql.ErrNoRows) {
+		if _, err := tx.Exec(`INSERT INTO permits(execution_attempt_id, space_id, replica_id, runtime_id, base_snapshot_id, lease_epoch, expires_at, holder_kind, holder_id, status, created_at) VALUES(?, ?, ?, ?, ?, ?, ?, 'local_agent', ?, 'prepared', ?)`, executionAttemptID, spaceID, replicaID, runtimeID, nullString(baseSnapshotID), leaseEpoch, expiresAt.Format(time.RFC3339Nano), holderID, now); err != nil {
+			return rollback(err)
+		}
+	} else if err != nil {
+		return rollback(err)
+	} else {
+		// An active/completed permit is a consumed durable fact. Re-preparing it
+		// would allow a stale channel to regain write authority after a retry.
+		if status != "prepared" {
+			return rollback(fmt.Errorf("local runtime execution permit is already %s", status))
+		}
+		if storedSpaceID != spaceID || storedReplicaID != replicaID || (storedRuntimeID != "" && storedRuntimeID != runtimeID) || storedHolderKind != "local_agent" || storedHolderID != executionAttemptID {
+			return rollback(errors.New("local runtime execution permit identity cannot be changed"))
+		}
+		result, err := tx.Exec(`UPDATE permits SET runtime_id = ?, base_snapshot_id = ?, lease_epoch = ?, expires_at = ?, holder_kind = 'local_agent', holder_id = ? WHERE execution_attempt_id = ? AND status = 'prepared' AND (COALESCE(runtime_id, '') = '' OR runtime_id = ?)`, runtimeID, nullString(baseSnapshotID), leaseEpoch, expiresAt.Format(time.RFC3339Nano), holderID, executionAttemptID, runtimeID)
+		if err != nil {
+			return rollback(err)
+		}
+		if affected, err := result.RowsAffected(); err != nil {
+			return rollback(err)
+		} else if affected != 1 {
+			return rollback(errors.New("local runtime execution permit was already consumed or changed"))
+		}
+	}
+	return tx.Commit()
+}
+
+func (s *StateStore) ClaimLocalRuntimePermit(executionAttemptID, spaceID, replicaID, runtimeID, baseSnapshotID string, leaseEpoch int64, expiresAt time.Time) error {
+	if strings.TrimSpace(executionAttemptID) == "" || strings.TrimSpace(spaceID) == "" || strings.TrimSpace(replicaID) == "" || strings.TrimSpace(runtimeID) == "" || leaseEpoch < 1 || !expiresAt.After(time.Now().UTC()) {
+		return errors.New("local runtime execution permit input is invalid or expired")
+	}
+	executionAttemptID = strings.TrimSpace(executionAttemptID)
+	spaceID = strings.TrimSpace(spaceID)
+	replicaID = strings.TrimSpace(replicaID)
+	runtimeID = strings.TrimSpace(runtimeID)
+	expiresAt = expiresAt.UTC()
+	now := time.Now().UTC()
+	tx, err := s.db.Begin()
+	if err != nil {
+		return err
+	}
+	rollback := func(cause error) error {
+		_ = tx.Rollback()
+		return cause
+	}
+	var storedSpaceID, storedReplicaID, storedRuntimeID, storedBaseSnapshotID, storedExpiresAt, storedStatus, storedHolderKind, storedHolderID string
+	var storedLeaseEpoch int64
+	err = tx.QueryRow(`SELECT space_id, replica_id, COALESCE(runtime_id, ''), COALESCE(base_snapshot_id, ''), COALESCE(lease_epoch, 0), expires_at, status, holder_kind, holder_id FROM permits WHERE execution_attempt_id = ?`, executionAttemptID).Scan(
+		&storedSpaceID,
+		&storedReplicaID,
+		&storedRuntimeID,
+		&storedBaseSnapshotID,
+		&storedLeaseEpoch,
+		&storedExpiresAt,
+		&storedStatus,
+		&storedHolderKind,
+		&storedHolderID,
+	)
+	if errors.Is(err, sql.ErrNoRows) {
+		return rollback(errors.New("local runtime execution permit is not prepared"))
+	}
+	if err != nil {
+		return rollback(err)
+	}
+	storedExpiry, parseErr := time.Parse(time.RFC3339Nano, storedExpiresAt)
+	if storedStatus != "prepared" || storedSpaceID != spaceID || storedReplicaID != replicaID || storedRuntimeID != runtimeID || storedBaseSnapshotID != baseSnapshotID || storedLeaseEpoch != leaseEpoch || storedHolderKind != "local_agent" || storedHolderID != executionAttemptID || parseErr != nil || !storedExpiry.Equal(expiresAt) || !storedExpiry.After(now) {
+		return rollback(errors.New("local runtime execution permit does not match the channel binding"))
+	}
+	// Repeat every authority-bearing field in the write predicate so a
+	// concurrent re-preparation or claim cannot activate a stale read.
+	result, err := tx.Exec(`UPDATE permits SET status = 'active', holder_id = ? WHERE execution_attempt_id = ? AND space_id = ? AND replica_id = ? AND runtime_id = ? AND COALESCE(base_snapshot_id, '') = ? AND COALESCE(lease_epoch, 0) = ? AND expires_at = ? AND holder_kind = 'local_agent' AND holder_id = ? AND status = 'prepared'`, localRuntimePermitHolderID(executionAttemptID), executionAttemptID, spaceID, replicaID, runtimeID, baseSnapshotID, leaseEpoch, storedExpiresAt, executionAttemptID)
 	if err != nil {
 		return rollback(err)
 	}
@@ -591,38 +703,10 @@ func (s *StateStore) ClaimAcpRuntimePermit(executionAttemptID, spaceID, replicaI
 		return rollback(err)
 	}
 	if affected != 1 {
-		return rollback(errors.New("ACP execution permit was already consumed"))
+		return rollback(errors.New("local runtime execution permit was already consumed or changed"))
 	}
 	if err := tx.Commit(); err != nil {
 		return err
-	}
-	return nil
-}
-
-func (s *StateStore) LatestPermitForReplica(spaceID, replicaID string) (executionAttemptID string, valid bool, err error) {
-	var expires string
-	err = s.db.QueryRow(`SELECT execution_attempt_id, expires_at FROM permits WHERE space_id = ? AND replica_id = ? AND status = 'prepared' AND expires_at > ? ORDER BY created_at DESC LIMIT 1`, spaceID, replicaID, time.Now().UTC().Format(time.RFC3339Nano)).Scan(&executionAttemptID, &expires)
-	if errors.Is(err, sql.ErrNoRows) {
-		return "", false, nil
-	}
-	if err != nil {
-		return "", false, err
-	}
-	parsed, parseErr := time.Parse(time.RFC3339Nano, expires)
-	return executionAttemptID, parseErr == nil && parsed.After(time.Now().UTC()), parseErr
-}
-
-func (s *StateStore) ConsumePermit(executionAttemptID string) error {
-	result, err := s.db.Exec(`UPDATE permits SET status = 'active' WHERE execution_attempt_id = ? AND status = 'prepared' AND expires_at > ?`, executionAttemptID, time.Now().UTC().Format(time.RFC3339Nano))
-	if err != nil {
-		return err
-	}
-	affected, err := result.RowsAffected()
-	if err != nil {
-		return err
-	}
-	if affected != 1 {
-		return errors.New("execution permit is no longer available")
 	}
 	return nil
 }
@@ -631,6 +715,7 @@ type PermitContext struct {
 	ExecutionAttemptID string
 	SpaceID            string
 	ReplicaID          string
+	RuntimeID          string
 	BaseSnapshotID     string
 	LeaseEpoch         int64
 	ExpiresAt          time.Time
@@ -642,7 +727,7 @@ type PermitContext struct {
 func (s *StateStore) PermitContext(executionAttemptID string) (*PermitContext, error) {
 	var item PermitContext
 	var expires string
-	err := s.db.QueryRow(`SELECT execution_attempt_id, space_id, replica_id, COALESCE(base_snapshot_id, ''), COALESCE(lease_epoch, 0), expires_at, status, holder_kind, holder_id FROM permits WHERE execution_attempt_id = ?`, executionAttemptID).Scan(&item.ExecutionAttemptID, &item.SpaceID, &item.ReplicaID, &item.BaseSnapshotID, &item.LeaseEpoch, &expires, &item.Status, &item.HolderKind, &item.HolderID)
+	err := s.db.QueryRow(`SELECT execution_attempt_id, space_id, replica_id, COALESCE(runtime_id, ''), COALESCE(base_snapshot_id, ''), COALESCE(lease_epoch, 0), expires_at, status, holder_kind, holder_id FROM permits WHERE execution_attempt_id = ?`, executionAttemptID).Scan(&item.ExecutionAttemptID, &item.SpaceID, &item.ReplicaID, &item.RuntimeID, &item.BaseSnapshotID, &item.LeaseEpoch, &expires, &item.Status, &item.HolderKind, &item.HolderID)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, nil
 	}
@@ -657,6 +742,7 @@ type ActivePermit struct {
 	ExecutionAttemptID string
 	SpaceID            string
 	ReplicaID          string
+	RuntimeID          string
 	LeaseEpoch         int64
 	ExpiresAt          time.Time
 	HolderKind         string
@@ -664,7 +750,7 @@ type ActivePermit struct {
 }
 
 func (s *StateStore) ActivePermits(ctx context.Context) ([]ActivePermit, error) {
-	rows, err := s.db.QueryContext(ctx, `SELECT execution_attempt_id, space_id, replica_id, COALESCE(lease_epoch, 0), expires_at, holder_kind, holder_id FROM permits WHERE status = 'active'`)
+	rows, err := s.db.QueryContext(ctx, `SELECT execution_attempt_id, space_id, replica_id, COALESCE(runtime_id, ''), COALESCE(lease_epoch, 0), expires_at, holder_kind, holder_id FROM permits WHERE status = 'active'`)
 	if err != nil {
 		return nil, err
 	}
@@ -673,7 +759,7 @@ func (s *StateStore) ActivePermits(ctx context.Context) ([]ActivePermit, error) 
 	for rows.Next() {
 		var item ActivePermit
 		var expires string
-		if err := rows.Scan(&item.ExecutionAttemptID, &item.SpaceID, &item.ReplicaID, &item.LeaseEpoch, &expires, &item.HolderKind, &item.HolderID); err != nil {
+		if err := rows.Scan(&item.ExecutionAttemptID, &item.SpaceID, &item.ReplicaID, &item.RuntimeID, &item.LeaseEpoch, &expires, &item.HolderKind, &item.HolderID); err != nil {
 			return nil, err
 		}
 		item.ExpiresAt, _ = time.Parse(time.RFC3339Nano, expires)
@@ -687,22 +773,94 @@ func (s *StateStore) UpdatePermitExpiry(executionAttemptID string, expiresAt tim
 	return err
 }
 
+// RenewLocalRuntimePermit reactivates a consumed local-runtime permit only
+// when every authority-bearing field still matches the original handoff. A
+// recovery acquire may refresh the server lease after the local permit has
+// expired, but it must never be able to revive a permit for another attempt,
+// replica, base snapshot, or lease epoch.
+func (s *StateStore) RenewLocalRuntimePermit(executionAttemptID, spaceID, replicaID, runtimeID, baseSnapshotID string, leaseEpoch int64, expiresAt time.Time) error {
+	if strings.TrimSpace(executionAttemptID) == "" || strings.TrimSpace(spaceID) == "" || strings.TrimSpace(replicaID) == "" || strings.TrimSpace(runtimeID) == "" {
+		return errors.New("local runtime execution permit identity is required")
+	}
+	if leaseEpoch < 1 || !expiresAt.After(time.Now().UTC()) {
+		return errors.New("local runtime execution permit is invalid or expired")
+	}
+	executionAttemptID = strings.TrimSpace(executionAttemptID)
+	spaceID = strings.TrimSpace(spaceID)
+	replicaID = strings.TrimSpace(replicaID)
+	runtimeID = strings.TrimSpace(runtimeID)
+	baseSnapshotID = strings.TrimSpace(baseSnapshotID)
+	expiresAt = expiresAt.UTC()
+	result, err := s.db.Exec(`
+		UPDATE permits
+		SET expires_at = ?, status = 'active', holder_kind = 'local_agent', holder_id = ?
+		WHERE execution_attempt_id = ?
+		  AND space_id = ?
+		  AND replica_id = ?
+		  AND runtime_id = ?
+		  AND COALESCE(base_snapshot_id, '') = ?
+		  AND COALESCE(lease_epoch, 0) = ?
+		  AND holder_kind = 'local_agent'
+		  AND holder_id = ?
+		  AND status IN ('active', 'expired')`,
+		expiresAt.Format(time.RFC3339Nano),
+		localRuntimePermitHolderID(executionAttemptID),
+		executionAttemptID,
+		spaceID,
+		replicaID,
+		runtimeID,
+		baseSnapshotID,
+		leaseEpoch,
+		localRuntimePermitHolderID(executionAttemptID),
+	)
+	if err != nil {
+		return err
+	}
+	affected, err := result.RowsAffected()
+	if err != nil {
+		return err
+	}
+	if affected != 1 {
+		return errors.New("local runtime execution permit is unavailable for recovery")
+	}
+	return nil
+}
+
+// BindPermitRuntimeID fills the runtime identity on a permit created by an
+// older locald schema. It is intentionally one-way: an existing identity can
+// only be reasserted, never replaced, and completed permits cannot be revived.
+func (s *StateStore) BindPermitRuntimeID(executionAttemptID, runtimeID string) error {
+	executionAttemptID = strings.TrimSpace(executionAttemptID)
+	runtimeID = strings.TrimSpace(runtimeID)
+	if executionAttemptID == "" || runtimeID == "" {
+		return errors.New("local runtime execution permit identity is required")
+	}
+	result, err := s.db.Exec(`UPDATE permits SET runtime_id = ? WHERE execution_attempt_id = ? AND COALESCE(runtime_id, '') = '' AND status IN ('prepared', 'active', 'expired')`, runtimeID, executionAttemptID)
+	if err != nil {
+		return err
+	}
+	if affected, err := result.RowsAffected(); err != nil {
+		return err
+	} else if affected == 1 {
+		return nil
+	}
+	var storedRuntimeID, status string
+	err = s.db.QueryRow(`SELECT COALESCE(runtime_id, ''), status FROM permits WHERE execution_attempt_id = ?`, executionAttemptID).Scan(&storedRuntimeID, &status)
+	if errors.Is(err, sql.ErrNoRows) {
+		return errors.New("local runtime execution permit is unavailable")
+	}
+	if err != nil {
+		return err
+	}
+	if storedRuntimeID == runtimeID && status != "completed" {
+		return nil
+	}
+	return errors.New("local runtime execution permit runtime identity cannot be changed")
+}
+
 func (s *StateStore) CompletePermit(executionAttemptID string) error {
 	_, err := s.db.Exec(`UPDATE permits SET status = 'completed' WHERE execution_attempt_id = ? AND status IN ('prepared', 'active', 'expired')`, executionAttemptID)
 	return err
-}
-
-func (s *StateStore) Permit(executionAttemptID string) (spaceID, replicaID string, valid bool, err error) {
-	var expires string
-	err = s.db.QueryRow(`SELECT space_id, replica_id, expires_at FROM permits WHERE execution_attempt_id = ? AND status IN ('prepared', 'active')`, executionAttemptID).Scan(&spaceID, &replicaID, &expires)
-	if errors.Is(err, sql.ErrNoRows) {
-		return "", "", false, nil
-	}
-	if err != nil {
-		return "", "", false, err
-	}
-	parsed, parseErr := time.Parse(time.RFC3339Nano, expires)
-	return spaceID, replicaID, parseErr == nil && parsed.After(time.Now().UTC()), parseErr
 }
 
 func nullInt64(value int64) any {

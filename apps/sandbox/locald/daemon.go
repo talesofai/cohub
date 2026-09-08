@@ -32,6 +32,7 @@ type Daemon struct {
 	client     *http.Client
 	mu         sync.Mutex
 	identityMu sync.RWMutex
+	tokenMu    sync.RWMutex
 }
 
 type IPCRequest struct {
@@ -46,24 +47,19 @@ type IPCRequest struct {
 	PolicyVersion      int64  `json:"policyVersion,omitempty"`
 	IntegrationVersion int64  `json:"integrationPolicyVersion,omitempty"`
 	InitialChoice      string `json:"initialChoice,omitempty"`
-	ExecutionAttemptID string `json:"executionAttemptId,omitempty"`
-	BaseSnapshotID     string `json:"baseSnapshotId,omitempty"`
-	LeaseEpoch         int64  `json:"leaseEpoch,omitempty"`
-	ExpiresAt          string `json:"expiresAt,omitempty"`
 }
 
 type IPCResponse struct {
-	Version            int    `json:"version"`
-	OK                 bool   `json:"ok"`
-	Code               string `json:"code,omitempty"`
-	Message            string `json:"message,omitempty"`
-	EventID            string `json:"eventId,omitempty"`
-	LocalReceiptSeq    int64  `json:"localReceiptSequence,omitempty"`
-	ExecutionAttemptID string `json:"executionAttemptId,omitempty"`
-	SpaceID            string `json:"spaceId,omitempty"`
-	ReplicaID          string `json:"replicaId,omitempty"`
-	RelativeCWD        string `json:"relativeCwd,omitempty"`
-	Data               any    `json:"data,omitempty"`
+	Version         int    `json:"version"`
+	OK              bool   `json:"ok"`
+	Code            string `json:"code,omitempty"`
+	Message         string `json:"message,omitempty"`
+	EventID         string `json:"eventId,omitempty"`
+	LocalReceiptSeq int64  `json:"localReceiptSequence,omitempty"`
+	SpaceID         string `json:"spaceId,omitempty"`
+	ReplicaID       string `json:"replicaId,omitempty"`
+	RelativeCWD     string `json:"relativeCwd,omitempty"`
+	Data            any    `json:"data,omitempty"`
 }
 
 type spoolEnvelope struct {
@@ -73,6 +69,9 @@ type spoolEnvelope struct {
 	SpaceID            string `json:"spaceId"`
 	ReplicaID          string `json:"replicaId"`
 	ExecutionAttemptID string `json:"executionAttemptId,omitempty"`
+	RuntimeID          string `json:"runtimeId,omitempty"`
+	LeaseEpoch         int64  `json:"leaseEpoch,omitempty"`
+	ErrorMessage       string `json:"errorMessage,omitempty"`
 }
 
 func NewDaemon(cfg Config) (*Daemon, error) {
@@ -180,10 +179,6 @@ func (d *Daemon) handleRequest(ctx context.Context, request IPCRequest) IPCRespo
 		return d.configureReplica(request)
 	case "status":
 		return d.status(request)
-	case "permit":
-		return d.preparePermit(request)
-	case "preflight":
-		return d.preflight(request)
 	case "flush":
 		go d.replayOnce(ctx)
 		return IPCResponse{Version: protocolVersion, OK: true}
@@ -254,61 +249,24 @@ func (d *Daemon) status(request IPCRequest) IPCResponse {
 		}
 		return IPCResponse{Version: protocolVersion, OK: true, SpaceID: replica.SpaceID, ReplicaID: replica.ReplicaID, RelativeCWD: relativeCWD(replica.Root, request.CWD), Data: replica}
 	}
-	return IPCResponse{Version: protocolVersion, OK: true, Data: map[string]any{"dataDir": d.cfg.DataDir, "socketPath": d.cfg.SocketPath}}
-}
-
-func (d *Daemon) preparePermit(request IPCRequest) IPCResponse {
-	if request.ExecutionAttemptID == "" || request.SpaceID == "" || request.ReplicaID == "" {
-		return IPCResponse{Version: protocolVersion, Code: "permit_identity_incomplete", Message: "executionAttemptId, spaceId, and replicaId are required"}
-	}
-	expiresAt := time.Now().UTC().Add(30 * time.Second)
-	if request.ExpiresAt != "" {
-		parsed, err := time.Parse(time.RFC3339Nano, request.ExpiresAt)
-		if err != nil || !parsed.After(time.Now().UTC()) {
-			return IPCResponse{Version: protocolVersion, Code: "permit_expired", Message: "permit expiry is invalid"}
+	deviceID := strings.TrimSpace(d.cfg.DeviceID)
+	if deviceID == "" {
+		if credential, credentialErr := LoadCredential(credentialDeviceID); credentialErr == nil {
+			deviceID = strings.TrimSpace(credential)
 		}
-		expiresAt = parsed
 	}
-	if err := d.state.PutPermit(request.ExecutionAttemptID, request.SpaceID, request.ReplicaID, request.BaseSnapshotID, request.LeaseEpoch, expiresAt, "local_agent", request.ExecutionAttemptID); err != nil {
-		return IPCResponse{Version: protocolVersion, Code: "permit_persist_failed", Message: err.Error()}
-	}
-	return IPCResponse{Version: protocolVersion, OK: true, ExecutionAttemptID: request.ExecutionAttemptID, SpaceID: request.SpaceID, ReplicaID: request.ReplicaID}
-}
-
-func (d *Daemon) preflight(request IPCRequest) IPCResponse {
-	if request.CWD == "" {
-		return IPCResponse{Version: protocolVersion, Code: "cwd_required", Message: "cwd is required"}
-	}
-	replica, err := d.state.ReplicaForPath(request.CWD)
+	replicaRoots, err := d.state.ReplicaRoots()
 	if err != nil {
 		return IPCResponse{Version: protocolVersion, Code: "state_failed", Message: err.Error()}
 	}
-	if replica == nil {
-		return IPCResponse{Version: protocolVersion, Code: "workspace_unattached", Message: "Workspace is not attached to CoHub."}
-	}
-	attemptID := request.ExecutionAttemptID
-	if attemptID == "" {
-		var valid bool
-		attemptID, valid, err = d.state.LatestPermitForReplica(replica.SpaceID, replica.ReplicaID)
-		if err != nil {
-			return IPCResponse{Version: protocolVersion, Code: "permit_read_failed", Message: err.Error()}
-		}
-		if !valid {
-			return IPCResponse{Version: protocolVersion, Code: "workspace_not_ready", Message: "Workspace handoff is not ready. Wait for CoHub sync, then submit again."}
-		}
-	}
-	spaceID, replicaID, valid, err := d.state.Permit(attemptID)
-	if err != nil {
-		return IPCResponse{Version: protocolVersion, Code: "permit_read_failed", Message: err.Error()}
-	}
-	if !valid || spaceID != replica.SpaceID || replicaID != replica.ReplicaID {
-		return IPCResponse{Version: protocolVersion, Code: "workspace_not_ready", Message: "Workspace handoff is not ready. Wait for CoHub sync, then submit again."}
-	}
-	if err := d.state.ConsumePermit(attemptID); err != nil {
-		return IPCResponse{Version: protocolVersion, Code: "workspace_not_ready", Message: "Workspace handoff permit was already consumed."}
-	}
-	return IPCResponse{Version: protocolVersion, OK: true, ExecutionAttemptID: attemptID, SpaceID: replica.SpaceID, ReplicaID: replica.ReplicaID, RelativeCWD: relativeCWD(replica.Root, request.CWD)}
+	return IPCResponse{Version: protocolVersion, OK: true, Data: map[string]any{
+		"dataDir":    d.cfg.DataDir,
+		"socketPath": d.cfg.SocketPath,
+		"deviceId":   nullableString(deviceID),
+		"replicas":   replicaRoots,
+	}}
 }
+
 func nullableString(value string) any {
 	if strings.TrimSpace(value) == "" {
 		return nil
@@ -343,9 +301,11 @@ func (d *Daemon) replayOnce(ctx context.Context) {
 		switch envelope.Kind {
 		case "workspace_terminal":
 			uploadErr = d.finalizeExecutionWorkspace(ctx, envelope.SpaceID, envelope.ReplicaID, envelope.ExecutionAttemptID)
+		case "runtime_start_failed":
+			uploadErr = d.failLocalRuntimeAttemptBeforeStart(ctx, envelope)
 		default:
 			// Unknown spool kinds are retired rather than retried forever. The
-			// ACP runtime is the only spool producer and it writes one kind.
+			// local runtime is the only spool producer.
 			_ = d.state.MarkSpoolResult(item.Sequence, true, "")
 			continue
 		}
@@ -357,28 +317,80 @@ func (d *Daemon) replayOnce(ctx context.Context) {
 	}
 }
 
+// failLocalRuntimeAttemptBeforeStart applies the durable cleanup record made
+// when locald claimed a permit but could not spawn the native provider. The
+// server mutation is idempotent; only after it confirms a terminal attempt do
+// we retire the local permit.
+func (d *Daemon) failLocalRuntimeAttemptBeforeStart(ctx context.Context, envelope spoolEnvelope) error {
+	if strings.TrimSpace(envelope.SpaceID) == "" || strings.TrimSpace(envelope.ReplicaID) == "" || strings.TrimSpace(envelope.ExecutionAttemptID) == "" || strings.TrimSpace(envelope.RuntimeID) == "" || envelope.LeaseEpoch < 1 {
+		return errors.New("local runtime start failure spool provenance is incomplete")
+	}
+	payload := mustJSON(map[string]any{
+		"runtimeId":    envelope.RuntimeID,
+		"leaseEpoch":   envelope.LeaseEpoch,
+		"errorMessage": strings.TrimSpace(envelope.ErrorMessage),
+	})
+	body, err := d.request(ctx, http.MethodPost, fmt.Sprintf("%s/api/local-agent/spaces/%s/replicas/%s/attempts/%s/fail-before-start", d.apiBaseURL(), envelope.SpaceID, envelope.ReplicaID, envelope.ExecutionAttemptID), payload, 2*1024*1024)
+	if err != nil {
+		return err
+	}
+	var response struct {
+		Status string `json:"status"`
+	}
+	if err := json.Unmarshal(body, &response); err != nil || !isTerminalAttemptStatus(response.Status) {
+		return errors.New("local runtime start failure response is invalid")
+	}
+	if err := d.state.CompletePermit(envelope.ExecutionAttemptID); err != nil {
+		return fmt.Errorf("complete local runtime permit after start failure: %w", err)
+	}
+	return nil
+}
+
+func isTerminalAttemptStatus(status string) bool {
+	switch strings.TrimSpace(status) {
+	case "failed", "aborted", "completed":
+		return true
+	default:
+		return false
+	}
+}
+
 func (d *Daemon) accessToken() (string, error) {
+	d.tokenMu.RLock()
+	token := strings.TrimSpace(d.cfg.AccessToken)
+	d.tokenMu.RUnlock()
+	if token != "" {
+		return token, nil
+	}
 	value, err := keyring.Get(keyringService, credentialAccessToken)
 	if err == nil && strings.TrimSpace(value) != "" {
 		return value, nil
 	}
-	token := strings.TrimSpace(d.cfg.AccessToken)
-	if token != "" {
-		return token, nil
-	}
 	return "", errors.New("local agent access token is unavailable")
 }
+
+func (d *Daemon) setAccessToken(token string) {
+	d.tokenMu.Lock()
+	d.cfg.AccessToken = strings.TrimSpace(token)
+	d.tokenMu.Unlock()
+}
+
 func (d *Daemon) releaseExecutionPermit(ctx context.Context, spaceID, executionAttemptID string) error {
 	permit, err := d.state.PermitContext(executionAttemptID)
 	if err != nil {
 		return err
 	}
-	if permit == nil || permit.SpaceID != spaceID || permit.Status == "completed" || (permit.Status == "expired" && !isAcpRuntimePermit(permit.HolderID)) || (permit.Status != "prepared" && permit.Status != "active" && permit.Status != "expired") {
+	if permit == nil || permit.SpaceID != spaceID || permit.Status == "completed" || (permit.Status == "expired" && !isLocalRuntimePermit(permit.HolderID)) || (permit.Status != "prepared" && permit.Status != "active" && permit.Status != "expired") {
 		return nil
+	}
+	runtimeID, err := d.runtimeIDForPermit(ctx, permit)
+	if err != nil {
+		return err
 	}
 	payload := mustJSON(map[string]any{
 		"holderKind": permit.HolderKind,
 		"holderId":   serverPermitHolderID(permit.HolderID),
+		"runtimeId":  runtimeID,
 		"epoch":      permit.LeaseEpoch,
 	})
 	if _, err := d.request(ctx, http.MethodPost, fmt.Sprintf("%s/api/local-agent/spaces/%s/leases/release", d.apiBaseURL(), spaceID), payload, 2*1024*1024); err != nil {

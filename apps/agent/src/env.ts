@@ -70,15 +70,15 @@ export const EnvSchema = z.object({
     .default("/configs"),
   ENV: z.enum(["dev", "prod"]).default("dev"),
   AGENT_VERSION: z.string().optional(),
-  LOCAL_ACP_RUNTIME_ENABLED: booleanEnv("LOCAL_ACP_RUNTIME_ENABLED", process.env.ENV !== "prod"),
-  LOCAL_ACP_PI_ENABLED: booleanEnv("LOCAL_ACP_PI_ENABLED", process.env.ENV !== "prod"),
-  LOCAL_ACP_CLAUDE_ENABLED: booleanEnv("LOCAL_ACP_CLAUDE_ENABLED", false),
-  LOCAL_ACP_CODEX_ENABLED: booleanEnv("LOCAL_ACP_CODEX_ENABLED", false),
+  LOCAL_RUNTIME_ENABLED: booleanEnv("LOCAL_RUNTIME_ENABLED", process.env.ENV !== "prod"),
+  LOCAL_RUNTIME_PI_ENABLED: booleanEnv("LOCAL_RUNTIME_PI_ENABLED", process.env.ENV !== "prod"),
+  LOCAL_RUNTIME_CLAUDE_ENABLED: booleanEnv("LOCAL_RUNTIME_CLAUDE_ENABLED", process.env.ENV !== "prod"),
+  LOCAL_RUNTIME_CODEX_ENABLED: booleanEnv("LOCAL_RUNTIME_CODEX_ENABLED", process.env.ENV !== "prod"),
   WORKER_SECRET: z.string().optional(),
-  LOCAL_ACP_RUNTIME_RELAY_URL: z.string().url().refine((value) => {
+  LOCAL_RUNTIME_RELAY_URL: z.string().url().refine((value) => {
     const url = new URL(value);
     return url.protocol === "ws:" || url.protocol === "wss:";
-  }, "LOCAL_ACP_RUNTIME_RELAY_URL must use ws:// or wss://").default("ws://localhost:8788/internal/runtime-relay"),
+  }, "LOCAL_RUNTIME_RELAY_URL must use ws:// or wss://").default("ws://localhost:8788/internal/runtime-relay"),
   APP_ENCRYPTION_KEY: z.string().min(1),
   SESSIONS_NAMESPACE: z.string().min(1),
   TURN_OBJECT_S3_ENDPOINT: z.string().min(1).default("https://oss-us-west-1-internal.aliyuncs.com"),
@@ -116,15 +116,15 @@ export const EnvSchema = z.object({
 export type Env = z.infer<typeof EnvSchema>;
 export const env = EnvSchema.parse(process.env);
 
-export const isLocalAcpProviderRolloutEnabled = (provider: string) => {
-  if (!env.LOCAL_ACP_RUNTIME_ENABLED) return false;
+export const isLocalRuntimeProviderRolloutEnabled = (provider: string) => {
+  if (!env.LOCAL_RUNTIME_ENABLED) return false;
   switch (provider) {
     case "pi":
-      return env.LOCAL_ACP_PI_ENABLED;
+      return env.LOCAL_RUNTIME_PI_ENABLED;
     case "claude_code":
-      return env.LOCAL_ACP_CLAUDE_ENABLED;
+      return env.LOCAL_RUNTIME_CLAUDE_ENABLED;
     case "codex":
-      return env.LOCAL_ACP_CODEX_ENABLED;
+      return env.LOCAL_RUNTIME_CODEX_ENABLED;
     default:
       return false;
   }

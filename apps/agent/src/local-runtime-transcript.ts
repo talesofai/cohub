@@ -11,14 +11,14 @@ import {
   getAgentWorkspacePath,
 } from "./runtime/paths.js";
 
-const LOCAL_ACP_SOURCE = "local_acp";
+const LOCAL_RUNTIME_SOURCE = "local_runtime";
 
-type LocalAcpMessageIdentity = {
+type LocalRuntimeMessageIdentity = {
   id: string;
   contentHash: string;
 };
 
-export type LocalAcpTranscriptInput = {
+export type LocalRuntimeTranscriptInput = {
   spaceId: string;
   sessionId: string;
   turnId: string;
@@ -27,7 +27,7 @@ export type LocalAcpTranscriptInput = {
   startedAt: string;
 };
 
-export type LocalAcpAssistantTranscriptInput = LocalAcpTranscriptInput & {
+export type LocalRuntimeAssistantTranscriptInput = LocalRuntimeTranscriptInput & {
   assistantMessageId: string;
   content: ContentBlock[];
   provider: string;
@@ -43,7 +43,7 @@ type TranscriptPart =
   | { kind: "assistant"; blocks: Array<Record<string, unknown>>; index: number }
   | { kind: "tool_result"; block: Extract<ContentBlock, { type: "tool_result" }>; index: number };
 
-export async function openLocalAcpSession(spaceId: string, sessionId: string) {
+export async function openLocalRuntimeSession(spaceId: string, sessionId: string) {
   await ensureAgentSpaceSessionPath(spaceId);
   const sessionDir = getAgentSpaceSessionsPath(spaceId);
   const sessionFile = getAgentSessionFilePath(spaceId, sessionId);
@@ -58,7 +58,7 @@ export async function openLocalAcpSession(spaceId: string, sessionId: string) {
     return manager;
   }
   const manager = await SessionManager.open(sessionFile, sessionDir, { recoverTrailingPartial: true });
-  if (manager.getSessionId() !== sessionId) throw new Error("local ACP session JSONL identity does not match the requested session");
+  if (manager.getSessionId() !== sessionId) throw new Error("local runtime session JSONL identity does not match the requested session");
   return manager;
 }
 
@@ -76,7 +76,7 @@ function contentHash(value: unknown) {
 }
 
 function stableEntryId(identity: string) {
-  const bytes = createHash("sha256").update(`cohub-local-acp-jsonl-entry-v1:${identity}`, "utf8").digest();
+  const bytes = createHash("sha256").update(`cohub-local-runtime-jsonl-entry-v1:${identity}`, "utf8").digest();
   bytes[6] = ((bytes[6] ?? 0) & 0x0f) | 0x50;
   bytes[8] = ((bytes[8] ?? 0) & 0x3f) | 0x80;
   const hex = bytes.toString("hex");
@@ -88,28 +88,28 @@ function messageMeta(entry: SessionEntry) {
   return record((entry.message as unknown as Record<string, unknown>).meta);
 }
 
-function findExistingMessage(manager: SessionManager, identity: LocalAcpMessageIdentity) {
+function findExistingMessage(manager: SessionManager, identity: LocalRuntimeMessageIdentity) {
   for (const entry of manager.getEntries()) {
     if (entry.type !== "message") continue;
     const message = entry.message as unknown as Record<string, unknown>;
     const meta = messageMeta(entry);
-    const matches = meta?.localAcpMessageId === identity.id
+    const matches = meta?.localRuntimeMessageId === identity.id
       || meta?.messageId === identity.id
       || message.id === identity.id;
     if (!matches) continue;
-    if (meta?.localAcpContentHash && meta.localAcpContentHash !== identity.contentHash) {
-      throw new Error("local ACP session message identity was reused with different content");
+    if (meta?.localRuntimeContentHash && meta.localRuntimeContentHash !== identity.contentHash) {
+      throw new Error("local runtime session message identity was reused with different content");
     }
     return entry.id;
   }
   return null;
 }
 
-function appendMessageOnce(manager: SessionManager, identity: LocalAcpMessageIdentity, entryId: string, message: AgentMessage) {
+function appendMessageOnce(manager: SessionManager, identity: LocalRuntimeMessageIdentity, entryId: string, message: AgentMessage) {
   const existing = findExistingMessage(manager, identity);
   if (existing) return existing;
   if (manager.getEntries().some((entry) => entry.id === entryId)) {
-    throw new Error("local ACP session entry identity was reused by a different message");
+    throw new Error("local runtime session entry identity was reused by a different message");
   }
   return manager.appendMessage(message, { id: entryId });
 }
@@ -136,11 +136,11 @@ function sessionUserContent(content: ContentBlock[]): string | Array<Record<stri
   return blocks.length > 0 ? blocks : "";
 }
 
-export function appendLocalAcpUserMessage(manager: SessionManager, input: LocalAcpTranscriptInput, content: ContentBlock[], meta?: Record<string, unknown> | null) {
+export function appendLocalRuntimeUserMessage(manager: SessionManager, input: LocalRuntimeTranscriptInput, content: ContentBlock[], meta?: Record<string, unknown> | null) {
   const baseMeta = {
     ...(meta ?? {}),
-    source: LOCAL_ACP_SOURCE,
-    localAcpMessageId: input.userMessageId,
+    source: LOCAL_RUNTIME_SOURCE,
+    localRuntimeMessageId: input.userMessageId,
     messageId: input.userMessageId,
     turnId: input.turnId,
     executionAttemptId: input.executionAttemptId,
@@ -153,7 +153,7 @@ export function appendLocalAcpUserMessage(manager: SessionManager, input: LocalA
     role: "user",
     content: persistedContent,
     timestamp: timestampMs(input.startedAt),
-    meta: { ...baseMeta, localAcpContentHash: messageHash },
+    meta: { ...baseMeta, localRuntimeContentHash: messageHash },
   } as unknown as AgentMessage;
   return appendMessageOnce(
     manager,
@@ -237,7 +237,7 @@ function buildTranscriptParts(content: ContentBlock[]): TranscriptPart[] {
   return parts;
 }
 
-export function appendLocalAcpAssistantMessages(manager: SessionManager, input: LocalAcpAssistantTranscriptInput) {
+export function appendLocalRuntimeAssistantMessages(manager: SessionManager, input: LocalRuntimeAssistantTranscriptInput) {
   const parts = buildTranscriptParts(input.content);
   const lastAssistantIndex = parts.reduce((last, part, index) => part.kind === "assistant" ? index : last, -1);
   const toolNames = new Map(input.content
@@ -250,8 +250,8 @@ export function appendLocalAcpAssistantMessages(manager: SessionManager, input: 
       const isFinal = partIndex === lastAssistantIndex;
       const identity = isFinal ? input.assistantMessageId : `${input.assistantMessageId}:assistant:${partIndex}`;
       const baseMeta = {
-        source: LOCAL_ACP_SOURCE,
-        localAcpMessageId: identity,
+        source: LOCAL_RUNTIME_SOURCE,
+        localRuntimeMessageId: identity,
         messageId: isFinal ? input.assistantMessageId : identity,
         turnId: input.turnId,
         executionAttemptId: input.executionAttemptId,
@@ -269,12 +269,12 @@ export function appendLocalAcpAssistantMessages(manager: SessionManager, input: 
       const messageHash = contentHash(stableMessage);
       const message = {
         ...stableMessage,
-        api: "local-acp",
+        api: "local-runtime",
         provider: input.provider,
         model: input.model ?? "",
         usage: sessionUsage(isFinal ? input.usage : null),
         timestamp: timestampMs(input.completedAt),
-        meta: { ...baseMeta, localAcpContentHash: messageHash },
+        meta: { ...baseMeta, localRuntimeContentHash: messageHash },
       } as unknown as AgentMessage;
       const entryId = appendMessageOnce(
         manager,
@@ -288,8 +288,8 @@ export function appendLocalAcpAssistantMessages(manager: SessionManager, input: 
 
     const identity = `${input.assistantMessageId}:tool-result:${part.index}`;
     const baseMeta = {
-      source: LOCAL_ACP_SOURCE,
-      localAcpMessageId: identity,
+      source: LOCAL_RUNTIME_SOURCE,
+      localRuntimeMessageId: identity,
       messageId: identity,
       turnId: input.turnId,
       executionAttemptId: input.executionAttemptId,
@@ -304,7 +304,7 @@ export function appendLocalAcpAssistantMessages(manager: SessionManager, input: 
       content: sessionTextContent(part.block.content),
       isError: part.block.is_error === true,
       timestamp: timestampMs(input.completedAt),
-      meta: { ...baseMeta, localAcpContentHash: messageHash },
+      meta: { ...baseMeta, localRuntimeContentHash: messageHash },
     } as unknown as AgentMessage;
     appendMessageOnce(
       manager,
@@ -314,6 +314,6 @@ export function appendLocalAcpAssistantMessages(manager: SessionManager, input: 
     );
   }
 
-  if (!finalEntryId) throw new Error("local ACP assistant transcript has no final message entry");
+  if (!finalEntryId) throw new Error("local runtime assistant transcript has no final message entry");
   return finalEntryId;
 }

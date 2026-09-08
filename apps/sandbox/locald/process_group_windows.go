@@ -4,9 +4,16 @@ package locald
 
 import "os/exec"
 
-func configureAcpProviderProcess(cmd *exec.Cmd) {}
+func configureProviderProcess(cmd *exec.Cmd) {}
 
-func terminateAcpProviderProcess(cmd *exec.Cmd) error {
+func terminateProviderProcess(cmd *exec.Cmd) error {
+	if cmd.Process == nil {
+		return nil
+	}
+	return cmd.Process.Kill()
+}
+
+func forceKillProviderProcess(cmd *exec.Cmd) error {
 	if cmd.Process == nil {
 		return nil
 	}

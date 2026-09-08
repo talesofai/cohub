@@ -13,7 +13,7 @@ import type {
 import type {
 	AppRecord,
 	AppRuntimeShellContext,
-	LocalAcpRuntimeRecord,
+	LocalRuntimeRecord,
 	Permission,
 	SpaceRecord,
 	TaskRunRecord,
@@ -327,7 +327,7 @@ let connectionStateBox: {
 } = { current: "idle" };
 // The replication controller is initialized below the chat host, so keep a
 // small reactive bridge for the host's runtime picker.
-let localRuntimeOptions = $state<LocalAcpRuntimeRecord[]>([]);
+let localRuntimeOptions = $state<LocalRuntimeRecord[]>([]);
 
 const sessionChat = createSessionChatHost({
 	openPath: (target) => openLinkedInlineFile(target),

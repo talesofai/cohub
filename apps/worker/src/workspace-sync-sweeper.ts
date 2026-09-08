@@ -1,4 +1,4 @@
-import { and, asc, eq, inArray, isNotNull, lt, notExists, sql } from "drizzle-orm";
+import { and, asc, desc, eq, inArray, isNotNull, lt, notExists, sql } from "drizzle-orm";
 import { workspaceExecutionAttempts, workspaceReplicas, workspaceSnapshots, workspaceState, workspaceSyncCycles } from "@cohub/db";
 import { COHUB_WORKSPACE_SYNC_QUEUE, buildWorkspaceSyncJobId, createBullmqQueue, defaultCriticalJobOptions } from "@cohub/infra/bullmq";
 import { config } from "./config.js";
@@ -12,7 +12,7 @@ const queue = createBullmqQueue(COHUB_WORKSPACE_SYNC_QUEUE, {
 const STALE_WORKSPACE_CYCLE_MS = Number(process.env.WORKSPACE_SYNC_STALE_CYCLE_MS ?? 60 * 60 * 1000);
 
 export async function sweepWorkspaceSyncWork() {
-  // Recover local ACP attempts whose bounded writer lease disappeared. A
+  // Recover local runtime attempts whose bounded writer lease disappeared. A
   // prepared attempt never reached the provider and can be aborted. A running
   // attempt may still own an unfenced local process, so retain it as recovery
   // work; the next lease acquisition refuses to take over an unresolved attempt.
@@ -22,7 +22,7 @@ export async function sweepWorkspaceSyncWork() {
         error_code = case when attempt.status = 'prepared' then 'permit_expired_before_start' else 'local_lease_expired' end,
         completed_at = case when attempt.status = 'prepared' then now() else attempt.completed_at end,
         updated_at = now()
-    where attempt.executor_kind = 'local_acp'
+    where attempt.executor_kind = 'local_runtime'
       and attempt.status in ('prepared', 'running', 'workspace_sealed', 'transcript_sealed')
       and attempt.updated_at < now() - interval '60 seconds'
       and not exists (
@@ -127,6 +127,78 @@ export async function sweepWorkspaceSyncWork() {
     }
   }
 
+  // A local runtime can die after locald has committed a verified candidate
+  // snapshot but before the normal sync job is delivered. Recover only that
+  // durable case. Without a candidate there is no server-side evidence that
+  // the provider stopped writing, so the awaiting_recovery status remains a
+  // deliberate takeover fence until locald reconnects and finalizes it.
+  const recoverableLocalAttempts = await db.select({
+    attemptId: workspaceExecutionAttempts.id,
+    spaceId: workspaceExecutionAttempts.spaceId,
+    replicaId: workspaceReplicas.id,
+    baseSnapshotId: workspaceExecutionAttempts.baseCanonicalSnapshotId,
+    leaseEpoch: workspaceExecutionAttempts.workspaceLeaseEpoch,
+    generation: workspaceState.generation,
+  }).from(workspaceExecutionAttempts)
+    .innerJoin(workspaceState, eq(workspaceState.spaceId, workspaceExecutionAttempts.spaceId))
+    .innerJoin(workspaceReplicas, and(
+      eq(workspaceReplicas.id, workspaceExecutionAttempts.replicaId),
+      eq(workspaceReplicas.spaceId, workspaceExecutionAttempts.spaceId),
+      eq(workspaceReplicas.kind, "local"),
+    ))
+    .where(and(
+      eq(workspaceExecutionAttempts.executorKind, "local_runtime"),
+      eq(workspaceExecutionAttempts.status, "awaiting_recovery"),
+      notExists(db.select({ id: workspaceSyncCycles.id }).from(workspaceSyncCycles).where(eq(workspaceSyncCycles.executionAttemptId, workspaceExecutionAttempts.id))),
+    ))
+    .orderBy(asc(workspaceExecutionAttempts.updatedAt))
+    .limit(50);
+
+  let recoveredLocalAttempts = 0;
+  for (const attempt of recoverableLocalAttempts) {
+    if (!attempt.leaseEpoch) continue;
+    // A ready snapshot is created only after all manifest/blob integrity
+    // checks pass. Select the newest snapshot for this attempt in case a
+    // retry left an older, superseded upload behind.
+    const [candidate] = await db.select({
+      id: workspaceSnapshots.id,
+      baseSnapshotId: workspaceSnapshots.baseCanonicalSnapshotId,
+      leaseEpoch: workspaceSnapshots.leaseEpoch,
+    }).from(workspaceSnapshots).where(and(
+      eq(workspaceSnapshots.spaceId, attempt.spaceId),
+      eq(workspaceSnapshots.replicaId, attempt.replicaId),
+      eq(workspaceSnapshots.sourceExecutionAttemptId, attempt.attemptId),
+      eq(workspaceSnapshots.status, "ready"),
+    )).orderBy(desc(workspaceSnapshots.createdAt)).limit(1);
+    if (!candidate
+      || (candidate.baseSnapshotId ?? null) !== (attempt.baseSnapshotId ?? null)
+      || candidate.leaseEpoch !== attempt.leaseEpoch) {
+      continue;
+    }
+
+    const [cycle] = await db.insert(workspaceSyncCycles).values({
+      spaceId: attempt.spaceId,
+      replicaId: attempt.replicaId,
+      baseSnapshotId: candidate.baseSnapshotId ?? attempt.baseSnapshotId,
+      localSnapshotId: candidate.id,
+      executionAttemptId: attempt.attemptId,
+      leaseEpoch: attempt.leaseEpoch,
+      direction: "reconcile",
+      canonicalGenerationAtStart: attempt.generation,
+      status: "planned",
+    }).onConflictDoNothing().returning({ id: workspaceSyncCycles.id });
+    if (!cycle) continue;
+    const [updated] = await db.update(workspaceExecutionAttempts).set({
+      workspaceCycleId: cycle.id,
+      status: "transcript_sealed",
+      updatedAt: new Date(),
+    }).where(and(
+      eq(workspaceExecutionAttempts.id, attempt.attemptId),
+      eq(workspaceExecutionAttempts.status, "awaiting_recovery"),
+    )).returning({ id: workspaceExecutionAttempts.id });
+    if (updated) recoveredLocalAttempts += 1;
+  }
+
   const cycles = await db.select({
     id: workspaceSyncCycles.id,
     spaceId: workspaceSyncCycles.spaceId,
@@ -146,7 +218,7 @@ export async function sweepWorkspaceSyncWork() {
       ...defaultCriticalJobOptions,
     });
   }
-  return { enqueued: cycles.length, recovered: orphanCandidates.length + recoverableAttempts.length };
+  return { enqueued: cycles.length, recovered: orphanCandidates.length + recoverableAttempts.length + recoveredLocalAttempts };
 }
 
 export async function closeWorkspaceSyncSweeper() {

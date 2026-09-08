@@ -21,9 +21,9 @@ CREATE TABLE "v2"."local_agent_runtime_commands" (
 	"cohub_session_id" uuid NOT NULL,
 	"command_id" varchar(255) NOT NULL,
 	"sequence" bigint NOT NULL,
-	"method" varchar(120) NOT NULL,
-	"params" jsonb NOT NULL,
-	"params_hash" varchar(64) NOT NULL,
+	"operation" varchar(120) NOT NULL,
+	"payload" jsonb NOT NULL,
+	"payload_hash" varchar(64) NOT NULL,
 	"status" varchar(30) DEFAULT 'prepared' NOT NULL,
 	"response" jsonb,
 	"error_code" integer,
@@ -38,7 +38,7 @@ CREATE TABLE "v2"."local_agent_runtime_events" (
 	"event_id" varchar(255) NOT NULL,
 	"sequence" bigint NOT NULL,
 	"direction" varchar(20) NOT NULL,
-	"method" varchar(120) NOT NULL,
+	"kind" varchar(120) NOT NULL,
 	"command_id" varchar(255),
 	"payload" jsonb NOT NULL,
 	"payload_hash" varchar(64) NOT NULL,
@@ -50,7 +50,7 @@ CREATE TABLE "v2"."local_agent_runtime_sessions" (
 	"runtime_id" uuid NOT NULL,
 	"space_id" uuid NOT NULL,
 	"cohub_session_id" uuid NOT NULL,
-	"acp_session_id" varchar(255) NOT NULL,
+	"provider_session_id" varchar(255) NOT NULL,
 	"connection_epoch" bigint NOT NULL,
 	"status" varchar(30) DEFAULT 'active' NOT NULL,
 	"last_event_sequence" bigint DEFAULT 0 NOT NULL,
@@ -354,7 +354,7 @@ CREATE UNIQUE INDEX "v2_uq_local_agent_runtime_events_session_event" ON "v2"."lo
 CREATE UNIQUE INDEX "v2_uq_local_agent_runtime_events_session_sequence" ON "v2"."local_agent_runtime_events" USING btree ("runtime_session_id","sequence");--> statement-breakpoint
 CREATE INDEX "v2_idx_local_agent_runtime_events_session_created" ON "v2"."local_agent_runtime_events" USING btree ("runtime_session_id","created_at");--> statement-breakpoint
 CREATE INDEX "v2_idx_local_agent_runtime_events_command" ON "v2"."local_agent_runtime_events" USING btree ("runtime_session_id","command_id","sequence");--> statement-breakpoint
-CREATE UNIQUE INDEX "v2_uq_local_agent_runtime_sessions_runtime_acp" ON "v2"."local_agent_runtime_sessions" USING btree ("runtime_id","acp_session_id");--> statement-breakpoint
+CREATE UNIQUE INDEX "v2_uq_local_agent_runtime_sessions_runtime_provider" ON "v2"."local_agent_runtime_sessions" USING btree ("runtime_id","provider_session_id");--> statement-breakpoint
 CREATE UNIQUE INDEX "v2_uq_local_agent_runtime_sessions_runtime_cohub" ON "v2"."local_agent_runtime_sessions" USING btree ("runtime_id","cohub_session_id");--> statement-breakpoint
 CREATE INDEX "v2_idx_local_agent_runtime_sessions_space_status" ON "v2"."local_agent_runtime_sessions" USING btree ("space_id","status","updated_at");--> statement-breakpoint
 CREATE UNIQUE INDEX "v2_uq_local_agent_runtimes_space_device_provider" ON "v2"."local_agent_runtimes" USING btree ("space_id","device_id","provider") WHERE "v2"."local_agent_runtimes"."status" <> 'revoked';--> statement-breakpoint

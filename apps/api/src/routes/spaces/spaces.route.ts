@@ -517,7 +517,7 @@ function promptInputError(error: unknown): string | null {
     error.message.includes("Invalid content block") ||
     error.message.includes("shell command is empty") ||
     error.message.includes("shell_command is not allowed") ||
-    error.message.includes("local ACP runtime")
+    error.message.includes("local runtime")
   ) {
     return error.message;
   }
@@ -822,7 +822,7 @@ router.post("/", async (c) => {
       description?: string | null;
       source?: string;
       cwd?: string;
-      protocol?: "pi" | "acp" | "internal";
+      protocol?: "pi" | "local_runtime" | "internal";
       meta?: Record<string, unknown>;
       extraEnv?: Array<{ name: string; value: string }>;
       channelBindings?: Array<{ channelId: string; config?: Record<string, unknown> | null }>;
@@ -839,7 +839,7 @@ router.post("/", async (c) => {
     description?: string | null;
     source?: string;
     cwd?: string;
-    protocol?: "pi" | "acp" | "internal";
+    protocol?: "pi" | "local_runtime" | "internal";
     meta?: Record<string, unknown>;
     extraEnv?: Array<{ name: string; value: string }>;
     channelBindings?: Array<{ channelId: string; config?: Record<string, unknown> | null }>;
@@ -1831,7 +1831,7 @@ router.post("/:id/prompt", async (c) => {
     return c.json({ message: "clientMessageId must be a string" }, 400);
   }
   if (body?.mode === "create") {
-    if (body.runtimeId) return c.json({ code: "runtime_mode_invalid", message: "local ACP runtime is only available for agent prompts" }, 400);
+    if (body.runtimeId) return c.json({ code: "runtime_mode_invalid", message: "local runtime is only available for agent prompts" }, 400);
     const generation = body.generation;
     if (!generation?.model || !Array.isArray(generation.content) || generation.content.length === 0) {
       return c.json({ message: "generation.model and generation.content are required" }, 400);
@@ -1927,16 +1927,16 @@ router.post("/:id/prompt", async (c) => {
   const requestedModel = body.model?.trim() || null;
   const requestedProvider = body.provider?.trim() || (requestedModel ? "cohub" : null);
   if (runtimeId && (requestedModel || requestedProvider)) {
-    return c.json({ code: "runtime_model_invalid", message: "local ACP runtime uses its own provider configuration" }, 400);
+    return c.json({ code: "runtime_model_invalid", message: "local runtime uses its own provider configuration" }, 400);
   }
   if (runtimeId && promptThinkingLevel !== null && promptThinkingLevel !== undefined) {
-    return c.json({ code: "runtime_thinking_invalid", message: "local ACP runtime uses its provider's own thinking configuration" }, 400);
+    return c.json({ code: "runtime_thinking_invalid", message: "local runtime uses its provider's own thinking configuration" }, 400);
   }
   if (runtimeId && (generationPolicy || body.generation != null)) {
-    return c.json({ code: "runtime_generation_invalid", message: "local ACP runtime uses its provider's own generation configuration" }, 400);
+    return c.json({ code: "runtime_generation_invalid", message: "local runtime uses its provider's own generation configuration" }, 400);
   }
   if (runtimeId && mode !== "immediate") {
-    return c.json({ code: "runtime_schedule_invalid", message: "local ACP runtime prompts must run immediately" }, 400);
+    return c.json({ code: "runtime_schedule_invalid", message: "local runtime prompts must run immediately" }, 400);
   }
   if (runtimeId && !(await hasPermission(user, "file.edit", { spaceId }))) {
     return authzDenied(c);
@@ -1949,11 +1949,11 @@ router.post("/:id/prompt", async (c) => {
     throw error;
   }
   if (runtimeId && promptEnv && Object.keys(promptEnv).length > 0) {
-    return c.json({ code: "runtime_env_invalid", message: "local ACP runtime does not accept Cohub environment overrides" }, 400);
+    return c.json({ code: "runtime_env_invalid", message: "local runtime does not accept Cohub environment overrides" }, 400);
   }
   const source = resolveSessionSourceFromRequest(c, typeof body.source === "string" ? body.source : null);
   if (runtimeId && source === "scheduled_task") {
-    return c.json({ code: "runtime_schedule_invalid", message: "local ACP runtime prompts must run immediately" }, 400);
+    return c.json({ code: "runtime_schedule_invalid", message: "local runtime prompts must run immediately" }, 400);
   }
 
   const clientMessageId = body.clientMessageId?.trim() || crypto.randomUUID();
@@ -1979,7 +1979,7 @@ router.post("/:id/prompt", async (c) => {
     )).limit(1);
   if (existingAttempt) {
     const existingRuntimeId = existingAttempt.runtimeId ?? null;
-    const expectedExecutorKind = runtimeId ? "local_acp" : "cloud_agent";
+    const expectedExecutorKind = runtimeId ? "local_runtime" : "cloud_agent";
     if (existingAttempt.userUuid !== user.uuid || existingAttempt.executorKind !== expectedExecutorKind || (sessionId && existingAttempt.sessionId !== sessionId) || existingRuntimeId !== runtimeId || (!runtimeId && (existingAttempt.turnModel !== requestedModel || existingAttempt.turnProvider !== requestedProvider))) {
       return c.json({ code: "prompt_idempotency_conflict", message: "clientMessageId is already bound to a different execution context" }, 409);
     }

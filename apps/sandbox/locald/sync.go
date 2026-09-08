@@ -31,12 +31,14 @@ type remoteReplicaState struct {
 		CurrentSnapshot   string `json:"currentSnapshotId"`
 		Generation        int64  `json:"generation"`
 		Status            string `json:"status"`
+		ActiveAttemptID   string `json:"activeExecutionAttemptId"`
 	} `json:"replica"`
 	Workspace struct {
 		CanonicalSnapshotID    string `json:"canonicalSnapshotId"`
 		CloudAppliedSnapshotID string `json:"cloudAppliedSnapshotId"`
 		Generation             int64  `json:"generation"`
 		Status                 string `json:"status"`
+		ActiveAttemptID        string `json:"activeExecutionAttemptId"`
 	} `json:"workspace"`
 	WorkspacePolicy struct {
 		PolicyVersion   int64          `json:"policyVersion"`
@@ -50,9 +52,29 @@ type remoteReplicaState struct {
 		WorkspaceMode            string `json:"workspaceMode"`
 	} `json:"integrationPolicy"`
 	Lease *struct {
-		HolderKind string `json:"holderKind"`
-		ExpiresAt  string `json:"expiresAt"`
+		HolderKind     string `json:"holderKind"`
+		HolderID       string `json:"holderId"`
+		Epoch          int64  `json:"epoch"`
+		BaseSnapshotID string `json:"baseSnapshotId"`
+		ExpiresAt      string `json:"expiresAt"`
 	} `json:"lease"`
+	// ExecutionAttempt is returned only when the state endpoint can prove that
+	// the active attempt belongs to this device/replica.
+	ExecutionAttempt *remoteExecutionAttempt `json:"executionAttempt"`
+}
+
+type remoteExecutionAttempt struct {
+	ID              string `json:"id"`
+	SpaceID         string `json:"spaceId"`
+	ReplicaID       string `json:"replicaId"`
+	RuntimeID       string `json:"runtimeId"`
+	DeviceID        string `json:"deviceId"`
+	ExecutorKind    string `json:"executorKind"`
+	Status          string `json:"status"`
+	BaseSnapshotID  string `json:"baseSnapshotId"`
+	LeaseEpoch      int64  `json:"leaseEpoch"`
+	ConnectionEpoch int64  `json:"connectionEpoch"`
+	LeaseExpiresAt  string `json:"leaseExpiresAt"`
 }
 
 type remoteSnapshot struct {
@@ -133,58 +155,247 @@ func scanPolicyFromRemote(state remoteReplicaState) ScanPolicy {
 	}
 }
 
-func (d *Daemon) prepareOnlinePermit(ctx context.Context, spaceID, replicaID string) error {
-	if existing, valid, err := d.state.LatestPermitForReplica(spaceID, replicaID); err != nil {
-		return err
-	} else if valid && existing != "" {
-		return nil
+func remoteExecutionAttemptForState(state remoteReplicaState) *remoteExecutionAttempt {
+	return state.ExecutionAttempt
+}
+
+// Resolve the runtime identity immediately before a lease mutation. The local
+// permit stores attempt/lease provenance, while the server remains authoritative
+// for which registered runtime owns that attempt.
+func (d *Daemon) runtimeIDForPermit(ctx context.Context, permit *PermitContext) (string, error) {
+	if permit == nil || strings.TrimSpace(permit.SpaceID) == "" || strings.TrimSpace(permit.ReplicaID) == "" || strings.TrimSpace(permit.ExecutionAttemptID) == "" {
+		return "", errors.New("local runtime execution permit identity is unavailable")
 	}
-	replica, err := d.state.ReplicaForSpace(spaceID)
+	if runtimeID := strings.TrimSpace(permit.RuntimeID); runtimeID != "" {
+		return runtimeID, nil
+	}
+	body, err := d.getJSON(ctx, fmt.Sprintf("%s/api/local-agent/spaces/%s/replicas/%s/state", d.apiBaseURL(), permit.SpaceID, permit.ReplicaID))
 	if err != nil {
-		return err
+		return "", err
 	}
-	if replica == nil || replica.ReplicaID != replicaID {
-		return errors.New("local workspace replica is unavailable")
+	var state remoteReplicaState
+	if err := json.Unmarshal(body, &state); err != nil {
+		return "", fmt.Errorf("decode local runtime state: %w", err)
 	}
-	if err := d.syncReplica(ctx, replica); err != nil {
-		return err
+	attempt := remoteExecutionAttemptForState(state)
+	if attempt == nil || attempt.ID != permit.ExecutionAttemptID || attempt.SpaceID != permit.SpaceID || attempt.ReplicaID != permit.ReplicaID || strings.TrimSpace(attempt.RuntimeID) == "" {
+		return "", errors.New("authoritative local runtime identity does not match the execution permit")
 	}
-	stateBody, err := d.getJSON(ctx, fmt.Sprintf("%s/api/local-agent/spaces/%s/replicas/%s/state", d.apiBaseURL(), spaceID, replicaID))
+	runtimeID := strings.TrimSpace(attempt.RuntimeID)
+	if err := d.state.BindPermitRuntimeID(permit.ExecutionAttemptID, runtimeID); err != nil {
+		return "", fmt.Errorf("persist local runtime identity for execution permit: %w", err)
+	}
+	permit.RuntimeID = runtimeID
+	return runtimeID, nil
+}
+
+// runtimeIDForPermitState resolves an execution's runtime identity from the
+// durable permit first. The state endpoint may intentionally omit terminal
+// attempts after snapshot commit, so a persisted identity is sufficient for
+// the API's lease/attempt provenance checks. A legacy permit with an empty
+// runtime_id is backfilled only when the authoritative state still exposes the
+// exact attempt identity.
+func (d *Daemon) runtimeIDForPermitState(permit *PermitContext, state remoteReplicaState) (string, error) {
+	if permit == nil || strings.TrimSpace(permit.ExecutionAttemptID) == "" || strings.TrimSpace(permit.SpaceID) == "" || strings.TrimSpace(permit.ReplicaID) == "" {
+		return "", errors.New("local runtime execution permit identity is unavailable")
+	}
+	attempt := state.ExecutionAttempt
+	runtimeID := strings.TrimSpace(permit.RuntimeID)
+	if runtimeID != "" {
+		if attempt != nil && (attempt.ID != permit.ExecutionAttemptID || (attempt.SpaceID != "" && attempt.SpaceID != permit.SpaceID) || (attempt.ReplicaID != "" && attempt.ReplicaID != permit.ReplicaID) || (strings.TrimSpace(attempt.RuntimeID) != "" && attempt.RuntimeID != runtimeID)) {
+			return "", errors.New("authoritative local runtime identity does not match the execution permit")
+		}
+		return runtimeID, nil
+	}
+	if attempt == nil || attempt.ID != permit.ExecutionAttemptID || attempt.SpaceID != permit.SpaceID || attempt.ReplicaID != permit.ReplicaID || strings.TrimSpace(attempt.RuntimeID) == "" {
+		return "", errors.New("authoritative local runtime identity is unavailable for the execution permit")
+	}
+	runtimeID = strings.TrimSpace(attempt.RuntimeID)
+	if err := d.state.BindPermitRuntimeID(permit.ExecutionAttemptID, runtimeID); err != nil {
+		return "", fmt.Errorf("persist local runtime identity for execution permit: %w", err)
+	}
+	permit.RuntimeID = runtimeID
+	return runtimeID, nil
+}
+
+func remoteLeaseExpiry(lease *struct {
+	HolderKind     string `json:"holderKind"`
+	HolderID       string `json:"holderId"`
+	Epoch          int64  `json:"epoch"`
+	BaseSnapshotID string `json:"baseSnapshotId"`
+	ExpiresAt      string `json:"expiresAt"`
+}) (time.Time, error) {
+	if lease == nil {
+		return time.Time{}, errors.New("workspace writer lease is unavailable")
+	}
+	expiresAt, err := time.Parse(time.RFC3339Nano, strings.TrimSpace(lease.ExpiresAt))
+	if err != nil {
+		return time.Time{}, fmt.Errorf("workspace writer lease expiry is invalid: %w", err)
+	}
+	return expiresAt, nil
+}
+
+func activeRemoteLeaseExpiry(lease *struct {
+	HolderKind     string `json:"holderKind"`
+	HolderID       string `json:"holderId"`
+	Epoch          int64  `json:"epoch"`
+	BaseSnapshotID string `json:"baseSnapshotId"`
+	ExpiresAt      string `json:"expiresAt"`
+}) (time.Time, error) {
+	expiresAt, err := remoteLeaseExpiry(lease)
+	if err != nil {
+		return time.Time{}, err
+	}
+	if !expiresAt.After(time.Now().UTC()) {
+		return time.Time{}, errors.New("workspace writer lease has expired")
+	}
+	return expiresAt, nil
+}
+
+// prepareLocalRuntimePermitFromState turns an authoritative active local
+// runtime lease into a local prepared permit. It returns true when the caller
+// must stop all workspace synchronization because the runtime owns the tree.
+// Every identity field is checked before anything is persisted locally.
+func (d *Daemon) prepareLocalRuntimePermitFromState(replica *ReplicaState, state remoteReplicaState) (bool, error) {
+	if state.Lease == nil {
+		return false, nil
+	}
+	if replica == nil || strings.TrimSpace(replica.SpaceID) == "" || strings.TrimSpace(replica.ReplicaID) == "" {
+		return false, errors.New("local workspace replica identity is unavailable")
+	}
+	expiresAt, err := remoteLeaseExpiry(state.Lease)
+	if err != nil {
+		return false, err
+	}
+	leaseExpired := !expiresAt.After(time.Now().UTC())
+	if state.Lease.HolderKind != "local_agent" {
+		return false, nil
+	}
+	if state.Replica.Status != "ready" {
+		return false, errors.New("active local runtime lease requires a ready local replica")
+	}
+	if state.Replica.AppliedSnapshot == "" || replica.AppliedSnapshotID == "" || state.Replica.AppliedSnapshot != replica.AppliedSnapshotID {
+		return false, errors.New("active local runtime lease requires a synchronized replica snapshot")
+	}
+	attempt := remoteExecutionAttemptForState(state)
+	if attempt == nil {
+		return false, errors.New("active local runtime lease has no execution attempt metadata")
+	}
+	if strings.TrimSpace(state.Lease.HolderID) == "" || state.Lease.HolderID != attempt.ID || attempt.ID == "" {
+		return false, errors.New("active local runtime lease holder does not match its execution attempt")
+	}
+	if attempt.ExecutorKind != "local_runtime" || attempt.SpaceID != replica.SpaceID || attempt.ReplicaID != replica.ReplicaID || (state.Replica.ReplicaID != "" && state.Replica.ReplicaID != replica.ReplicaID) {
+		return false, errors.New("active local runtime lease is bound to a different workspace")
+	}
+	if state.Workspace.ActiveAttemptID != "" && state.Workspace.ActiveAttemptID != attempt.ID {
+		return false, errors.New("workspace active execution attempt does not match its writer lease")
+	}
+	if state.Replica.ActiveAttemptID != "" && state.Replica.ActiveAttemptID != attempt.ID {
+		return false, errors.New("replica active execution attempt does not match its writer lease")
+	}
+	canonicalID := state.Workspace.CanonicalSnapshotID
+	if canonicalID == "" {
+		canonicalID = state.Replica.CanonicalSnapshot
+	}
+	if attempt.BaseSnapshotID == "" || canonicalID == "" || attempt.BaseSnapshotID != state.Lease.BaseSnapshotID || attempt.BaseSnapshotID != canonicalID || attempt.BaseSnapshotID != state.Replica.AppliedSnapshot || attempt.BaseSnapshotID != replica.AppliedSnapshotID {
+		return false, errors.New("active local runtime lease base snapshot is stale")
+	}
+	if state.Lease.Epoch < 1 || attempt.LeaseEpoch != state.Lease.Epoch {
+		return false, errors.New("active local runtime lease epoch does not match its execution attempt")
+	}
+	if attempt.ConnectionEpoch < 1 || strings.TrimSpace(attempt.RuntimeID) == "" {
+		return false, errors.New("active local runtime execution attempt metadata is incomplete")
+	}
+	if attempt.DeviceID != "" && attempt.DeviceID != replica.DeviceID {
+		return false, errors.New("active local runtime execution attempt belongs to another device")
+	}
+	if attempt.LeaseExpiresAt != "" {
+		attemptExpiry, parseErr := time.Parse(time.RFC3339Nano, attempt.LeaseExpiresAt)
+		if parseErr != nil || !attemptExpiry.Equal(expiresAt) {
+			return false, errors.New("active local runtime execution attempt lease expiry does not match")
+		}
+	}
+	permit, permitErr := d.state.PermitContext(attempt.ID)
+	if permitErr != nil {
+		return false, permitErr
+	}
+	if permit != nil {
+		validHolder := permit.Status == "prepared" && permit.HolderID == attempt.ID
+		validHolder = validHolder || permit.Status != "prepared" && isLocalRuntimePermit(permit.HolderID) && serverPermitHolderID(permit.HolderID) == attempt.ID
+		if permit.ExecutionAttemptID != attempt.ID || permit.SpaceID != replica.SpaceID || permit.ReplicaID != replica.ReplicaID || (strings.TrimSpace(permit.RuntimeID) != "" && permit.RuntimeID != attempt.RuntimeID) || !validHolder {
+			return false, errors.New("local runtime execution permit provenance is invalid")
+		}
+		if strings.TrimSpace(permit.RuntimeID) == "" {
+			if err := d.state.BindPermitRuntimeID(attempt.ID, attempt.RuntimeID); err != nil {
+				return false, fmt.Errorf("persist local runtime identity for execution permit: %w", err)
+			}
+			permit.RuntimeID = attempt.RuntimeID
+		}
+	}
+	if permit != nil && permit.Status != "prepared" {
+		// A consumed permit is a stronger local fence than a fresh server poll.
+		if permit.Status == "active" && isLocalRuntimePermit(permit.HolderID) {
+			return true, nil
+		}
+		return false, fmt.Errorf("local runtime execution permit is already %s", permit.Status)
+	}
+	if leaseExpired {
+		// A prepared permit means this daemon has durably accepted the runtime
+		// handoff, even if the server lease expired while the network was down.
+		// Keep the disk fenced until the runtime either renews or explicitly
+		// consumes/releases that permit; never let reconciliation race it.
+		if permit == nil || permit.Status != "prepared" {
+			return false, nil
+		}
+		// A prepared permit whose own deadline elapsed was never claimed by a
+		// provider, so it cannot be writing the tree anymore.
+		return permit.ExpiresAt.IsZero() || permit.ExpiresAt.After(time.Now().UTC()), nil
+	}
+	if err := d.state.PutPermit(attempt.ID, replica.SpaceID, replica.ReplicaID, attempt.RuntimeID, attempt.BaseSnapshotID, state.Lease.Epoch, expiresAt, "local_agent", attempt.ID); err != nil {
+		return false, err
+	}
+	return true, nil
+}
+
+// refreshLocalRuntimePermit fetches the authoritative state immediately before
+// a relay channel starts. The normal five-second sync poll remains useful for
+// caching, but cannot be the only preparation window for a short-lived lease.
+func (d *Daemon) refreshLocalRuntimePermit(ctx context.Context, ref runtimeAttemptRef) error {
+	body, err := d.getJSON(ctx, fmt.Sprintf("%s/api/local-agent/spaces/%s/replicas/%s/state", d.apiBaseURL(), ref.spaceID, ref.replicaID))
 	if err != nil {
 		return err
 	}
 	var state remoteReplicaState
-	if err := json.Unmarshal(stateBody, &state); err != nil {
+	if err := json.Unmarshal(body, &state); err != nil {
 		return err
 	}
-	canonicalID := state.Workspace.CanonicalSnapshotID
-	if canonicalID == "" || state.Workspace.Status != "ready" || state.Replica.AppliedSnapshot != canonicalID || state.Workspace.CloudAppliedSnapshotID != canonicalID {
-		return errors.New("workspace handoff is not ready")
-	}
-	attemptID := uuid.NewString()
-	body, err := d.request(ctx, http.MethodPost, fmt.Sprintf("%s/api/local-agent/spaces/%s/leases/acquire", d.apiBaseURL(), spaceID), mustJSON(map[string]any{
-		"holderKind":      "local_agent",
-		"holderId":        attemptID,
-		"replicaId":       replicaID,
-		"baseSnapshotId":  canonicalID,
-		"durationSeconds": 30,
-		"offline":         false,
-	}), 2*1024*1024)
+	replica, err := d.state.ReplicaForSpace(ref.spaceID)
 	if err != nil {
 		return err
 	}
-	var lease struct {
-		Epoch     int64  `json:"epoch"`
-		ExpiresAt string `json:"expiresAt"`
+	if replica == nil || replica.ReplicaID != ref.replicaID {
+		return errors.New("local workspace replica is unavailable")
 	}
-	if err := json.Unmarshal(body, &lease); err != nil {
+	attempt := remoteExecutionAttemptForState(state)
+	if attempt == nil || attempt.ID != ref.attemptID || strings.TrimSpace(ref.runtimeID) == "" || attempt.RuntimeID != ref.runtimeID || attempt.ConnectionEpoch != ref.connectionEpoch || attempt.LeaseEpoch != ref.leaseEpoch || attempt.BaseSnapshotID != ref.baseSnapshotID {
+		return errors.New("authoritative local runtime lease does not match the channel binding")
+	}
+	lease := state.Lease
+	if lease == nil || lease.HolderID != ref.attemptID || lease.Epoch != ref.leaseEpoch || lease.BaseSnapshotID != ref.baseSnapshotID {
+		return errors.New("authoritative workspace lease does not match the channel binding")
+	}
+	expiresAt, err := activeRemoteLeaseExpiry(lease)
+	if err != nil || !expiresAt.Equal(ref.expiresAt) {
+		return errors.New("authoritative workspace lease expiry does not match the channel binding")
+	}
+	prepared, err := d.prepareLocalRuntimePermitFromState(replica, state)
+	if err != nil {
 		return err
 	}
-	expiresAt, err := time.Parse(time.RFC3339Nano, lease.ExpiresAt)
-	if err != nil || lease.Epoch <= 0 || !expiresAt.After(time.Now().UTC()) {
-		return errors.New("workspace lease response is invalid")
+	if !prepared {
+		return errors.New("authoritative local runtime lease is unavailable")
 	}
-	return d.state.PutPermit(attemptID, spaceID, replicaID, canonicalID, lease.Epoch, expiresAt, "local_agent", attemptID)
+	return nil
 }
 
 func (d *Daemon) syncReplicas(ctx context.Context) {
@@ -202,10 +413,10 @@ func (d *Daemon) syncReplicas(ctx context.Context) {
 	}
 }
 
-// heartbeatAcpPermits is run only by the ACP runtime process. The ordinary
-// daemon deliberately does not renew ACP permits because it cannot prove that
+// heartbeatLocalRuntimePermits is run only by the local runtime host process. The ordinary
+// daemon deliberately does not renew local runtime permits because it cannot prove that
 // the provider connection is still mutating the replica.
-func (d *Daemon) heartbeatAcpPermits(ctx context.Context, isAttemptActive func(string) bool) {
+func (d *Daemon) heartbeatLocalRuntimePermits(ctx context.Context, isAttemptActive func(string) bool) {
 	refresh := func() {
 		permits, err := d.state.ActivePermits(ctx)
 		if err != nil {
@@ -213,7 +424,7 @@ func (d *Daemon) heartbeatAcpPermits(ctx context.Context, isAttemptActive func(s
 		}
 		now := time.Now().UTC()
 		for _, permit := range permits {
-			if !isAcpRuntimePermit(permit.HolderID) || !isAttemptActive(serverPermitHolderID(permit.HolderID)) || permit.ExpiresAt.IsZero() || !permit.ExpiresAt.After(now) {
+			if !isLocalRuntimePermit(permit.HolderID) || !isAttemptActive(serverPermitHolderID(permit.HolderID)) || permit.ExpiresAt.IsZero() || !permit.ExpiresAt.After(now) {
 				continue
 			}
 			_ = d.state.UpdatePermitExpiry(permit.ExecutionAttemptID, now.Add(30*time.Second))
@@ -238,7 +449,7 @@ func (d *Daemon) heartbeatActivePermits(ctx context.Context) {
 		return
 	}
 	for _, permit := range permits {
-		if permit.LeaseEpoch <= 0 || permit.ExpiresAt.Before(time.Now().UTC()) || isAcpRuntimePermit(permit.HolderID) {
+		if permit.LeaseEpoch <= 0 || permit.ExpiresAt.Before(time.Now().UTC()) || isLocalRuntimePermit(permit.HolderID) {
 			continue
 		}
 		payload := mustJSON(map[string]any{
@@ -297,6 +508,13 @@ func (d *Daemon) syncReplica(ctx context.Context, replica *ReplicaState) error {
 	var state remoteReplicaState
 	if err := json.Unmarshal(stateBody, &state); err != nil {
 		return err
+	}
+	if runtimeOwned, err := d.prepareLocalRuntimePermitFromState(replica, state); err != nil {
+		return err
+	} else if runtimeOwned {
+		// A local runtime lease is a write fence. The provider channel will claim
+		// the prepared permit; until then no sync/apply operation may touch disk.
+		return nil
 	}
 	if state.WorkspacePolicy.PolicyVersion < 1 || state.IntegrationPolicy.IntegrationPolicyVersion < 1 {
 		return errors.New("workspace or integration policy is unavailable")
@@ -486,19 +704,108 @@ func (d *Daemon) syncReplica(ctx context.Context, replica *ReplicaState) error {
 	return nil
 }
 
-type acpServerLeaseHeartbeat struct {
+type localRuntimeLeaseHeartbeat struct {
 	stop  func()
 	check func() error
 }
 
-func (d *Daemon) startAcpServerLeaseHeartbeat(ctx context.Context, spaceID string, permit *PermitContext) (*acpServerLeaseHeartbeat, error) {
-	if permit == nil || !isAcpRuntimePermit(permit.HolderID) {
-		return &acpServerLeaseHeartbeat{stop: func() {}, check: func() error { return nil }}, nil
+// recoverLocalRuntimeLease re-opens the exact writer lease that produced a
+// terminal local-runtime spool record. Recovery deliberately keeps the same
+// holder and epoch: a newer writer must make this request fail rather than
+// allowing an old provider host to regain workspace authority.
+func (d *Daemon) recoverLocalRuntimeLease(ctx context.Context, spaceID string, permit *PermitContext, runtimeID string) error {
+	if permit == nil {
+		return errors.New("local runtime execution permit is unavailable for lease recovery")
+	}
+	if permit.HolderKind != "local_agent" || strings.TrimSpace(permit.ExecutionAttemptID) == "" || strings.TrimSpace(permit.SpaceID) != strings.TrimSpace(spaceID) {
+		return errors.New("local runtime execution permit provenance is invalid for lease recovery")
+	}
+	expectedHolderID := serverPermitHolderID(permit.HolderID)
+	if expectedHolderID == "" || expectedHolderID != permit.ExecutionAttemptID {
+		return errors.New("local runtime execution permit holder is invalid for lease recovery")
+	}
+	if permit.Status == "prepared" {
+		if permit.HolderID != expectedHolderID {
+			return errors.New("prepared local runtime execution permit holder is invalid for lease recovery")
+		}
+	} else if permit.Status == "active" || permit.Status == "expired" {
+		if permit.HolderID != localRuntimePermitHolderID(expectedHolderID) {
+			return errors.New("consumed local runtime execution permit holder is invalid for lease recovery")
+		}
+	} else {
+		return fmt.Errorf("local runtime execution permit is already %s", permit.Status)
+	}
+	if strings.TrimSpace(runtimeID) == "" {
+		return errors.New("local runtime identity is unavailable for lease recovery")
+	}
+
+	body, err := d.request(ctx, http.MethodPost, fmt.Sprintf("%s/api/local-agent/spaces/%s/leases/acquire", d.apiBaseURL(), spaceID), mustJSON(map[string]any{
+		"holderKind":      "local_agent",
+		"holderId":        expectedHolderID,
+		"runtimeId":       runtimeID,
+		"replicaId":       permit.ReplicaID,
+		"baseSnapshotId":  nullableString(permit.BaseSnapshotID),
+		"durationSeconds": 30,
+		"recovery":        true,
+	}), 2*1024*1024)
+	if err != nil {
+		return fmt.Errorf("local runtime lease recovery acquire failed: %w", err)
+	}
+	var response struct {
+		SpaceID        string `json:"spaceId"`
+		HolderKind     string `json:"holderKind"`
+		HolderID       string `json:"holderId"`
+		Epoch          int64  `json:"epoch"`
+		BaseSnapshotID string `json:"baseSnapshotId"`
+		ExpiresAt      string `json:"expiresAt"`
+	}
+	if err := json.Unmarshal(body, &response); err != nil {
+		return fmt.Errorf("local runtime lease recovery response is invalid: %w", err)
+	}
+	if response.SpaceID != spaceID || response.HolderKind != "local_agent" || response.HolderID != expectedHolderID || response.Epoch != permit.LeaseEpoch || response.BaseSnapshotID != permit.BaseSnapshotID {
+		return errors.New("local runtime lease recovery response does not match the permit")
+	}
+	expiresAt, err := time.Parse(time.RFC3339Nano, strings.TrimSpace(response.ExpiresAt))
+	if err != nil || !expiresAt.After(time.Now().UTC()) {
+		return errors.New("local runtime lease recovery response has an invalid expiry")
+	}
+	if permit.Status == "prepared" {
+		if err := d.state.PutPermit(permit.ExecutionAttemptID, permit.SpaceID, permit.ReplicaID, runtimeID, permit.BaseSnapshotID, permit.LeaseEpoch, expiresAt, "local_agent", expectedHolderID); err != nil {
+			return fmt.Errorf("refresh prepared local runtime permit after recovery: %w", err)
+		}
+	} else if err := d.state.RenewLocalRuntimePermit(permit.ExecutionAttemptID, permit.SpaceID, permit.ReplicaID, runtimeID, permit.BaseSnapshotID, permit.LeaseEpoch, expiresAt); err != nil {
+		return fmt.Errorf("refresh consumed local runtime permit after recovery: %w", err)
+	}
+	return nil
+}
+
+func (d *Daemon) startLocalRuntimeLeaseHeartbeat(ctx context.Context, spaceID string, permit *PermitContext) (*localRuntimeLeaseHeartbeat, error) {
+	if permit == nil || permit.HolderKind != "local_agent" {
+		return &localRuntimeLeaseHeartbeat{stop: func() {}, check: func() error { return nil }}, nil
+	}
+	if strings.TrimSpace(spaceID) == "" || strings.TrimSpace(permit.SpaceID) != strings.TrimSpace(spaceID) || strings.TrimSpace(permit.ExecutionAttemptID) == "" || strings.TrimSpace(permit.ReplicaID) == "" || permit.LeaseEpoch < 1 {
+		return nil, errors.New("local runtime execution permit identity is invalid")
+	}
+	if permit.Status == "prepared" {
+		if permit.HolderID != permit.ExecutionAttemptID {
+			return nil, errors.New("prepared local runtime execution permit holder is invalid")
+		}
+	} else if permit.Status == "active" || permit.Status == "expired" {
+		if permit.HolderID != localRuntimePermitHolderID(permit.ExecutionAttemptID) {
+			return nil, errors.New("consumed local runtime execution permit holder is invalid")
+		}
+	} else {
+		return nil, fmt.Errorf("local runtime execution permit is already %s", permit.Status)
+	}
+	runtimeID, err := d.runtimeIDForPermit(ctx, permit)
+	if err != nil {
+		return nil, err
 	}
 	heartbeat := func(heartbeatCtx context.Context) error {
 		body, err := d.request(heartbeatCtx, http.MethodPost, fmt.Sprintf("%s/api/local-agent/spaces/%s/leases/heartbeat", d.apiBaseURL(), spaceID), mustJSON(map[string]any{
 			"holderKind":      permit.HolderKind,
 			"holderId":        serverPermitHolderID(permit.HolderID),
+			"runtimeId":       runtimeID,
 			"epoch":           permit.LeaseEpoch,
 			"durationSeconds": 30,
 		}), 2*1024*1024)
@@ -513,13 +820,25 @@ func (d *Daemon) startAcpServerLeaseHeartbeat(ctx context.Context, spaceID strin
 		}
 		expiresAt, err := time.Parse(time.RFC3339Nano, response.ExpiresAt)
 		if err != nil || !expiresAt.After(time.Now().UTC()) {
-			return errors.New("ACP workspace lease heartbeat response is invalid")
+			return errors.New("local runtime workspace lease heartbeat response is invalid")
+		}
+		if permit.Status == "prepared" {
+			return d.state.PutPermit(permit.ExecutionAttemptID, permit.SpaceID, permit.ReplicaID, runtimeID, permit.BaseSnapshotID, permit.LeaseEpoch, expiresAt, "local_agent", permit.ExecutionAttemptID)
 		}
 		return d.state.UpdatePermitExpiry(permit.ExecutionAttemptID, expiresAt)
 	}
 	errCh := make(chan error, 1)
 	if err := heartbeat(ctx); err != nil {
-		errCh <- err
+		// A host-reaped terminal spool may outlive the online lease. Re-open
+		// only the original lease, at the original epoch, then retry the
+		// heartbeat; any takeover makes recovery fail closed and leaves the
+		// spool available for a later safe retry.
+		if recoveryErr := d.recoverLocalRuntimeLease(ctx, spaceID, permit, runtimeID); recoveryErr != nil {
+			return nil, fmt.Errorf("local runtime workspace lease heartbeat failed: %w (recovery failed: %v)", err, recoveryErr)
+		}
+		if retryErr := heartbeat(ctx); retryErr != nil {
+			return nil, fmt.Errorf("local runtime workspace lease heartbeat failed after recovery: %w", retryErr)
+		}
 	}
 
 	heartbeatCtx, cancel := context.WithCancel(ctx)
@@ -569,7 +888,7 @@ func (d *Daemon) startAcpServerLeaseHeartbeat(ctx context.Context, spaceID strin
 			<-done
 		})
 	}
-	return &acpServerLeaseHeartbeat{stop: stop, check: check}, nil
+	return &localRuntimeLeaseHeartbeat{stop: stop, check: check}, nil
 }
 
 func (d *Daemon) finalizeExecutionWorkspace(ctx context.Context, spaceID, replicaID, executionAttemptID string) error {
@@ -586,19 +905,25 @@ func (d *Daemon) finalizeExecutionWorkspace(ctx context.Context, spaceID, replic
 	if permit.Status == "completed" {
 		return nil
 	}
-	if permit.Status != "prepared" && permit.Status != "active" && !(permit.Status == "expired" && isAcpRuntimePermit(permit.HolderID)) {
+	if permit.Status != "prepared" && permit.Status != "active" && !(permit.Status == "expired" && isLocalRuntimePermit(permit.HolderID)) {
 		return errors.New("local execution permit is unavailable for workspace finalization")
 	}
-	leaseHeartbeat, err := d.startAcpServerLeaseHeartbeat(ctx, spaceID, permit)
+	leaseHeartbeat, err := d.startLocalRuntimeLeaseHeartbeat(ctx, spaceID, permit)
 	if err != nil {
 		return err
 	}
 	defer leaseHeartbeat.stop()
 	checkLeaseHeartbeat := func() error {
 		if heartbeatErr := leaseHeartbeat.check(); heartbeatErr != nil {
-			return fmt.Errorf("ACP workspace lease heartbeat failed: %w", heartbeatErr)
+			return fmt.Errorf("local runtime workspace lease heartbeat failed: %w", heartbeatErr)
 		}
 		return nil
+	}
+	// Check immediately after starting the heartbeat and before reading any
+	// state or making a mutating API call. The first heartbeat can race lease
+	// expiry, and finalization must fail closed in that case.
+	if err := checkLeaseHeartbeat(); err != nil {
+		return err
 	}
 	replica, err := d.state.ReplicaForSpace(spaceID)
 	if err != nil {
@@ -615,17 +940,28 @@ func (d *Daemon) finalizeExecutionWorkspace(ctx context.Context, spaceID, replic
 	if err := json.Unmarshal(stateBody, &state); err != nil {
 		return err
 	}
+	if err := checkLeaseHeartbeat(); err != nil {
+		return err
+	}
 	if err := d.state.UpdateReplicaPolicy(spaceID, state.WorkspacePolicy.PolicyVersion, state.IntegrationPolicy.IntegrationPolicyVersion); err != nil {
 		return err
 	}
 	replica.PolicyVersion = state.WorkspacePolicy.PolicyVersion
 	replica.IntegrationPolicyVersion = state.IntegrationPolicy.IntegrationPolicyVersion
+	runtimeID, err := d.runtimeIDForPermitState(permit, state)
+	if err != nil {
+		return err
+	}
 	registerPayload := mustJSON(map[string]any{
 		"leaseEpoch":               permit.LeaseEpoch,
 		"baseSnapshotId":           nullableString(permit.BaseSnapshotID),
+		"runtimeId":                runtimeID,
 		"workspacePolicyVersion":   replica.PolicyVersion,
 		"integrationPolicyVersion": replica.IntegrationPolicyVersion,
 	})
+	if err := checkLeaseHeartbeat(); err != nil {
+		return err
+	}
 	registerBody, err := d.request(ctx, http.MethodPost, fmt.Sprintf("%s/api/local-agent/spaces/%s/replicas/%s/attempts/%s/register", d.apiBaseURL(), spaceID, replicaID, executionAttemptID), registerPayload, 2*1024*1024)
 	if err != nil {
 		return err
@@ -636,14 +972,13 @@ func (d *Daemon) finalizeExecutionWorkspace(ctx context.Context, spaceID, replic
 	if err := json.Unmarshal(registerBody, &registered); err != nil || registered.Status == "" {
 		return errors.New("execution attempt registration response is invalid")
 	}
-	terminalAttempt := registered.Status == "completed" || registered.Status == "failed" || registered.Status == "aborted" || registered.Status == "transcript_sealed" || registered.Status == "workspace_sealed" || registered.Status == "awaiting_recovery"
-	if err := checkLeaseHeartbeat(); err != nil && !terminalAttempt {
+	if err := checkLeaseHeartbeat(); err != nil {
 		return err
 	}
 	if err := d.uploadLocalCandidate(ctx, replica, state, executionAttemptID); err != nil {
 		return err
 	}
-	if err := checkLeaseHeartbeat(); err != nil && !terminalAttempt {
+	if err := checkLeaseHeartbeat(); err != nil {
 		return err
 	}
 	leaseHeartbeat.stop()
@@ -658,7 +993,7 @@ func (d *Daemon) activePermit(spaceID string) (string, string, bool, error) {
 	defer row.Close()
 	var storedSpace, replicaID string
 	valid := false
-	var expiredAcpAttemptIDs []string
+	var expiredLocalRuntimeAttemptIDs []string
 	for row.Next() {
 		var currentSpace, currentReplica, expires, holderID, status string
 		if err := row.Scan(&currentSpace, &currentReplica, &expires, &holderID, &status); err != nil {
@@ -673,11 +1008,11 @@ func (d *Daemon) activePermit(spaceID string) (string, string, bool, error) {
 		}
 		if parsed.After(time.Now().UTC()) {
 			valid = true
-			if status == "active" && isAcpRuntimePermit(holderID) {
+			if status == "active" && isLocalRuntimePermit(holderID) {
 				return currentSpace, currentReplica, true, nil
 			}
-		} else if status == "active" && isAcpRuntimePermit(holderID) {
-			expiredAcpAttemptIDs = append(expiredAcpAttemptIDs, serverPermitHolderID(holderID))
+		} else if status == "active" && isLocalRuntimePermit(holderID) {
+			expiredLocalRuntimeAttemptIDs = append(expiredLocalRuntimeAttemptIDs, serverPermitHolderID(holderID))
 		}
 	}
 	if err := row.Err(); err != nil {
@@ -686,7 +1021,7 @@ func (d *Daemon) activePermit(spaceID string) (string, string, bool, error) {
 	if err := row.Close(); err != nil {
 		return storedSpace, replicaID, false, err
 	}
-	for _, attemptID := range expiredAcpAttemptIDs {
+	for _, attemptID := range expiredLocalRuntimeAttemptIDs {
 		if _, err := d.state.db.Exec(`UPDATE permits SET status = 'expired' WHERE execution_attempt_id = ? AND status = 'active'`, attemptID); err != nil {
 			return storedSpace, replicaID, false, err
 		}
@@ -772,6 +1107,7 @@ func (d *Daemon) uploadLocalCandidate(ctx context.Context, replica *ReplicaState
 	// the evidence of concurrent cloud changes. Initial merge deliberately has
 	// no common base; initial use-local explicitly treats cloud as the base.
 	var leaseEpoch any
+	runtimeID := ""
 	if executionAttemptID != "" {
 		permit, permitErr := d.state.PermitContext(executionAttemptID)
 		if permitErr != nil {
@@ -779,6 +1115,10 @@ func (d *Daemon) uploadLocalCandidate(ctx context.Context, replica *ReplicaState
 		}
 		if permit == nil || permit.SpaceID != replica.SpaceID || permit.ReplicaID != replica.ReplicaID || permit.LeaseEpoch <= 0 {
 			return errors.New("execution attempt has no valid local lease provenance")
+		}
+		runtimeID, err = d.runtimeIDForPermitState(permit, state)
+		if err != nil {
+			return err
 		}
 		leaseEpoch = permit.LeaseEpoch
 	}
@@ -788,6 +1128,7 @@ func (d *Daemon) uploadLocalCandidate(ctx context.Context, replica *ReplicaState
 		"parentSnapshotId":        nullableString(replica.AppliedSnapshotID),
 		"baseCanonicalSnapshotId": nullableString(baseCanonical),
 		"executionAttemptId":      nullableString(executionAttemptID),
+		"runtimeId":               nullableString(runtimeID),
 		"leaseEpoch":              leaseEpoch,
 		"source":                  source,
 		"manifest":                scan.Manifest,
@@ -831,7 +1172,7 @@ func (d *Daemon) uploadLocalCandidate(ctx context.Context, replica *ReplicaState
 			return fmt.Errorf("upload workspace blob %s: %w", path, err)
 		}
 	}
-	commitBody, err := d.request(ctx, http.MethodPost, fmt.Sprintf("%s/api/local-agent/spaces/%s/replicas/%s/snapshots/%s/commit", d.apiBaseURL(), replica.SpaceID, replica.ReplicaID, snapshotID), []byte(`{}`), 2*1024*1024)
+	commitBody, err := d.request(ctx, http.MethodPost, fmt.Sprintf("%s/api/local-agent/spaces/%s/replicas/%s/snapshots/%s/commit", d.apiBaseURL(), replica.SpaceID, replica.ReplicaID, snapshotID), mustJSON(map[string]any{"runtimeId": nullableString(runtimeID)}), 2*1024*1024)
 	if err != nil {
 		return err
 	}
@@ -1017,7 +1358,11 @@ func (d *Daemon) refreshAccessToken(ctx context.Context) error {
 	if err := json.Unmarshal(body, &result); err != nil || strings.TrimSpace(result.AccessToken) == "" {
 		return errors.New("local agent token refresh response is invalid")
 	}
-	return SaveCredential(credentialAccessToken, result.AccessToken)
+	if err := SaveCredential(credentialAccessToken, result.AccessToken); err != nil {
+		return err
+	}
+	d.setAccessToken(result.AccessToken)
+	return nil
 }
 
 func (d *Daemon) getJSON(ctx context.Context, url string) ([]byte, error) {

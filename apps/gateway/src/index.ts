@@ -49,7 +49,7 @@ import {
 import { markChannelDegraded, touchChannelOutbound } from "./channel-health.js";
 import { handleAsrWebSocketConnection } from "./asr/session.js";
 import { handleRelayControlConnection, handleRelayDataConnection, handleRelayPeerConnection } from "./relay/index.js";
-import { handleRuntimeControlConnection, handleRuntimeDataConnection, handleRuntimePeerConnection } from "./runtime-relay.js";
+import { decodeRelayPathSegment, handleRuntimeControlConnection, handleRuntimeDataConnection, handleRuntimePeerConnection } from "./runtime-relay.js";
 import {
   createPubSubRedisClient,
   redisCommandClient,
@@ -781,8 +781,8 @@ const submitWebsocketSessionMessage = async (ctx: WsConnectionContext, requestId
   const thinkingLevel = typeof payload.thinkingLevel === "string" && payload.thinkingLevel.trim()
     ? payload.thinkingLevel.trim()
     : null;
-  if (runtimeId && (model || provider)) throw new WsClientInputError("local ACP runtime uses its own provider configuration");
-  if (runtimeId && thinkingLevel) throw new WsClientInputError("local ACP runtime uses its provider's own thinking configuration");
+  if (runtimeId && (model || provider)) throw new WsClientInputError("local runtime uses its own provider configuration");
+  if (runtimeId && thinkingLevel) throw new WsClientInputError("local runtime uses its provider's own thinking configuration");
   // WS schema already validates enum; reject if non-empty but invalid
   if (thinkingLevel && !new Set(["off", "minimal", "low", "medium", "high", "xhigh", "max"]).has(thinkingLevel)) {
     throw new WsClientInputError("thinkingLevel must be one of: off, minimal, low, medium, high, xhigh, max");
@@ -976,8 +976,12 @@ async function main() {
     ["/asr/ws", asrWss],
     ["/sandbox/relay", relayControlWss],
     ["/sandbox/relay/data", relayDataWss],
+    ["/internal/sandbox-relay", relayControlWss],
+    ["/internal/sandbox-relay/data", relayDataWss],
     ["/runtime/relay", runtimeControlWss],
     ["/runtime/relay/data", runtimeDataWss],
+    ["/internal/runtime-relay", runtimeControlWss],
+    ["/internal/runtime-relay/data", runtimeDataWss],
   ]);
 
   // Match /internal/sandbox-relay/:spaceId for cloud peers.
@@ -987,8 +991,19 @@ async function main() {
   server.on("upgrade", (request, socket, head) => {
     const pathname = request.url ? new URL(request.url, "http://localhost").pathname : "";
 
+    // Exact control/data aliases must win over the dynamic internal peer
+    // prefixes below (otherwise `/internal/runtime-relay/data` is parsed as a
+    // peer for runtimeId `data`).
+    const websocketServer = websocketRoutes.get(pathname);
+    if (websocketServer) {
+      websocketServer.handleUpgrade(request, socket, head, (websocket) => {
+        websocketServer.emit("connection", websocket, request);
+      });
+      return;
+    }
+
     if (pathname.startsWith(RELAY_PEER_PREFIX)) {
-      const spaceId = decodeURIComponent(pathname.slice(RELAY_PEER_PREFIX.length)).trim();
+      const spaceId = decodeRelayPathSegment(pathname.slice(RELAY_PEER_PREFIX.length));
       if (!spaceId) {
         socket.write("HTTP/1.1 400 Bad Request\r\nConnection: close\r\n\r\n");
         socket.destroy();
@@ -1001,28 +1016,20 @@ async function main() {
     }
 
     if (pathname.startsWith(RUNTIME_PEER_PREFIX)) {
-      const runtimeId = decodeURIComponent(pathname.slice(RUNTIME_PEER_PREFIX.length)).trim();
+      const runtimeId = decodeRelayPathSegment(pathname.slice(RUNTIME_PEER_PREFIX.length));
       if (!runtimeId) {
         socket.write("HTTP/1.1 400 Bad Request\r\nConnection: close\r\n\r\n");
         socket.destroy();
         return;
       }
       runtimePeerWss.handleUpgrade(request, socket, head, (websocket) => {
-        handleRuntimePeerConnection(websocket, request, runtimeId);
+        void handleRuntimePeerConnection(websocket, request, runtimeId);
       });
       return;
     }
 
-    const websocketServer = websocketRoutes.get(pathname);
-    if (!websocketServer) {
-      socket.write("HTTP/1.1 404 Not Found\r\nConnection: close\r\n\r\n");
-      socket.destroy();
-      return;
-    }
-
-    websocketServer.handleUpgrade(request, socket, head, (websocket) => {
-      websocketServer.emit("connection", websocket, request);
-    });
+    socket.write("HTTP/1.1 404 Not Found\r\nConnection: close\r\n\r\n");
+    socket.destroy();
   });
 
   asrWss.on("connection", handleAsrWebSocketConnection);

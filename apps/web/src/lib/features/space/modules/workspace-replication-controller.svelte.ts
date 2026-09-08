@@ -1,5 +1,5 @@
 import type { WorkspaceStateUpdatedEvent } from "@cohub/protocol/realtime";
-import { HttpError, type LocalAcpRuntimeRecord } from "@neta-art/cohub";
+import { HttpError, type LocalRuntimeRecord } from "@neta-art/cohub";
 import { sdk } from "$lib/sdk";
 
 export type WorkspaceReplicationReplica = {
@@ -35,7 +35,7 @@ export type WorkspaceReplicationLease = {
 
 export type WorkspaceReplicationSnapshot = {
 	replicas: WorkspaceReplicationReplica[];
-	runtimes: LocalAcpRuntimeRecord[];
+	runtimes: LocalRuntimeRecord[];
 	workspace: WorkspaceReplicationWorkspace | null;
 	lease: WorkspaceReplicationLease | null;
 	openConflictCount: number;
@@ -46,7 +46,7 @@ export type WorkspaceReplicationSnapshot = {
 
 type OverviewResponse = {
 	replicas: Array<Record<string, unknown>>;
-	runtimes?: LocalAcpRuntimeRecord[];
+	runtimes?: LocalRuntimeRecord[];
 	workspace: Record<string, unknown> | null;
 	lease: Record<string, unknown> | null;
 	openConflictCount: number;
@@ -122,9 +122,9 @@ function parseLease(
 	};
 }
 
-function parseRuntime(value: unknown): LocalAcpRuntimeRecord | null {
+function parseRuntime(value: unknown): LocalRuntimeRecord | null {
 	if (!value || typeof value !== "object" || Array.isArray(value)) return null;
-	const runtime = value as Partial<LocalAcpRuntimeRecord>;
+	const runtime = value as Partial<LocalRuntimeRecord>;
 	if (
 		typeof runtime.id !== "string" ||
 		typeof runtime.spaceId !== "string" ||
@@ -139,7 +139,7 @@ function parseRuntime(value: unknown): LocalAcpRuntimeRecord | null {
 		).includes(runtime.status ?? "")
 	)
 		return null;
-	return runtime as LocalAcpRuntimeRecord;
+	return runtime as LocalRuntimeRecord;
 }
 
 function parseOverview(
@@ -154,7 +154,7 @@ function parseOverview(
 			),
 		runtimes: (value.runtimes ?? [])
 			.map(parseRuntime)
-			.filter((runtime): runtime is LocalAcpRuntimeRecord => runtime !== null),
+			.filter((runtime): runtime is LocalRuntimeRecord => runtime !== null),
 		workspace: parseWorkspace(value.workspace),
 		lease: parseLease(value.lease),
 		openConflictCount: Number.isSafeInteger(value.openConflictCount)

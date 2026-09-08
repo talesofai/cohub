@@ -19,7 +19,7 @@ import { createHash, randomUUID } from "node:crypto";
 import { and, eq, inArray, or, sql } from "drizzle-orm";
 import { localAgentRuntimes, sessionTurns, spaceLocalAgentPolicies, spaceWorkspacePolicies, workspaceExecutionAttempts, workspaceReplicas, workspaceState } from "@cohub/db";
 import { db } from "./db/index.js";
-import { isLocalAcpProviderEnabled } from "./local-acp-runtime-service.js";
+import { isLocalRuntimeProviderEnabled } from "./local-runtime-service.js";
 import { LocalAgentServiceError } from "./local-agent-service.js";
 import { getSessionDomainServices } from "./session-services.js";
 
@@ -49,7 +49,7 @@ export const expandPromptContent = async (input: {
 
 export const buildPromptIdempotencyKey = (clientMessageId: string, runtimeId?: string | null) => {
   const normalizedClientMessageId = clientMessageId.trim();
-  const prefix = runtimeId?.trim() ? "local-acp-turn:" : "cloud-turn:";
+  const prefix = runtimeId?.trim() ? "local-runtime-turn:" : "cloud-turn:";
   const suffix = normalizedClientMessageId.length <= 220
     ? normalizedClientMessageId
     : createHash("sha256").update(normalizedClientMessageId, "utf8").digest("hex");
@@ -68,11 +68,11 @@ async function allocateCloudWorkspaceAttempt(input: {
   return db.transaction(async (tx) => {
     const [state] = await tx.select().from(workspaceState).where(eq(workspaceState.spaceId, input.spaceId)).for("update").limit(1);
     if (!state) {
-      if (runtimeId) throw new LocalAgentServiceError("workspace state is unavailable for local ACP execution", "workspace_state_unavailable", 409);
+      if (runtimeId) throw new LocalAgentServiceError("workspace state is unavailable for local runtime execution", "workspace_state_unavailable", 409);
       return null;
     }
     if (runtimeId && !state.canonicalSnapshotId) {
-      throw new LocalAgentServiceError("workspace has no canonical snapshot for local ACP execution", "runtime_replica_not_ready", 409);
+      throw new LocalAgentServiceError("workspace has no canonical snapshot for local runtime execution", "runtime_replica_not_ready", 409);
     }
     const [turn] = await tx.select({ meta: sessionTurns.meta }).from(sessionTurns).where(and(eq(sessionTurns.id, input.turnId), eq(sessionTurns.sessionId, input.sessionId), eq(sessionTurns.executionKind, "agent"))).for("update").limit(1);
     if (!turn) throw new Error("cloud turn not found while allocating workspace attempt");
@@ -94,8 +94,8 @@ async function allocateCloudWorkspaceAttempt(input: {
         eq(localAgentRuntimes.userUuid, input.userId),
         or(eq(localAgentRuntimes.status, "ready"), eq(localAgentRuntimes.status, "busy")),
       )).for("update").limit(1);
-      if (!runtimeRow) throw new LocalAgentServiceError("local ACP runtime is offline or unavailable", "runtime_unavailable", 409);
-      if (!isLocalAcpProviderEnabled(runtimeRow.provider)) throw new LocalAgentServiceError(`${runtimeRow.provider} local ACP runtime is disabled`, "provider_not_enabled", 403);
+      if (!runtimeRow) throw new LocalAgentServiceError("local runtime is offline or unavailable", "runtime_unavailable", 409);
+      if (!isLocalRuntimeProviderEnabled(runtimeRow.provider)) throw new LocalAgentServiceError(`${runtimeRow.provider} local runtime is disabled`, "provider_not_enabled", 403);
       const [integrationPolicy] = await tx.select({ workspaceMode: spaceLocalAgentPolicies.workspaceMode, integrationPolicyVersion: spaceLocalAgentPolicies.integrationPolicyVersion }).from(spaceLocalAgentPolicies).where(and(
         eq(spaceLocalAgentPolicies.spaceId, input.spaceId),
         eq(spaceLocalAgentPolicies.deviceId, runtimeRow.deviceId),
@@ -117,7 +117,7 @@ async function allocateCloudWorkspaceAttempt(input: {
       if (!replicaRow) throw new LocalAgentServiceError("local workspace replica is not ready for this runtime", "runtime_replica_not_ready", 409);
       localReplica = replicaRow;
     }
-    if (runtimeId && !policy) throw new LocalAgentServiceError("workspace policy is unavailable for local ACP execution", "workspace_policy_unavailable", 409);
+    if (runtimeId && !policy) throw new LocalAgentServiceError("workspace policy is unavailable for local runtime execution", "workspace_policy_unavailable", 409);
     const attemptId = randomUUID();
     const idempotencyKey = buildPromptIdempotencyKey(input.clientMessageId, runtimeId);
     const idempotencyKeys = [...new Set([
@@ -140,7 +140,7 @@ async function allocateCloudWorkspaceAttempt(input: {
       runtimeId: runtime?.id ?? null,
       replicaId: localReplica?.id ?? null,
       idempotencyKey,
-      executorKind: runtimeId ? "local_acp" : "cloud_agent",
+      executorKind: runtimeId ? "local_runtime" : "cloud_agent",
       provider: runtime?.provider ?? null,
       integrationPolicyVersion: runtimeId ? integrationPolicyVersion : null,
       workspaceRequired: true,
@@ -164,7 +164,7 @@ async function allocateCloudWorkspaceAttempt(input: {
     await tx.update(sessionTurns).set({
       meta: sql`coalesce(${sessionTurns.meta}, '{}'::jsonb) || ${JSON.stringify({
         executionAttemptId: attemptId,
-        executorKind: runtimeId ? "local_acp" : "cloud_agent",
+        executorKind: runtimeId ? "local_runtime" : "cloud_agent",
         ...(runtimeId ? { runtimeId, provider: runtime?.provider ?? null } : {}),
         workspaceExecutionBase: {
           canonicalSnapshotId: state.canonicalSnapshotId,

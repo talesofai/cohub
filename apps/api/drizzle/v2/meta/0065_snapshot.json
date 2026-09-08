@@ -4004,20 +4004,20 @@
           "primaryKey": false,
           "notNull": true
         },
-        "method": {
-          "name": "method",
+        "operation": {
+          "name": "operation",
           "type": "varchar(120)",
           "primaryKey": false,
           "notNull": true
         },
-        "params": {
-          "name": "params",
+        "payload": {
+          "name": "payload",
           "type": "jsonb",
           "primaryKey": false,
           "notNull": true
         },
-        "params_hash": {
-          "name": "params_hash",
+        "payload_hash": {
+          "name": "payload_hash",
           "type": "varchar(64)",
           "primaryKey": false,
           "notNull": true
@@ -4253,8 +4253,8 @@
           "primaryKey": false,
           "notNull": true
         },
-        "method": {
-          "name": "method",
+        "kind": {
+          "name": "kind",
           "type": "varchar(120)",
           "primaryKey": false,
           "notNull": true
@@ -4428,8 +4428,8 @@
           "primaryKey": false,
           "notNull": true
         },
-        "acp_session_id": {
-          "name": "acp_session_id",
+        "provider_session_id": {
+          "name": "provider_session_id",
           "type": "varchar(255)",
           "primaryKey": false,
           "notNull": true
@@ -4482,8 +4482,8 @@
         }
       },
       "indexes": {
-        "v2_uq_local_agent_runtime_sessions_runtime_acp": {
-          "name": "v2_uq_local_agent_runtime_sessions_runtime_acp",
+        "v2_uq_local_agent_runtime_sessions_runtime_provider": {
+          "name": "v2_uq_local_agent_runtime_sessions_runtime_provider",
           "columns": [
             {
               "expression": "runtime_id",
@@ -4492,7 +4492,7 @@
               "nulls": "last"
             },
             {
-              "expression": "acp_session_id",
+              "expression": "provider_session_id",
               "isExpression": false,
               "asc": true,
               "nulls": "last"

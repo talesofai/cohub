@@ -1,6 +1,51 @@
 package locald
 
-import "testing"
+import (
+	"encoding/json"
+	"strings"
+	"testing"
+)
+
+func TestPrepareLocalRuntimePermitRejectsNonReadyReplica(t *testing.T) {
+	for _, status := range []string{"", "attaching", "syncing", "offline", "conflicted", "detached", "error"} {
+		var state remoteReplicaState
+		if err := json.Unmarshal([]byte(`{"lease":{"holderKind":"local_agent","expiresAt":"2099-01-01T00:00:00Z"},"replica":{"status":"`+status+`"}}`), &state); err != nil {
+			t.Fatal(err)
+		}
+		_, err := (&Daemon{}).prepareLocalRuntimePermitFromState(&ReplicaState{
+			SpaceID:   "space",
+			ReplicaID: "replica",
+		}, state)
+		if err == nil || !strings.Contains(err.Error(), "ready local replica") {
+			t.Fatalf("expected non-ready replica status %q to reject a local runtime permit", status)
+		}
+	}
+}
+
+func TestPrepareLocalRuntimePermitRejectsUnsynchronizedReplica(t *testing.T) {
+	var state remoteReplicaState
+	if err := json.Unmarshal([]byte(`{"lease":{"holderKind":"local_agent","expiresAt":"2099-01-01T00:00:00Z"},"replica":{"status":"ready","appliedSnapshotId":"remote"}}`), &state); err != nil {
+		t.Fatal(err)
+	}
+	_, err := (&Daemon{}).prepareLocalRuntimePermitFromState(&ReplicaState{
+		SpaceID:           "space",
+		ReplicaID:         "replica",
+		AppliedSnapshotID: "local",
+	}, state)
+	if err == nil || !strings.Contains(err.Error(), "synchronized replica snapshot") {
+		t.Fatalf("expected mismatched replica snapshots to reject a local runtime permit, got %v", err)
+	}
+}
+
+func TestPrepareLocalRuntimePermitRejectsMissingReplica(t *testing.T) {
+	var state remoteReplicaState
+	if err := json.Unmarshal([]byte(`{"lease":{"holderKind":"local_agent","expiresAt":"2099-01-01T00:00:00Z"},"replica":{"status":"ready"}}`), &state); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := (&Daemon{}).prepareLocalRuntimePermitFromState(nil, state); err == nil {
+		t.Fatal("expected a missing local replica to reject a runtime permit")
+	}
+}
 
 func TestInitialCandidateBaseFollowsAttachStrategy(t *testing.T) {
 	replica := &ReplicaState{InitialChoice: "merge"}

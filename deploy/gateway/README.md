@@ -9,6 +9,9 @@ Gateway 负责维护与第三方 IM 平台（Discord、Telegram、Feishu 等）�
 - 提供 **HTTP API**（默认 8788 端口）供 Session Runtime 调用
 - 支持多副本水平扩展，API 自动分配 Channel 到各个节点
 - 通过 **HTTPRoute** 暴露外部访问（可选）
+- 为本地 sandbox/runtime relay 使用独立的 `*-runtime-relay` Service，并以
+  `ClientIP` affinity 保证 control/data WebSocket 落在同一个 Gateway Pod；普通
+  Gateway 流量仍使用无 affinity 的主 Service。
 
 ## 目录结构
 
@@ -84,4 +87,3 @@ cp values.example.yaml values.yaml
 ```
 
 Do not commit real `values.yaml` or `secrets.yaml`.
-

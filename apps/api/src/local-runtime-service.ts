@@ -1,10 +1,12 @@
-import { and, asc, eq, inArray, ne, sql } from "drizzle-orm";
+import { and, asc, eq, gt, inArray, ne, sql } from "drizzle-orm";
 import { localAgentRuntimes, localAgentDevices, localAgentRuntimeCommands, localAgentRuntimeSessions, sessionTurns, spaceLocalAgentPolicies, workspaceExecutionAttempts, workspaceReplicas, workspaceState, workspaceWriterLeases } from "@cohub/db";
 import {
-  LocalAcpProviderSchema,
-  LocalAcpRuntimeCapabilitiesSchema,
+  LOCAL_RUNTIME_PROTOCOL_VERSION,
+  isLocalRuntimeHeartbeatFresh,
+  LocalRuntimeProviderSchema,
+  LocalRuntimeCapabilitiesSchema,
   isUuid,
-  type LocalAcpProvider,
+  type LocalRuntimeProvider,
 } from "@cohub/protocol";
 import { db } from "./db/index.js";
 import { config } from "./config.js";
@@ -28,18 +30,66 @@ const bounded = (value: unknown, field: string, max: number) => {
 };
 
 const RUNTIME_REGISTRATION_UNIQUE_CONSTRAINT = "v2_uq_local_agent_runtimes_space_device_provider";
+const UNRESOLVED_ATTEMPT_STATUSES = ["queued", "prepared", "running", "workspace_sealed", "transcript_sealed", "awaiting_recovery"] as const;
+const CONNECTED_RUNTIME_STATUSES = ["connecting", "ready", "busy"] as const;
+const isConnectedRuntimeStatus = (status: string): status is (typeof CONNECTED_RUNTIME_STATUSES)[number] =>
+  CONNECTED_RUNTIME_STATUSES.some((value) => value === status);
 
-const providerEnabled = (provider: LocalAcpProvider) => {
-  if (!config.localAcpRuntimeEnabled) return false;
-  return provider === "pi"
-    ? config.localAcpPiEnabled
-    : provider === "codex"
-      ? config.localAcpCodexEnabled
-      : config.localAcpClaudeEnabled;
+export const validateGatewayWsEndpoint = (value: string | null | undefined): string | null => {
+  if (value == null) return null;
+  const candidate = value.trim();
+  if (!candidate || candidate.length > 2048) {
+    throw new LocalAgentServiceError("gatewayWsEndpoint is invalid", "invalid_gateway_endpoint", 400);
+  }
+  let url: URL;
+  try {
+    url = new URL(candidate);
+  } catch {
+    throw new LocalAgentServiceError("gatewayWsEndpoint is invalid", "invalid_gateway_endpoint", 400);
+  }
+  if ((url.protocol !== "ws:" && url.protocol !== "wss:")
+    || !url.hostname
+    || url.username
+    || url.password
+    || url.search
+    || url.hash
+    || (url.pathname !== "/internal/runtime-relay" && url.pathname !== "/internal/runtime-relay/")) {
+    throw new LocalAgentServiceError("gatewayWsEndpoint is invalid", "invalid_gateway_endpoint", 400);
+  }
+  return `${url.protocol}//${url.host}/internal/runtime-relay`;
 };
 
-export const isLocalAcpProviderEnabled = (value: string) => {
-  const parsed = LocalAcpProviderSchema.safeParse(value);
+export const shouldFenceLocalRuntimeRegistration = (input: {
+  status: string;
+  lastSeenAt: Date | null | undefined;
+  replicaChanged: boolean;
+}) => input.replicaChanged
+  || (isConnectedRuntimeStatus(input.status)
+    && !isLocalRuntimeHeartbeatFresh(input.lastSeenAt));
+
+/** Runtime frames and persisted registrations are pinned to the supported v1 contract. */
+export const assertSupportedLocalRuntimeProtocolVersion = (value: unknown): number => {
+  if (value !== LOCAL_RUNTIME_PROTOCOL_VERSION) {
+    throw new LocalAgentServiceError(
+      `local runtime protocol version ${String(value)} is unsupported`,
+      "unsupported_protocol",
+      400,
+    );
+  }
+  return LOCAL_RUNTIME_PROTOCOL_VERSION;
+};
+
+const providerEnabled = (provider: LocalRuntimeProvider) => {
+  if (!config.localRuntimeEnabled) return false;
+  return provider === "pi"
+    ? config.localRuntimePiEnabled
+    : provider === "codex"
+      ? config.localRuntimeCodexEnabled
+      : config.localRuntimeClaudeEnabled;
+};
+
+export const isLocalRuntimeProviderEnabled = (value: string) => {
+  const parsed = LocalRuntimeProviderSchema.safeParse(value);
   return parsed.success && providerEnabled(parsed.data);
 };
 
@@ -77,7 +127,7 @@ const assertActorCanUseSpace = async (actor: LocalAgentActor, spaceId: string) =
   }
 };
 
-export async function registerLocalAcpRuntime(input: {
+export async function registerLocalRuntime(input: {
   actor: LocalAgentActor;
   spaceId: string;
   replicaId: string;
@@ -87,42 +137,46 @@ export async function registerLocalAcpRuntime(input: {
   providerVersion?: string;
   adapterVersion?: string;
   capabilities?: Record<string, unknown>;
-  protocolVersion?: number;
+  protocolVersion: number;
 }) {
   assertUuid(input.spaceId, "spaceId");
   assertUuid(input.replicaId, "replicaId");
+  const protocolVersion = assertSupportedLocalRuntimeProtocolVersion(input.protocolVersion);
   const deviceId = input.actor.deviceId ?? (input.deviceId ? assertUuid(input.deviceId, "deviceId") : null);
   if (!deviceId) throw new LocalAgentServiceError("a device credential is required", "device_required", 401);
-  const provider = LocalAcpProviderSchema.parse(input.provider);
-  if (!providerEnabled(provider)) throw new LocalAgentServiceError(`${provider} local ACP runtime is disabled`, "provider_not_enabled", 403);
+  const provider = LocalRuntimeProviderSchema.parse(input.provider);
+  if (!providerEnabled(provider)) throw new LocalAgentServiceError(`${provider} local runtime is disabled`, "provider_not_enabled", 403);
   await assertActorCanUseSpace(input.actor, input.spaceId);
   const displayName = bounded(input.displayName, "displayName", 255);
-  const [device] = await db.select({ id: localAgentDevices.id }).from(localAgentDevices).where(and(
-    eq(localAgentDevices.id, deviceId),
-    eq(localAgentDevices.userUuid, input.actor.userUuid),
-    eq(localAgentDevices.status, "active"),
-    input.actor.credentialVersion != null ? eq(localAgentDevices.credentialVersion, input.actor.credentialVersion) : undefined,
-  )).limit(1);
-  if (!device) throw new LocalAgentServiceError("device is not enrolled or has been revoked", "device_not_found", 404);
-  const [replica] = await db.select({ id: workspaceReplicas.id, deviceId: workspaceReplicas.deviceId, status: workspaceReplicas.status }).from(workspaceReplicas).where(and(
-    eq(workspaceReplicas.id, input.replicaId),
-    eq(workspaceReplicas.spaceId, input.spaceId),
-    eq(workspaceReplicas.kind, "local"),
-    eq(workspaceReplicas.deviceId, deviceId),
-    ne(workspaceReplicas.status, "detached"),
-  )).limit(1);
-  if (!replica?.deviceId) throw new LocalAgentServiceError("local workspace replica is unavailable", "replica_not_found", 404);
-  const [integrationPolicy] = await db.select({ workspaceMode: spaceLocalAgentPolicies.workspaceMode }).from(spaceLocalAgentPolicies).where(and(
-    eq(spaceLocalAgentPolicies.spaceId, input.spaceId),
-    eq(spaceLocalAgentPolicies.deviceId, deviceId),
-  )).limit(1);
-  if (!integrationPolicy) throw new LocalAgentServiceError("local agent policy is unavailable", "policy_unavailable", 409);
-  if (integrationPolicy.workspaceMode === "one_way_to_local") {
-    throw new LocalAgentServiceError("local workspace is read-only under the current policy", "workspace_write_disabled", 403);
-  }
-
-  const capabilities = LocalAcpRuntimeCapabilitiesSchema.parse(input.capabilities ?? {});
+  const capabilities = LocalRuntimeCapabilitiesSchema.parse(input.capabilities ?? {});
   const persistRegistration = () => db.transaction(async (tx) => {
+    // Re-check and lock the authorization inputs in the same transaction as
+    // the runtime upsert. The preflight checks above used to leave a window
+    // where device revocation, replica detachment, or a policy change could
+    // race registration and still leave a usable runtime row behind.
+    const [device] = await tx.select({ id: localAgentDevices.id }).from(localAgentDevices).where(and(
+      eq(localAgentDevices.id, deviceId),
+      eq(localAgentDevices.userUuid, input.actor.userUuid),
+      eq(localAgentDevices.status, "active"),
+      input.actor.credentialVersion != null ? eq(localAgentDevices.credentialVersion, input.actor.credentialVersion) : undefined,
+    )).for("update").limit(1);
+    if (!device) throw new LocalAgentServiceError("device is not enrolled or has been revoked", "device_not_found", 404);
+    const [integrationPolicy] = await tx.select({ workspaceMode: spaceLocalAgentPolicies.workspaceMode }).from(spaceLocalAgentPolicies).where(and(
+      eq(spaceLocalAgentPolicies.spaceId, input.spaceId),
+      eq(spaceLocalAgentPolicies.deviceId, deviceId),
+    )).for("update").limit(1);
+    if (!integrationPolicy) throw new LocalAgentServiceError("local agent policy is unavailable", "policy_unavailable", 409);
+    if (integrationPolicy.workspaceMode === "one_way_to_local") {
+      throw new LocalAgentServiceError("local workspace is read-only under the current policy", "workspace_write_disabled", 403);
+    }
+    const [replica] = await tx.select({ id: workspaceReplicas.id, deviceId: workspaceReplicas.deviceId, status: workspaceReplicas.status }).from(workspaceReplicas).where(and(
+      eq(workspaceReplicas.id, input.replicaId),
+      eq(workspaceReplicas.spaceId, input.spaceId),
+      eq(workspaceReplicas.kind, "local"),
+      eq(workspaceReplicas.deviceId, deviceId),
+      ne(workspaceReplicas.status, "detached"),
+    )).for("update").limit(1);
+    if (!replica?.deviceId) throw new LocalAgentServiceError("local workspace replica is unavailable", "replica_not_found", 404);
     const [existing] = await tx.select().from(localAgentRuntimes).where(and(
       eq(localAgentRuntimes.spaceId, input.spaceId),
       eq(localAgentRuntimes.deviceId, deviceId),
@@ -137,29 +191,72 @@ export async function registerLocalAcpRuntime(input: {
       provider,
       displayName,
       providerVersion: bounded(input.providerVersion ?? "unknown", "providerVersion", 120),
-      adapterVersion: bounded(input.adapterVersion ?? "cohub-locald-acp-v1", "adapterVersion", 120),
-      protocolVersion: Number.isSafeInteger(input.protocolVersion) && (input.protocolVersion as number) > 0 ? input.protocolVersion as number : 1,
+      adapterVersion: bounded(input.adapterVersion ?? "cohub-local-runtime-v1", "adapterVersion", 120),
+      protocolVersion,
       capabilities: capabilities as unknown as Record<string, unknown>,
       status: "offline" as const,
       lastError: null,
       updatedAt: new Date(),
     };
     if (existing) {
-      if (existing.replicaId !== input.replicaId && ["connecting", "ready", "busy"].includes(existing.status)) {
-        throw new LocalAgentServiceError("cannot move a connected runtime to another workspace replica", "runtime_busy", 409);
+      const replicaChanged = existing.replicaId !== input.replicaId;
+      const staleConnection = isConnectedRuntimeStatus(existing.status)
+        && !isLocalRuntimeHeartbeatFresh(existing.lastSeenAt);
+      const connectionFenced = shouldFenceLocalRuntimeRegistration({
+        status: existing.status,
+        lastSeenAt: existing.lastSeenAt,
+        replicaChanged,
+      });
+      const now = new Date();
+      if (existing.protocolVersion !== protocolVersion) {
+        throw new LocalAgentServiceError(
+          `local runtime protocol version ${existing.protocolVersion} is unsupported`,
+          "unsupported_protocol",
+          409,
+        );
       }
+      if (existing.replicaId !== input.replicaId) {
+        // Runtime status is only a connection hint. The attempt ledger and
+        // writer lease are the authoritative handoff state, so a registration
+        // update must not orphan work created for the old replica.
+        const [unresolvedAttempt] = await tx.select({ id: workspaceExecutionAttempts.id }).from(workspaceExecutionAttempts).where(and(
+          eq(workspaceExecutionAttempts.spaceId, input.spaceId),
+          eq(workspaceExecutionAttempts.runtimeId, existing.id),
+          inArray(workspaceExecutionAttempts.status, [...UNRESOLVED_ATTEMPT_STATUSES]),
+        )).for("update").limit(1);
+        if (unresolvedAttempt) {
+          throw new LocalAgentServiceError("cannot move a runtime with an unresolved execution attempt", "runtime_busy", 409);
+        }
+        const [activeLease] = await tx.select({ holderId: workspaceWriterLeases.holderId }).from(workspaceWriterLeases)
+          .innerJoin(workspaceExecutionAttempts, and(
+            eq(workspaceExecutionAttempts.id, workspaceWriterLeases.holderId),
+            eq(workspaceExecutionAttempts.runtimeId, existing.id),
+          ))
+          .where(and(
+            eq(workspaceWriterLeases.spaceId, input.spaceId),
+            eq(workspaceWriterLeases.holderKind, "local_agent"),
+            gt(workspaceWriterLeases.expiresAt, new Date()),
+          )).for("update").limit(1);
+        if (activeLease) {
+          throw new LocalAgentServiceError("cannot move a runtime with an active workspace lease", "runtime_busy", 409);
+        }
+      }
+      const preserveGatewayRoute = isConnectedRuntimeStatus(existing.status) && !connectionFenced;
       const [updated] = await tx.update(localAgentRuntimes).set({
         ...values,
-        status: existing.status,
-        connectionEpoch: existing.connectionEpoch,
-        connectedAt: existing.connectedAt,
-        disconnectedAt: existing.disconnectedAt,
-        lastSeenAt: existing.lastSeenAt,
+        status: connectionFenced ? "offline" : existing.status,
+        connectionEpoch: connectionFenced ? existing.connectionEpoch + 1 : existing.connectionEpoch,
+        gatewayNodeId: preserveGatewayRoute ? existing.gatewayNodeId : null,
+        gatewayWsEndpoint: preserveGatewayRoute ? existing.gatewayWsEndpoint : null,
+        connectedAt: connectionFenced ? null : existing.connectedAt,
+        disconnectedAt: connectionFenced ? now : existing.disconnectedAt,
+        lastSeenAt: connectionFenced ? null : existing.lastSeenAt,
+        lastError: staleConnection ? "runtime heartbeat expired" : null,
       }).where(eq(localAgentRuntimes.id, existing.id)).returning();
       return updated ?? existing;
     }
     const [created] = await tx.insert(localAgentRuntimes).values(values).returning();
-    if (!created) throw new LocalAgentServiceError("failed to register local ACP runtime", "runtime_registration_failed", 500);
+    if (!created) throw new LocalAgentServiceError("failed to register local runtime", "runtime_registration_failed", 500);
     return created;
   });
   let result: typeof localAgentRuntimes.$inferSelect;
@@ -174,7 +271,7 @@ export async function registerLocalAcpRuntime(input: {
   return serialize(result);
 }
 
-export async function listLocalAcpRuntimes(input: { actor: LocalAgentActor; spaceId: string }) {
+export async function listLocalRuntimes(input: { actor: LocalAgentActor; spaceId: string }) {
   assertUuid(input.spaceId, "spaceId");
   await assertActorCanViewSpace(input.actor, input.spaceId);
   const visibility = input.actor.deviceId
@@ -184,7 +281,7 @@ export async function listLocalAcpRuntimes(input: { actor: LocalAgentActor; spac
   return { runtimes: rows.map(serialize) };
 }
 
-export async function getLocalAcpRuntime(input: { actor: LocalAgentActor; spaceId: string; runtimeId: string }) {
+export async function getLocalRuntime(input: { actor: LocalAgentActor; spaceId: string; runtimeId: string }) {
   assertUuid(input.spaceId, "spaceId");
   assertUuid(input.runtimeId, "runtimeId");
   await assertActorCanViewSpace(input.actor, input.spaceId);
@@ -192,11 +289,11 @@ export async function getLocalAcpRuntime(input: { actor: LocalAgentActor; spaceI
   if (input.actor.deviceId) conditions.push(eq(localAgentRuntimes.deviceId, input.actor.deviceId));
   else conditions.push(eq(localAgentRuntimes.userUuid, input.actor.userUuid));
   const [row] = await db.select().from(localAgentRuntimes).where(and(...conditions)).limit(1);
-  if (!row) throw new LocalAgentServiceError("local ACP runtime not found", "runtime_not_found", 404);
+  if (!row) throw new LocalAgentServiceError("local runtime not found", "runtime_not_found", 404);
   return serialize(row);
 }
 
-export async function revokeLocalAcpRuntime(input: { actor: LocalAgentActor; spaceId: string; runtimeId: string }) {
+export async function revokeLocalRuntime(input: { actor: LocalAgentActor; spaceId: string; runtimeId: string }) {
   assertUuid(input.spaceId, "spaceId");
   assertUuid(input.runtimeId, "runtimeId");
   await assertActorCanUseSpace(input.actor, input.spaceId);
@@ -206,16 +303,18 @@ export async function revokeLocalAcpRuntime(input: { actor: LocalAgentActor; spa
   let abortRequests: Array<{ sessionId: string; turnId: string }> = [];
   const result = await db.transaction(async (tx) => {
     const [runtime] = await tx.select().from(localAgentRuntimes).where(and(...conditions)).for("update").limit(1);
-    if (!runtime) throw new LocalAgentServiceError("local ACP runtime not found", "runtime_not_found", 404);
+    if (!runtime) throw new LocalAgentServiceError("local runtime not found", "runtime_not_found", 404);
     const revokedAt = new Date();
     const [row] = await tx.update(localAgentRuntimes).set({
       status: "revoked",
       connectionEpoch: sql`${localAgentRuntimes.connectionEpoch} + 1`,
+      gatewayNodeId: null,
+      gatewayWsEndpoint: null,
       disconnectedAt: revokedAt,
       lastError: "runtime revoked",
       updatedAt: revokedAt,
     }).where(eq(localAgentRuntimes.id, runtime.id)).returning();
-    if (!row) throw new LocalAgentServiceError("local ACP runtime disappeared during revoke", "runtime_revoke_failed", 500);
+    if (!row) throw new LocalAgentServiceError("local runtime disappeared during revoke", "runtime_revoke_failed", 500);
     const attempts = await tx.select({ id: workspaceExecutionAttempts.id, sessionId: workspaceExecutionAttempts.sessionId, turnId: workspaceExecutionAttempts.turnId, status: workspaceExecutionAttempts.status }).from(workspaceExecutionAttempts).where(and(
       eq(workspaceExecutionAttempts.spaceId, input.spaceId),
       eq(workspaceExecutionAttempts.runtimeId, runtime.id),
@@ -230,7 +329,7 @@ export async function revokeLocalAcpRuntime(input: { actor: LocalAgentActor; spa
     await tx.update(localAgentRuntimeCommands).set({
       status: "failed",
       errorCode: -32004,
-      errorMessage: "local ACP runtime was revoked",
+      errorMessage: "local runtime was revoked",
       updatedAt: revokedAt,
     }).where(and(
       eq(localAgentRuntimeCommands.runtimeId, runtime.id),
@@ -240,7 +339,7 @@ export async function revokeLocalAcpRuntime(input: { actor: LocalAgentActor; spa
       await tx.update(workspaceExecutionAttempts).set({
         status: "aborted",
         errorCode: "runtime_revoked",
-        errorMessage: "local ACP runtime was revoked",
+        errorMessage: "local runtime was revoked",
         completedAt: revokedAt,
         updatedAt: revokedAt,
       }).where(inArray(workspaceExecutionAttempts.id, attemptIds));
@@ -261,7 +360,7 @@ export async function revokeLocalAcpRuntime(input: { actor: LocalAgentActor; spa
       if (turnIds.length > 0) {
         await tx.update(sessionTurns).set({
           status: "failed",
-          errorMessage: "local ACP runtime was revoked",
+          errorMessage: "local runtime was revoked",
           summary: { finishReason: "failed", reason: "runtime_revoked" },
           completedAt: revokedAt,
           updatedAt: revokedAt,
@@ -288,7 +387,7 @@ export async function revokeLocalAcpRuntime(input: { actor: LocalAgentActor; spa
 
 type PolicyTransaction = Parameters<Parameters<typeof db.transaction>[0]>[0];
 
-async function fenceLocalAcpRuntimesInTransaction(tx: PolicyTransaction, input: {
+async function fenceLocalRuntimesInTransaction(tx: PolicyTransaction, input: {
   spaceId: string;
   deviceId: string;
   errorMessage: string;
@@ -305,6 +404,8 @@ async function fenceLocalAcpRuntimesInTransaction(tx: PolicyTransaction, input: 
   await tx.update(localAgentRuntimes).set({
     status: "offline",
     connectionEpoch: sql`${localAgentRuntimes.connectionEpoch} + 1`,
+    gatewayNodeId: null,
+    gatewayWsEndpoint: null,
     disconnectedAt: fencedAt,
     lastError: input.errorMessage,
     updatedAt: fencedAt,
@@ -408,7 +509,7 @@ export async function updateLocalAgentPolicy(input: {
       eq(spaceLocalAgentPolicies.deviceId, input.deviceId),
     )).for("update").limit(1);
     if (!row || row.integrationPolicyVersion !== input.expectedVersion) return null;
-    abortRequests = await fenceLocalAcpRuntimesInTransaction(tx, { spaceId: input.spaceId, deviceId: input.deviceId, errorMessage: fenceMessage });
+    abortRequests = await fenceLocalRuntimesInTransaction(tx, { spaceId: input.spaceId, deviceId: input.deviceId, errorMessage: fenceMessage });
     const [next] = await tx.update(spaceLocalAgentPolicies).set({
       workspaceMode: input.workspaceMode,
       integrationPolicyVersion: row.integrationPolicyVersion + 1,
@@ -433,15 +534,17 @@ export async function updateLocalAgentPolicy(input: {
   return updated;
 }
 
-export async function authorizeLocalAcpRuntime(input: {
+export async function authorizeLocalRuntime(input: {
   runtimeId: string;
   spaceId: string;
   actor: LocalAgentActor;
+  protocolVersion: number;
   gatewayNodeId?: string | null;
   gatewayWsEndpoint?: string | null;
 }) {
   assertUuid(input.runtimeId, "runtimeId");
   assertUuid(input.spaceId, "spaceId");
+  const protocolVersion = assertSupportedLocalRuntimeProtocolVersion(input.protocolVersion);
   if (!input.actor.deviceId) throw new LocalAgentServiceError("runtime device credential is required", "device_required", 401);
   await assertActorCanUseSpace(input.actor, input.spaceId);
   const result = await db.transaction(async (tx) => {
@@ -459,8 +562,37 @@ export async function authorizeLocalAcpRuntime(input: {
       eq(localAgentRuntimes.userUuid, input.actor.userUuid),
       ne(localAgentRuntimes.status, "revoked"),
     )).for("update").limit(1);
-    if (!row) throw new LocalAgentServiceError("local ACP runtime is not registered for this Space", "runtime_not_found", 404);
-    if (!providerEnabled(row.provider)) throw new LocalAgentServiceError(`${row.provider} local ACP runtime is disabled`, "provider_not_enabled", 403);
+    if (!row) throw new LocalAgentServiceError("local runtime is not registered for this Space", "runtime_not_found", 404);
+    const [replica] = await tx.select({
+      appliedSnapshotId: workspaceReplicas.appliedSnapshotId,
+      workspaceStatus: workspaceState.status,
+      workspaceCanonicalSnapshotId: workspaceState.canonicalSnapshotId,
+    }).from(workspaceReplicas)
+      .innerJoin(workspaceState, eq(workspaceState.spaceId, workspaceReplicas.spaceId))
+      .where(and(
+        eq(workspaceReplicas.id, row.replicaId),
+        eq(workspaceReplicas.spaceId, input.spaceId),
+        eq(workspaceReplicas.kind, "local"),
+        eq(workspaceReplicas.deviceId, input.actor.deviceId as string),
+        eq(workspaceReplicas.userUuid, input.actor.userUuid),
+        eq(workspaceReplicas.status, "ready"),
+      ))
+      .for("update", { of: workspaceReplicas })
+      .limit(1);
+    if (!replica) {
+      throw new LocalAgentServiceError("local workspace replica is not ready for this runtime", "runtime_replica_not_ready", 409);
+    }
+    if (replica.workspaceStatus !== "ready" || !replica.workspaceCanonicalSnapshotId || replica.appliedSnapshotId !== replica.workspaceCanonicalSnapshotId) {
+      throw new LocalAgentServiceError("local workspace replica is not synchronized for this runtime", "runtime_replica_not_ready", 409);
+    }
+    if (row.protocolVersion !== protocolVersion) {
+      throw new LocalAgentServiceError(
+        `local runtime protocol version ${row.protocolVersion} is unsupported`,
+        "unsupported_protocol",
+        409,
+      );
+    }
+    if (!providerEnabled(row.provider)) throw new LocalAgentServiceError(`${row.provider} local runtime is disabled`, "provider_not_enabled", 403);
     const [integrationPolicy] = await tx.select({ workspaceMode: spaceLocalAgentPolicies.workspaceMode }).from(spaceLocalAgentPolicies).where(and(
       eq(spaceLocalAgentPolicies.spaceId, input.spaceId),
       eq(spaceLocalAgentPolicies.deviceId, input.actor.deviceId as string),
@@ -471,9 +603,9 @@ export async function authorizeLocalAcpRuntime(input: {
     }
     const now = new Date();
     const gatewayNodeId = input.gatewayNodeId == null ? null : bounded(input.gatewayNodeId, "gatewayNodeId", 255);
-    const gatewayWsEndpoint = input.gatewayWsEndpoint == null ? null : bounded(input.gatewayWsEndpoint, "gatewayWsEndpoint", 2048);
-    if (gatewayWsEndpoint && !/^wss?:\/\//i.test(gatewayWsEndpoint)) {
-      throw new LocalAgentServiceError("gatewayWsEndpoint is invalid", "invalid_gateway_endpoint", 400);
+    const gatewayWsEndpoint = validateGatewayWsEndpoint(input.gatewayWsEndpoint);
+    if ((gatewayNodeId == null) !== (gatewayWsEndpoint == null)) {
+      throw new LocalAgentServiceError("gateway node and peer endpoint must be provided together", "invalid_gateway_endpoint", 400);
     }
     const [updated] = await tx.update(localAgentRuntimes).set({
       status: "ready",
@@ -486,7 +618,7 @@ export async function authorizeLocalAcpRuntime(input: {
       lastError: null,
       updatedAt: now,
     }).where(and(eq(localAgentRuntimes.id, row.id), ne(localAgentRuntimes.status, "revoked"))).returning();
-    if (!updated) throw new LocalAgentServiceError("local ACP runtime was revoked during authorization", "runtime_revoked", 401);
+    if (!updated) throw new LocalAgentServiceError("local runtime was revoked during authorization", "runtime_revoked", 401);
     return updated;
   });
   return {
@@ -494,17 +626,19 @@ export async function authorizeLocalAcpRuntime(input: {
     spaceId: result.spaceId,
     replicaId: result.replicaId,
     provider: result.provider,
+    protocolVersion: result.protocolVersion,
     connectionEpoch: result.connectionEpoch,
     capabilities: result.capabilities,
   };
 }
 
-export async function touchLocalAcpRuntime(input: { runtimeId: string; connectionEpoch: number; actor: LocalAgentActor }) {
+export async function touchLocalRuntime(input: { runtimeId: string; connectionEpoch: number; actor: LocalAgentActor; protocolVersion: number }) {
   assertUuid(input.runtimeId, "runtimeId");
   if (!Number.isSafeInteger(input.connectionEpoch) || input.connectionEpoch < 1) throw new LocalAgentServiceError("connectionEpoch is invalid", "invalid_epoch", 400);
+  const protocolVersion = assertSupportedLocalRuntimeProtocolVersion(input.protocolVersion);
   if (!input.actor.deviceId) throw new LocalAgentServiceError("runtime device credential is required", "device_required", 401);
-  const [runtime] = await db.select({ spaceId: localAgentRuntimes.spaceId, userUuid: localAgentRuntimes.userUuid, deviceId: localAgentRuntimes.deviceId, provider: localAgentRuntimes.provider }).from(localAgentRuntimes).where(eq(localAgentRuntimes.id, input.runtimeId)).limit(1);
-  if (!runtime || runtime.userUuid !== input.actor.userUuid || runtime.deviceId !== input.actor.deviceId || !isLocalAcpProviderEnabled(runtime.provider)) return false;
+  const [runtime] = await db.select({ spaceId: localAgentRuntimes.spaceId, userUuid: localAgentRuntimes.userUuid, deviceId: localAgentRuntimes.deviceId, provider: localAgentRuntimes.provider, protocolVersion: localAgentRuntimes.protocolVersion, status: localAgentRuntimes.status }).from(localAgentRuntimes).where(eq(localAgentRuntimes.id, input.runtimeId)).limit(1);
+  if (!runtime || runtime.userUuid !== input.actor.userUuid || runtime.deviceId !== input.actor.deviceId || runtime.protocolVersion !== protocolVersion || !isLocalRuntimeProviderEnabled(runtime.provider) || !["connecting", "ready", "busy"].includes(runtime.status)) return false;
   if (!(await hasPermission({ uuid: input.actor.userUuid }, "file.edit", { spaceId: runtime.spaceId }))) return false;
   const [device] = await db.select({ id: localAgentDevices.id }).from(localAgentDevices).where(and(
     eq(localAgentDevices.id, input.actor.deviceId),
@@ -522,7 +656,7 @@ export async function touchLocalAcpRuntime(input: { runtimeId: string; connectio
     eq(localAgentRuntimes.connectionEpoch, input.connectionEpoch),
     eq(localAgentRuntimes.deviceId, input.actor.deviceId),
     eq(localAgentRuntimes.userUuid, input.actor.userUuid),
-    ne(localAgentRuntimes.status, "revoked"),
+    inArray(localAgentRuntimes.status, ["connecting", "ready", "busy"]),
     sql`exists (
       select 1 from v2.space_local_agent_policies policy
       where policy.space_id = ${localAgentRuntimes.spaceId}
@@ -533,22 +667,70 @@ export async function touchLocalAcpRuntime(input: { runtimeId: string; connectio
   return Boolean(row);
 }
 
-export async function reportLocalAcpRuntimeStatus(input: {
+export async function reportLocalRuntimeStatus(input: {
   runtimeId: string;
   connectionEpoch: number;
+  protocolVersion: number;
+  actor: LocalAgentActor;
   status: "ready" | "offline" | "error";
   error?: string | null;
 }) {
   assertUuid(input.runtimeId, "runtimeId");
   if (!Number.isSafeInteger(input.connectionEpoch) || input.connectionEpoch < 1) throw new LocalAgentServiceError("connectionEpoch is invalid", "invalid_epoch", 400);
+  const protocolVersion = assertSupportedLocalRuntimeProtocolVersion(input.protocolVersion);
+  if (!input.actor.deviceId) throw new LocalAgentServiceError("runtime device credential is required", "device_required", 401);
+  const [device] = await db.select({ id: localAgentDevices.id }).from(localAgentDevices).where(and(
+    eq(localAgentDevices.id, input.actor.deviceId),
+    eq(localAgentDevices.userUuid, input.actor.userUuid),
+    eq(localAgentDevices.status, "active"),
+    input.actor.credentialVersion != null ? eq(localAgentDevices.credentialVersion, input.actor.credentialVersion) : undefined,
+  )).limit(1);
+  if (!device) return null;
   const errorMessage = input.error == null ? null : bounded(input.error, "error", 2000);
   const current = new Date();
+  const allowedStatuses = input.status === "offline"
+    ? ["connecting", "ready", "busy", "error", "offline"]
+    : input.status === "ready"
+      ? ["connecting", "ready", "busy"]
+      : ["connecting", "ready", "busy", "error"];
+  const [runtime] = await db.select({ provider: localAgentRuntimes.provider, spaceId: localAgentRuntimes.spaceId }).from(localAgentRuntimes).where(and(
+    eq(localAgentRuntimes.id, input.runtimeId),
+    eq(localAgentRuntimes.connectionEpoch, input.connectionEpoch),
+    eq(localAgentRuntimes.protocolVersion, protocolVersion),
+    eq(localAgentRuntimes.deviceId, input.actor.deviceId),
+    eq(localAgentRuntimes.userUuid, input.actor.userUuid),
+    ne(localAgentRuntimes.status, "revoked"),
+  )).limit(1);
+  if (!runtime || (input.status !== "offline" && !isLocalRuntimeProviderEnabled(runtime.provider))) return null;
+  // A runtime may report an error or go offline while its user is being
+  // revoked, but it must not transition back to `ready` without a current
+  // workspace write grant. Keep this check on the ready path only so cleanup
+  // from a stale connection remains possible.
+  if (input.status === "ready" && !(await hasPermission({ uuid: input.actor.userUuid }, "file.edit", {
+    spaceId: runtime.spaceId,
+  }))) return null;
   const [row] = await db.update(localAgentRuntimes).set({
     status: input.status,
     lastSeenAt: current,
+    ...(input.status === "offline" ? { gatewayNodeId: null, gatewayWsEndpoint: null } : {}),
     ...(input.status === "offline" ? { disconnectedAt: current } : { connectedAt: current, disconnectedAt: null }),
     lastError: errorMessage,
     updatedAt: current,
-  }).where(and(eq(localAgentRuntimes.id, input.runtimeId), eq(localAgentRuntimes.connectionEpoch, input.connectionEpoch), ne(localAgentRuntimes.status, "revoked"))).returning();
+  }).where(and(
+    eq(localAgentRuntimes.id, input.runtimeId),
+    eq(localAgentRuntimes.connectionEpoch, input.connectionEpoch),
+    eq(localAgentRuntimes.protocolVersion, protocolVersion),
+    eq(localAgentRuntimes.deviceId, input.actor.deviceId),
+    eq(localAgentRuntimes.userUuid, input.actor.userUuid),
+    inArray(localAgentRuntimes.status, allowedStatuses as Array<typeof localAgentRuntimes.$inferSelect["status"]>),
+    ...(input.status === "ready"
+      ? [sql`exists (
+          select 1 from v2.space_local_agent_policies policy
+          where policy.space_id = ${localAgentRuntimes.spaceId}
+            and policy.device_id = ${localAgentRuntimes.deviceId}
+            and policy.workspace_mode <> 'one_way_to_local'
+        )`]
+      : []),
+  )).returning();
   return row ? serialize(row) : null;
 }

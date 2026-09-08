@@ -91,7 +91,7 @@ pnpm dev
 
 ## Local Agent daemon
 
-`cmd/locald` builds the independent `cohub-locald` daemon used for workspace replicas and the local ACP runtime. It does not register a `space_sandboxes` record and never accesses Postgres, Redis, or `/sessions` directly.
+`cmd/locald` builds the independent `cohub-locald` daemon used for workspace replicas and the local runtime. It does not register a `space_sandboxes` record and never accesses Postgres, Redis, or `/sessions` directly.
 
 ```bash
 cd apps/sandbox
@@ -104,15 +104,15 @@ Release artifacts are built by `.github/workflows/locald-binaries-build.yml` for
 
 Before moving the CLI pin, publish the runtime tag and verify every CDN checksum. Then update `LOCALD_VERSION` in `packages/cli/src/commands/locald-binary.ts`.
 
-### Local ACP runtime
+### Local runtime
 
-`cohub-locald runtime` is the ACP host for an enrolled local provider. It
+`cohub-locald runtime` is the local runtime host for an enrolled local provider. It
 connects outbound to the Gateway runtime relay, starts the official provider
-adapter with the attached replica as its working directory, and forwards ACP
-JSON-RPC over stdio. It does not expose a Cohub tool server or register MCP
-servers. Supported default adapter binaries are `pi-acp`, `codex-acp`, and
-`claude-agent-acp`; provider credentials and native session files stay in the
-provider's normal user profile.
+adapter with the attached replica as its working directory, and forwards
+provider-neutral local-runtime frames over stdio. It does not expose a Cohub tool server
+or register MCP servers. The default host binary is `cohub-agent-runtime`; it
+selects the native SDK adapter from the registered provider. Provider
+credentials and native session files stay in the provider's normal user profile.
 
 ## Docker 构建
 

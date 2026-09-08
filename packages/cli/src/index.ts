@@ -54,6 +54,7 @@ Common commands:
   cohub -s <space-id> run -- git status
   cohub sandbox up ./my-project
   cohub workspace attach <space-id> ./my-project
+  cohub agent runtime start <space-id> --root ./my-project
   cohub search "release notes"
   cohub -s <space-id> boards inspect <board-id>
   cohub -s <space-id> spaces turns ls --author others

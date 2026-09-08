@@ -41,17 +41,17 @@ test("matching prevalidated model skips duplicate model validation", async () =>
   assert.equal(validationCalls, 0);
 });
 
-test("local ACP runtime rejects a Cohub model override", async () => {
+test("local runtime rejects a Cohub model override", async () => {
   await assert.rejects(
     submitSessionPrompt(
       createDeps(async () => true),
       { ...input, runtimeId: "runtime-1" },
     ),
-    /local ACP runtime uses its own provider configuration/,
+    /local runtime uses its own provider configuration/,
   );
 });
 
-test("local ACP runtime rejects Cohub generation and environment overrides", async () => {
+test("local runtime rejects Cohub generation and environment overrides", async () => {
   await assert.rejects(
     submitSessionPrompt(
       createDeps(async () => true),
@@ -62,7 +62,7 @@ test("local ACP runtime rejects Cohub generation and environment overrides", asy
         generationPolicy: { version: 1, mode: "limited" },
       },
     ),
-    /local ACP runtime uses its provider's own generation configuration/,
+    /local runtime uses its provider's own generation configuration/,
   );
   await assert.rejects(
     submitSessionPrompt(
@@ -74,17 +74,17 @@ test("local ACP runtime rejects Cohub generation and environment overrides", asy
         env: { TEST_VALUE: "ignored" },
       },
     ),
-    /local ACP runtime does not accept Cohub environment overrides/,
+    /local runtime does not accept Cohub environment overrides/,
   );
 });
 
-test("local ACP runtime rejects scheduled execution", async () => {
+test("local runtime rejects scheduled execution", async () => {
   await assert.rejects(
     submitSessionPrompt(
       createDeps(async () => true),
       { ...input, model: null, runtimeId: "runtime-1", source: "scheduled_task" },
     ),
-    /local ACP runtime prompts must run immediately/,
+    /local runtime prompts must run immediately/,
   );
 });
 

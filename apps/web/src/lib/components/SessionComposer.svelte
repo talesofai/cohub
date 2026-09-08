@@ -1,7 +1,7 @@
 <script lang="ts">
 import type { ViewportContext } from "@cohub/protocol";
 import type {
-	LocalAcpRuntimeRecord,
+	LocalRuntimeRecord,
 	PromptTemplateCatalogEntry,
 	SkillCatalogEntry,
 	VoiceInputClient,
@@ -115,7 +115,7 @@ type Props = {
 	onremoveattachment?: (id: string) => void;
 	onremoveviewport?: (id: string) => void;
 	onModelSelect?: () => void;
-	localRuntimes?: LocalAcpRuntimeRecord[];
+	localRuntimes?: LocalRuntimeRecord[];
 	selectedRuntimeId?: string | null;
 	onRuntimeSelect?: (runtimeId: string | null) => void;
 };

@@ -79,10 +79,10 @@ export type AppConfig = {
   /** Optional Meta Events Manager test code; omit in normal production traffic. */
   metaPromotionTestEventCode?: string;
   workspaceReplicationEnabled: boolean;
-  localAcpRuntimeEnabled: boolean;
-  localAcpPiEnabled: boolean;
-  localAcpClaudeEnabled: boolean;
-  localAcpCodexEnabled: boolean;
+  localRuntimeEnabled: boolean;
+  localRuntimePiEnabled: boolean;
+  localRuntimeClaudeEnabled: boolean;
+  localRuntimeCodexEnabled: boolean;
 };
 
 export type SandboxToleration = {
@@ -273,16 +273,16 @@ export const config: AppConfig = {
     env === "dev" && Boolean((process.env.WORKSPACE_OBJECT_ENDPOINT ?? process.env.USER_UPLOAD_S3_ENDPOINT) && (process.env.WORKSPACE_OBJECT_BUCKET ?? process.env.SPACE_UPLOAD_S3_BUCKET) && (process.env.WORKSPACE_OBJECT_ACCESS_KEY_ID ?? process.env.USER_UPLOAD_S3_ACCESS_KEY_ID) && (process.env.WORKSPACE_OBJECT_SECRET_ACCESS_KEY ?? process.env.USER_UPLOAD_S3_SECRET_ACCESS_KEY)),
     "WORKSPACE_REPLICATION_ENABLED",
   ),
-  localAcpRuntimeEnabled: parseBoolean(process.env.LOCAL_ACP_RUNTIME_ENABLED, false, "LOCAL_ACP_RUNTIME_ENABLED"),
-  localAcpPiEnabled: parseBoolean(process.env.LOCAL_ACP_PI_ENABLED, env === "dev", "LOCAL_ACP_PI_ENABLED"),
-  localAcpClaudeEnabled: parseBoolean(process.env.LOCAL_ACP_CLAUDE_ENABLED, false, "LOCAL_ACP_CLAUDE_ENABLED"),
-  localAcpCodexEnabled: parseBoolean(process.env.LOCAL_ACP_CODEX_ENABLED, false, "LOCAL_ACP_CODEX_ENABLED"),
+  localRuntimeEnabled: parseBoolean(process.env.LOCAL_RUNTIME_ENABLED, false, "LOCAL_RUNTIME_ENABLED"),
+  localRuntimePiEnabled: parseBoolean(process.env.LOCAL_RUNTIME_PI_ENABLED, env === "dev", "LOCAL_RUNTIME_PI_ENABLED"),
+  localRuntimeClaudeEnabled: parseBoolean(process.env.LOCAL_RUNTIME_CLAUDE_ENABLED, env === "dev", "LOCAL_RUNTIME_CLAUDE_ENABLED"),
+  localRuntimeCodexEnabled: parseBoolean(process.env.LOCAL_RUNTIME_CODEX_ENABLED, env === "dev", "LOCAL_RUNTIME_CODEX_ENABLED"),
 };
 
-// Local ACP runtimes require replication; default the flag to follow it in dev
+// Local provider runtimes require replication; default the flag to follow it in dev
 // so an explicit `false` still wins but an unset flag never contradicts it.
-if (process.env.LOCAL_ACP_RUNTIME_ENABLED == null || process.env.LOCAL_ACP_RUNTIME_ENABLED.trim() === "") {
-  config.localAcpRuntimeEnabled = config.env === "dev" && config.workspaceReplicationEnabled;
+if (process.env.LOCAL_RUNTIME_ENABLED == null || process.env.LOCAL_RUNTIME_ENABLED.trim() === "") {
+  config.localRuntimeEnabled = config.env === "dev" && config.workspaceReplicationEnabled;
 }
 
 export const sessionsNamespace = getSessionsNamespace(config.env);
@@ -306,7 +306,7 @@ export const assertRequiredConfig = () => {
     if (!config.workspaceObjectAccessKeyId) throw new Error("Missing required env: WORKSPACE_OBJECT_ACCESS_KEY_ID");
     if (!config.workspaceObjectSecretAccessKey) throw new Error("Missing required env: WORKSPACE_OBJECT_SECRET_ACCESS_KEY");
   }
-  if (config.localAcpRuntimeEnabled && !config.workspaceReplicationEnabled) {
-    throw new Error("LOCAL_ACP_RUNTIME_ENABLED requires WORKSPACE_REPLICATION_ENABLED");
+  if (config.localRuntimeEnabled && !config.workspaceReplicationEnabled) {
+    throw new Error("LOCAL_RUNTIME_ENABLED requires WORKSPACE_REPLICATION_ENABLED");
   }
 };

@@ -3,7 +3,7 @@ import { AuthorizationError, verifyUserAccessToken } from "@cohub/identity";
 import { buildTraceHeaders, getTraceResponseHeaders, type TraceIdentifiers } from "@cohub/infra/tracing";
 import type { ContentBlock } from "@cohub/protocol/core";
 import type { RealtimeRoom, RealtimeRoomDescriptor } from "@cohub/protocol/realtime";
-import type { BillingPayload } from "@cohub/protocol";
+import { LOCAL_RUNTIME_PROTOCOL_VERSION, type BillingPayload } from "@cohub/protocol";
 import type { GatewayAuthUser } from "./config.js";
 import { gatewayConfig } from "./config.js";
 
@@ -368,13 +368,14 @@ export type LocalSandboxAuthorizeResult =
   | { ok: true; spaceId: string; userId: string }
   | { ok: false; status: number; message: string };
 
-export type LocalAcpRuntimeAuthorizeResult =
+export type LocalRuntimeAuthorizeResult =
   | {
       ok: true;
       runtimeId: string;
       spaceId: string;
       replicaId: string | null;
       provider: string;
+      protocolVersion: number;
       connectionEpoch: number;
       capabilities: Record<string, unknown>;
     }
@@ -405,14 +406,15 @@ export const authorizeLocalSandbox = async (input: {
 
 // Report a local sandbox connection state transition (ready on connect,
 // stopped on disconnect). The gateway is the sole reporter for local sandboxes.
-export const authorizeLocalAcpRuntime = async (input: {
+export const authorizeLocalRuntime = async (input: {
   authToken: string;
   runtimeId: string;
   spaceId: string;
+  protocolVersion: number;
   gatewayNodeId?: string;
   gatewayWsEndpoint?: string;
-}): Promise<LocalAcpRuntimeAuthorizeResult> => {
-  const response = await fetch(`${gatewayConfig.apiBaseUrl}/internal/gateway/local-acp-runtime/authorize`, {
+}): Promise<LocalRuntimeAuthorizeResult> => {
+  const response = await fetch(`${gatewayConfig.apiBaseUrl}/internal/gateway/local-runtime/authorize`, {
     method: "POST",
     headers: {
       "content-type": "application/json",
@@ -423,6 +425,7 @@ export const authorizeLocalAcpRuntime = async (input: {
     body: JSON.stringify({
       runtimeId: input.runtimeId,
       spaceId: input.spaceId,
+      protocolVersion: input.protocolVersion,
       gatewayNodeId: input.gatewayNodeId,
       gatewayWsEndpoint: input.gatewayWsEndpoint,
     }),
@@ -433,18 +436,20 @@ export const authorizeLocalAcpRuntime = async (input: {
     spaceId?: string;
     replicaId?: string | null;
     provider?: string;
+    protocolVersion?: number;
     connectionEpoch?: number;
     capabilities?: Record<string, unknown>;
     message?: string;
   }>(response);
-  if (!response.ok || !data?.ok || !data.runtimeId || !data.spaceId || !data.provider || !Number.isSafeInteger(data.connectionEpoch)) {
+  if (!response.ok || !data?.ok || !data.runtimeId || !data.spaceId || !data.provider || data.protocolVersion !== LOCAL_RUNTIME_PROTOCOL_VERSION || !Number.isSafeInteger(data.connectionEpoch)) {
     return { ok: false, status: response.status, message: data?.message ?? "runtime authorization failed" };
   }
   const runtimeId = data.runtimeId;
   const spaceId = data.spaceId;
   const provider = data.provider;
+  const protocolVersion = data.protocolVersion;
   const connectionEpoch = data.connectionEpoch;
-  if (!runtimeId || !spaceId || !provider || !Number.isSafeInteger(connectionEpoch)) {
+  if (!runtimeId || !spaceId || !provider || protocolVersion !== LOCAL_RUNTIME_PROTOCOL_VERSION || !Number.isSafeInteger(connectionEpoch)) {
     return { ok: false, status: 502, message: "runtime authorization returned an invalid identity" };
   }
   return {
@@ -453,17 +458,19 @@ export const authorizeLocalAcpRuntime = async (input: {
     spaceId,
     replicaId: data.replicaId ?? null,
     provider,
+    protocolVersion,
     connectionEpoch: connectionEpoch as number,
     capabilities: data.capabilities ?? {},
   };
 };
 
-export const touchLocalAcpRuntime = async (input: {
+export const touchLocalRuntime = async (input: {
   runtimeId: string;
   connectionEpoch: number;
+  protocolVersion: number;
   authToken: string;
-}): Promise<void> => {
-  const response = await fetch(`${gatewayConfig.apiBaseUrl}/internal/gateway/local-acp-runtime/heartbeat`, {
+}): Promise<boolean> => {
+  const response = await fetch(`${gatewayConfig.apiBaseUrl}/internal/gateway/local-runtime/heartbeat`, {
     method: "POST",
     headers: {
       "content-type": "application/json",
@@ -471,29 +478,34 @@ export const touchLocalAcpRuntime = async (input: {
       authorization: `Bearer ${input.authToken}`,
       ...buildTraceHeaders(),
     },
-    body: JSON.stringify({ runtimeId: input.runtimeId, connectionEpoch: input.connectionEpoch }),
+    body: JSON.stringify({ runtimeId: input.runtimeId, connectionEpoch: input.connectionEpoch, protocolVersion: input.protocolVersion }),
   });
-  if (!response.ok) throw new Error(`Local ACP runtime heartbeat failed ${response.status}`);
+  if (!response.ok) throw new Error(`Local runtime heartbeat failed ${response.status}`);
+  return true;
 };
 
-export const reportLocalAcpRuntimeStatus = async (input: {
+export const reportLocalRuntimeStatus = async (input: {
   runtimeId: string;
   connectionEpoch: number;
+  protocolVersion: number;
   status: "ready" | "offline" | "error";
+  authToken: string;
   error?: string | null;
 }): Promise<void> => {
-  const response = await fetch(`${gatewayConfig.apiBaseUrl}/internal/gateway/local-acp-runtime/status`, {
+  const { authToken, ...body } = input;
+  const response = await fetch(`${gatewayConfig.apiBaseUrl}/internal/gateway/local-runtime/status`, {
     method: "POST",
     headers: {
       "content-type": "application/json",
       "x-worker-secret": gatewayConfig.workerSecret,
+      authorization: `Bearer ${authToken}`,
       ...buildTraceHeaders(),
     },
-    body: JSON.stringify(input),
+    body: JSON.stringify(body),
   });
   if (!response.ok) {
     const text = await response.text().catch(() => "");
-    throw new Error(`Local ACP runtime status report failed ${response.status}: ${text}`);
+    throw new Error(`Local runtime status report failed ${response.status}: ${text}`);
   }
 };
 

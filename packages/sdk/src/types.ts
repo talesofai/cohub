@@ -1212,7 +1212,7 @@ export type CreateSpacePromptInput = {
   content?: ContentBlock[];
   model?: string | null;
   provider?: string | null;
-  /** Optional registered local ACP runtime for this turn. */
+  /** Optional registered local runtime for this turn. */
   runtimeId?: string | null;
   /** Optional thinking level override for this turn. Omit to inherit session default. */
   thinkingLevel?: ModelThinkingLevel | null;

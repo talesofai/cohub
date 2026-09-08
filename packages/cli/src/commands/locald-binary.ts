@@ -234,7 +234,7 @@ export async function resolveLocaldBinary(options: { download?: boolean } = {}):
   if (await isExecutableFile(cached)) return cached;
   if (options.download === false) {
     throw new LocaldUnavailableError(
-      "cohub-locald is not installed. Run `cohub agent runtime install` or set COHUB_LOCALD_BIN to its path.",
+      "cohub-locald is unavailable. Retry the command with network access or set COHUB_LOCALD_BIN to a local executable.",
     );
   }
   return ensureLocaldBinary();

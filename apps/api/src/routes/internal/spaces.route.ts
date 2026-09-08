@@ -436,19 +436,19 @@ router.post("/:spaceId/sessions/:sessionId/prompt", async (c) => {
   const requestedModel = typeof body.model === "string" ? body.model.trim() : null;
   const requestedProvider = typeof body.provider === "string" ? body.provider.trim() : null;
   if (runtimeId && (requestedModel || requestedProvider)) {
-    return c.json({ code: "runtime_model_invalid", message: "local ACP runtime uses its own provider configuration" }, 400);
+    return c.json({ code: "runtime_model_invalid", message: "local runtime uses its own provider configuration" }, 400);
   }
   if (runtimeId && promptThinkingLevel) {
-    return c.json({ code: "runtime_thinking_invalid", message: "local ACP runtime uses its provider's own thinking configuration" }, 400);
+    return c.json({ code: "runtime_thinking_invalid", message: "local runtime uses its provider's own thinking configuration" }, 400);
   }
   if (runtimeId && body.content.some((block) => block && typeof block === "object" && !Array.isArray(block) && (block as { type?: unknown }).type === "shell_command")) {
-    return c.json({ message: "local ACP runtime does not accept Cohub shell commands" }, 400);
+    return c.json({ message: "local runtime does not accept Cohub shell commands" }, 400);
   }
   if (runtimeId && body.content.some((block) => {
     const type = block && typeof block === "object" && !Array.isArray(block) ? (block as { type?: unknown }).type : null;
     return type !== "text" && type !== "image" && type !== "thinking";
   })) {
-    return c.json({ message: "local ACP runtime accepts only text and image prompt content" }, 400);
+    return c.json({ message: "local runtime accepts only text and image prompt content" }, 400);
   }
 
   let promptEnv: Record<string, string> | null = null;
@@ -459,12 +459,12 @@ router.post("/:spaceId/sessions/:sessionId/prompt", async (c) => {
     throw error;
   }
   if (runtimeId && promptEnv && Object.keys(promptEnv).length > 0) {
-    return c.json({ code: "runtime_env_invalid", message: "local ACP runtime does not accept Cohub environment overrides" }, 400);
+    return c.json({ code: "runtime_env_invalid", message: "local runtime does not accept Cohub environment overrides" }, 400);
   }
   if (body.source != null && typeof body.source !== "string") return c.json({ message: "source must be a string" }, 400);
   const source = body.source?.trim() || "scheduled_task";
   if (runtimeId && source === "scheduled_task") {
-    return c.json({ code: "runtime_schedule_invalid", message: "local ACP runtime prompts must run immediately" }, 400);
+    return c.json({ code: "runtime_schedule_invalid", message: "local runtime prompts must run immediately" }, 400);
   }
 
   const idempotencyKeys = [...new Set([
@@ -485,7 +485,7 @@ router.post("/:spaceId/sessions/:sessionId/prompt", async (c) => {
       inArray(workspaceExecutionAttempts.idempotencyKey, idempotencyKeys),
     )).limit(1);
   if (existingAttempt) {
-    const expectedExecutorKind = runtimeId ? "local_acp" : "cloud_agent";
+    const expectedExecutorKind = runtimeId ? "local_runtime" : "cloud_agent";
     if (existingAttempt.userUuid !== userId || existingAttempt.sessionId !== sessionId || existingAttempt.executorKind !== expectedExecutorKind || (existingAttempt.runtimeId ?? null) !== runtimeId) {
       return c.json({ code: "prompt_idempotency_conflict", message: "clientMessageId is already bound to a different execution context" }, 409);
     }

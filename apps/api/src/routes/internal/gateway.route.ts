@@ -12,7 +12,8 @@ import { hasPermission } from "../../permissions.js";
 import { ensureInternalRequest, getLocalAgentPrincipal, getOptionalAuth, getAppSessionPrincipal, requireValidId } from "../../lib/middleware.js";
 import { getSpaceById } from "../../space-sessions.js";
 import { getSpaceSandboxBySpaceId, updateSpaceSandbox } from "../../space-sandboxes.js";
-import { authorizeLocalAcpRuntime, reportLocalAcpRuntimeStatus, touchLocalAcpRuntime } from "../../local-acp-runtime-service.js";
+import { LOCAL_RUNTIME_PROTOCOL_VERSION } from "@cohub/protocol";
+import { authorizeLocalRuntime, reportLocalRuntimeStatus, touchLocalRuntime } from "../../local-runtime-service.js";
 import { normalizeSandboxLifecycleStatus, normalizeSandboxRuntimeStatus } from "@cohub/sandbox-controller";
 import {
   PublicAssetConfigError,
@@ -257,29 +258,33 @@ router.post("/authorize-board-awareness", async (c) => {
   return c.json({ ok: true, boardId, spaceId, permission });
 });
 
-// POST /internal/gateway/local-acp-runtime/authorize
-// Called by the Gateway when a registered local ACP runtime opens its control
+// POST /internal/gateway/local-runtime/authorize
+// Called by the Gateway when a registered local runtime opens its control
 // connection. The device token is validated by the normal API auth middleware.
-router.post("/local-acp-runtime/authorize", async (c) => {
+router.post("/local-runtime/authorize", async (c) => {
   const forbidden = ensureInternalRequest(c);
   if (forbidden) return forbidden;
   const principal = getLocalAgentPrincipal(c);
   if (!principal) return c.json({ ok: false, message: "a local device credential is required" }, 401);
-  const body = await c.req.json<{ runtimeId?: string; spaceId?: string; gatewayNodeId?: string; gatewayWsEndpoint?: string }>().catch(() => null);
+  const body = await c.req.json<{ runtimeId?: string; spaceId?: string; protocolVersion?: unknown; gatewayNodeId?: string; gatewayWsEndpoint?: string }>().catch(() => null);
   const runtimeId = typeof body?.runtimeId === "string" ? body.runtimeId.trim() : "";
   const spaceId = typeof body?.spaceId === "string" ? body.spaceId.trim() : "";
   if (!runtimeId || !spaceId || !requireValidId(runtimeId) || !requireValidId(spaceId)) {
     return c.json({ ok: false, message: "runtimeId and spaceId are required" }, 400);
   }
+  if (body?.protocolVersion !== LOCAL_RUNTIME_PROTOCOL_VERSION) {
+    return c.json({ ok: false, message: "protocolVersion must be 1" }, 400);
+  }
   const allowed = await hasPermission({ uuid: principal.userUuid }, "file.edit", { spaceId }).catch((error) => {
-    logger.warn("[LocalAcpRuntime] failed to authorize runtime connect", { runtimeId, spaceId, error });
+    logger.warn("[LocalRuntime] failed to authorize runtime connect", { runtimeId, spaceId, error });
     return false;
   });
   if (!allowed) return c.json({ ok: false, message: "missing workspace edit permission" }, 403);
   try {
-    const result = await authorizeLocalAcpRuntime({
+    const result = await authorizeLocalRuntime({
       runtimeId,
       spaceId,
+      protocolVersion: body.protocolVersion,
       actor: {
         userUuid: principal.userUuid,
         deviceId: principal.deviceId,
@@ -298,21 +303,25 @@ router.post("/local-acp-runtime/authorize", async (c) => {
   }
 });
 
-// POST /internal/gateway/local-acp-runtime/heartbeat
-router.post("/local-acp-runtime/heartbeat", async (c) => {
+// POST /internal/gateway/local-runtime/heartbeat
+router.post("/local-runtime/heartbeat", async (c) => {
   const forbidden = ensureInternalRequest(c);
   if (forbidden) return forbidden;
   const principal = getLocalAgentPrincipal(c);
   if (!principal) return c.json({ ok: false, message: "a local device credential is required" }, 401);
-  const body = await c.req.json<{ runtimeId?: string; connectionEpoch?: number }>().catch(() => null);
+  const body = await c.req.json<{ runtimeId?: string; connectionEpoch?: number; protocolVersion?: unknown }>().catch(() => null);
   const runtimeId = typeof body?.runtimeId === "string" ? body.runtimeId.trim() : "";
   const connectionEpoch = typeof body?.connectionEpoch === "number" ? body.connectionEpoch : 0;
   if (!runtimeId || !requireValidId(runtimeId) || !Number.isSafeInteger(connectionEpoch) || connectionEpoch < 1) {
     return c.json({ ok: false, message: "runtimeId and connectionEpoch are required" }, 400);
   }
-  const touched = await touchLocalAcpRuntime({
+  if (body?.protocolVersion !== LOCAL_RUNTIME_PROTOCOL_VERSION) {
+    return c.json({ ok: false, message: "protocolVersion must be 1" }, 400);
+  }
+  const touched = await touchLocalRuntime({
     runtimeId,
     connectionEpoch,
+    protocolVersion: body.protocolVersion,
     actor: {
       userUuid: principal.userUuid,
       deviceId: principal.deviceId,
@@ -320,20 +329,23 @@ router.post("/local-acp-runtime/heartbeat", async (c) => {
       principal: "device",
     },
   }).catch((error) => {
-    logger.warn("[LocalAcpRuntime] failed to touch runtime heartbeat", { runtimeId, connectionEpoch, error });
+    logger.warn("[LocalRuntime] failed to touch runtime heartbeat", { runtimeId, connectionEpoch, error });
     return false;
   });
   if (!touched) return c.json({ ok: false, message: "runtime is stale or revoked" }, 409);
   return c.json({ ok: true });
 });
 
-// POST /internal/gateway/local-acp-runtime/status
-router.post("/local-acp-runtime/status", async (c) => {
+// POST /internal/gateway/local-runtime/status
+router.post("/local-runtime/status", async (c) => {
   const forbidden = ensureInternalRequest(c);
   if (forbidden) return forbidden;
+  const principal = getLocalAgentPrincipal(c);
+  if (!principal) return c.json({ ok: false, message: "a local device credential is required" }, 401);
   const body = await c.req.json<{
     runtimeId?: string;
     connectionEpoch?: number;
+    protocolVersion?: unknown;
     status?: "ready" | "offline" | "error";
     error?: string | null;
   }>().catch(() => null);
@@ -346,11 +358,26 @@ router.post("/local-acp-runtime/status", async (c) => {
   if (!runtimeId || !requireValidId(runtimeId) || !Number.isSafeInteger(connectionEpoch) || connectionEpoch < 1) {
     return c.json({ ok: false, message: "runtimeId and connectionEpoch are required" }, 400);
   }
+  if (body?.protocolVersion !== LOCAL_RUNTIME_PROTOCOL_VERSION) {
+    return c.json({ ok: false, message: "protocolVersion must be 1" }, 400);
+  }
   if (body?.error != null && typeof body.error !== "string") {
     return c.json({ ok: false, message: "error must be a string" }, 400);
   }
-  const updated = await reportLocalAcpRuntimeStatus({ runtimeId, connectionEpoch, status, error: body?.error ?? null }).catch((error) => {
-    logger.warn("[LocalAcpRuntime] failed to record runtime status", { runtimeId, connectionEpoch, error });
+  const updated = await reportLocalRuntimeStatus({
+    runtimeId,
+    connectionEpoch,
+    protocolVersion: body.protocolVersion,
+    actor: {
+      userUuid: principal.userUuid,
+      deviceId: principal.deviceId,
+      credentialVersion: principal.credentialVersion,
+      principal: "device",
+    },
+    status,
+    error: body?.error ?? null,
+  }).then((result) => Boolean(result)).catch((error) => {
+    logger.warn("[LocalRuntime] failed to record runtime status", { runtimeId, connectionEpoch, error });
     return null;
   });
   if (!updated) return c.json({ ok: false, message: "runtime is stale or revoked" }, 409);

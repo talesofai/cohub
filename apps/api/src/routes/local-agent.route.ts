@@ -1,6 +1,6 @@
 import { Hono, type Context } from "hono";
 import { ZodError } from "zod";
-import { LocalAgentPolicySchema } from "@cohub/protocol";
+import { LOCAL_RUNTIME_PROTOCOL_VERSION, LocalAgentPolicySchema } from "@cohub/protocol";
 import { and, eq } from "drizzle-orm";
 import { localAgentDevices, spaceLocalAgentPolicies } from "@cohub/db";
 import { useAccountPrincipal, getLocalAgentPrincipal, authzDenied, requireValidId, useAuth } from "../lib/middleware.js";
@@ -24,18 +24,22 @@ import {
   listWorkspaceReplicaStates,
   prepareWorkspaceSnapshot,
   releaseWorkspaceWriterLease,
+  failLocalRuntimeAttemptBeforeStart,
   registerLocalWorkspaceAttempt,
   revokeLocalAgentDevice,
   ensureWorkspaceReplica,
+  type PrepareSnapshotInput,
   type LocalAgentActor,
 } from "../local-agent-service.js";
+import { dispatchTurnFinalized } from "../session-output.js";
+import { getSessionTurnById } from "../session-turns.js";
 import {
-  getLocalAcpRuntime,
-  listLocalAcpRuntimes,
-  registerLocalAcpRuntime,
-  revokeLocalAcpRuntime,
+  getLocalRuntime,
+  listLocalRuntimes,
+  registerLocalRuntime,
+  revokeLocalRuntime,
   updateLocalAgentPolicy,
-} from "../local-acp-runtime-service.js";
+} from "../local-runtime-service.js";
 
 const router = new Hono();
 
@@ -142,7 +146,10 @@ router.post("/spaces/:spaceId/runtimes", async (c) => {
     if (typeof body.replicaId !== "string" || typeof body.provider !== "string") {
       return c.json({ code: "invalid_request", message: "replicaId and provider are required" }, 400);
     }
-    return c.json(await registerLocalAcpRuntime({
+    if (body.protocolVersion !== LOCAL_RUNTIME_PROTOCOL_VERSION) {
+      return c.json({ code: "unsupported_protocol", message: "protocolVersion must be 1" }, 400);
+    }
+    return c.json(await registerLocalRuntime({
       actor,
       spaceId,
       deviceId: typeof body.deviceId === "string" ? body.deviceId : undefined,
@@ -152,7 +159,7 @@ router.post("/spaces/:spaceId/runtimes", async (c) => {
       providerVersion: body.providerVersion as string | undefined,
       adapterVersion: body.adapterVersion as string | undefined,
       capabilities: body.capabilities as Record<string, unknown> | undefined,
-      protocolVersion: typeof body.protocolVersion === "number" ? body.protocolVersion : undefined,
+      protocolVersion: body.protocolVersion,
     }), 201);
   } catch (error) {
     return errorResponse(c, error);
@@ -165,7 +172,7 @@ router.get("/spaces/:spaceId/runtimes", async (c) => {
   const spaceId = c.req.param("spaceId");
   if (!requireValidId(spaceId)) return c.json({ code: "space_not_found", message: "space not found" }, 404);
   try {
-    return c.json(await listLocalAcpRuntimes({ actor, spaceId }));
+    return c.json(await listLocalRuntimes({ actor, spaceId }));
   } catch (error) {
     return errorResponse(c, error);
   }
@@ -178,7 +185,7 @@ router.get("/spaces/:spaceId/runtimes/:runtimeId", async (c) => {
   const runtimeId = c.req.param("runtimeId");
   if (!requireValidId(spaceId) || !requireValidId(runtimeId)) return c.json({ code: "runtime_not_found", message: "runtime not found" }, 404);
   try {
-    return c.json(await getLocalAcpRuntime({ actor, spaceId, runtimeId }));
+    return c.json(await getLocalRuntime({ actor, spaceId, runtimeId }));
   } catch (error) {
     return errorResponse(c, error);
   }
@@ -191,7 +198,7 @@ router.delete("/spaces/:spaceId/runtimes/:runtimeId", async (c) => {
   const runtimeId = c.req.param("runtimeId");
   if (!requireValidId(spaceId) || !requireValidId(runtimeId)) return c.json({ code: "runtime_not_found", message: "runtime not found" }, 404);
   try {
-    return c.json({ runtime: await revokeLocalAcpRuntime({ actor, spaceId, runtimeId }) });
+    return c.json({ runtime: await revokeLocalRuntime({ actor, spaceId, runtimeId }) });
   } catch (error) {
     return errorResponse(c, error);
   }
@@ -237,7 +244,7 @@ router.get("/spaces/:spaceId/replicas", async (c) => {
   try {
     const [replication, runtimes] = await Promise.all([
       listWorkspaceReplicaStates({ actor, spaceId }),
-      listLocalAcpRuntimes({ actor, spaceId }),
+      listLocalRuntimes({ actor, spaceId }),
     ]);
     return c.json({ ...replication, runtimes: runtimes.runtimes });
   } catch (error) {
@@ -300,11 +307,12 @@ router.post("/spaces/:spaceId/replicas/:replicaId/snapshots/prepare", async (c) 
   const permissionError = await requireSpacePermission(c, actor, spaceId, "file.edit");
   if (permissionError) return permissionError;
   try {
+    const body = await c.req.json<JsonRecord>();
     return c.json(await prepareWorkspaceSnapshot({
       actor,
       spaceId,
       replicaId,
-      value: await c.req.json(),
+      value: body as PrepareSnapshotInput,
     }));
   } catch (error) {
     return errorResponse(c, error);
@@ -354,7 +362,14 @@ router.post("/spaces/:spaceId/replicas/:replicaId/snapshots/:snapshotId/commit",
   const permissionError = await requireSpacePermission(c, actor, spaceId, "file.edit");
   if (permissionError) return permissionError;
   try {
-    const result = await commitWorkspaceSnapshot({ actor, spaceId, replicaId, snapshotId });
+    const body = await c.req.json<JsonRecord>().catch(() => ({} as JsonRecord));
+    const result = await commitWorkspaceSnapshot({
+      actor,
+      spaceId,
+      replicaId,
+      snapshotId,
+      runtimeId: typeof body.runtimeId === "string" ? body.runtimeId : null,
+    });
     if (result.cycleId) {
       await enqueueWorkspaceSyncJob({ cycleId: result.cycleId, spaceId, replicaId }).catch(() => undefined);
     }
@@ -382,9 +397,11 @@ router.post("/spaces/:spaceId/leases/acquire", async (c) => {
       spaceId,
       holderKind,
       holderId: body.holderId as string,
+      runtimeId: typeof body.runtimeId === "string" ? body.runtimeId : null,
       replicaId: typeof body.replicaId === "string" ? body.replicaId : null,
       baseSnapshotId: body.baseSnapshotId as string | null | undefined,
       durationSeconds: typeof body.durationSeconds === "number" ? body.durationSeconds : undefined,
+      recovery: body.recovery === true,
     }));
   } catch (error) {
     return errorResponse(c, error);
@@ -396,6 +413,8 @@ router.post("/spaces/:spaceId/leases/heartbeat", async (c) => {
   if (actor instanceof Response) return actor;
   const spaceId = c.req.param("spaceId");
   if (!requireValidId(spaceId)) return c.json({ code: "space_not_found", message: "space not found" }, 404);
+  const permissionError = await requireSpacePermission(c, actor, spaceId, "file.edit");
+  if (permissionError) return permissionError;
   try {
     const body = await c.req.json<JsonRecord>();
     if (body.holderKind !== "local_agent") return c.json({ code: "invalid_holder_kind", message: "holderKind is not available on the public local-agent API" }, 400);
@@ -404,6 +423,7 @@ router.post("/spaces/:spaceId/leases/heartbeat", async (c) => {
       spaceId,
       holderKind: body.holderKind,
       holderId: body.holderId as string,
+      runtimeId: typeof body.runtimeId === "string" ? body.runtimeId : null,
       epoch: body.epoch as number,
       durationSeconds: body.durationSeconds as number | undefined,
     }));
@@ -425,6 +445,7 @@ router.post("/spaces/:spaceId/leases/release", async (c) => {
       spaceId,
       holderKind: body.holderKind,
       holderId: body.holderId as string,
+      runtimeId: typeof body.runtimeId === "string" ? body.runtimeId : null,
       epoch: body.epoch as number,
     }));
   } catch (error) {
@@ -449,11 +470,46 @@ router.post("/spaces/:spaceId/replicas/:replicaId/attempts/:attemptId/register",
       spaceId,
       replicaId,
       attemptId,
+      runtimeId: typeof body.runtimeId === "string" ? body.runtimeId : "",
       leaseEpoch: body.leaseEpoch as number,
       baseSnapshotId: typeof body.baseSnapshotId === "string" ? body.baseSnapshotId : null,
       workspacePolicyVersion: body.workspacePolicyVersion as number,
       integrationPolicyVersion: body.integrationPolicyVersion as number,
     }));
+  } catch (error) {
+    return errorResponse(c, error);
+  }
+});
+
+router.post("/spaces/:spaceId/replicas/:replicaId/attempts/:attemptId/fail-before-start", async (c) => {
+  const actor = await actorFromContext(c);
+  if (actor instanceof Response) return actor;
+  const spaceId = c.req.param("spaceId");
+  const replicaId = c.req.param("replicaId");
+  const attemptId = c.req.param("attemptId");
+  if (!requireValidId(spaceId) || !requireValidId(replicaId) || !requireValidId(attemptId)) return c.json({ code: "attempt_not_found", message: "execution attempt not found" }, 404);
+  if (actor.principal !== "device") return c.json({ code: "device_required", message: "a local device credential is required" }, 401);
+  const permissionError = await requireSpacePermission(c, actor, spaceId, "file.edit");
+  if (permissionError) return permissionError;
+  try {
+    const body = await c.req.json<JsonRecord>();
+    const result = await failLocalRuntimeAttemptBeforeStart({
+      actor,
+      spaceId,
+      replicaId,
+      attemptId,
+      runtimeId: typeof body.runtimeId === "string" ? body.runtimeId : "",
+      leaseEpoch: body.leaseEpoch as number,
+      errorMessage: typeof body.errorMessage === "string" ? body.errorMessage : null,
+    });
+    // The mutation is atomic; publish the normal turn-finalized event only
+    // after the transaction has committed. A retry may observe an already
+    // terminal turn, in which case the event is harmlessly skipped.
+    const turn = await getSessionTurnById(result.sessionId, result.turnId).catch(() => null);
+    if (result.changed && turn?.status === "failed") {
+      void dispatchTurnFinalized({ spaceId, sessionId: result.sessionId, turn }).catch(() => undefined);
+    }
+    return c.json(result);
   } catch (error) {
     return errorResponse(c, error);
   }

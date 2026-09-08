@@ -28,8 +28,8 @@ import type {
   SessionTurnSummary,
 } from "@cohub/protocol/model";
 import type {
-  LocalAcpProvider,
-  LocalAcpRuntimeStatus,
+  LocalRuntimeProvider,
+  LocalRuntimeStatus,
 } from "@cohub/protocol";
 import type {
   WorkspaceConflictKind,
@@ -1487,7 +1487,7 @@ export const resourceReferences = v2.table(
   }),
 );
 
-// ── Local ACP runtime and workspace replica state ───────────────────────────
+// ── Local provider runtime and workspace replica state ──────────────────────
 // These tables are intentionally separate from space_sandboxes and the legacy
 // session execution rows. They are durable coordination/provenance records;
 // filesystem bytes remain in object storage and the transcript stays in the
@@ -1804,13 +1804,13 @@ export const localAgentRuntimes = v2.table(
     deviceId: uuid("device_id").notNull().references(() => localAgentDevices.id, { onDelete: "restrict" }),
     replicaId: uuid("replica_id").notNull().references(() => workspaceReplicas.id, { onDelete: "restrict" }),
     userUuid: varchar("user_uuid", { length: 255 }).notNull(),
-    provider: varchar("provider", { length: 40 }).$type<LocalAcpProvider>().notNull(),
+    provider: varchar("provider", { length: 40 }).$type<LocalRuntimeProvider>().notNull(),
     displayName: varchar("display_name", { length: 255 }).notNull(),
     providerVersion: varchar("provider_version", { length: 120 }).notNull().default("unknown"),
     adapterVersion: varchar("adapter_version", { length: 120 }).notNull().default("unknown"),
     protocolVersion: integer("protocol_version").notNull().default(1),
     capabilities: jsonb("capabilities").$type<Record<string, unknown>>().notNull().default(sql`'{}'::jsonb`),
-    status: varchar("status", { length: 30 }).$type<LocalAcpRuntimeStatus>().notNull().default("offline"),
+    status: varchar("status", { length: 30 }).$type<LocalRuntimeStatus>().notNull().default("offline"),
     connectionEpoch: bigint("connection_epoch", { mode: "number" }).notNull().default(0),
     gatewayNodeId: varchar("gateway_node_id", { length: 255 }),
     gatewayWsEndpoint: text("gateway_ws_endpoint"),
@@ -1835,7 +1835,7 @@ export const localAgentRuntimeSessions = v2.table(
     runtimeId: uuid("runtime_id").notNull().references(() => localAgentRuntimes.id, { onDelete: "restrict" }),
     spaceId: uuid("space_id").notNull().references(() => spaces.id, { onDelete: "restrict" }),
     cohubSessionId: uuid("cohub_session_id").notNull().references(() => spaceSessions.id, { onDelete: "restrict" }),
-    acpSessionId: varchar("acp_session_id", { length: 255 }).notNull(),
+    providerSessionId: varchar("provider_session_id", { length: 255 }).notNull(),
     connectionEpoch: bigint("connection_epoch", { mode: "number" }).notNull(),
     status: varchar("status", { length: 30 }).notNull().default("active"),
     lastEventSequence: bigint("last_event_sequence", { mode: "number" }).notNull().default(0),
@@ -1845,7 +1845,7 @@ export const localAgentRuntimeSessions = v2.table(
     updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
   },
   (table) => ({
-    runtimeAcpSessionUniqueIdx: uniqueIndex("v2_uq_local_agent_runtime_sessions_runtime_acp").on(table.runtimeId, table.acpSessionId),
+    runtimeProviderSessionUniqueIdx: uniqueIndex("v2_uq_local_agent_runtime_sessions_runtime_provider").on(table.runtimeId, table.providerSessionId),
     runtimeCohubSessionUniqueIdx: uniqueIndex("v2_uq_local_agent_runtime_sessions_runtime_cohub").on(table.runtimeId, table.cohubSessionId),
     spaceStatusIdx: index("v2_idx_local_agent_runtime_sessions_space_status").on(table.spaceId, table.status, table.updatedAt),
   }),
@@ -1861,9 +1861,9 @@ export const localAgentRuntimeCommands = v2.table(
     cohubSessionId: uuid("cohub_session_id").notNull().references(() => spaceSessions.id, { onDelete: "restrict" }),
     commandId: varchar("command_id", { length: 255 }).notNull(),
     sequence: bigint("sequence", { mode: "number" }).notNull(),
-    method: varchar("method", { length: 120 }).notNull(),
-    params: jsonb("params").notNull().$type<Record<string, unknown>>(),
-    paramsHash: varchar("params_hash", { length: 64 }).notNull(),
+    operation: varchar("operation", { length: 120 }).notNull(),
+    payload: jsonb("payload").notNull().$type<Record<string, unknown>>(),
+    payloadHash: varchar("payload_hash", { length: 64 }).notNull(),
     status: varchar("status", { length: 30 }).notNull().default("prepared"),
     response: jsonb("response").$type<Record<string, unknown> | null>(),
     errorCode: integer("error_code"),
@@ -1887,7 +1887,7 @@ export const localAgentRuntimeEvents = v2.table(
     eventId: varchar("event_id", { length: 255 }).notNull(),
     sequence: bigint("sequence", { mode: "number" }).notNull(),
     direction: varchar("direction", { length: 20 }).notNull(),
-    method: varchar("method", { length: 120 }).notNull(),
+    kind: varchar("kind", { length: 120 }).notNull(),
     commandId: varchar("command_id", { length: 255 }),
     payload: jsonb("payload").notNull().$type<Record<string, unknown>>(),
     payloadHash: varchar("payload_hash", { length: 64 }).notNull(),

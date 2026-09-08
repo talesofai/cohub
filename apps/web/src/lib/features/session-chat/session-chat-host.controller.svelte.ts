@@ -19,7 +19,7 @@ import type { ChannelEnvelope } from "@cohub/protocol/realtime";
 import {
 	extractBillingPayload,
 	HttpError,
-	type LocalAcpRuntimeRecord,
+	type LocalRuntimeRecord,
 	type SessionRecord,
 } from "@neta-art/cohub";
 import { tick, untrack } from "svelte";
@@ -191,7 +191,7 @@ export type SessionChatHostOptions = SessionChatEnvironment & {
 		| "error";
 	canManageSessionAccess?: () => boolean;
 	hasSpace?: () => boolean;
-	getLocalRuntimes?: () => LocalAcpRuntimeRecord[];
+	getLocalRuntimes?: () => LocalRuntimeRecord[];
 };
 
 // Wire generation store reset once for process-wide leases.

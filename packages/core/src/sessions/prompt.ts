@@ -142,7 +142,7 @@ export type SubmitSessionPromptInput = {
   sourceClientId?: string | null;
   model?: string | null;
   provider?: string | null;
-  /** Optional registered local ACP runtime for this turn. */
+  /** Optional registered local runtime for this turn. */
   runtimeId?: string | null;
   /** Optional thinking level override for this turn. Omit to inherit session default. */
   thinkingLevel?: string | null;
@@ -369,19 +369,19 @@ export const submitSessionPrompt = async (
   }
   const runtimeId = input.runtimeId?.trim() || null;
   if (runtimeId && (input.model?.trim() || input.provider?.trim())) {
-    throw new Error("local ACP runtime uses its own provider configuration");
+    throw new Error("local runtime uses its own provider configuration");
   }
   if (runtimeId && input.thinkingLevel != null) {
-    throw new Error("local ACP runtime uses its provider's own thinking configuration");
+    throw new Error("local runtime uses its provider's own thinking configuration");
   }
   if (runtimeId && input.generationPolicy != null) {
-    throw new Error("local ACP runtime uses its provider's own generation configuration");
+    throw new Error("local runtime uses its provider's own generation configuration");
   }
   if (runtimeId && input.env != null && Object.keys(input.env).length > 0) {
-    throw new Error("local ACP runtime does not accept Cohub environment overrides");
+    throw new Error("local runtime does not accept Cohub environment overrides");
   }
   if (runtimeId && (input.source === "scheduled_task" || input.context?.kind === "scheduled_task")) {
-    throw new Error("local ACP runtime prompts must run immediately");
+    throw new Error("local runtime prompts must run immediately");
   }
 
   const modelProvider = normalizePromptModelProvider(input);
@@ -429,10 +429,10 @@ export const submitSessionPrompt = async (
 
   const isDirectShellCommand = content.length === 1 && content[0]?.type === "shell_command";
   if (runtimeId && content.some((block) => block.type === "shell_command")) {
-    throw new Error("local ACP runtime does not accept Cohub shell commands");
+    throw new Error("local runtime does not accept Cohub shell commands");
   }
   if (runtimeId && content.some((block) => block.type !== "text" && block.type !== "image" && block.type !== "thinking")) {
-    throw new Error("local ACP runtime accepts only text and image prompt content");
+    throw new Error("local runtime accepts only text and image prompt content");
   }
   if (accessMode === "read_only" && isDirectShellCommand) {
     throw new Error("shell_command is not allowed in read_only accessMode");

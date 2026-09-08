@@ -4,14 +4,14 @@ import { join } from "node:path";
 import { tmpdir } from "node:os";
 import test from "node:test";
 import {
-  appendLocalAcpAssistantMessages,
-  appendLocalAcpUserMessage,
-  type LocalAcpAssistantTranscriptInput,
-  type LocalAcpTranscriptInput,
-} from "../local-acp-transcript.js";
+  appendLocalRuntimeAssistantMessages,
+  appendLocalRuntimeUserMessage,
+  type LocalRuntimeAssistantTranscriptInput,
+  type LocalRuntimeTranscriptInput,
+} from "../local-runtime-transcript.js";
 import { SessionManager } from "../runtime/local-session-manager.js";
 
-const baseInput: LocalAcpTranscriptInput = {
+const baseInput: LocalRuntimeTranscriptInput = {
   spaceId: "22222222-2222-4222-8222-222222222222",
   sessionId: "88888888-8888-4888-8888-888888888888",
   turnId: "99999999-9999-4999-8999-999999999999",
@@ -20,7 +20,7 @@ const baseInput: LocalAcpTranscriptInput = {
   startedAt: "2026-09-03T00:00:00.000Z",
 };
 
-const assistantInput: LocalAcpAssistantTranscriptInput = {
+const assistantInput: LocalRuntimeAssistantTranscriptInput = {
   ...baseInput,
   assistantMessageId: "cccccccc-cccc-4ccc-8ccc-cccccccccccc",
   provider: "codex",
@@ -37,8 +37,8 @@ const assistantInput: LocalAcpAssistantTranscriptInput = {
   ],
 };
 
-test("local ACP transcript projects valid JSONL messages and deduplicates retries", async () => {
-  const root = await mkdtemp(join(tmpdir(), "cohub-local-acp-transcript-"));
+test("local runtime transcript projects valid JSONL messages and deduplicates retries", async () => {
+  const root = await mkdtemp(join(tmpdir(), "cohub-local-runtime-transcript-"));
   const sessionsDir = join(root, "sessions");
   const sessionFile = join(sessionsDir, "session.jsonl");
   try {
@@ -46,8 +46,8 @@ test("local ACP transcript projects valid JSONL messages and deduplicates retrie
     manager.newSession({ id: baseInput.sessionId });
     manager.setSessionFile(sessionFile);
 
-    const userEntryId = appendLocalAcpUserMessage(manager, baseInput, [{ type: "text", text: "run" }]);
-    const finalEntryId = appendLocalAcpAssistantMessages(manager, assistantInput);
+    const userEntryId = appendLocalRuntimeUserMessage(manager, baseInput, [{ type: "text", text: "run" }]);
+    const finalEntryId = appendLocalRuntimeAssistantMessages(manager, assistantInput);
     await manager.flush();
     await manager.close();
 
@@ -65,13 +65,13 @@ test("local ACP transcript projects valid JSONL messages and deduplicates retrie
     assert.deepEqual(reopened.buildSessionContext().messages.map((message) => message.role), ["user", "assistant", "toolResult", "assistant"]);
     assert.equal(reopened.buildSessionContext().model, null);
 
-    const duplicateUserId = appendLocalAcpUserMessage(reopened, baseInput, [{ type: "text", text: "run" }]);
-    const duplicateFinalId = appendLocalAcpAssistantMessages(reopened, assistantInput);
+    const duplicateUserId = appendLocalRuntimeUserMessage(reopened, baseInput, [{ type: "text", text: "run" }]);
+    const duplicateFinalId = appendLocalRuntimeAssistantMessages(reopened, assistantInput);
     await reopened.flush();
     assert.equal(duplicateUserId, userEntryId);
     assert.equal(duplicateFinalId, finalEntryId);
     assert.throws(
-      () => appendLocalAcpUserMessage(reopened, baseInput, [{ type: "text", text: "different" }]),
+      () => appendLocalRuntimeUserMessage(reopened, baseInput, [{ type: "text", text: "different" }]),
       /different content/,
     );
     assert.equal(reopened.getEntries().flatMap((entry) => entry.type === "message" ? [entry] : []).length, 4);
