@@ -1,5 +1,16 @@
 # @neta-art/cohub-cli
 
+## 6.8.0
+
+### Minor Changes
+
+- 8633eb5: CLI commands now fall back to the Home space when `-s` / `COHUB_SPACE_ID` are omitted (`GET /api/spaces/default`, cached per login). `apps publish` infers `--source` from runtime (workspace in a sandbox, local otherwise). `getCohubContext()` treats runtime as sandbox only when an execution token is present.
+
+### Patch Changes
+
+- Updated dependencies [8633eb5]
+  - @neta-art/cohub@8.10.1
+
 ## 6.7.0
 
 ### Minor Changes
