@@ -41,6 +41,7 @@ export type WebsocketClientOptions = {
   autoReconnect?: boolean;
   reconnectBaseDelayMs?: number;
   reconnectMaxDelayMs?: number;
+  connectTimeoutMs?: number;
   pingIntervalMs?: number;
   pongTimeoutMs?: number;
   debug?: boolean;
@@ -112,6 +113,7 @@ const normalizeOptions = (options: WebsocketClientOptions = {}) => ({
   autoReconnect: options.autoReconnect !== false,
   reconnectBaseDelayMs: options.reconnectBaseDelayMs ?? 1000,
   reconnectMaxDelayMs: options.reconnectMaxDelayMs ?? 15000,
+  connectTimeoutMs: normalizeConnectTimeoutMs(options.connectTimeoutMs ?? 15000),
   pingIntervalMs: options.pingIntervalMs ?? 20000,
   pongTimeoutMs: options.pongTimeoutMs ?? 15000,
   debug: options.debug === true,
@@ -119,6 +121,13 @@ const normalizeOptions = (options: WebsocketClientOptions = {}) => ({
 
 const formatCloseMessage = (code?: number, reason?: string) =>
   `WebSocket closed: ${code ?? 0} ${reason || ""}`.trim();
+
+const normalizeConnectTimeoutMs = (value: number): number => {
+  if (!Number.isInteger(value) || value < 1 || value > 2_147_483_647) {
+    throw new Error("connectTimeoutMs must be an integer between 1 and 2147483647");
+  }
+  return value;
+};
 
 const AUTH_CLOSE_CODE = 4003;
 const AUTH_CLOSE_REASON = "authentication failed";
@@ -214,6 +223,7 @@ export class WebsocketClient {
   private readonly autoReconnect: boolean;
   private readonly reconnectBaseDelayMs: number;
   private readonly reconnectMaxDelayMs: number;
+  private readonly connectTimeoutMs: number;
   private readonly pingIntervalMs: number;
   private readonly pongTimeoutMs: number;
   private readonly debug: boolean;
@@ -230,6 +240,7 @@ export class WebsocketClient {
   private retryAuthClose = false;
   private manuallyClosed = false;
   private connectPromise: Promise<void> | null = null;
+  private pendingConnectReject: ((error: Error) => void) | null = null;
   private authWaiter: {
     promise: Promise<void>;
     resolve: () => void;
@@ -258,6 +269,7 @@ export class WebsocketClient {
     this.autoReconnect = normalized.autoReconnect;
     this.reconnectBaseDelayMs = normalized.reconnectBaseDelayMs;
     this.reconnectMaxDelayMs = normalized.reconnectMaxDelayMs;
+    this.connectTimeoutMs = normalized.connectTimeoutMs;
     this.pingIntervalMs = normalized.pingIntervalMs;
     this.pongTimeoutMs = normalized.pongTimeoutMs;
     this.debug = normalized.debug;
@@ -306,60 +318,50 @@ export class WebsocketClient {
       const ws = new this.WebSocketImpl(this.url);
       this.ws = ws;
       let settled = false;
+      let closed = false;
+      let connectTimer: ReturnType<typeof setTimeout> | null = null;
+
+      const clearConnectTimer = () => {
+        if (connectTimer === null) return;
+        clearTimeout(connectTimer);
+        connectTimer = null;
+      };
 
       const rejectOnce = (error: Error) => {
         if (settled) return;
+        clearConnectTimer();
         settled = true;
         this.connectPromise = null;
+        if (this.pendingConnectReject === rejectOnce) {
+          this.pendingConnectReject = null;
+        }
         reject(error);
       };
 
       const resolveOnce = () => {
         if (settled) return;
+        clearConnectTimer();
         settled = true;
         this.connectPromise = null;
+        if (this.pendingConnectReject === rejectOnce) {
+          this.pendingConnectReject = null;
+        }
         resolve();
       };
 
-      ws.onopen = async () => {
-        try {
-          this.log("connected", { url: this.url, isReconnect, attempt: this.reconnectAttempt });
-          this.startPingLoop();
-          await this.authenticate();
-          this.state = "open";
-          this.restoreRoomSubscriptions();
-          this.reconnectAttempt = 0;
-          this.emit("open", { connectionId: this.connectionId });
-          resolveOnce();
-        } catch (error) {
-          const authError =
-            error instanceof Error ? error : new Error("authentication failed");
-          const recoverable = Boolean(
-            this.getAccessToken &&
-            this.autoReconnect &&
-            !this.manuallyClosed &&
-            !this.authReconnectAttempted
-          );
-          this.retryAuthClose = recoverable;
-          if (recoverable) {
-            this.authReconnectAttempted = true;
-            this.forceRefreshOnNextAuth = true;
-          }
-          this.emit("error", { error: authError, recoverable });
-          rejectOnce(authError);
-          ws.close(AUTH_CLOSE_CODE, AUTH_CLOSE_REASON);
-        }
+      const isCurrentConnection = () => this.ws === ws && !closed;
+
+      const cleanupSocket = () => {
+        ws.onopen = null;
+        ws.onmessage = null;
+        ws.onerror = null;
+        ws.onclose = null;
       };
 
-      ws.onmessage = (event) => {
-        this.handleMessage(event.data);
-      };
-
-      ws.onerror = (error) => {
-        this.emit("error", { error, recoverable: !this.manuallyClosed });
-      };
-
-      ws.onclose = (event) => {
+      const handleClose = (event: { code: number; reason: string }) => {
+        if (closed || this.ws !== ws) return;
+        closed = true;
+        clearConnectTimer();
         this.stopPingLoop();
         const wasConnecting = this.state === "connecting" || this.state === "reconnecting";
         this.state = "closed";
@@ -380,6 +382,7 @@ export class WebsocketClient {
           reason: event.reason,
           willReconnect,
         });
+        cleanupSocket();
         if (wasConnecting) {
           rejectOnce(closeError);
         }
@@ -387,6 +390,70 @@ export class WebsocketClient {
           void this.scheduleReconnect(event.code, event.reason);
         }
       };
+
+      ws.onopen = async () => {
+        if (!isCurrentConnection()) return;
+        clearConnectTimer();
+        try {
+          this.log("connected", { url: this.url, isReconnect, attempt: this.reconnectAttempt });
+          this.startPingLoop();
+          await this.authenticate();
+          if (!isCurrentConnection()) return;
+          this.state = "open";
+          this.restoreRoomSubscriptions();
+          this.reconnectAttempt = 0;
+          this.emit("open", { connectionId: this.connectionId });
+          resolveOnce();
+        } catch (error) {
+          if (!isCurrentConnection()) return;
+          const authError =
+            error instanceof Error ? error : new Error("authentication failed");
+          const recoverable = Boolean(
+            this.getAccessToken &&
+            this.autoReconnect &&
+            !this.manuallyClosed &&
+            !this.authReconnectAttempted
+          );
+          this.retryAuthClose = recoverable;
+          if (recoverable) {
+            this.authReconnectAttempted = true;
+            this.forceRefreshOnNextAuth = true;
+          }
+          this.emit("error", { error: authError, recoverable });
+          rejectOnce(authError);
+          ws.close(AUTH_CLOSE_CODE, AUTH_CLOSE_REASON);
+        }
+      };
+
+      ws.onmessage = (event) => {
+        if (!isCurrentConnection()) return;
+        this.handleMessage(event.data);
+      };
+
+      ws.onerror = (error) => {
+        if (!isCurrentConnection()) return;
+        this.emit("error", { error, recoverable: !this.manuallyClosed });
+      };
+
+      ws.onclose = (event) => {
+        handleClose(event);
+      };
+
+      this.pendingConnectReject = rejectOnce;
+      connectTimer = setTimeout(() => {
+        if (!isCurrentConnection() || settled) return;
+        const reason = "connect timeout";
+        const error = new Error(`WebSocket ${reason} after ${this.connectTimeoutMs}ms`);
+        this.emit("error", {
+          error,
+          recoverable: !this.manuallyClosed && this.autoReconnect,
+        });
+        try {
+          ws.close(4002, reason);
+        } finally {
+          handleClose({ code: 4002, reason });
+        }
+      }, this.connectTimeoutMs);
     });
 
     return this.connectPromise;
@@ -398,9 +465,19 @@ export class WebsocketClient {
     this.stopPingLoop();
     this.state = "closed";
     this.rejectAuthWaiter(new Error("disconnected"));
-    this.ws?.close(code, reason);
+    const ws = this.ws;
     this.ws = null;
+    ws?.close(code, reason);
+    this.pendingConnectReject?.(new Error(`WebSocket disconnected: ${reason}`));
+    this.pendingConnectReject = null;
     this.connectPromise = null;
+    if (ws) {
+      ws.onopen = null;
+      ws.onmessage = null;
+      ws.onerror = null;
+      ws.onclose = null;
+      this.emit("close", { code, reason, willReconnect: false });
+    }
     this.authReconnectAttempted = false;
     this.forceRefreshOnNextAuth = false;
     this.retryAuthClose = false;

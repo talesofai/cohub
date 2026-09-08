@@ -76,6 +76,155 @@ const authError = {
 const sentTypes = (socket: FakeWebSocket) =>
   socket.sent.map((raw) => (JSON.parse(raw) as { type: string }).type);
 
+test("reconnects a stalled handshake without a close event and restores retained rooms", async (t) => {
+  FakeWebSocket.instances = [];
+  t.mock.timers.enable({ apis: ["setTimeout", "setInterval", "Date"] });
+  const closes: CloseSnapshot[] = [];
+  const client = new WebsocketClient({
+    url: "ws://localhost",
+    reconnectBaseDelayMs: 1000,
+    getAccessToken: () => "token",
+    WebSocketImpl: FakeWebSocket,
+  });
+  t.after(() => client.disconnect());
+  client.on("close", (snapshot) => closes.push(snapshot));
+
+  const connecting = client.connect();
+  const rejected = assert.rejects(connecting, /connect timeout/);
+  const release = client.subscribeSpace("space-1");
+  const releaseOther = client.subscribeSpace("space-2");
+  releaseOther();
+  const first = FakeWebSocket.instances[0];
+  assert.ok(first);
+  const lateClose = first.onclose;
+  const lateOpen = first.onopen;
+  const closeCalls: Array<{ code?: number; reason?: string }> = [];
+  first.close = (code, reason) => {
+    closeCalls.push({ code, reason });
+    first.readyState = WebSocket.CLOSING;
+  };
+
+  t.mock.timers.tick(14_999);
+  assert.equal(client.state, "connecting");
+  assert.equal(closeCalls.length, 0);
+  t.mock.timers.tick(1);
+  assert.equal(client.state, "reconnecting");
+  assert.equal(closeCalls.length, 1);
+  assert.match(closeCalls[0].reason ?? "", /connect timeout/);
+  assert.deepEqual(closes.map(({ willReconnect }) => willReconnect), [true]);
+  await rejected;
+
+  t.mock.timers.tick(1000);
+  await Promise.resolve();
+  assert.equal(FakeWebSocket.instances.length, 2);
+  const second = FakeWebSocket.instances[1];
+  assert.ok(second);
+  second.open();
+  await waitFor(() => sentTypes(second).includes("auth"), "expected authentication after timeout");
+  second.receive(authOk("connection-2"));
+  await waitFor(() => sentTypes(second).includes("subscribe"), "expected retained rooms after timeout");
+  assert.equal(client.state, "open");
+  const subscription = second.sent.map((raw) => JSON.parse(raw)).find((event) => event.type === "subscribe");
+  assert.deepEqual(subscription.payload.rooms, ["space:space-1"]);
+  second.receive({
+    id: "subscribe-connection-2",
+    timestamp: Date.now(),
+    domain: "system",
+    type: "system.subscribe.ok",
+    payload: { rooms: ["space:space-1"] },
+  });
+
+  lateClose?.({ code: 1006, reason: "late close" } as CloseEvent);
+  lateOpen?.(new Event("open"));
+  await Promise.resolve();
+  assert.equal(client.state, "open");
+  assert.equal(client.connectionId, "connection-2");
+  assert.deepEqual(sentTypes(second), ["auth", "subscribe"]);
+  assert.equal(closes.length, 1);
+
+  release();
+  assert.deepEqual(sentTypes(second), ["auth", "subscribe", "unsubscribe"]);
+});
+
+test("cancels the handshake timeout once the socket opens", async (t) => {
+  FakeWebSocket.instances = [];
+  t.mock.timers.enable({ apis: ["setTimeout", "setInterval", "Date"] });
+  const client = new WebsocketClient({
+    url: "ws://localhost",
+    getAccessToken: () => "token",
+    WebSocketImpl: FakeWebSocket,
+  });
+  t.after(() => client.disconnect());
+  const connecting = client.connect();
+  const first = FakeWebSocket.instances[0];
+  assert.ok(first);
+  t.mock.timers.tick(14_999);
+  first.open();
+  await waitFor(() => sentTypes(first).includes("auth"), "expected authentication");
+  first.receive(authOk("connection-1"));
+  await connecting;
+
+  t.mock.timers.tick(15_000);
+  assert.equal(client.state, "open");
+  assert.equal(FakeWebSocket.instances.length, 1);
+  assert.equal(first.readyState, WebSocket.OPEN);
+});
+
+test("rejects a stalled handshake without reconnecting when autoReconnect is disabled", async (t) => {
+  FakeWebSocket.instances = [];
+  t.mock.timers.enable({ apis: ["setTimeout", "setInterval", "Date"] });
+  const client = new WebsocketClient({
+    url: "ws://localhost",
+    autoReconnect: false,
+    connectTimeoutMs: 1234,
+    getAccessToken: () => "token",
+    WebSocketImpl: FakeWebSocket,
+  });
+  t.after(() => client.disconnect());
+  const rejected = assert.rejects(client.connect(), /connect timeout/);
+  t.mock.timers.tick(1233);
+  assert.equal(client.state, "connecting");
+  t.mock.timers.tick(1);
+  assert.equal(client.state, "closed");
+  await rejected;
+  t.mock.timers.tick(60_000);
+  assert.equal(FakeWebSocket.instances.length, 1);
+});
+
+test("disconnect cancels and settles a pending handshake without waiting for close", async (t) => {
+  FakeWebSocket.instances = [];
+  t.mock.timers.enable({ apis: ["setTimeout", "setInterval", "Date"] });
+  const client = new WebsocketClient({
+    url: "ws://localhost",
+    getAccessToken: () => "token",
+    WebSocketImpl: FakeWebSocket,
+  });
+  t.after(() => client.disconnect());
+  const closes: CloseSnapshot[] = [];
+  client.on("close", (snapshot) => closes.push(snapshot));
+  const connecting = client.connect();
+  const rejected = assert.rejects(connecting, /manual/);
+  const first = FakeWebSocket.instances[0];
+  assert.ok(first);
+  first.close = () => { first.readyState = WebSocket.CLOSING; };
+
+  await client.disconnect();
+  await rejected;
+  assert.deepEqual(closes, [{ code: 1000, reason: "manual", willReconnect: false }]);
+  t.mock.timers.tick(60_000);
+  assert.equal(client.state, "closed");
+  assert.equal(FakeWebSocket.instances.length, 1);
+});
+
+test("rejects invalid handshake timeout values", () => {
+  for (const connectTimeoutMs of [0, -1, 0.5, NaN, Infinity, 2_147_483_648]) {
+    assert.throws(
+      () => new WebsocketClient({ connectTimeoutMs, WebSocketImpl: FakeWebSocket }),
+      /connectTimeoutMs must be an integer between 1 and 2147483647/,
+    );
+  }
+});
+
 test("retries authentication with a forced token refresh and restores rooms", async () => {
   FakeWebSocket.instances = [];
   const tokenOptions: Array<{ forceRefresh?: boolean } | undefined> = [];
