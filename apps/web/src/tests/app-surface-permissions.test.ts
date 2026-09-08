@@ -92,7 +92,7 @@ test("Workspace App tabs require a complete invocation context", () => {
 
 test("App previews pass invocation context through the runtime bridge", () => {
 	assert.match(previewSource, /invocation=\{preview\.invocation\}/);
-	assert.match(source, /createAppBridgeHost\(\{[\s\S]*?invocation,/);
+	assert.match(source, /\(bridgeFactory \?\? createAppBridgeHost\)\(\{[\s\S]*?invocation,/);
 	assert.match(
 		workspaceSource,
 		/openContext: WorkspaceAppOpenContext[\s\S]*?sessionId: context\.source\.sessionId/,

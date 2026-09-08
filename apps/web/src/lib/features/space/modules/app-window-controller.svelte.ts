@@ -6,6 +6,7 @@ import {
 import type { AppDetailResponse } from "@neta-art/cohub";
 import { appDisplayTitle } from "$lib/app-page-meta";
 import { isNewerAppSnapshot } from "$lib/features/app/app-realtime";
+import { loadAppPreview } from "$lib/features/app/app-open";
 import { createRequestDedupe } from "./request-dedupe";
 import {
 	createWorkspaceAppInvocation,
@@ -88,15 +89,7 @@ export function createAppPreviewController(
 	 * back to the public one rather than showing a permission error.
 	 */
 	async function loadDetailFor(appId: string): Promise<AppDetailResponse> {
-		try {
-			return await loadApp(appId);
-		} catch (cause) {
-			// Read structurally: importing the SDK error class here would pull the
-			// client into this module, which the lazy import above avoids.
-			const status = (cause as { status?: unknown } | null)?.status;
-			if (status !== 401 && status !== 403) throw cause;
-			return await loadPublicApp(appId);
-		}
+		return loadAppPreview({ get: loadApp, getPublicById: loadPublicApp }, appId);
 	}
 
 	function patch(appId: string, next: Partial<InlineAppPreview>) {

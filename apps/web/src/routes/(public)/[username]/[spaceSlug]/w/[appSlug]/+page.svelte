@@ -1,12 +1,27 @@
 <script lang="ts">
-import type { AppDetailResponse } from "@neta-art/cohub";
+import type { AppNavigationOpenMessage } from "@cohub/protocol/app-navigation";
+import { isUuid } from "@cohub/protocol/identifiers";
+import type {
+	AppDetailResponse,
+	AppRuntimeShellContext,
+} from "@neta-art/cohub";
 import { onMount } from "svelte";
+import { goto } from "$app/navigation";
 import { page } from "$app/state";
 import { buildAppPageMeta } from "$lib/app-page-meta";
 import { reportAppPromotionReady, startAppPromotion } from "$lib/app-promotion";
 import AppPageHead from "$lib/components/app/AppPageHead.svelte";
 import AppSurface from "$lib/components/app/AppSurface.svelte";
+import { resolveAppNavigation } from "$lib/features/app/app-open";
 import { sdk } from "$lib/sdk";
+import { authStore } from "$lib/stores/auth.svelte";
+import {
+	buildSpaceCheckpointRoute,
+	buildSpaceCronjobRoute,
+	buildSpaceFileRoute,
+	buildSpaceSessionRoute,
+	buildSpaceTaskRoute,
+} from "$lib/space-routes";
 
 type ReadyData = {
 	mode: "ready";
@@ -44,6 +59,79 @@ let surfaceLoaded = false;
 let promotionReadyReported = false;
 let promotionRuntime: ReturnType<typeof startAppPromotion> | null = null;
 let activePromotionKey = "";
+let standaloneShell = $state<AppRuntimeShellContext | undefined>();
+let hostNotice = $state("");
+
+// Opt-in target context, verified with the account API. The query is not a grant.
+$effect(() => {
+	void authStore.userUuid;
+	const spaceId = page.url.searchParams.get("cohub_space");
+	standaloneShell = undefined;
+	hostNotice = "";
+	if (!surfaceReady || !spaceId || !isUuid(spaceId)) return;
+	let cancelled = false;
+	void sdk
+		.space(spaceId)
+		.get()
+		.then((space) => {
+			if (!cancelled)
+				standaloneShell = {
+					surface: "workspace",
+					space: { id: space.id, name: space.name },
+					session: null,
+					turn: null,
+				};
+		})
+		.catch(() => {
+			if (!cancelled) hostNotice = "Space context is unavailable.";
+		});
+	return () => {
+		cancelled = true;
+	};
+});
+
+function closeStandalone() {
+	window.close();
+	if (!window.closed) hostNotice = "You can close this tab.";
+}
+
+async function openStandalone(message: AppNavigationOpenMessage) {
+	const target = message.target;
+	if (!standaloneShell?.space)
+		return { handled: false as const, reason: "unsupported" as const };
+	if (target.kind === "app") {
+		if (message.call)
+			return { handled: false as const, reason: "unsupported" as const };
+		const { detail, launch } = await resolveAppNavigation(
+			sdk.apps,
+			target.ref,
+			target.launch,
+		);
+		if (!detail.publicUrl) return { handled: false as const, reason: "inaccessible" as const };
+		const url = new URL(detail.publicUrl, page.url.origin);
+		if (url.origin !== page.url.origin)
+			return { handled: false as const, reason: "unsupported" as const };
+		if (launch?.search) url.search = launch.search;
+		if (launch?.hash) url.hash = launch.hash;
+		url.searchParams.set("cohub_space", standaloneShell.space.id);
+		await goto(url.href);
+		return { handled: true as const };
+	}
+	if (target.spaceId !== standaloneShell.space.id)
+		return { handled: false as const, reason: "unsupported" as const };
+	const url =
+		target.kind === "file"
+			? buildSpaceFileRoute(target.spaceId, target.path)
+			: target.kind === "session"
+				? buildSpaceSessionRoute(target.spaceId, target.sessionId)
+				: target.kind === "task"
+					? buildSpaceTaskRoute(target.spaceId, target.taskRunId)
+					: target.kind === "checkpoint"
+						? buildSpaceCheckpointRoute(target.spaceId, target.checkpointId)
+						: buildSpaceCronjobRoute(target.spaceId, target.cronjobId);
+	await goto(url);
+	return { handled: true as const };
+}
 
 const promotionId = $derived(page.url.searchParams.get("cohub_campaign"));
 
@@ -166,15 +254,22 @@ $effect(() => {
 
 <AppPageHead meta={pageMeta} />
 
+{#if hostNotice}<p class="fixed left-3 top-3 z-50 rounded bg-bg-surface p-3 text-sm text-text-secondary" role="status">{hostNotice}</p>{/if}
+
 {#if ready && surfaceReady}
+	{#key ready.app.id}
 	<AppSurface
 		app={ready.app}
 		space={ready.space}
 		owner={ready.owner}
 		content={ready.content}
 		{launchState}
+		shell={standaloneShell}
+		onCloseSelf={closeStandalone}
+		onNavigationOpen={openStandalone}
 		onReady={handleSurfaceReady}
 	/>
+	{/key}
 {:else if ready}
 	<!-- SSR / first paint: head already has share meta; surface hydrates client-side. -->
 	<div class="min-h-screen bg-bg-primary" aria-hidden="true"></div>

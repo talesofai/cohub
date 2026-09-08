@@ -22,6 +22,10 @@ import { readAppCheckoutState } from "$lib/components/app/app-checkout-state";
 import SpaceAvatar from "$lib/components/SpaceAvatar.svelte";
 import UserIdentity from "$lib/components/UserIdentity.svelte";
 import AppAuthorizeDialog from "$lib/features/app/AppAuthorizeDialog.svelte";
+import type {
+	AppBridgeHost,
+	AppBridgeHostConfig,
+} from "$lib/features/app/bridge-host.svelte";
 import { createAppBridgeHost } from "$lib/features/app/bridge-host.svelte";
 import {
 	type AppSurfaceHost,
@@ -29,6 +33,7 @@ import {
 } from "$lib/features/app/surface-host";
 import { parseNewChatBackgroundAction } from "$lib/new-chat-background-bridge";
 import { emitSpaceConfigBackgroundAction } from "$lib/space-config";
+import AppEmbedRoot from "./AppEmbedRoot.svelte";
 
 type AppSurfaceMode = "page" | "background" | "app";
 
@@ -73,6 +78,11 @@ type Props = {
 	onSurfaceHost?: (host: AppSurfaceHost | null) => void;
 	onComposerChip?: (chip: AppComposerChip | null) => void;
 	onReady?: () => void;
+	/** Trusted Web-only transport injection. Never supplied by App messages. */
+	bridgeFactory?: (config: AppBridgeHostConfig) => AppBridgeHost;
+	onFrameLoad?: () => void;
+	onFrameFocus?: () => void;
+	onCloseSelf?: () => void;
 	onNavigationOpen?: (
 		message: AppNavigationOpenMessage,
 	) => Promise<
@@ -95,6 +105,10 @@ const {
 	onSurfaceHost = undefined,
 	onComposerChip = undefined,
 	onReady = undefined,
+	bridgeFactory = undefined,
+	onFrameLoad = undefined,
+	onFrameFocus = undefined,
+	onCloseSelf = undefined,
 	onNavigationOpen = undefined,
 }: Props = $props();
 
@@ -163,7 +177,7 @@ const checkoutState = $derived(readAppCheckoutState(page.url));
 // app remounts the component), so capturing their initial values is intentional.
 // `reply`/`getCheckoutState` stay reactive via closures.
 const host = untrack(() =>
-	createAppBridgeHost({
+	(bridgeFactory ?? createAppBridgeHost)({
 		app: { ...app, spaceName: space?.name ?? null },
 		authorizationContext: { surface: mode },
 		invocation,
@@ -307,12 +321,16 @@ onMount(() => {
 			sandbox={frameSandbox}
 			allow={framePermissions}
 			src={iframeSrc}
+			onfocus={onFrameFocus}
 			onload={() => {
 				// load only marks the document as visually ready. Context waits for
 				// the new document's runtime handshake.
-				runtimeReady = false;
+				// The trusted wrapper preserves an early ready handshake; its
+				// private bridge invalidates and re-announces the document epoch.
+				if (!bridgeFactory) runtimeReady = false;
 				surfaceHost?.reset();
 				reportReady();
+				onFrameLoad?.();
 			}}
 		></iframe>
 	{:else if !hasFrameSource}
@@ -354,6 +372,9 @@ onMount(() => {
 	{/if}
 </div>
 
+{#if !bridgeFactory && frame && frameOrigin}
+	<AppEmbedRoot {frame} origin={frameOrigin} appId={app.id} {shell} {onCloseSelf} {onNavigationOpen} />
+{/if}
 
 <AppAuthorizeDialog
 	open={host.authOpen && !!host.pendingAuth}
