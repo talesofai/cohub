@@ -300,33 +300,3 @@ test("does not create or start anything when no providers are detected", async (
   assert.equal(registrations.length, 0);
   assert.equal(calls.length, 0);
 });
-
-test("skips providers disabled by server rollout while starting enabled providers", async () => {
-  const calls: Array<{ command: string; args: string[]; options: Record<string, unknown> }> = [];
-  const { client, registrations } = fakeClient({
-    register: async (_spaceId, body) => {
-      if (body.provider === "codex") {
-        const error = Object.assign(new Error("codex local runtime is disabled"), { code: "provider_not_enabled" });
-        throw error;
-      }
-      return runtime(body.provider as DetectedProvider["provider"], { id: `${String(body.provider)}-enabled` });
-    },
-  });
-  const result = await startDetectedRuntimes({
-    client,
-    binary: "/tmp/cohub-locald",
-    dataDir: "/tmp/cohub-data",
-    spaceId: "space-1",
-    root: "/work/project",
-    deviceId: "device-1",
-    replicaId: "replica-1",
-    providers: [provider("codex"), provider("pi")],
-    relay: "wss://relay.test/runtime",
-    spawnProcess: fakeSpawn(calls),
-  });
-
-  assert.deepEqual(result.skipped, [{ provider: "codex", reason: "provider_not_enabled" }]);
-  assert.deepEqual(result.runtimes.map((item) => item.provider), ["pi"]);
-  assert.equal(registrations.length, 2);
-  assert.equal(calls.length, 1);
-});

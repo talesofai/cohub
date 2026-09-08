@@ -33,11 +33,6 @@ type StartedRuntime = {
   relay: string;
 };
 
-type SkippedRuntime = {
-  provider: Provider;
-  reason: "provider_not_enabled";
-};
-
 const LOCAL_RUNTIME_ADAPTER_VERSION = "cohub-local-runtime-v1";
 const LOCAL_RUNTIME_PROVIDER_VERSIONS: Record<Provider, string> = {
   codex: "@openai/codex-sdk@0.153.4",
@@ -143,28 +138,14 @@ export async function startDetectedRuntimes(input: {
   providerCommand?: string;
   foreground?: boolean;
   spawnProcess?: typeof nodeSpawn;
-}): Promise<{ runtimes: StartedRuntime[]; skipped: SkippedRuntime[]; waits: Array<Promise<number | null>> }> {
+}): Promise<{ runtimes: StartedRuntime[]; waits: Array<Promise<number | null>> }> {
   const registrations: Array<{ runtime: RuntimeRecord; provider: Provider }> = [];
   const failures: string[] = [];
-  const skipped: SkippedRuntime[] = [];
-
-  const errorCode = (cause: unknown): string | null => {
-    if (!cause || typeof cause !== "object") return null;
-    const direct = (cause as { code?: unknown }).code;
-    if (typeof direct === "string") return direct;
-    const body = (cause as { body?: unknown }).body;
-    if (body && typeof body === "object" && typeof (body as { code?: unknown }).code === "string") {
-      return (body as { code: string }).code;
-    }
-    return null;
-  };
 
   for (const detected of input.providers) {
     try {
       // Registration is idempotent and intentionally runs for every detected
-      // provider. Besides moving offline registrations to the current replica,
-      // this re-checks the server rollout flag before an old registration is
-      // reused and started.
+      // provider, moving offline registrations to the current replica.
       const runtime = await input.client.localAgent.registerRuntime(input.spaceId, {
         deviceId: input.deviceId,
         replicaId: input.replicaId,
@@ -179,22 +160,13 @@ export async function startDetectedRuntimes(input: {
       if (runtime.status === "revoked") throw new Error("runtime registration is revoked");
       registrations.push({ runtime, provider: detected.provider });
     } catch (cause) {
-      if (errorCode(cause) === "provider_not_enabled") {
-        skipped.push({ provider: detected.provider, reason: "provider_not_enabled" });
-        continue;
-      }
       failures.push(`${detected.displayName}: ${cause instanceof Error ? cause.message : String(cause)}`);
     }
   }
   if (registrations.length === 0) {
-    const skippedMessage = skipped.length > 0
-      ? ` Disabled by server rollout: ${skipped.map((item) => providerDisplayName(item.provider)).join(", ")}.`
-      : "";
     throw new Error(failures.length > 0
-      ? `No local runtimes could be registered. ${failures.join("; ")}${skippedMessage}`
-      : skipped.length > 0
-        ? `No enabled local runtimes were detected.${skippedMessage}`
-        : "No local runtimes were detected.");
+      ? `No local runtimes could be registered. ${failures.join("; ")}`
+      : "No local runtimes were detected.");
   }
   // Do not launch a subset of providers and then report failure. A detached
   // child would otherwise survive a failed `start` command with no reliable
@@ -225,7 +197,7 @@ export async function startDetectedRuntimes(input: {
     runtimes.push({ provider, runtimeId: runtime.id, state: "started", pid: started.pid, relay: started.relay });
     if (started.wait) waits.push(started.wait);
   }
-  return { runtimes, skipped, waits };
+  return { runtimes, waits };
 }
 
 async function waitForReplicaReady(client: ReturnType<typeof createClient>, spaceId: string, replicaId: string, timeoutMs = 120_000): Promise<void> {
@@ -358,7 +330,6 @@ export function registerAgentRuntime(program: Command): void {
           replicaId,
           providers: providers.map((provider) => provider.provider),
           runtimes: started.runtimes,
-          skipped: started.skipped,
         };
         if (jsonRequested(opts)) outJson(result);
         else {
@@ -367,7 +338,6 @@ export function registerAgentRuntime(program: Command): void {
           console.log(`  Root:    ${prepared.root}`);
           console.log(`  Replica: ${replicaId}`);
           for (const item of started.runtimes) console.log(`  ${providerDisplayName(item.provider)}: ${item.state} (${item.runtimeId})`);
-          for (const item of started.skipped) console.log(`  ${providerDisplayName(item.provider)}: skipped (disabled by server rollout)`);
         }
         if (opts.foreground && started.waits.length > 0) {
           const codes = await Promise.all(started.waits);

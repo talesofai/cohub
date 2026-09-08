@@ -46,10 +46,6 @@ SESSIONS_NAMESPACE=$(get_value "sessionsNamespace")
 AGENT_WORKER_CONCURRENCY=$(get_value "agentWorkerConcurrency")
 AGENT_LOCK_DB_POOL_MAX=$(get_value "agentLockDbPoolMax")
 AGENT_SHUTDOWN_DRAIN_TIMEOUT_MS=$(get_value "agentShutdownDrainTimeoutMs")
-LOCAL_RUNTIME_ENABLED=$(get_value "localRuntimeEnabled")
-LOCAL_RUNTIME_PI_ENABLED=$(get_value "localRuntimePiEnabled")
-LOCAL_RUNTIME_CLAUDE_ENABLED=$(get_value "localRuntimeClaudeEnabled")
-LOCAL_RUNTIME_CODEX_ENABLED=$(get_value "localRuntimeCodexEnabled")
 LOCAL_RUNTIME_RELAY_URL=$(get_value "localRuntimeRelayUrl")
 TURN_OBJECT_S3_ENDPOINT=$(get_value "TURN_OBJECT_S3_ENDPOINT")
 TURN_OBJECT_S3_REGION=$(get_value "TURN_OBJECT_S3_REGION")
@@ -105,10 +101,6 @@ require_value "sessionsNamespace" "$SESSIONS_NAMESPACE"
 require_value "agentWorkerConcurrency" "$AGENT_WORKER_CONCURRENCY"
 require_value "agentLockDbPoolMax" "$AGENT_LOCK_DB_POOL_MAX"
 require_value "agentShutdownDrainTimeoutMs" "$AGENT_SHUTDOWN_DRAIN_TIMEOUT_MS"
-require_value "localRuntimeEnabled" "$LOCAL_RUNTIME_ENABLED"
-require_value "localRuntimePiEnabled" "$LOCAL_RUNTIME_PI_ENABLED"
-require_value "localRuntimeClaudeEnabled" "$LOCAL_RUNTIME_CLAUDE_ENABLED"
-require_value "localRuntimeCodexEnabled" "$LOCAL_RUNTIME_CODEX_ENABLED"
 require_value "localRuntimeRelayUrl" "$LOCAL_RUNTIME_RELAY_URL"
 require_value "TURN_OBJECT_S3_ENDPOINT" "$TURN_OBJECT_S3_ENDPOINT"
 require_value "TURN_OBJECT_S3_REGION" "$TURN_OBJECT_S3_REGION"
@@ -172,10 +164,6 @@ sed -i.bak \
   -e "s|{{AGENT_WORKER_CONCURRENCY}}|${AGENT_WORKER_CONCURRENCY}|g" \
   -e "s|{{AGENT_LOCK_DB_POOL_MAX}}|${AGENT_LOCK_DB_POOL_MAX}|g" \
   -e "s|{{AGENT_SHUTDOWN_DRAIN_TIMEOUT_MS}}|${AGENT_SHUTDOWN_DRAIN_TIMEOUT_MS}|g" \
-  -e "s|{{LOCAL_RUNTIME_ENABLED}}|${LOCAL_RUNTIME_ENABLED}|g" \
-  -e "s|{{LOCAL_RUNTIME_PI_ENABLED}}|${LOCAL_RUNTIME_PI_ENABLED}|g" \
-  -e "s|{{LOCAL_RUNTIME_CLAUDE_ENABLED}}|${LOCAL_RUNTIME_CLAUDE_ENABLED}|g" \
-  -e "s|{{LOCAL_RUNTIME_CODEX_ENABLED}}|${LOCAL_RUNTIME_CODEX_ENABLED}|g" \
   -e "s|{{LOCAL_RUNTIME_RELAY_URL}}|${LOCAL_RUNTIME_RELAY_URL}|g" \
   -e "s|{{PLATFORM_CONFIG_ROOT}}|${PLATFORM_CONFIG_ROOT}|g" \
   -e "s|{{TURN_OBJECT_S3_ENDPOINT}}|${TURN_OBJECT_S3_ENDPOINT}|g" \

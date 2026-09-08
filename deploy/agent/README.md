@@ -33,10 +33,6 @@
 - `SESSIONS_DIR`
 - `ENV`
 - `WORKER_SECRET`
-- `LOCAL_RUNTIME_ENABLED`
-- `LOCAL_RUNTIME_PI_ENABLED`
-- `LOCAL_RUNTIME_CLAUDE_ENABLED`
-- `LOCAL_RUNTIME_CODEX_ENABLED`
 - `LOCAL_RUNTIME_RELAY_URL`
 - `AGENT_VERSION`
 - `TURN_OBJECT_S3_ENDPOINT`
@@ -129,4 +125,3 @@ cp values.example.yaml values.yaml
 ```
 
 Do not commit real `values.yaml` or `secrets.yaml`.
-

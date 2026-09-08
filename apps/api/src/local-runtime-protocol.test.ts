@@ -3,6 +3,7 @@ import { test } from "node:test";
 import { LocalAgentServiceError } from "./local-agent-service.js";
 import {
   assertSupportedLocalRuntimeProtocolVersion,
+  isSupportedLocalRuntimeProvider,
   shouldFenceLocalRuntimeRegistration,
   validateGatewayWsEndpoint,
 } from "./local-runtime-service.js";
@@ -26,6 +27,13 @@ test("local runtime protocol validation rejects unsupported values", () => {
         && error.status === 400,
     );
   }
+});
+
+test("local runtime supports every native provider", () => {
+  for (const provider of ["pi", "claude_code", "codex"]) {
+    assert.equal(isSupportedLocalRuntimeProvider(provider), true);
+  }
+  assert.equal(isSupportedLocalRuntimeProvider("unknown"), false);
 });
 
 test("runtime registration fences stale active connections but reuses fresh ones", () => {

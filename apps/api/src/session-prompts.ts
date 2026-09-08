@@ -19,7 +19,7 @@ import { createHash, randomUUID } from "node:crypto";
 import { and, eq, inArray, or, sql } from "drizzle-orm";
 import { localAgentRuntimes, sessionTurns, spaceLocalAgentPolicies, spaceWorkspacePolicies, workspaceExecutionAttempts, workspaceReplicas, workspaceState } from "@cohub/db";
 import { db } from "./db/index.js";
-import { isLocalRuntimeProviderEnabled } from "./local-runtime-service.js";
+import { isSupportedLocalRuntimeProvider } from "./local-runtime-service.js";
 import { LocalAgentServiceError } from "./local-agent-service.js";
 import { getSessionDomainServices } from "./session-services.js";
 
@@ -95,7 +95,7 @@ async function allocateCloudWorkspaceAttempt(input: {
         or(eq(localAgentRuntimes.status, "ready"), eq(localAgentRuntimes.status, "busy")),
       )).for("update").limit(1);
       if (!runtimeRow) throw new LocalAgentServiceError("local runtime is offline or unavailable", "runtime_unavailable", 409);
-      if (!isLocalRuntimeProviderEnabled(runtimeRow.provider)) throw new LocalAgentServiceError(`${runtimeRow.provider} local runtime is disabled`, "provider_not_enabled", 403);
+      if (!isSupportedLocalRuntimeProvider(runtimeRow.provider)) throw new LocalAgentServiceError("local runtime provider is unsupported", "unsupported_provider", 409);
       const [integrationPolicy] = await tx.select({ workspaceMode: spaceLocalAgentPolicies.workspaceMode, integrationPolicyVersion: spaceLocalAgentPolicies.integrationPolicyVersion }).from(spaceLocalAgentPolicies).where(and(
         eq(spaceLocalAgentPolicies.spaceId, input.spaceId),
         eq(spaceLocalAgentPolicies.deviceId, runtimeRow.deviceId),

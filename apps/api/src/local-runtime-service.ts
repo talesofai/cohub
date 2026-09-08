@@ -6,10 +6,8 @@ import {
   LocalRuntimeProviderSchema,
   LocalRuntimeCapabilitiesSchema,
   isUuid,
-  type LocalRuntimeProvider,
 } from "@cohub/protocol";
 import { db } from "./db/index.js";
-import { config } from "./config.js";
 import { LocalAgentServiceError, notifyWorkspaceState, type LocalAgentActor } from "./local-agent-service.js";
 import { hasPermission } from "./permissions.js";
 import { requestAgentTurnAbort } from "./agent-turn-abort.js";
@@ -79,18 +77,9 @@ export const assertSupportedLocalRuntimeProtocolVersion = (value: unknown): numb
   return LOCAL_RUNTIME_PROTOCOL_VERSION;
 };
 
-const providerEnabled = (provider: LocalRuntimeProvider) => {
-  if (!config.localRuntimeEnabled) return false;
-  return provider === "pi"
-    ? config.localRuntimePiEnabled
-    : provider === "codex"
-      ? config.localRuntimeCodexEnabled
-      : config.localRuntimeClaudeEnabled;
-};
-
-export const isLocalRuntimeProviderEnabled = (value: string) => {
+export const isSupportedLocalRuntimeProvider = (value: string) => {
   const parsed = LocalRuntimeProviderSchema.safeParse(value);
-  return parsed.success && providerEnabled(parsed.data);
+  return parsed.success;
 };
 
 const serialize = (row: typeof localAgentRuntimes.$inferSelect) => ({
@@ -145,7 +134,6 @@ export async function registerLocalRuntime(input: {
   const deviceId = input.actor.deviceId ?? (input.deviceId ? assertUuid(input.deviceId, "deviceId") : null);
   if (!deviceId) throw new LocalAgentServiceError("a device credential is required", "device_required", 401);
   const provider = LocalRuntimeProviderSchema.parse(input.provider);
-  if (!providerEnabled(provider)) throw new LocalAgentServiceError(`${provider} local runtime is disabled`, "provider_not_enabled", 403);
   await assertActorCanUseSpace(input.actor, input.spaceId);
   const displayName = bounded(input.displayName, "displayName", 255);
   const capabilities = LocalRuntimeCapabilitiesSchema.parse(input.capabilities ?? {});
@@ -592,7 +580,7 @@ export async function authorizeLocalRuntime(input: {
         409,
       );
     }
-    if (!providerEnabled(row.provider)) throw new LocalAgentServiceError(`${row.provider} local runtime is disabled`, "provider_not_enabled", 403);
+    if (!isSupportedLocalRuntimeProvider(row.provider)) throw new LocalAgentServiceError("local runtime provider is unsupported", "unsupported_provider", 409);
     const [integrationPolicy] = await tx.select({ workspaceMode: spaceLocalAgentPolicies.workspaceMode }).from(spaceLocalAgentPolicies).where(and(
       eq(spaceLocalAgentPolicies.spaceId, input.spaceId),
       eq(spaceLocalAgentPolicies.deviceId, input.actor.deviceId as string),
@@ -638,7 +626,7 @@ export async function touchLocalRuntime(input: { runtimeId: string; connectionEp
   const protocolVersion = assertSupportedLocalRuntimeProtocolVersion(input.protocolVersion);
   if (!input.actor.deviceId) throw new LocalAgentServiceError("runtime device credential is required", "device_required", 401);
   const [runtime] = await db.select({ spaceId: localAgentRuntimes.spaceId, userUuid: localAgentRuntimes.userUuid, deviceId: localAgentRuntimes.deviceId, provider: localAgentRuntimes.provider, protocolVersion: localAgentRuntimes.protocolVersion, status: localAgentRuntimes.status }).from(localAgentRuntimes).where(eq(localAgentRuntimes.id, input.runtimeId)).limit(1);
-  if (!runtime || runtime.userUuid !== input.actor.userUuid || runtime.deviceId !== input.actor.deviceId || runtime.protocolVersion !== protocolVersion || !isLocalRuntimeProviderEnabled(runtime.provider) || !["connecting", "ready", "busy"].includes(runtime.status)) return false;
+  if (!runtime || runtime.userUuid !== input.actor.userUuid || runtime.deviceId !== input.actor.deviceId || runtime.protocolVersion !== protocolVersion || !isSupportedLocalRuntimeProvider(runtime.provider) || !["connecting", "ready", "busy"].includes(runtime.status)) return false;
   if (!(await hasPermission({ uuid: input.actor.userUuid }, "file.edit", { spaceId: runtime.spaceId }))) return false;
   const [device] = await db.select({ id: localAgentDevices.id }).from(localAgentDevices).where(and(
     eq(localAgentDevices.id, input.actor.deviceId),
@@ -701,7 +689,7 @@ export async function reportLocalRuntimeStatus(input: {
     eq(localAgentRuntimes.userUuid, input.actor.userUuid),
     ne(localAgentRuntimes.status, "revoked"),
   )).limit(1);
-  if (!runtime || (input.status !== "offline" && !isLocalRuntimeProviderEnabled(runtime.provider))) return null;
+  if (!runtime || (input.status !== "offline" && !isSupportedLocalRuntimeProvider(runtime.provider))) return null;
   // A runtime may report an error or go offline while its user is being
   // revoked, but it must not transition back to `ready` without a current
   // workspace write grant. Keep this check on the ready path only so cleanup

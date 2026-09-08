@@ -11,7 +11,6 @@ import {
 } from "@cohub/db";
 import type { LocalRuntimeCommand, LocalRuntimeEvent } from "@cohub/protocol";
 import { db } from "../db.js";
-import { isLocalRuntimeProviderRolloutEnabled } from "../env.js";
 import { normalizeContentBlocksImages } from "../image-normalizer.js";
 import { logger } from "../logger.js";
 import { abortSessionTurn, interruptSessionTurn, persistAssistantMessage, persistUserMessage, failSessionTurn } from "../persistence.js";
@@ -959,7 +958,6 @@ export async function processLocalRuntimeTurn(input: { attemptId: string }): Pro
   if (!replica || runtime.spaceId !== attempt.spaceId || runtime.replicaId !== replica.id || attempt.replicaId !== replica.id) await fail("local runtime workspace binding is invalid");
   if (!replica) throw new Error("local runtime replica is unavailable");
   if (!turn.userUuid || runtime.userUuid !== turn.userUuid) await fail("local runtime ownership does not match the turn actor");
-  if (!isLocalRuntimeProviderRolloutEnabled(runtime.provider)) await fail(`${runtime.provider} local runtime is disabled`);
   if (!state.canonicalSnapshotId) await fail("local runtime execution requires a canonical workspace snapshot");
 
   const meta = record(turn.meta);

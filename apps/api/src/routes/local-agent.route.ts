@@ -6,7 +6,6 @@ import { localAgentDevices, spaceLocalAgentPolicies } from "@cohub/db";
 import { useAccountPrincipal, getLocalAgentPrincipal, authzDenied, requireValidId, useAuth } from "../lib/middleware.js";
 import { hasPermission } from "../permissions.js";
 import { db } from "../db/index.js";
-import { config } from "../config.js";
 import { enqueueWorkspaceSyncJob } from "../workspace-sync-queue.js";
 import {
   LocalAgentServiceError,
@@ -42,11 +41,6 @@ import {
 } from "../local-runtime-service.js";
 
 const router = new Hono();
-
-router.use("*", async (c, next) => {
-  if (!config.workspaceReplicationEnabled) return c.json({ code: "not_found", message: "not found" }, 404);
-  await next();
-});
 
 type JsonRecord = Record<string, unknown>;
 

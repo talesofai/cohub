@@ -78,11 +78,6 @@ export type AppConfig = {
   metaPromotionClientIpHeader?: string;
   /** Optional Meta Events Manager test code; omit in normal production traffic. */
   metaPromotionTestEventCode?: string;
-  workspaceReplicationEnabled: boolean;
-  localRuntimeEnabled: boolean;
-  localRuntimePiEnabled: boolean;
-  localRuntimeClaudeEnabled: boolean;
-  localRuntimeCodexEnabled: boolean;
 };
 
 export type SandboxToleration = {
@@ -103,14 +98,6 @@ const getDefaultSandboxImage = (env: "dev" | "prod") => {
 };
 
 const env = (process.env.ENV === "prod" ? "prod" : "dev") as "dev" | "prod";
-
-const parseBoolean = (value: string | undefined, fallback: boolean, name: string) => {
-  if (value == null || value.trim() === "") return fallback;
-  const normalized = value.trim().toLowerCase();
-  if (["1", "true", "yes", "on"].includes(normalized)) return true;
-  if (["0", "false", "no", "off"].includes(normalized)) return false;
-  throw new Error(`${name} must be true or false`);
-};
 
 const parseCommaList = (value: string | undefined) => {
   return (value ?? "")
@@ -265,25 +252,7 @@ export const config: AppConfig = {
   metaPromotionApiVersion: process.env.COHUB_META_API_VERSION?.trim() || "v21.0",
   metaPromotionClientIpHeader: process.env.COHUB_META_CLIENT_IP_HEADER?.trim().toLowerCase() || undefined,
   metaPromotionTestEventCode: process.env.COHUB_META_TEST_EVENT_CODE?.trim() || undefined,
-  // Replication needs private object storage. In dev it turns on by itself
-  // only when that storage is configured, so a checkout that follows
-  // .env.example still starts. Setting the flag explicitly is always honored.
-  workspaceReplicationEnabled: parseBoolean(
-    process.env.WORKSPACE_REPLICATION_ENABLED,
-    env === "dev" && Boolean((process.env.WORKSPACE_OBJECT_ENDPOINT ?? process.env.USER_UPLOAD_S3_ENDPOINT) && (process.env.WORKSPACE_OBJECT_BUCKET ?? process.env.SPACE_UPLOAD_S3_BUCKET) && (process.env.WORKSPACE_OBJECT_ACCESS_KEY_ID ?? process.env.USER_UPLOAD_S3_ACCESS_KEY_ID) && (process.env.WORKSPACE_OBJECT_SECRET_ACCESS_KEY ?? process.env.USER_UPLOAD_S3_SECRET_ACCESS_KEY)),
-    "WORKSPACE_REPLICATION_ENABLED",
-  ),
-  localRuntimeEnabled: parseBoolean(process.env.LOCAL_RUNTIME_ENABLED, false, "LOCAL_RUNTIME_ENABLED"),
-  localRuntimePiEnabled: parseBoolean(process.env.LOCAL_RUNTIME_PI_ENABLED, env === "dev", "LOCAL_RUNTIME_PI_ENABLED"),
-  localRuntimeClaudeEnabled: parseBoolean(process.env.LOCAL_RUNTIME_CLAUDE_ENABLED, env === "dev", "LOCAL_RUNTIME_CLAUDE_ENABLED"),
-  localRuntimeCodexEnabled: parseBoolean(process.env.LOCAL_RUNTIME_CODEX_ENABLED, env === "dev", "LOCAL_RUNTIME_CODEX_ENABLED"),
 };
-
-// Local provider runtimes require replication; default the flag to follow it in dev
-// so an explicit `false` still wins but an unset flag never contradicts it.
-if (process.env.LOCAL_RUNTIME_ENABLED == null || process.env.LOCAL_RUNTIME_ENABLED.trim() === "") {
-  config.localRuntimeEnabled = config.env === "dev" && config.workspaceReplicationEnabled;
-}
 
 export const sessionsNamespace = getSessionsNamespace(config.env);
 
@@ -300,13 +269,8 @@ export const assertRequiredConfig = () => {
   if (!config.bullmqRedisUrl) {
     throw new Error("Missing required env: BULLMQ_REDIS_URL");
   }
-  if (config.workspaceReplicationEnabled) {
-    if (!config.workspaceObjectEndpoint) throw new Error("Missing required env: WORKSPACE_OBJECT_ENDPOINT");
-    if (!config.workspaceObjectBucket) throw new Error("Missing required env: WORKSPACE_OBJECT_BUCKET");
-    if (!config.workspaceObjectAccessKeyId) throw new Error("Missing required env: WORKSPACE_OBJECT_ACCESS_KEY_ID");
-    if (!config.workspaceObjectSecretAccessKey) throw new Error("Missing required env: WORKSPACE_OBJECT_SECRET_ACCESS_KEY");
-  }
-  if (config.localRuntimeEnabled && !config.workspaceReplicationEnabled) {
-    throw new Error("LOCAL_RUNTIME_ENABLED requires WORKSPACE_REPLICATION_ENABLED");
-  }
+  if (!config.workspaceObjectEndpoint) throw new Error("Missing required env: WORKSPACE_OBJECT_ENDPOINT");
+  if (!config.workspaceObjectBucket) throw new Error("Missing required env: WORKSPACE_OBJECT_BUCKET");
+  if (!config.workspaceObjectAccessKeyId) throw new Error("Missing required env: WORKSPACE_OBJECT_ACCESS_KEY_ID");
+  if (!config.workspaceObjectSecretAccessKey) throw new Error("Missing required env: WORKSPACE_OBJECT_SECRET_ACCESS_KEY");
 };

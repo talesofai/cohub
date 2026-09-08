@@ -14,15 +14,6 @@ const redisUrlSchema = z
   }, "REDIS_URL must use redis:// or rediss://");
 
 const defaultAgentInstanceId = process.env.HOSTNAME?.trim() || `agent-${process.pid}`;
-const booleanEnv = (name: string, fallback: boolean) => z.string().optional().transform((value, context) => {
-  if (value == null || value.trim() === "") return fallback;
-  const normalized = value.trim().toLowerCase();
-  if (["1", "true", "yes", "on"].includes(normalized)) return true;
-  if (["0", "false", "no", "off"].includes(normalized)) return false;
-  context.addIssue({ code: "custom", message: `${name} must be true or false` });
-  return z.NEVER;
-});
-
 export const EnvSchema = z.object({
   AGENT_INSTANCE_ID: z.string().min(1).default(defaultAgentInstanceId),
   REDIS_URL: redisUrlSchema.default("redis://localhost:6379"),
@@ -70,10 +61,6 @@ export const EnvSchema = z.object({
     .default("/configs"),
   ENV: z.enum(["dev", "prod"]).default("dev"),
   AGENT_VERSION: z.string().optional(),
-  LOCAL_RUNTIME_ENABLED: booleanEnv("LOCAL_RUNTIME_ENABLED", process.env.ENV !== "prod"),
-  LOCAL_RUNTIME_PI_ENABLED: booleanEnv("LOCAL_RUNTIME_PI_ENABLED", process.env.ENV !== "prod"),
-  LOCAL_RUNTIME_CLAUDE_ENABLED: booleanEnv("LOCAL_RUNTIME_CLAUDE_ENABLED", process.env.ENV !== "prod"),
-  LOCAL_RUNTIME_CODEX_ENABLED: booleanEnv("LOCAL_RUNTIME_CODEX_ENABLED", process.env.ENV !== "prod"),
   WORKER_SECRET: z.string().optional(),
   LOCAL_RUNTIME_RELAY_URL: z.string().url().refine((value) => {
     const url = new URL(value);
@@ -115,20 +102,6 @@ export const EnvSchema = z.object({
 
 export type Env = z.infer<typeof EnvSchema>;
 export const env = EnvSchema.parse(process.env);
-
-export const isLocalRuntimeProviderRolloutEnabled = (provider: string) => {
-  if (!env.LOCAL_RUNTIME_ENABLED) return false;
-  switch (provider) {
-    case "pi":
-      return env.LOCAL_RUNTIME_PI_ENABLED;
-    case "claude_code":
-      return env.LOCAL_RUNTIME_CLAUDE_ENABLED;
-    case "codex":
-      return env.LOCAL_RUNTIME_CODEX_ENABLED;
-    default:
-      return false;
-  }
-};
 
 export const AGENT_INSTANCE_HEARTBEAT_MS = 5000;
 export const SPACE_OWNER_LEASE_MS = 15000;
