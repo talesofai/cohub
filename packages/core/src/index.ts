@@ -9,3 +9,4 @@ export * from "./hooks/index.js";
 export * from "./fs-cdn/index.js";
 export * from "./labels/index.js";
 export * from "./apps/index.js";
+export * from "./workspace-replication/index.js";

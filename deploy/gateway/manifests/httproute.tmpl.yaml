@@ -10,6 +10,25 @@ spec:
   hostnames:
 __HOSTNAMES_BLOCK__
   rules:
+    # Control and data channels keep their in-memory pairing state in one
+    # Gateway process. Route both relay namespaces through the affinity
+    # Service; the normal Gateway Service remains load-balanced.
+    - matches:
+        - path:
+            type: PathPrefix
+            value: /runtime/relay
+        - path:
+            type: PathPrefix
+            value: /internal/runtime-relay
+        - path:
+            type: PathPrefix
+            value: /sandbox/relay
+        - path:
+            type: PathPrefix
+            value: /internal/sandbox-relay
+      backendRefs:
+        - name: __APP_NAME__-runtime-relay
+          port: __SERVICE_PORT__
     - matches:
         - path:
             type: PathPrefix

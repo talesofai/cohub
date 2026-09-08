@@ -69,6 +69,26 @@ spec:
                 secretKeyRef:
                   name: {{APP_NAME}}-secrets
                   key: TURN_OBJECT_S3_SECRET_ACCESS_KEY
+            - name: USER_UPLOAD_S3_ACCESS_KEY_ID
+              valueFrom:
+                secretKeyRef:
+                  name: {{APP_NAME}}-secrets
+                  key: USER_UPLOAD_S3_ACCESS_KEY_ID
+            - name: USER_UPLOAD_S3_SECRET_ACCESS_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: {{APP_NAME}}-secrets
+                  key: USER_UPLOAD_S3_SECRET_ACCESS_KEY
+            - name: WORKSPACE_OBJECT_ACCESS_KEY_ID
+              valueFrom:
+                secretKeyRef:
+                  name: {{APP_NAME}}-secrets
+                  key: WORKSPACE_OBJECT_ACCESS_KEY_ID
+            - name: WORKSPACE_OBJECT_SECRET_ACCESS_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: {{APP_NAME}}-secrets
+                  key: WORKSPACE_OBJECT_SECRET_ACCESS_KEY
           {{RESOURCES}}
           volumeMounts:
             - name: space-storage

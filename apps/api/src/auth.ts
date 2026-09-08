@@ -1,6 +1,7 @@
 import type { Context } from "hono";
 
 import { verifyExecutionGrant, type ExecutionGrantPayload } from "./execution-grants.js";
+export type { LocalAgentAuthPrincipal } from "./local-agent-auth.js";
 export type { AuthUserProfile } from "@cohub/identity";
 
 const parseBearer = (value?: string | null) => {

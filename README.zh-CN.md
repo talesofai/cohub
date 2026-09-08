@@ -40,7 +40,12 @@ Cohub 用 Cohub 开发。核心开发流程——需求、Agent 运行、Review�
 ```bash
 npm install -g @neta-art/cohub-cli
 cohub auth login
+# 挂载本地项目，并暴露本机已登录的原生 runtime
+cohub agent runtime start <space-id> --root ./project
 ```
+
+该命令会自动检测本机已配置的 Codex、Claude Code 和 Pi 凭据。runtime host
+已随 CLI 打包，不需要单独安装 runtime 或手动注册 provider。
 
 **Self-host** — 见 [docs/self-hosting.md](docs/self-hosting.md)。
 
@@ -65,7 +70,8 @@ pnpm dev
 
 ## Thanks
 
-Cohub 的 Agent Runtime 基于 [pi](https://github.com/earendil-works/pi) 构建，感谢它提供的基石。
+Cohub 的本地 runtime 适配器使用 Codex、Claude Code 和 Pi 的原生 SDK；provider
+配置与凭据始终保留在用户本机。
 
 ## License
 

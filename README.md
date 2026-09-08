@@ -40,7 +40,13 @@ Cohub is developed inside Cohub. The core dev workflow — specs, agent runs, re
 ```bash
 npm install -g @neta-art/cohub-cli
 cohub auth login
+# Attach a local project and expose its logged-in native runtimes
+cohub agent runtime start <space-id> --root ./project
 ```
+
+The start command automatically detects the Codex, Claude Code, and Pi
+credentials already configured on the machine. The runtime host is bundled in
+the CLI; no separate runtime installation or provider registration is needed.
 
 **Self-host** — see [docs/self-hosting.md](docs/self-hosting.md).
 
@@ -65,7 +71,8 @@ Quality checks: `pnpm lint` · `pnpm typecheck` · `pnpm build`
 
 ## Thanks
 
-Cohub's agent runtime is built on [pi](https://github.com/earendil-works/pi) — thank you for the foundation.
+Cohub's local runtime adapters build on the native Codex, Claude Code, and Pi
+SDKs. The provider configuration and credentials remain on the user's machine.
 
 ## License
 

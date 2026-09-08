@@ -79,6 +79,40 @@ cohub -s <spaceId> spaces prompt "message" --json
 COHUB_SPACE_ID=<spaceId> cohub spaces prompt "message" --json
 ```
 
+## Local workspace replicas
+
+Start every configured native runtime for a local project with one command:
+
+```bash
+cohub agent runtime start <spaceId> --root ./project
+cohub agent doctor
+```
+
+`start` automatically downloads and verifies `cohub-locald`, enrolls or reuses this CLI's device, attaches or reuses the workspace replica, detects configured Codex, Claude Code, and Pi credentials, registers each usable provider, and starts its relay runtime. Empty folders initialize from the Space; non-empty folders use a non-destructive merge strategy. `--foreground` keeps all detected runtimes attached to the terminal.
+
+Inspect and resolve retained workspace conflicts without materializing conflict files into the project:
+
+```bash
+cohub workspace conflicts --space <spaceId>
+cohub workspace resolve <conflictId> --space <spaceId> --use-local
+```
+
+`COHUB_LOCALD_BIN` overrides the runtime path for development. `COHUB_LOCALD_VERSION` and `COHUB_LOCALD_CDN_BASE_URL` select a released version and mirror. Local runtime control uses locald and the Gateway relay; network transfer and retries happen in the daemon.
+
+For local execution, install the Cohub CLI globally. It includes the native
+runtime host, which loads each provider SDK and keeps the provider's own
+configuration and credentials:
+
+```bash
+npm install -g @neta-art/cohub-cli
+cohub agent runtime start <spaceId> --root ./project
+cohub agent runtime list <spaceId>
+cohub agent runtime get <spaceId> <runtimeId>
+cohub agent runtime revoke <spaceId> <runtimeId>
+```
+
+The bundled runtime host is an internal implementation detail. Runtime prompts are selected in the Web composer or sent by SDK callers with `runtimeId`; they run immediately and do not accept a Cohub model override. Provider MCP configuration remains provider-owned and is not registered by Cohub.
+
 ## Chats and prompts
 
 Use `spaces prompt` for immediate sends, delayed sends, one-time schedules, recurring schedules, new Chats, and existing Chats.
@@ -93,6 +127,9 @@ cat prompt.md | cohub -s <spaceId> spaces prompt --json
 
 # Send to an existing Chat
 cohub -s <spaceId> spaces prompt --session <sessionId> "message" --json
+
+# Send immediately through a registered local runtime
+cohub -s <spaceId> spaces prompt --runtime-id <runtimeId> "message" --json
 
 # Create a new Chat and send
 cohub -s <spaceId> spaces prompt --title "<chat title>" "message" --json

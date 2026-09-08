@@ -9,6 +9,7 @@
 - `src/sandbox/ws-client.ts`: sandbox WebSocket client（per-space）
 - `src/sandbox/tools.ts`: remote sandbox tools 适配层
 - `Dockerfile`: Agent 镜像
+- `src/local-runtime/`: Local runtime driver. `transport.ts` exchanges canonical command/event frames with the Gateway peer; `projection.ts` reduces provider-neutral events into Cohub content; `ledger.ts` keeps the command and event records that make prompts replay-safe; `turn.ts` owns the workspace lease and transcript persistence
 
 ## 运行方式
 
@@ -35,6 +36,16 @@ pnpm typecheck
 # 运行构建产物
 pnpm start
 ```
+
+## Local runtime
+
+When a prompt is bound to a registered `runtimeId`, the worker does not create a
+Cohub-native provider session. It opens the runtime's fenced Gateway peer,
+negotiates the local-runtime protocol with the provider adapter, reduces
+normalized provider events into the existing transcript stream, and persists the
+final turn through the normal idempotent session writer. The provider keeps its
+native tools, configuration, credentials, and session journal. Workspace lease
+and local replica checks run before the provider receives the prompt.
 
 ## Redis 流控机制
 

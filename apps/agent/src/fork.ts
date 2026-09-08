@@ -9,6 +9,7 @@ import { appendTerminalGenerationMessages } from "./generation-session-sync.js";
 import { getAgentSessionFilePath, getAgentSpaceSessionsPath, getAgentWorkspacePath } from "./runtime/paths.js";
 import { SessionManager } from "./runtime/local-session-manager.js";
 import type { AgentSessionForkJobData } from "./queue.js";
+import { acquireSessionLock } from "./session-lock.js";
 
 const tracer = getAgentTracer();
 
@@ -45,7 +46,7 @@ async function appendVisibleGenerationMessages(input: {
   await appendTerminalGenerationMessages(rows.map((row) => row.message), input.sessionManager);
 }
 
-async function provisionForkFile(data: AgentSessionForkJobData) {
+export async function provisionSessionForkFile(data: AgentSessionForkJobData) {
   const parentSessionFile = getAgentSessionFilePath(data.spaceId, data.parentSessionId);
   const childSessionFile = getAgentSessionFilePath(data.spaceId, data.sessionId);
   const workingSessionFile = `${childSessionFile}.forking`;
@@ -133,8 +134,16 @@ export async function processSessionForkJob(job: import("bullmq").Job<AgentSessi
       ...(queueWaitMs != null ? { "agent.queue.wait_ms": queueWaitMs } : {}),
     },
   }, parentCtx, async () => {
+    const lock = await acquireSessionLock(data.parentSessionId, {
+      holderKind: "fork",
+      holderId: data.sessionId,
+    });
+    if (!lock) throw new Error("Parent session is busy; fork will retry");
     try {
-      return await provisionForkFile(data);
+      lock.assertHealthy();
+      const result = await provisionSessionForkFile(data);
+      lock.assertHealthy();
+      return result;
     } catch (error) {
       await recordJobFailure(job, error, {
         reason: "session_fork_failed",
@@ -147,6 +156,8 @@ export async function processSessionForkJob(job: import("bullmq").Job<AgentSessi
         },
       });
       throw error;
+    } finally {
+      await lock.release();
     }
   });
 }

@@ -19,6 +19,7 @@ import {
 import { context, SpanStatusCode, trace } from "@opentelemetry/api";
 import { getTracer, extractTrace } from "@cohub/infra/tracing/propagator";
 import { assertRequiredConfig, config } from "../config.js";
+import { closeDb } from "../db.js";
 import { getRegisteredSystemJobs, getSystemJobHandler } from "../system/registry.js";
 import { SANDBOX_IDLE_REAPER_JOB } from "../system/jobs/sandbox-idle-reaper/types.js";
 import { startSystemReferralRewardRetryLoop } from "../system/referral-reward-retry.js";
@@ -209,6 +210,7 @@ const shutdown = async (signal: string) => {
   });
   await systemQueue.close().catch(() => undefined);
   await connection.quit().catch(() => undefined);
+  await closeDb();
   process.exit(0);
 };
 

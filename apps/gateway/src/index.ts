@@ -9,6 +9,7 @@ import { Hono } from "hono";
 import { cors } from "hono/cors";
 import { httpInstrumentationMiddleware } from "@hono/otel";
 import { WebSocketServer, type RawData, type WebSocket } from "ws";
+import { isUuid } from "@cohub/protocol";
 import type { ContentBlock } from "@cohub/protocol/core";
 import type {
   RealtimeCompactFrame,
@@ -48,6 +49,7 @@ import {
 import { markChannelDegraded, touchChannelOutbound } from "./channel-health.js";
 import { handleAsrWebSocketConnection } from "./asr/session.js";
 import { handleRelayControlConnection, handleRelayDataConnection, handleRelayPeerConnection } from "./relay/index.js";
+import { decodeRelayPathSegment, handleRuntimeControlConnection, handleRuntimeDataConnection, handleRuntimePeerConnection } from "./runtime-relay.js";
 import {
   createPubSubRedisClient,
   redisCommandClient,
@@ -759,6 +761,7 @@ const submitWebsocketSessionMessage = async (ctx: WsConnectionContext, requestId
   const clientMessageId = typeof payload.clientMessageId === "string" && payload.clientMessageId.trim()
     ? payload.clientMessageId.trim()
     : randomUUID();
+  if (clientMessageId.length > 255) throw new WsClientInputError("clientMessageId is too long");
   const content = Array.isArray(payload.content)
     ? payload.content as ContentBlock[]
     : [];
@@ -768,9 +771,18 @@ const submitWebsocketSessionMessage = async (ctx: WsConnectionContext, requestId
   const provider = typeof payload.provider === "string" && payload.provider.trim()
     ? payload.provider.trim()
     : null;
+  if (payload.runtimeId != null && typeof payload.runtimeId !== "string") {
+    throw new WsClientInputError("runtimeId must be a string");
+  }
+  const runtimeId = typeof payload.runtimeId === "string" && payload.runtimeId.trim()
+    ? payload.runtimeId.trim()
+    : null;
+  if (runtimeId && !isUuid(runtimeId)) throw new WsClientInputError("runtimeId must be a valid UUID");
   const thinkingLevel = typeof payload.thinkingLevel === "string" && payload.thinkingLevel.trim()
     ? payload.thinkingLevel.trim()
     : null;
+  if (runtimeId && (model || provider)) throw new WsClientInputError("local runtime uses its own provider configuration");
+  if (runtimeId && thinkingLevel) throw new WsClientInputError("local runtime uses its provider's own thinking configuration");
   // WS schema already validates enum; reject if non-empty but invalid
   if (thinkingLevel && !new Set(["off", "minimal", "low", "medium", "high", "xhigh", "max"]).has(thinkingLevel)) {
     throw new WsClientInputError("thinkingLevel must be one of: off, minimal, low, medium, high, xhigh, max");
@@ -791,6 +803,7 @@ const submitWebsocketSessionMessage = async (ctx: WsConnectionContext, requestId
     source: "websocket",
     model,
     provider,
+    runtimeId,
     thinkingLevel,
     context: {
       kind: "websocket",
@@ -954,22 +967,43 @@ async function main() {
   const relayControlWss = new WebSocketServer({ noServer: true, maxPayload: 1024 * 1024 });
   const relayDataWss = new WebSocketServer({ noServer: true, maxPayload: 50 * 1024 * 1024 });
   const relayPeerWss = new WebSocketServer({ noServer: true, maxPayload: 50 * 1024 * 1024 });
+  const runtimeControlWss = new WebSocketServer({ noServer: true, maxPayload: 4 * 1024 * 1024 });
+  const runtimeDataWss = new WebSocketServer({ noServer: true, maxPayload: 32 * 1024 * 1024 });
+  const runtimePeerWss = new WebSocketServer({ noServer: true, maxPayload: 32 * 1024 * 1024 });
 
   const websocketRoutes = new Map<string, WebSocketServer>([
     ["/ws", wss],
     ["/asr/ws", asrWss],
     ["/sandbox/relay", relayControlWss],
     ["/sandbox/relay/data", relayDataWss],
+    ["/internal/sandbox-relay", relayControlWss],
+    ["/internal/sandbox-relay/data", relayDataWss],
+    ["/runtime/relay", runtimeControlWss],
+    ["/runtime/relay/data", runtimeDataWss],
+    ["/internal/runtime-relay", runtimeControlWss],
+    ["/internal/runtime-relay/data", runtimeDataWss],
   ]);
 
   // Match /internal/sandbox-relay/:spaceId for cloud peers.
   const RELAY_PEER_PREFIX = "/internal/sandbox-relay/";
+  const RUNTIME_PEER_PREFIX = "/internal/runtime-relay/";
 
   server.on("upgrade", (request, socket, head) => {
     const pathname = request.url ? new URL(request.url, "http://localhost").pathname : "";
 
+    // Exact control/data aliases must win over the dynamic internal peer
+    // prefixes below (otherwise `/internal/runtime-relay/data` is parsed as a
+    // peer for runtimeId `data`).
+    const websocketServer = websocketRoutes.get(pathname);
+    if (websocketServer) {
+      websocketServer.handleUpgrade(request, socket, head, (websocket) => {
+        websocketServer.emit("connection", websocket, request);
+      });
+      return;
+    }
+
     if (pathname.startsWith(RELAY_PEER_PREFIX)) {
-      const spaceId = decodeURIComponent(pathname.slice(RELAY_PEER_PREFIX.length)).trim();
+      const spaceId = decodeRelayPathSegment(pathname.slice(RELAY_PEER_PREFIX.length));
       if (!spaceId) {
         socket.write("HTTP/1.1 400 Bad Request\r\nConnection: close\r\n\r\n");
         socket.destroy();
@@ -981,21 +1015,28 @@ async function main() {
       return;
     }
 
-    const websocketServer = websocketRoutes.get(pathname);
-    if (!websocketServer) {
-      socket.write("HTTP/1.1 404 Not Found\r\nConnection: close\r\n\r\n");
-      socket.destroy();
+    if (pathname.startsWith(RUNTIME_PEER_PREFIX)) {
+      const runtimeId = decodeRelayPathSegment(pathname.slice(RUNTIME_PEER_PREFIX.length));
+      if (!runtimeId) {
+        socket.write("HTTP/1.1 400 Bad Request\r\nConnection: close\r\n\r\n");
+        socket.destroy();
+        return;
+      }
+      runtimePeerWss.handleUpgrade(request, socket, head, (websocket) => {
+        void handleRuntimePeerConnection(websocket, request, runtimeId);
+      });
       return;
     }
 
-    websocketServer.handleUpgrade(request, socket, head, (websocket) => {
-      websocketServer.emit("connection", websocket, request);
-    });
+    socket.write("HTTP/1.1 404 Not Found\r\nConnection: close\r\n\r\n");
+    socket.destroy();
   });
 
   asrWss.on("connection", handleAsrWebSocketConnection);
   relayControlWss.on("connection", (socket, request) => void handleRelayControlConnection(socket, request));
   relayDataWss.on("connection", (socket, request) => handleRelayDataConnection(socket, request));
+  runtimeControlWss.on("connection", (socket, request) => void handleRuntimeControlConnection(socket, request));
+  runtimeDataWss.on("connection", (socket, request) => handleRuntimeDataConnection(socket, request));
 
   wss.on("connection", (socket: WebSocket) => {
     const connectionId = randomUUID();

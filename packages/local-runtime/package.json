@@ -1,0 +1,66 @@
+{
+  "name": "@cohub/local-runtime",
+  "version": "1.0.0",
+  "description": "Provider-neutral local runtime host for Cohub native agent SDKs.",
+  "private": true,
+  "type": "module",
+  "bin": {
+    "cohub-agent-runtime": "./bin/cohub-agent-runtime.js"
+  },
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    },
+    "./host": {
+      "types": "./dist/host.d.ts",
+      "default": "./dist/host.js"
+    },
+    "./runner": {
+      "types": "./dist/runner.d.ts",
+      "default": "./dist/runner.js"
+    },
+    "./types": {
+      "types": "./dist/types.d.ts",
+      "default": "./dist/types.js"
+    },
+    "./providers": {
+      "types": "./dist/providers/index.d.ts",
+      "default": "./dist/providers/index.js"
+    },
+    "./providers/codex": {
+      "types": "./dist/providers/codex.d.ts",
+      "default": "./dist/providers/codex.js"
+    },
+    "./providers/claude": {
+      "types": "./dist/providers/claude.d.ts",
+      "default": "./dist/providers/claude.js"
+    },
+    "./providers/pi": {
+      "types": "./dist/providers/pi.d.ts",
+      "default": "./dist/providers/pi.js"
+    }
+  },
+  "files": [
+    "dist",
+    "bin",
+    "README.md"
+  ],
+  "scripts": {
+    "build": "tsc -p tsconfig.build.json",
+    "test": "node ../../scripts/test/run.mjs 'src/**/*.test.ts'",
+    "typecheck": "tsc -p tsconfig.json --noEmit"
+  },
+  "dependencies": {
+    "@anthropic-ai/claude-agent-sdk": "0.3.263",
+    "@cohub/protocol": "workspace:*",
+    "@earendil-works/pi-agent-core": "0.81.1",
+    "@earendil-works/pi-ai": "0.81.1",
+    "@earendil-works/pi-coding-agent": "0.81.1",
+    "@openai/codex-sdk": "0.153.4"
+  },
+  "devDependencies": {
+    "@types/node": "26.4.0",
+    "typescript": "7.0.2"
+  }
+}

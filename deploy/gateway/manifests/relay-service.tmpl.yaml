@@ -1,0 +1,26 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: __APP_NAME__-runtime-relay
+  namespace: __NAMESPACE__
+  labels:
+    app.kubernetes.io/name: __APP_NAME__
+    app.kubernetes.io/component: runtime-relay
+  annotations:
+    # Keep Traefik on the Service ClusterIP so kube-proxy applies the
+    # ClientIP affinity below. Native endpoint balancing would bypass it.
+    traefik.io/service.nativelb: "false"
+spec:
+  type: ClusterIP
+  sessionAffinity: ClientIP
+  sessionAffinityConfig:
+    clientIP:
+      # Runtime control and data sockets can live for hours. The value is
+      # bounded by Kubernetes to 1..86400 seconds.
+      timeoutSeconds: 86400
+  selector:
+    app.kubernetes.io/name: __APP_NAME__
+  ports:
+    - name: http
+      port: __SERVICE_PORT__
+      targetPort: __CONTAINER_PORT__

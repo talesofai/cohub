@@ -37,6 +37,17 @@ test("accepts generic realtime room events and room routes", () => {
   });
   assert.equal(request.success, true);
 
+  const localRuntimePrompt = wsClientEventSchema.safeParse({
+    type: "session.message.create",
+    payload: {
+      spaceId: "11111111-1111-4111-8111-111111111111",
+      sessionId: "22222222-2222-4222-8222-222222222222",
+      runtimeId: "33333333-3333-4333-8333-333333333333",
+      content: [{ type: "text", text: "run locally" }],
+    },
+  });
+  assert.equal(localRuntimePrompt.success, true);
+
   const event = realtimeEnvelopeSchema.safeParse({
     id: "event-1",
     timestamp: Date.now(),

@@ -8,6 +8,8 @@ import { ensureSandboxConnection } from "./sandbox-pool.js";
 import { tracedRpc } from "./sandbox/tools.js";
 import { runWithToolExecutionContext } from "./tool-context.js";
 import { logger } from "./logger.js";
+import { withAgentWorkspaceLease } from "./workspace-lease.js";
+import { acquireWorkspacePhysicalLock } from "./workspace-physical-lock.js";
 import type {
   AgentSandboxFsMutationJobData,
   AgentSandboxFsMutationJobResult,
@@ -249,8 +251,11 @@ export async function processSandboxFsMutationJob(job: Job<AgentSandboxFsMutatio
   };
 
   await job.updateProgress({ stage: "running", ...logMeta }).catch(() => undefined);
+  const workspacePhysicalLock = data.workspaceLease ? await acquireWorkspacePhysicalLock(data.spaceId) : null;
+  if (data.workspaceLease && !workspacePhysicalLock) throw new Error("workspace_physical_writer_active");
 
-  return runWithToolExecutionContext({
+  try {
+    return await runWithToolExecutionContext({
     spaceId: data.spaceId,
     sessionId: "",
     llmRound: 0,
@@ -264,31 +269,40 @@ export async function processSandboxFsMutationJob(job: Job<AgentSandboxFsMutatio
     llmRound: 0,
     toolCallId,
     requestId: data.requestId ?? undefined,
-  }, async () => {
-    const connection = await ensureSandboxConnection(data.spaceId);
-    try {
-      let result: AgentSandboxFsMutationJobResult;
-      switch (data.mutation.operation) {
-        case "write":
-          result = await writeMutation(connection, data.mutation);
-          break;
-        case "mkdir":
-          result = await mkdirMutation(connection, data.mutation);
-          break;
-        case "delete":
-          result = await deleteMutation(connection, data.mutation);
-          break;
-        case "move":
-          result = await moveMutation(connection, data.mutation);
-          break;
+  }, async () => withAgentWorkspaceLease({
+    spaceId: data.spaceId,
+    lease: data.workspaceLease ?? null,
+    run: async () => {
+      const connection = await ensureSandboxConnection(data.spaceId);
+      try {
+        let result: AgentSandboxFsMutationJobResult;
+        switch (data.mutation.operation) {
+          case "write":
+            result = await writeMutation(connection, data.mutation);
+            break;
+          case "mkdir":
+            result = await mkdirMutation(connection, data.mutation);
+            break;
+          case "delete":
+            result = await deleteMutation(connection, data.mutation);
+            break;
+          case "move":
+            result = await moveMutation(connection, data.mutation);
+            break;
+        }
+        await job.updateProgress({ stage: "completed", ...logMeta }).catch(() => undefined);
+        return result;
+      } catch (error) {
+        const mapped = mapMutationRpcError(error);
+        if (mapped) return mapped;
+        logger.warn(`[SandboxFsMutation] failed spaceId=${data.spaceId} mutationId=${data.mutationId} operation=${data.mutation.operation}`, error);
+        throw error;
       }
-      await job.updateProgress({ stage: "completed", ...logMeta }).catch(() => undefined);
-      return result;
-    } catch (error) {
-      const mapped = mapMutationRpcError(error);
-      if (mapped) return mapped;
-      logger.warn(`[SandboxFsMutation] failed spaceId=${data.spaceId} mutationId=${data.mutationId} operation=${data.mutation.operation}`, error);
-      throw error;
-    }
-  }));
+      },
+    })));
+  } finally {
+    await workspacePhysicalLock?.release().catch((error) => {
+      logger.error("[WorkspaceLock] failed to release sandbox mutation lock", { spaceId: data.spaceId, error });
+    });
+  }
 }

@@ -19,7 +19,7 @@ function asRecord(value: unknown): Record<string, unknown> | null {
 type ComposerTurnSource = Pick<
 	SessionTurnRecord,
 	"id" | "sequence" | "executionKind" | "provider" | "model"
->;
+> & { meta?: unknown };
 
 export function mergeComposerTurnSources(
 	turns: ComposerTurnSource[],
@@ -36,6 +36,7 @@ export type SessionComposerSelection =
 	| {
 			mode: "agent";
 			model: { provider: string; id: string; name?: string } | null;
+			runtimeId: string | null;
 	  }
 	| { mode: "create"; modelId: string | null };
 
@@ -46,13 +47,19 @@ export function shouldClearComposerDraftAfterSend(
 }
 
 export function resolveComposerSelectionFromTurn(
-	turn: Pick<SessionTurnRecord, "executionKind" | "provider" | "model">,
+	turn: Pick<SessionTurnRecord, "executionKind" | "provider" | "model"> & {
+		meta?: unknown;
+	},
 	catalog: ModelCatalogItem[] | null | undefined,
 ): SessionComposerSelection {
 	if (turn.executionKind === "direct_generation") {
 		return { mode: "create", modelId: turn.model ?? null };
 	}
-	if (!turn.model) return { mode: "agent", model: null };
+	const runtimeId = asRecord(turn.meta)?.runtimeId;
+	const selectedRuntimeId =
+		typeof runtimeId === "string" && runtimeId.trim() ? runtimeId.trim() : null;
+	if (!turn.model)
+		return { mode: "agent", model: null, runtimeId: selectedRuntimeId };
 	const provider = turn.provider ?? "cohub";
 	const catalogItem = catalog?.find(
 		(item) => item.provider === provider && item.id === turn.model,
@@ -64,6 +71,7 @@ export function resolveComposerSelectionFromTurn(
 			id: turn.model,
 			name: catalogItem?.model.name as string | undefined,
 		},
+		runtimeId: selectedRuntimeId,
 	};
 }
 

@@ -16,6 +16,27 @@
       "@cohub/protocol": [
         "../../packages/protocol/dist/index.d.ts"
       ],
+      "@cohub/local-runtime": [
+        "../../packages/local-runtime/dist/index.d.ts"
+      ],
+      "@cohub/local-runtime/host": [
+        "../../packages/local-runtime/dist/host.d.ts"
+      ],
+      "@cohub/local-runtime/providers": [
+        "../../packages/local-runtime/dist/providers/index.d.ts"
+      ],
+      "@cohub/local-runtime/providers/claude": [
+        "../../packages/local-runtime/dist/providers/claude.d.ts"
+      ],
+      "@cohub/local-runtime/providers/codex": [
+        "../../packages/local-runtime/dist/providers/codex.d.ts"
+      ],
+      "@cohub/local-runtime/providers/pi": [
+        "../../packages/local-runtime/dist/providers/pi.d.ts"
+      ],
+      "@cohub/local-runtime/*": [
+        "../../packages/local-runtime/dist/*"
+      ],
       "@cohub/protocol/core": [
         "../../packages/protocol/dist/core/index.d.ts"
       ],

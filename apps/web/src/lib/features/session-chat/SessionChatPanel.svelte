@@ -413,8 +413,11 @@ async function handleDraftDrop(event: DragEvent) {
 					onmodechange={host.setComposerMode}
 					viewportContexts={host.viewportContexts}
 					currentModel={host.composerMode === "create" ? host.activeGenerationModel : host.activeSessionModel}
-					thinkingLevelLabel={host.composerMode === "agent" ? host.activeSessionThinkingLevelLabel : null}
-					generationPolicyLabel={host.composerMode === "agent" ? host.generationPolicyLabel : null}
+					localRuntimes={host.localRuntimes}
+					selectedRuntimeId={host.activeRuntimeId}
+					onRuntimeSelect={host.composerMode === "agent" ? host.handleRuntimeSelect : undefined}
+					thinkingLevelLabel={host.composerMode === "agent" && !host.activeRuntimeId ? host.activeSessionThinkingLevelLabel : null}
+					generationPolicyLabel={host.composerMode === "agent" && !host.activeRuntimeId ? host.generationPolicyLabel : null}
 					quickActions={host.quickPromptActions}
 					onquickaction={(action) => {
 						host.handleQuickPromptAction(action);
@@ -433,7 +436,7 @@ async function handleDraftDrop(event: DragEvent) {
 					onremoveviewport={host.handleRemoveViewportContext}
 					onsubmit={host.handleSend}
 					onabort={host.handleAbort}
-					onModelSelect={() => {
+					onModelSelect={host.activeRuntimeId ? undefined : () => {
 						if (host.composerMode === "create") {
 							void host.loadGenerationModelsCatalog();
 							showCreateModelSelector = true;

@@ -3,7 +3,7 @@ import { AuthorizationError, verifyUserAccessToken } from "@cohub/identity";
 import { buildTraceHeaders, getTraceResponseHeaders, type TraceIdentifiers } from "@cohub/infra/tracing";
 import type { ContentBlock } from "@cohub/protocol/core";
 import type { RealtimeRoom, RealtimeRoomDescriptor } from "@cohub/protocol/realtime";
-import type { BillingPayload } from "@cohub/protocol";
+import { LOCAL_RUNTIME_PROTOCOL_VERSION, type BillingPayload } from "@cohub/protocol";
 import type { GatewayAuthUser } from "./config.js";
 import { gatewayConfig } from "./config.js";
 
@@ -234,6 +234,7 @@ export const submitInternalSessionPrompt = async (input: {
   clientMessageId: string;
   content: ContentBlock[];
   source: string;
+  runtimeId?: string | null;
   model?: string | null;
   provider?: string | null;
   thinkingLevel?: string | null;
@@ -253,6 +254,7 @@ export const submitInternalSessionPrompt = async (input: {
       authToken: input.authToken ?? null,
       clientMessageId: input.clientMessageId,
       source: input.source,
+      runtimeId: input.runtimeId ?? null,
       model: input.model ?? null,
       provider: input.provider ?? null,
       thinkingLevel: input.thinkingLevel ?? null,
@@ -366,6 +368,19 @@ export type LocalSandboxAuthorizeResult =
   | { ok: true; spaceId: string; userId: string }
   | { ok: false; status: number; message: string };
 
+export type LocalRuntimeAuthorizeResult =
+  | {
+      ok: true;
+      runtimeId: string;
+      spaceId: string;
+      replicaId: string | null;
+      provider: string;
+      protocolVersion: number;
+      connectionEpoch: number;
+      capabilities: Record<string, unknown>;
+    }
+  | { ok: false; status: number; message: string };
+
 // Authorize a local sandbox runner's control connection. The user's access
 // token is forwarded so the API can verify sandbox.manage on the target space.
 export const authorizeLocalSandbox = async (input: {
@@ -391,6 +406,109 @@ export const authorizeLocalSandbox = async (input: {
 
 // Report a local sandbox connection state transition (ready on connect,
 // stopped on disconnect). The gateway is the sole reporter for local sandboxes.
+export const authorizeLocalRuntime = async (input: {
+  authToken: string;
+  runtimeId: string;
+  spaceId: string;
+  protocolVersion: number;
+  gatewayNodeId?: string;
+  gatewayWsEndpoint?: string;
+}): Promise<LocalRuntimeAuthorizeResult> => {
+  const response = await fetch(`${gatewayConfig.apiBaseUrl}/internal/gateway/local-runtime/authorize`, {
+    method: "POST",
+    headers: {
+      "content-type": "application/json",
+      "x-worker-secret": gatewayConfig.workerSecret,
+      authorization: `Bearer ${input.authToken}`,
+      ...buildTraceHeaders(),
+    },
+    body: JSON.stringify({
+      runtimeId: input.runtimeId,
+      spaceId: input.spaceId,
+      protocolVersion: input.protocolVersion,
+      gatewayNodeId: input.gatewayNodeId,
+      gatewayWsEndpoint: input.gatewayWsEndpoint,
+    }),
+  });
+  const data = await parseJson<{
+    ok?: boolean;
+    runtimeId?: string;
+    spaceId?: string;
+    replicaId?: string | null;
+    provider?: string;
+    protocolVersion?: number;
+    connectionEpoch?: number;
+    capabilities?: Record<string, unknown>;
+    message?: string;
+  }>(response);
+  if (!response.ok || !data?.ok || !data.runtimeId || !data.spaceId || !data.provider || data.protocolVersion !== LOCAL_RUNTIME_PROTOCOL_VERSION || !Number.isSafeInteger(data.connectionEpoch)) {
+    return { ok: false, status: response.status, message: data?.message ?? "runtime authorization failed" };
+  }
+  const runtimeId = data.runtimeId;
+  const spaceId = data.spaceId;
+  const provider = data.provider;
+  const protocolVersion = data.protocolVersion;
+  const connectionEpoch = data.connectionEpoch;
+  if (!runtimeId || !spaceId || !provider || protocolVersion !== LOCAL_RUNTIME_PROTOCOL_VERSION || !Number.isSafeInteger(connectionEpoch)) {
+    return { ok: false, status: 502, message: "runtime authorization returned an invalid identity" };
+  }
+  return {
+    ok: true,
+    runtimeId,
+    spaceId,
+    replicaId: data.replicaId ?? null,
+    provider,
+    protocolVersion,
+    connectionEpoch: connectionEpoch as number,
+    capabilities: data.capabilities ?? {},
+  };
+};
+
+export const touchLocalRuntime = async (input: {
+  runtimeId: string;
+  connectionEpoch: number;
+  protocolVersion: number;
+  authToken: string;
+}): Promise<boolean> => {
+  const response = await fetch(`${gatewayConfig.apiBaseUrl}/internal/gateway/local-runtime/heartbeat`, {
+    method: "POST",
+    headers: {
+      "content-type": "application/json",
+      "x-worker-secret": gatewayConfig.workerSecret,
+      authorization: `Bearer ${input.authToken}`,
+      ...buildTraceHeaders(),
+    },
+    body: JSON.stringify({ runtimeId: input.runtimeId, connectionEpoch: input.connectionEpoch, protocolVersion: input.protocolVersion }),
+  });
+  if (!response.ok) throw new Error(`Local runtime heartbeat failed ${response.status}`);
+  return true;
+};
+
+export const reportLocalRuntimeStatus = async (input: {
+  runtimeId: string;
+  connectionEpoch: number;
+  protocolVersion: number;
+  status: "ready" | "offline" | "error";
+  authToken: string;
+  error?: string | null;
+}): Promise<void> => {
+  const { authToken, ...body } = input;
+  const response = await fetch(`${gatewayConfig.apiBaseUrl}/internal/gateway/local-runtime/status`, {
+    method: "POST",
+    headers: {
+      "content-type": "application/json",
+      "x-worker-secret": gatewayConfig.workerSecret,
+      authorization: `Bearer ${authToken}`,
+      ...buildTraceHeaders(),
+    },
+    body: JSON.stringify(body),
+  });
+  if (!response.ok) {
+    const text = await response.text().catch(() => "");
+    throw new Error(`Local runtime status report failed ${response.status}: ${text}`);
+  }
+};
+
 export const reportLocalSandboxStatus = async (input: {
   spaceId: string;
   status: "ready" | "stopped";

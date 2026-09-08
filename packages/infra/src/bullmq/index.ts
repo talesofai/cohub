@@ -9,6 +9,7 @@ const logger = createLogger({ serviceName: "cohub-infra" });
 export const COHUB_TASKS_QUEUE = "cohub-tasks";
 export const COHUB_AGENT_TURNS_QUEUE = "cohub-agent-turns";
 export const COHUB_SYSTEM_QUEUE = "cohub-system";
+export const COHUB_WORKSPACE_SYNC_QUEUE = "cohub-workspace-sync";
 
 export const DEFAULT_TASK_WORKER_CONCURRENCY = 5;
 export const DEFAULT_SYSTEM_WORKER_CONCURRENCY = 4;
@@ -30,6 +31,14 @@ export const queueDefinitions = [
     concurrencyEnv: "AGENT_WORKER_CONCURRENCY",
     defaultConcurrencyPerWorker: DEFAULT_AGENT_WORKER_CONCURRENCY,
     registeredJobs: ["agent_turns", "agent_session_fork", "sandbox_bash", "sandbox_bash_atomic", "run_command", "sandbox_fs_mutation"],
+  },
+  {
+    name: COHUB_WORKSPACE_SYNC_QUEUE,
+    owner: "worker",
+    criticality: "critical",
+    concurrencyEnv: "WORKSPACE_SYNC_WORKER_CONCURRENCY",
+    defaultConcurrencyPerWorker: 4,
+    registeredJobs: ["workspace_sync"],
   },
   {
     name: COHUB_SYSTEM_QUEUE,
@@ -99,6 +108,18 @@ export const defaultCriticalJobOptions = {
   backoff: { type: "exponential", delay: 1000 },
   ...defaultJobRetention,
 } satisfies JobsOptions;
+
+/**
+ * Workspace sync cycles are durable rows; the queue only wakes a worker. BullMQ
+ * keeps failed jobs for a retention window and refuses to enqueue a new job with
+ * the same id while one is retained, so a fixed `workspace-sync-<cycle>` id
+ * would make a failed cycle unretryable by the sweeper. Salt the id with a
+ * coarse time bucket: duplicates within a bucket still dedupe, and a later
+ * resubmission gets a fresh id. The processor is idempotent on the cycle row.
+ */
+export const WORKSPACE_SYNC_JOB_ID_BUCKET_MS = 60_000;
+export const buildWorkspaceSyncJobId = (cycleId: string, now = Date.now()) =>
+  `workspace-sync-${cycleId}-${Math.floor(now / WORKSPACE_SYNC_JOB_ID_BUCKET_MS)}`;
 
 export const createQueueTelemetry = (serviceName: string) =>
   new BullMQOtel({ tracerName: serviceName });

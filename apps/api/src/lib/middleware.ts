@@ -5,6 +5,7 @@ import type { AuthUserProfile } from "../auth.js";
 import type { ExecutionAuthPrincipal } from "../auth.js";
 import type { PreviewSessionPrincipal } from "../preview-sessions.js";
 import type { AppSessionPrincipal } from "../app-sessions.js";
+import type { LocalAgentAuthPrincipal } from "../local-agent-auth.js";
 import { isUuidOrShortUuid } from "@cohub/protocol/identifiers";
 
 /** AuthUserProfile with guaranteed uuid (returned after auth checks pass). */
@@ -14,7 +15,8 @@ export type RequestPrincipal =
   | { type: "user"; user: AuthUser }
   | { type: "execution"; execution: ExecutionAuthPrincipal }
   | { type: "preview_session"; previewSession: PreviewSessionPrincipal }
-  | { type: "app_session"; appSession: AppSessionPrincipal };
+  | { type: "app_session"; appSession: AppSessionPrincipal }
+  | { type: "local_agent"; localAgent: LocalAgentAuthPrincipal };
 
 import { config } from "../config.js";
 import { getProfilesByUuids } from "../user-profiles.js";
@@ -101,6 +103,11 @@ export const authzDenied = (c: Context) => {
 export const getExecutionPrincipal = (c: Context): ExecutionAuthPrincipal | null => {
   const principal = c.get("principal") as RequestPrincipal | null | undefined;
   return principal?.type === "execution" ? principal.execution : null;
+};
+
+export const getLocalAgentPrincipal = (c: Context): LocalAgentAuthPrincipal | null => {
+  const principal = c.get("principal") as RequestPrincipal | null | undefined;
+  return principal?.type === "local_agent" ? principal.localAgent : null;
 };
 
 export const getAppSessionPrincipal = (c: Context): AppSessionPrincipal | null => {

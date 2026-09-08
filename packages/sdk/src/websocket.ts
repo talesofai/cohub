@@ -501,6 +501,7 @@ export class WebsocketClient {
     sessionId: string;
     content: ContentBlock[];
     clientMessageId?: string;
+    runtimeId?: string;
     requestId?: string;
     model?: string;
     provider?: string;
@@ -515,6 +516,7 @@ export class WebsocketClient {
         sessionId: input.sessionId,
         content: input.content,
         clientMessageId: input.clientMessageId,
+        runtimeId: input.runtimeId,
         model: input.model,
         provider: input.provider,
         thinkingLevel: input.thinkingLevel,

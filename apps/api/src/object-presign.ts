@@ -47,6 +47,7 @@ const createPresignedObjectUrl = (
   putConditions?: {
     contentLength?: number;
     forbidOverwrite?: boolean;
+    checksumSha256Base64?: string;
   },
 ) => {
   if (!storage.bucket) throw new Error("bucket is required");
@@ -70,6 +71,9 @@ const createPresignedObjectUrl = (
       ? { "content-length": String(putConditions.contentLength) }
       : {}),
     ...(method === "PUT" && putConditions?.forbidOverwrite ? { "x-oss-forbid-overwrite": "true" } : {}),
+    ...(method === "PUT" && putConditions?.checksumSha256Base64
+      ? { "x-amz-checksum-sha256": putConditions.checksumSha256Base64 }
+      : {}),
   };
   const signedHeaders = Object.keys(headers).sort().join(";");
   url.searchParams.set("X-Amz-Algorithm", "AWS4-HMAC-SHA256");
@@ -123,6 +127,7 @@ export const createPresignedPutObjectUrl = (
   conditions?: {
     contentLength?: number;
     forbidOverwrite?: boolean;
+    checksumSha256Base64?: string;
   },
 ) => {
   const signed = createPresignedObjectUrl(

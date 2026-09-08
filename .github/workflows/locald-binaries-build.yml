@@ -1,0 +1,197 @@
+name: Local Agent Runtime Build and Release
+
+on:
+  push:
+    tags:
+      - 'locald-v*.*.*'
+    paths:
+      - 'apps/sandbox/**'
+      - 'packages/cli/src/commands/locald-binary.ts'
+      - '.github/workflows/locald-binaries-build.yml'
+  pull_request:
+    paths:
+      - 'apps/sandbox/**'
+      - 'packages/cli/src/commands/locald-binary.ts'
+      - '.github/workflows/locald-binaries-build.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  BINARY_NAME: cohub-locald
+  OSS_BUCKET: cohub-public
+  OSS_ENDPOINT: https://oss-us-west-1.aliyuncs.com
+  OSS_REGION: us-west-1
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - goos: linux
+            goarch: amd64
+          - goos: linux
+            goarch: arm64
+          - goos: darwin
+            goarch: amd64
+          - goos: darwin
+            goarch: arm64
+          - goos: windows
+            goarch: amd64
+          - goos: windows
+            goarch: arm64
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: '1.24'
+          cache-dependency-path: apps/sandbox/go.sum
+
+      - name: Resolve version
+        id: version
+        run: |
+          set -euo pipefail
+          if [[ "${{ github.ref }}" == refs/tags/locald-v* ]]; then
+            VERSION="${{ github.ref_name }}"
+            VERSION="${VERSION#locald-}"
+          else
+            VERSION="dev-$(git rev-parse --short HEAD)"
+          fi
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+
+      - name: Go checks
+        working-directory: apps/sandbox
+        run: |
+          set -euo pipefail
+          test -z "$(gofmt -l .)"
+          go vet ./...
+          go test ./...
+
+      - name: Build locald
+        working-directory: apps/sandbox
+        env:
+          GOOS: ${{ matrix.goos }}
+          GOARCH: ${{ matrix.goarch }}
+          CGO_ENABLED: '0'
+          VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          set -euo pipefail
+          OUT_DIR="dist/${BINARY_NAME}_${GOOS}_${GOARCH}"
+          mkdir -p "$OUT_DIR"
+          EXT=""
+          if [[ "$GOOS" == windows ]]; then EXT=".exe"; fi
+          go build -trimpath \
+            -ldflags "-s -w -X main.buildVersion=${VERSION}" \
+            -o "${OUT_DIR}/${BINARY_NAME}${EXT}" ./cmd/locald
+          if [[ "$GOOS" == linux && "$GOARCH" == amd64 ]]; then
+            "${OUT_DIR}/${BINARY_NAME}${EXT}" --version
+          else
+            test -s "${OUT_DIR}/${BINARY_NAME}${EXT}"
+          fi
+
+      - name: Package and checksum
+        working-directory: apps/sandbox
+        env:
+          GOOS: ${{ matrix.goos }}
+          GOARCH: ${{ matrix.goarch }}
+          VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          set -euo pipefail
+          EXT=""
+          BINARY_FILE="${BINARY_NAME}"
+          if [[ "$GOOS" == windows ]]; then
+            EXT=".exe"
+            BINARY_FILE="${BINARY_NAME}.exe"
+          fi
+          BASE="${BINARY_NAME}_${VERSION}_${GOOS}_${GOARCH}"
+          cp LICENSE NOTICE "dist/${BINARY_NAME}_${GOOS}_${GOARCH}/"
+          cd dist
+          tar -czf "${BASE}.tar.gz" -C "${BINARY_NAME}_${GOOS}_${GOARCH}" "$BINARY_FILE" LICENSE NOTICE
+          sha256sum "${BASE}.tar.gz" > "${BASE}.tar.gz.sha256"
+          tar -tzf "${BASE}.tar.gz"
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: locald-${{ matrix.goos }}-${{ matrix.goarch }}
+          path: |
+            apps/sandbox/dist/*.tar.gz
+            apps/sandbox/dist/*.sha256
+          if-no-files-found: error
+          retention-days: 14
+
+  release:
+    needs: build
+    if: ${{ startsWith(github.ref, 'refs/tags/locald-v') }}
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Download artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+
+      - name: Collect release assets
+        run: |
+          set -euo pipefail
+          mkdir -p release
+          find artifacts -type f \( -name '*.tar.gz' -o -name '*.sha256' \) -exec cp {} release/ \;
+          ( cd release && cat *.sha256 | sort > SHA256SUMS.txt )
+          ls -la release
+
+      - name: Publish GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            release/*.tar.gz
+            release/SHA256SUMS.txt
+          fail_on_unmatched_files: true
+
+  publish-cdn:
+    needs: build
+    if: ${{ startsWith(github.ref, 'refs/tags/locald-v') }}
+    runs-on: ubuntu-latest
+    steps:
+      - name: Download artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+
+      - name: Collect CDN assets
+        run: |
+          set -euo pipefail
+          mkdir -p upload
+          find artifacts -type f \( -name '*.tar.gz' -o -name '*.sha256' \) -exec cp {} upload/ \;
+          ( cd upload && cat *.sha256 | sort > SHA256SUMS.txt )
+
+      - name: Configure AWS CLI for OSS
+        run: |
+          set -euo pipefail
+          mkdir -p ~/.aws
+          printf '[default]\nrequest_checksum_calculation = when_required\nresponse_checksum_validation = when_required\ns3 =\n    addressing_style = virtual\n' > ~/.aws/config
+
+      - name: Publish versioned runtime to public CDN
+        env:
+          AWS_ACCESS_KEY_ID: ${{ secrets.PUBLIC_ASSET_OSS_ACCESS_KEY_ID }}
+          AWS_SECRET_ACCESS_KEY: ${{ secrets.PUBLIC_ASSET_OSS_SECRET_ACCESS_KEY }}
+          AWS_DEFAULT_REGION: ${{ env.OSS_REGION }}
+          VERSION: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+          if [[ -z "${AWS_ACCESS_KEY_ID:-}" || -z "${AWS_SECRET_ACCESS_KEY:-}" ]]; then
+            echo "Missing PUBLIC_ASSET_OSS_ACCESS_KEY_ID / PUBLIC_ASSET_OSS_SECRET_ACCESS_KEY secrets"
+            exit 1
+          fi
+          VERSION="${VERSION#locald-}"
+          aws s3 cp upload "s3://${OSS_BUCKET}/locald/${VERSION}/" \
+            --endpoint-url "${OSS_ENDPOINT}" \
+            --recursive \
+            --cache-control "public, max-age=31536000, immutable"
+          echo "Published locald ${VERSION} to https://public.cohub.run/locald/${VERSION}/"

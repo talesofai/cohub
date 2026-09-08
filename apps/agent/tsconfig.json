@@ -22,6 +22,27 @@
       "@cohub/protocol": [
         "../../packages/protocol/src/index.ts"
       ],
+      "@cohub/local-runtime": [
+        "../../packages/local-runtime/src/index.ts"
+      ],
+      "@cohub/local-runtime/host": [
+        "../../packages/local-runtime/src/host.ts"
+      ],
+      "@cohub/local-runtime/providers": [
+        "../../packages/local-runtime/src/providers/index.ts"
+      ],
+      "@cohub/local-runtime/providers/claude": [
+        "../../packages/local-runtime/src/providers/claude.ts"
+      ],
+      "@cohub/local-runtime/providers/codex": [
+        "../../packages/local-runtime/src/providers/codex.ts"
+      ],
+      "@cohub/local-runtime/providers/pi": [
+        "../../packages/local-runtime/src/providers/pi.ts"
+      ],
+      "@cohub/local-runtime/*": [
+        "../../packages/local-runtime/src/*"
+      ],
       "@cohub/protocol/core": [
         "../../packages/protocol/src/core/index.ts"
       ],
@@ -57,6 +78,9 @@
       ],
       "@cohub/infra/bullmq": [
         "../../packages/infra/src/bullmq/index.ts"
+      ],
+      "@cohub/infra/lock-db-pool": [
+        "../../packages/infra/src/lock-db-pool.ts"
       ],
       "@cohub/infra/space-hooks": [
         "../../packages/infra/src/space-hooks/index.ts"

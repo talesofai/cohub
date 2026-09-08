@@ -111,6 +111,10 @@
     "./apps": {
       "types": "./dist/apps/index.d.ts",
       "default": "./dist/apps/index.js"
+    },
+    "./workspace-replication": {
+      "types": "./dist/workspace-replication/index.d.ts",
+      "default": "./dist/workspace-replication/index.js"
     }
   },
   "types": "./dist/index.d.ts",

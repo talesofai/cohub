@@ -44,6 +44,11 @@ export interface WorkerConfig {
   env: "dev" | "prod";
   /** Author email for checkpoint git commits. */
   checkpointGitAuthorEmail: string;
+  workspaceObjectEndpoint?: string;
+  workspaceObjectRegion: string;
+  workspaceObjectBucket?: string;
+  workspaceObjectAccessKeyId?: string;
+  workspaceObjectSecretAccessKey?: string;
 }
 
 const env = (process.env.ENV === "prod" ? "prod" : "dev") as "dev" | "prod";
@@ -105,6 +110,11 @@ export const config: WorkerConfig = {
   talesofaiBillingAdminApiKey: process.env.TALESOFAI_BILLING_ADMIN_API_KEY,
   env,
   checkpointGitAuthorEmail: process.env.CHECKPOINT_GIT_AUTHOR_EMAIL?.trim() || "noreply@cohub.live",
+  workspaceObjectEndpoint: process.env.WORKSPACE_OBJECT_ENDPOINT ?? process.env.USER_UPLOAD_S3_ENDPOINT,
+  workspaceObjectRegion: process.env.WORKSPACE_OBJECT_REGION ?? process.env.USER_UPLOAD_S3_REGION ?? "auto",
+  workspaceObjectBucket: process.env.WORKSPACE_OBJECT_BUCKET ?? process.env.SPACE_UPLOAD_S3_BUCKET,
+  workspaceObjectAccessKeyId: process.env.WORKSPACE_OBJECT_ACCESS_KEY_ID ?? process.env.USER_UPLOAD_S3_ACCESS_KEY_ID,
+  workspaceObjectSecretAccessKey: process.env.WORKSPACE_OBJECT_SECRET_ACCESS_KEY ?? process.env.USER_UPLOAD_S3_SECRET_ACCESS_KEY,
 };
 
 export const assertRequiredConfig = () => {
@@ -117,4 +127,8 @@ export const assertRequiredConfig = () => {
   if (!config.spaceStorageRoot) throw new Error("Missing required env: SPACE_STORAGE_ROOT");
   if (!config.spaceSystemRoot) throw new Error("Missing required env: SPACE_SYSTEM_ROOT");
   if (!config.checkpointCacheRoot) throw new Error("Missing required env: CHECKPOINT_CACHE_ROOT");
+  if (!config.workspaceObjectEndpoint) throw new Error("Missing required env: WORKSPACE_OBJECT_ENDPOINT");
+  if (!config.workspaceObjectBucket) throw new Error("Missing required env: WORKSPACE_OBJECT_BUCKET");
+  if (!config.workspaceObjectAccessKeyId) throw new Error("Missing required env: WORKSPACE_OBJECT_ACCESS_KEY_ID");
+  if (!config.workspaceObjectSecretAccessKey) throw new Error("Missing required env: WORKSPACE_OBJECT_SECRET_ACCESS_KEY");
 };
