@@ -1,27 +1,15 @@
 <script lang="ts">
-import type { AppNavigationOpenMessage } from "@cohub/protocol/app-navigation";
 import { isUuid } from "@cohub/protocol/identifiers";
-import type {
-	AppDetailResponse,
-	AppRuntimeShellContext,
-} from "@neta-art/cohub";
+import type { AppDetailResponse, AppRuntimeInvocationContext, AppRuntimeShellContext } from "@neta-art/cohub";
 import { onMount } from "svelte";
-import { goto } from "$app/navigation";
 import { page } from "$app/state";
 import { buildAppPageMeta } from "$lib/app-page-meta";
 import { reportAppPromotionReady, startAppPromotion } from "$lib/app-promotion";
 import AppPageHead from "$lib/components/app/AppPageHead.svelte";
 import AppSurface from "$lib/components/app/AppSurface.svelte";
-import { resolveAppNavigation } from "$lib/features/app/app-open";
 import { sdk } from "$lib/sdk";
 import { authStore } from "$lib/stores/auth.svelte";
-import {
-	buildSpaceCheckpointRoute,
-	buildSpaceCronjobRoute,
-	buildSpaceFileRoute,
-	buildSpaceSessionRoute,
-	buildSpaceTaskRoute,
-} from "$lib/space-routes";
+import { subscribeDesktopContext } from "$lib/features/app/desktop-context";
 
 type ReadyData = {
 	mode: "ready";
@@ -59,35 +47,35 @@ let surfaceLoaded = false;
 let promotionReadyReported = false;
 let promotionRuntime: ReturnType<typeof startAppPromotion> | null = null;
 let activePromotionKey = "";
+const desktopMode = $derived(page.url.searchParams.get("cohub_desktop") === "1");
+let desktopShell = $state<AppRuntimeShellContext | undefined>();
 let standaloneShell = $state<AppRuntimeShellContext | undefined>();
 let hostNotice = $state("");
+const shell = $derived(desktopMode ? desktopShell : standaloneShell);
+// Navigation hints only. Identity, home Space and grants stay in the local App bridge.
+const invocation = $derived<AppRuntimeInvocationContext | undefined>(shell?.space ? {
+	surface: "app", source: "user", spaceId: shell.space.id,
+	...(shell.session ? { sessionId: shell.session.id } : {}),
+	...(shell.turn ? { turnId: shell.turn.id } : {}),
+} : undefined);
 
-// Opt-in target context, verified with the account API. The query is not a grant.
+$effect(() => {
+	if (!surfaceReady || !desktopMode) { desktopShell = undefined; return; }
+	return subscribeDesktopContext(value => { desktopShell = value; });
+});
+
+// An independently opened Desktop may opt into a verified working Space.
 $effect(() => {
 	void authStore.userUuid;
 	const spaceId = page.url.searchParams.get("cohub_space");
 	standaloneShell = undefined;
 	hostNotice = "";
-	if (!surfaceReady || !spaceId || !isUuid(spaceId)) return;
+	if (!surfaceReady || desktopMode || !spaceId || !isUuid(spaceId)) return;
 	let cancelled = false;
-	void sdk
-		.space(spaceId)
-		.get()
-		.then((space) => {
-			if (!cancelled)
-				standaloneShell = {
-					surface: "workspace",
-					space: { id: space.id, name: space.name },
-					session: null,
-					turn: null,
-				};
-		})
-		.catch(() => {
-			if (!cancelled) hostNotice = "Space context is unavailable.";
-		});
-	return () => {
-		cancelled = true;
-	};
+	void sdk.space(spaceId).get().then(space => {
+		if (!cancelled) standaloneShell = { surface: "workspace", space: { id: space.id, name: space.name }, session: null, turn: null };
+	}).catch(() => { if (!cancelled) hostNotice = "Space context is unavailable."; });
+	return () => { cancelled = true; };
 });
 
 function closeStandalone() {
@@ -95,48 +83,11 @@ function closeStandalone() {
 	if (!window.closed) hostNotice = "You can close this tab.";
 }
 
-async function openStandalone(message: AppNavigationOpenMessage) {
-	const target = message.target;
-	if (!standaloneShell?.space)
-		return { handled: false as const, reason: "unsupported" as const };
-	if (target.kind === "app") {
-		if (message.call)
-			return { handled: false as const, reason: "unsupported" as const };
-		const { detail, launch } = await resolveAppNavigation(
-			sdk.apps,
-			target.ref,
-			target.launch,
-		);
-		if (!detail.publicUrl) return { handled: false as const, reason: "inaccessible" as const };
-		const url = new URL(detail.publicUrl, page.url.origin);
-		if (url.origin !== page.url.origin)
-			return { handled: false as const, reason: "unsupported" as const };
-		if (launch?.search) url.search = launch.search;
-		if (launch?.hash) url.hash = launch.hash;
-		url.searchParams.set("cohub_space", standaloneShell.space.id);
-		await goto(url.href);
-		return { handled: true as const };
-	}
-	if (target.spaceId !== standaloneShell.space.id)
-		return { handled: false as const, reason: "unsupported" as const };
-	const url =
-		target.kind === "file"
-			? buildSpaceFileRoute(target.spaceId, target.path)
-			: target.kind === "session"
-				? buildSpaceSessionRoute(target.spaceId, target.sessionId)
-				: target.kind === "task"
-					? buildSpaceTaskRoute(target.spaceId, target.taskRunId)
-					: target.kind === "checkpoint"
-						? buildSpaceCheckpointRoute(target.spaceId, target.checkpointId)
-						: buildSpaceCronjobRoute(target.spaceId, target.cronjobId);
-	await goto(url);
-	return { handled: true as const };
-}
-
 const promotionId = $derived(page.url.searchParams.get("cohub_campaign"));
 
 function maybeReportPromotionReady() {
 	if (
+		desktopMode ||
 		!surfaceLoaded ||
 		promotionReadyReported ||
 		!promotionRuntime ||
@@ -187,7 +138,7 @@ const pageMeta = $derived(
 							? ready.content.kind
 							: null,
 				},
-				{ origin: ready.origin, path: ready.pathname },
+				{ origin: ready.origin, path: ready.pathname, indexable: !desktopMode },
 			)
 		: buildAppPageMeta(null, {
 				origin: props.data.origin,
@@ -202,7 +153,7 @@ onMount(() => {
 });
 
 $effect(() => {
-	if (!surfaceReady || !promotionId || !ready) return;
+	if (!surfaceReady || desktopMode || !promotionId || !ready) return;
 	const key = `${ready.app.id}:${promotionId}`;
 	if (activePromotionKey === key) return;
 	activePromotionKey = key;
@@ -258,17 +209,20 @@ $effect(() => {
 
 {#if ready && surfaceReady}
 	{#key ready.app.id}
+	<div class:desktop-page={desktopMode}>
 	<AppSurface
 		app={ready.app}
 		space={ready.space}
 		owner={ready.owner}
 		content={ready.content}
 		{launchState}
-		shell={standaloneShell}
-		onCloseSelf={closeStandalone}
-		onNavigationOpen={openStandalone}
+		{shell}
+		{invocation}
+		embedded={desktopMode}
+		onCloseSelf={desktopMode ? undefined : closeStandalone}
 		onReady={handleSurfaceReady}
 	/>
+	</div>
 	{/key}
 {:else if ready}
 	<!-- SSR / first paint: head already has share meta; surface hydrates client-side. -->
@@ -286,3 +240,7 @@ $effect(() => {
 		{clientError || "App is unavailable."}
 	</div>
 {/if}
+
+<style>
+.desktop-page { height: 100dvh; overflow: hidden; }
+</style>

@@ -22,18 +22,14 @@ import { readAppCheckoutState } from "$lib/components/app/app-checkout-state";
 import SpaceAvatar from "$lib/components/SpaceAvatar.svelte";
 import UserIdentity from "$lib/components/UserIdentity.svelte";
 import AppAuthorizeDialog from "$lib/features/app/AppAuthorizeDialog.svelte";
-import type {
-	AppBridgeHost,
-	AppBridgeHostConfig,
-} from "$lib/features/app/bridge-host.svelte";
 import { createAppBridgeHost } from "$lib/features/app/bridge-host.svelte";
+import { isDesktopCloseRequest } from "$lib/features/app/desktop-context";
 import {
 	type AppSurfaceHost,
 	createAppSurfaceHost,
 } from "$lib/features/app/surface-host";
 import { parseNewChatBackgroundAction } from "$lib/new-chat-background-bridge";
 import { emitSpaceConfigBackgroundAction } from "$lib/space-config";
-import AppEmbedRoot from "./AppEmbedRoot.svelte";
 
 type AppSurfaceMode = "page" | "background" | "app";
 
@@ -78,10 +74,8 @@ type Props = {
 	onSurfaceHost?: (host: AppSurfaceHost | null) => void;
 	onComposerChip?: (chip: AppComposerChip | null) => void;
 	onReady?: () => void;
-	/** Trusted Web-only transport injection. Never supplied by App messages. */
-	bridgeFactory?: (config: AppBridgeHostConfig) => AppBridgeHost;
-	onFrameLoad?: () => void;
-	onFrameFocus?: () => void;
+	/** Presentation only: keep this public page's own authorization behavior. */
+	embedded?: boolean;
 	onCloseSelf?: () => void;
 	onNavigationOpen?: (
 		message: AppNavigationOpenMessage,
@@ -105,9 +99,7 @@ const {
 	onSurfaceHost = undefined,
 	onComposerChip = undefined,
 	onReady = undefined,
-	bridgeFactory = undefined,
-	onFrameLoad = undefined,
-	onFrameFocus = undefined,
+	embedded = false,
 	onCloseSelf = undefined,
 	onNavigationOpen = undefined,
 }: Props = $props();
@@ -125,7 +117,7 @@ function reportReady() {
 }
 
 const isBackground = $derived(mode === "background");
-const isAppWindow = $derived(mode === "app");
+const isAppWindow = $derived(mode === "app" || embedded);
 const spaceName = $derived(space?.name || space?.slug || "Space");
 const appTitle = $derived(appDisplayTitle(app?.meta, app?.slug ?? "App"));
 const publisherName = $derived(owner?.displayName ?? "Cohub");
@@ -177,7 +169,7 @@ const checkoutState = $derived(readAppCheckoutState(page.url));
 // app remounts the component), so capturing their initial values is intentional.
 // `reply`/`getCheckoutState` stay reactive via closures.
 const host = untrack(() =>
-	(bridgeFactory ?? createAppBridgeHost)({
+	createAppBridgeHost({
 		app: { ...app, spaceName: space?.name ?? null },
 		authorizationContext: { surface: mode },
 		invocation,
@@ -240,6 +232,10 @@ function pushSurfaceContext() {
 async function onFrameMessage(event: MessageEvent) {
 	if (event.source !== frame?.contentWindow) return;
 	if (!frameOrigin || event.origin !== frameOrigin) return;
+	if (isDesktopCloseRequest(event.data)) {
+		onCloseSelf?.();
+		return;
+	}
 	const navigation = parseAppNavigationOpenMessage(event.data);
 	if (navigation) {
 		let result:
@@ -321,23 +317,21 @@ onMount(() => {
 			sandbox={frameSandbox}
 			allow={framePermissions}
 			src={iframeSrc}
-			onfocus={onFrameFocus}
 			onload={() => {
 				// load only marks the document as visually ready. Context waits for
 				// the new document's runtime handshake.
-				// The trusted wrapper preserves an early ready handshake; its
-				// private bridge invalidates and re-announces the document epoch.
-				if (!bridgeFactory) runtimeReady = false;
+				// Embedded public pages can receive a legacy SDK's ready message
+				// before load. Preserve it so later shell snapshots still arrive.
+				if (!embedded) runtimeReady = false;
 				surfaceHost?.reset();
 				reportReady();
-				onFrameLoad?.();
 			}}
 		></iframe>
 	{:else if !hasFrameSource}
 		<div class="empty-state">App asset is unavailable.</div>
 	{/if}
 
-	{#if mode === "page" && !hideCohubBar}
+	{#if mode === "page" && !hideCohubBar && !embedded}
 		<footer class="pointer-events-none fixed inset-x-0 bottom-0 z-50 flex justify-center px-3 pb-3 sm:pb-4">
 			<div class="app-bar pointer-events-auto flex h-12 w-full max-w-[860px] items-center gap-3 rounded-lg border border-border-subtle bg-bg-surface/95 px-2.5 text-[11px] text-text-tertiary shadow-lg shadow-bg-primary/15 backdrop-blur-md supports-[not(backdrop-filter:blur(0))]:bg-bg-surface sm:px-3">
 				<div class="flex min-w-0 flex-1 items-center gap-2.5 overflow-hidden">
@@ -372,9 +366,6 @@ onMount(() => {
 	{/if}
 </div>
 
-{#if !bridgeFactory && frame && frameOrigin}
-	<AppEmbedRoot {frame} origin={frameOrigin} appId={app.id} {shell} {onCloseSelf} {onNavigationOpen} />
-{/if}
 
 <AppAuthorizeDialog
 	open={host.authOpen && !!host.pendingAuth}
