@@ -47,11 +47,10 @@ let surfaceLoaded = false;
 let promotionReadyReported = false;
 let promotionRuntime: ReturnType<typeof startAppPromotion> | null = null;
 let activePromotionKey = "";
-const desktopMode = $derived(page.url.searchParams.get("cohub_desktop") === "1");
 let desktopShell = $state<AppRuntimeShellContext | undefined>();
 let standaloneShell = $state<AppRuntimeShellContext | undefined>();
 let hostNotice = $state("");
-const shell = $derived(desktopMode ? desktopShell : standaloneShell);
+const shell = $derived(desktopShell ?? standaloneShell);
 // Navigation hints only. Identity, home Space and grants stay in the local App bridge.
 const invocation = $derived<AppRuntimeInvocationContext | undefined>(shell?.space ? {
 	surface: "app", source: "user", spaceId: shell.space.id,
@@ -60,7 +59,9 @@ const invocation = $derived<AppRuntimeInvocationContext | undefined>(shell?.spac
 } : undefined);
 
 $effect(() => {
-	if (!surfaceReady || !desktopMode) { desktopShell = undefined; return; }
+	desktopShell = undefined;
+	// Opt in to location hints only; this is not an embed or presentation mode.
+	if (!surfaceReady || page.url.searchParams.get("cohub_desktop") !== "1") return;
 	return subscribeDesktopContext(value => { desktopShell = value; });
 });
 
@@ -70,7 +71,7 @@ $effect(() => {
 	const spaceId = page.url.searchParams.get("cohub_space");
 	standaloneShell = undefined;
 	hostNotice = "";
-	if (!surfaceReady || desktopMode || !spaceId || !isUuid(spaceId)) return;
+	if (!surfaceReady || !spaceId || !isUuid(spaceId)) return;
 	let cancelled = false;
 	void sdk.space(spaceId).get().then(space => {
 		if (!cancelled) standaloneShell = { surface: "workspace", space: { id: space.id, name: space.name }, session: null, turn: null };
@@ -87,7 +88,6 @@ const promotionId = $derived(page.url.searchParams.get("cohub_campaign"));
 
 function maybeReportPromotionReady() {
 	if (
-		desktopMode ||
 		!surfaceLoaded ||
 		promotionReadyReported ||
 		!promotionRuntime ||
@@ -138,7 +138,7 @@ const pageMeta = $derived(
 							? ready.content.kind
 							: null,
 				},
-				{ origin: ready.origin, path: ready.pathname, indexable: !desktopMode },
+				{ origin: ready.origin, path: ready.pathname },
 			)
 		: buildAppPageMeta(null, {
 				origin: props.data.origin,
@@ -153,7 +153,7 @@ onMount(() => {
 });
 
 $effect(() => {
-	if (!surfaceReady || desktopMode || !promotionId || !ready) return;
+	if (!surfaceReady || !promotionId || !ready) return;
 	const key = `${ready.app.id}:${promotionId}`;
 	if (activePromotionKey === key) return;
 	activePromotionKey = key;
@@ -209,7 +209,6 @@ $effect(() => {
 
 {#if ready && surfaceReady}
 	{#key ready.app.id}
-	<div class:desktop-page={desktopMode}>
 	<AppSurface
 		app={ready.app}
 		space={ready.space}
@@ -218,11 +217,9 @@ $effect(() => {
 		{launchState}
 		{shell}
 		{invocation}
-		embedded={desktopMode}
-		onCloseSelf={desktopMode ? undefined : closeStandalone}
+		onCloseSelf={closeStandalone}
 		onReady={handleSurfaceReady}
 	/>
-	</div>
 	{/key}
 {:else if ready}
 	<!-- SSR / first paint: head already has share meta; surface hydrates client-side. -->
@@ -240,7 +237,3 @@ $effect(() => {
 		{clientError || "App is unavailable."}
 	</div>
 {/if}
-
-<style>
-.desktop-page { height: 100dvh; overflow: hidden; }
-</style>

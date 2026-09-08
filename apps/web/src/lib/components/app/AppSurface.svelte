@@ -74,8 +74,6 @@ type Props = {
 	onSurfaceHost?: (host: AppSurfaceHost | null) => void;
 	onComposerChip?: (chip: AppComposerChip | null) => void;
 	onReady?: () => void;
-	/** Presentation only: keep this public page's own authorization behavior. */
-	embedded?: boolean;
 	onCloseSelf?: () => void;
 	onNavigationOpen?: (
 		message: AppNavigationOpenMessage,
@@ -99,7 +97,6 @@ const {
 	onSurfaceHost = undefined,
 	onComposerChip = undefined,
 	onReady = undefined,
-	embedded = false,
 	onCloseSelf = undefined,
 	onNavigationOpen = undefined,
 }: Props = $props();
@@ -107,6 +104,7 @@ const {
 let frame: HTMLIFrameElement | null = $state(null);
 let bridgeReady = $state(false);
 let runtimeReady = $state(false);
+let frameHasLoaded = false;
 let readyReported = false;
 let contextSyncWarningReported = false;
 
@@ -117,7 +115,7 @@ function reportReady() {
 }
 
 const isBackground = $derived(mode === "background");
-const isAppWindow = $derived(mode === "app" || embedded);
+const isAppWindow = $derived(mode === "app");
 const spaceName = $derived(space?.name || space?.slug || "Space");
 const appTitle = $derived(appDisplayTitle(app?.meta, app?.slug ?? "App"));
 const publisherName = $derived(owner?.displayName ?? "Cohub");
@@ -155,6 +153,7 @@ const frameReplyTarget = $derived(frameOrigin ?? page.url.origin);
 $effect(() => {
 	void iframeSrc;
 	runtimeReady = false;
+	frameHasLoaded = false;
 	surfaceHost?.reset();
 });
 
@@ -320,9 +319,11 @@ onMount(() => {
 			onload={() => {
 				// load only marks the document as visually ready. Context waits for
 				// the new document's runtime handshake.
-				// Embedded public pages can receive a legacy SDK's ready message
-				// before load. Preserve it so later shell snapshots still arrive.
-				if (!embedded) runtimeReady = false;
+				// Any App can announce ready before its initial load event. Preserve
+				// that handshake; later in-frame navigations must announce again.
+				const isFirstLoad = !frameHasLoaded;
+				frameHasLoaded = true;
+				if (!isFirstLoad) runtimeReady = false;
 				surfaceHost?.reset();
 				reportReady();
 			}}
@@ -331,7 +332,7 @@ onMount(() => {
 		<div class="empty-state">App asset is unavailable.</div>
 	{/if}
 
-	{#if mode === "page" && !hideCohubBar && !embedded}
+	{#if mode === "page" && !hideCohubBar}
 		<footer class="pointer-events-none fixed inset-x-0 bottom-0 z-50 flex justify-center px-3 pb-3 sm:pb-4">
 			<div class="app-bar pointer-events-auto flex h-12 w-full max-w-[860px] items-center gap-3 rounded-lg border border-border-subtle bg-bg-surface/95 px-2.5 text-[11px] text-text-tertiary shadow-lg shadow-bg-primary/15 backdrop-blur-md supports-[not(backdrop-filter:blur(0))]:bg-bg-surface sm:px-3">
 				<div class="flex min-w-0 flex-1 items-center gap-2.5 overflow-hidden">
