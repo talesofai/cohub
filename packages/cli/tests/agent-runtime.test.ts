@@ -29,7 +29,6 @@ type RuntimeClient = ReturnType<typeof createClient>;
 const provider = (value: DetectedProvider["provider"]): DetectedProvider => ({
   provider: value,
   displayName: value === "claude_code" ? "Claude Code" : value === "codex" ? "Codex" : "Pi",
-  source: "credentials",
 });
 
 const RECENT_RUNTIME_SEEN_AT = new Date().toISOString();
@@ -62,7 +61,7 @@ const fakeClient = (input: {
         registrations.push({ spaceId, body });
         if (input.register) return input.register(spaceId, body);
         const current = input.runtimes?.find((item) => item.provider === body.provider && item.status !== "revoked");
-        if (current && (current.replicaId === body.replicaId || ["connecting", "ready", "busy"].includes(current.status))) {
+        if (current && (current.replicaId === body.replicaId || ["ready", "busy"].includes(current.status))) {
           return current;
         }
         return runtime(body.provider as DetectedProvider["provider"], { id: `${String(body.provider)}-new` });
@@ -115,6 +114,9 @@ test("exposes only the native runtime lifecycle commands", () => {
   assert.equal(start.options.find((option) => option.long === "--root")?.mandatory, true);
   assert.equal(start.options.some((option) => option.long === "--runtime-id"), false);
   assert.equal(start.options.some((option) => option.long === "--provider"), false);
+  assert.equal(start.options.some((option) => option.long === "--relay"), false);
+  assert.equal(start.options.some((option) => option.long === "--provider-command"), false);
+  assert.equal(start.options.some((option) => option.long === "--mode"), false);
 });
 
 test("rejects missing roots and legacy start arguments", async () => {
@@ -159,7 +161,29 @@ test("starts every detected provider in order and sends native host arguments", 
     ["pi", "started", "pi-new"],
   ]);
   assert.equal(result.waits.length, 0);
-  assert.deepEqual(registrations.map((item) => item.body.provider), ["codex", "claude_code", "pi"]);
+  assert.deepEqual(registrations.map((item) => item.body), [
+    {
+      deviceId: "device-1",
+      replicaId: "replica-1",
+      provider: "codex",
+      displayName: "Codex local runtime",
+      protocolVersion: 1,
+    },
+    {
+      deviceId: "device-1",
+      replicaId: "replica-1",
+      provider: "claude_code",
+      displayName: "Claude Code local runtime",
+      protocolVersion: 1,
+    },
+    {
+      deviceId: "device-1",
+      replicaId: "replica-1",
+      provider: "pi",
+      displayName: "Pi local runtime",
+      protocolVersion: 1,
+    },
+  ]);
   assert.deepEqual(calls.map((call) => call.args.slice(0, 14)), [
     ["runtime", "--data-dir", "/tmp/cohub-data", "--space-id", "space-1", "--runtime-id", "codex-new", "--replica-id", "replica-1", "--provider", "codex", "--root", "/work/project", "--relay"],
     ["runtime", "--data-dir", "/tmp/cohub-data", "--space-id", "space-1", "--runtime-id", "claude_code-new", "--replica-id", "replica-1", "--provider", "claude_code", "--root", "/work/project", "--relay"],
@@ -255,7 +279,7 @@ test("re-registers revoked runtimes and migrates offline runtimes to the attache
 test("reports a connected runtime bound to another replica instead of starting it", async () => {
   const calls: Array<{ command: string; args: string[]; options: Record<string, unknown> }> = [];
   const { client, registrations } = fakeClient({
-    runtimes: [runtime("codex", { id: "codex-connected-old", status: "connecting", replicaId: "replica-old", lastSeenAt: RECENT_RUNTIME_SEEN_AT })],
+    runtimes: [runtime("codex", { id: "codex-connected-old", status: "ready", replicaId: "replica-old", lastSeenAt: RECENT_RUNTIME_SEEN_AT })],
     register: async () => {
       throw new Error("runtime is already connected to another workspace replica");
     },

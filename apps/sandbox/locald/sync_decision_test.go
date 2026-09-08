@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"strings"
 	"testing"
+	"time"
 )
 
 func TestPrepareLocalRuntimePermitRejectsNonReadyReplica(t *testing.T) {
@@ -95,5 +96,58 @@ func TestCandidateApplyRejectsPostUploadLocalEdit(t *testing.T) {
 	}
 	if err := candidateApplyIsSafe(candidate, current, target); err == nil {
 		t.Fatal("expected post-upload local edit to block remote apply")
+	}
+}
+
+func TestManifestOmissionProtectsOldPathDeletions(t *testing.T) {
+	oldByPath := map[string]remoteEntry{
+		"private":             {Path: "private", Type: "directory"},
+		"private/token.txt":   {Path: "private/token.txt", Type: "file"},
+		"private-other/a.txt": {Path: "private-other/a.txt", Type: "file"},
+		"root.txt":            {Path: "root.txt", Type: "file"},
+		"retained.txt":        {Path: "retained.txt", Type: "file"},
+	}
+	newByPath := map[string]remoteEntry{
+		"retained.txt": {Path: "retained.txt", Type: "file"},
+	}
+	deletions := remoteManifestDeletionPaths(oldByPath, newByPath, []string{"private", "root.txt"})
+	if len(deletions) != 1 || deletions[0] != "private-other/a.txt" {
+		t.Fatalf("omitted manifest paths did not protect deletions: %#v", deletions)
+	}
+}
+
+func TestRemoteApplyPreconditionRejectsStaleCanonicalState(t *testing.T) {
+	state := remoteReplicaState{}
+	state.Workspace.CanonicalSnapshotID = "snapshot"
+	state.Workspace.Generation = 7
+	if err := validateRemoteApplyPrecondition(state, "snapshot", 7, time.Time{}); err != nil {
+		t.Fatalf("current canonical state rejected: %v", err)
+	}
+
+	state.Workspace.CanonicalSnapshotID = "new-snapshot"
+	if err := validateRemoteApplyPrecondition(state, "snapshot", 7, time.Time{}); err == nil || !strings.Contains(err.Error(), "canonical workspace state changed") {
+		t.Fatalf("expected a changed canonical snapshot to reject apply, got %v", err)
+	}
+
+	state.Workspace.CanonicalSnapshotID = "snapshot"
+	state.Workspace.Generation = 8
+	if err := validateRemoteApplyPrecondition(state, "snapshot", 7, time.Time{}); err == nil || !strings.Contains(err.Error(), "canonical workspace state changed") {
+		t.Fatalf("expected a changed canonical generation to reject apply, got %v", err)
+	}
+}
+
+func TestRemoteApplyPreconditionRejectsActiveWriterLease(t *testing.T) {
+	now := time.Date(2026, time.September, 8, 12, 0, 0, 0, time.UTC)
+	var state remoteReplicaState
+	if err := json.Unmarshal([]byte(`{"workspace":{"canonicalSnapshotId":"snapshot","generation":7},"lease":{"expiresAt":"2026-09-08T12:00:01Z"}}`), &state); err != nil {
+		t.Fatal(err)
+	}
+	if err := validateRemoteApplyPrecondition(state, "snapshot", 7, now); err == nil || !strings.Contains(err.Error(), "active server writer lease") {
+		t.Fatalf("expected an active writer lease to reject apply, got %v", err)
+	}
+
+	state.Lease.ExpiresAt = "2026-09-08T11:59:59Z"
+	if err := validateRemoteApplyPrecondition(state, "snapshot", 7, now); err != nil {
+		t.Fatalf("expired writer lease rejected a current apply: %v", err)
 	}
 }

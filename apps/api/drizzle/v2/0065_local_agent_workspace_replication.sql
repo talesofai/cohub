@@ -37,7 +37,6 @@ CREATE TABLE "v2"."local_agent_runtime_events" (
 	"runtime_session_id" uuid NOT NULL,
 	"event_id" varchar(255) NOT NULL,
 	"sequence" bigint NOT NULL,
-	"direction" varchar(20) NOT NULL,
 	"kind" varchar(120) NOT NULL,
 	"command_id" varchar(255),
 	"payload" jsonb NOT NULL,
@@ -54,7 +53,6 @@ CREATE TABLE "v2"."local_agent_runtime_sessions" (
 	"connection_epoch" bigint NOT NULL,
 	"status" varchar(30) DEFAULT 'active' NOT NULL,
 	"last_event_sequence" bigint DEFAULT 0 NOT NULL,
-	"last_event_hash" varchar(64),
 	"last_seen_at" timestamp with time zone,
 	"created_at" timestamp with time zone DEFAULT now() NOT NULL,
 	"updated_at" timestamp with time zone DEFAULT now() NOT NULL
@@ -68,10 +66,7 @@ CREATE TABLE "v2"."local_agent_runtimes" (
 	"user_uuid" varchar(255) NOT NULL,
 	"provider" varchar(40) NOT NULL,
 	"display_name" varchar(255) NOT NULL,
-	"provider_version" varchar(120) DEFAULT 'unknown' NOT NULL,
-	"adapter_version" varchar(120) DEFAULT 'unknown' NOT NULL,
 	"protocol_version" integer DEFAULT 1 NOT NULL,
-	"capabilities" jsonb DEFAULT '{}'::jsonb NOT NULL,
 	"status" varchar(30) DEFAULT 'offline' NOT NULL,
 	"connection_epoch" bigint DEFAULT 0 NOT NULL,
 	"gateway_node_id" varchar(255),
@@ -100,7 +95,7 @@ CREATE TABLE "v2"."space_local_agent_policies" (
 	"device_id" uuid NOT NULL,
 	"user_uuid" varchar(255) NOT NULL,
 	"integration_policy_version" bigint DEFAULT 1 NOT NULL,
-	"workspace_mode" varchar(30) DEFAULT 'handoff' NOT NULL,
+	"workspace_mode" varchar(30) DEFAULT 'two_way_safe' NOT NULL,
 	"updated_by" varchar(255) NOT NULL,
 	"created_at" timestamp with time zone DEFAULT now() NOT NULL,
 	"updated_at" timestamp with time zone DEFAULT now() NOT NULL
@@ -141,14 +136,10 @@ CREATE TABLE "v2"."workspace_execution_attempts" (
 	"executor_kind" varchar(40) NOT NULL,
 	"provider" varchar(40),
 	"integration_policy_version" bigint,
-	"workspace_required" boolean DEFAULT true NOT NULL,
-	"transcript_required" boolean DEFAULT true NOT NULL,
 	"session_id" uuid,
 	"turn_id" uuid,
-	"relative_cwd" text,
 	"base_canonical_snapshot_id" uuid,
 	"workspace_lease_epoch" bigint,
-	"workspace_policy_version" bigint,
 	"status" varchar(30) DEFAULT 'prepared' NOT NULL,
 	"workspace_cycle_id" uuid,
 	"result_snapshot_id" uuid,
@@ -169,10 +160,8 @@ CREATE TABLE "v2"."workspace_replicas" (
 	"status" varchar(30) DEFAULT 'attaching' NOT NULL,
 	"display_name" varchar(255) NOT NULL,
 	"root_fingerprint" varchar(255),
-	"parent_replica_id" uuid,
-	"boundary_mode" varchar(30),
 	"protocol_version" integer DEFAULT 1 NOT NULL,
-	"capabilities" jsonb DEFAULT '{}'::jsonb NOT NULL,
+	"initial_choice" varchar(20),
 	"current_snapshot_id" uuid,
 	"applied_snapshot_id" uuid,
 	"last_common_snapshot_id" uuid,
@@ -195,7 +184,6 @@ CREATE TABLE "v2"."workspace_snapshots" (
 	"replica_id" uuid NOT NULL,
 	"replica_generation" bigint NOT NULL,
 	"parent_snapshot_id" uuid,
-	"merge_parent_snapshot_id" uuid,
 	"base_canonical_snapshot_id" uuid,
 	"workspace_policy_version" bigint NOT NULL,
 	"manifest_version" integer DEFAULT 1 NOT NULL,
@@ -208,8 +196,6 @@ CREATE TABLE "v2"."workspace_snapshots" (
 	"file_count" bigint DEFAULT 0 NOT NULL,
 	"total_bytes" bigint DEFAULT 0 NOT NULL,
 	"source" varchar(40) NOT NULL,
-	"source_session_id" uuid,
-	"source_turn_id" uuid,
 	"source_execution_attempt_id" uuid,
 	"lease_epoch" bigint,
 	"status" varchar(30) DEFAULT 'uploading' NOT NULL,
@@ -225,8 +211,6 @@ CREATE TABLE "v2"."workspace_state" (
 	"status" varchar(30) DEFAULT 'initializing' NOT NULL,
 	"active_cycle_id" uuid,
 	"active_execution_attempt_id" uuid,
-	"last_writer_kind" varchar(40),
-	"last_writer_id" varchar(255),
 	"updated_at" timestamp with time zone DEFAULT now() NOT NULL
 );
 --> statement-breakpoint
@@ -239,9 +223,6 @@ CREATE TABLE "v2"."workspace_sync_conflicts" (
 	"base_entry" jsonb,
 	"local_entry" jsonb,
 	"cloud_entry" jsonb,
-	"base_object_key" text,
-	"local_object_key" text,
-	"cloud_object_key" text,
 	"status" varchar(20) DEFAULT 'open' NOT NULL,
 	"resolution" varchar(30),
 	"resolved_snapshot_id" uuid,
@@ -260,10 +241,6 @@ CREATE TABLE "v2"."workspace_sync_cycles" (
 	"cloud_snapshot_id" uuid,
 	"result_snapshot_id" uuid,
 	"execution_attempt_id" uuid,
-	"direction" varchar(30) NOT NULL,
-	"canonical_generation_at_start" bigint DEFAULT 0 NOT NULL,
-	"plan_object_key" text,
-	"plan_sha256" varchar(64),
 	"lease_epoch" bigint,
 	"status" varchar(30) DEFAULT 'planned' NOT NULL,
 	"stats" jsonb,
@@ -312,7 +289,6 @@ ALTER TABLE "v2"."workspace_execution_attempts" ADD CONSTRAINT "workspace_execut
 ALTER TABLE "v2"."workspace_execution_attempts" ADD CONSTRAINT "workspace_execution_attempts_result_snapshot_id_workspace_snapshots_id_fk" FOREIGN KEY ("result_snapshot_id") REFERENCES "v2"."workspace_snapshots"("id") ON DELETE restrict ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "v2"."workspace_replicas" ADD CONSTRAINT "workspace_replicas_space_id_spaces_id_fk" FOREIGN KEY ("space_id") REFERENCES "v2"."spaces"("id") ON DELETE restrict ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "v2"."workspace_replicas" ADD CONSTRAINT "workspace_replicas_device_id_local_agent_devices_id_fk" FOREIGN KEY ("device_id") REFERENCES "v2"."local_agent_devices"("id") ON DELETE restrict ON UPDATE no action;--> statement-breakpoint
-ALTER TABLE "v2"."workspace_replicas" ADD CONSTRAINT "workspace_replicas_parent_replica_id_workspace_replicas_id_fk" FOREIGN KEY ("parent_replica_id") REFERENCES "v2"."workspace_replicas"("id") ON DELETE restrict ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "v2"."workspace_replicas" ADD CONSTRAINT "workspace_replicas_current_snapshot_id_workspace_snapshots_id_fk" FOREIGN KEY ("current_snapshot_id") REFERENCES "v2"."workspace_snapshots"("id") ON DELETE restrict ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "v2"."workspace_replicas" ADD CONSTRAINT "workspace_replicas_applied_snapshot_id_workspace_snapshots_id_fk" FOREIGN KEY ("applied_snapshot_id") REFERENCES "v2"."workspace_snapshots"("id") ON DELETE restrict ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "v2"."workspace_replicas" ADD CONSTRAINT "workspace_replicas_last_common_snapshot_id_workspace_snapshots_id_fk" FOREIGN KEY ("last_common_snapshot_id") REFERENCES "v2"."workspace_snapshots"("id") ON DELETE restrict ON UPDATE no action;--> statement-breakpoint
@@ -322,10 +298,7 @@ ALTER TABLE "v2"."workspace_snapshot_blobs" ADD CONSTRAINT "workspace_snapshot_b
 ALTER TABLE "v2"."workspace_snapshots" ADD CONSTRAINT "workspace_snapshots_space_id_spaces_id_fk" FOREIGN KEY ("space_id") REFERENCES "v2"."spaces"("id") ON DELETE restrict ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "v2"."workspace_snapshots" ADD CONSTRAINT "workspace_snapshots_replica_id_workspace_replicas_id_fk" FOREIGN KEY ("replica_id") REFERENCES "v2"."workspace_replicas"("id") ON DELETE restrict ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "v2"."workspace_snapshots" ADD CONSTRAINT "workspace_snapshots_parent_snapshot_id_workspace_snapshots_id_fk" FOREIGN KEY ("parent_snapshot_id") REFERENCES "v2"."workspace_snapshots"("id") ON DELETE restrict ON UPDATE no action;--> statement-breakpoint
-ALTER TABLE "v2"."workspace_snapshots" ADD CONSTRAINT "workspace_snapshots_merge_parent_snapshot_id_workspace_snapshots_id_fk" FOREIGN KEY ("merge_parent_snapshot_id") REFERENCES "v2"."workspace_snapshots"("id") ON DELETE restrict ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "v2"."workspace_snapshots" ADD CONSTRAINT "workspace_snapshots_base_canonical_snapshot_id_workspace_snapshots_id_fk" FOREIGN KEY ("base_canonical_snapshot_id") REFERENCES "v2"."workspace_snapshots"("id") ON DELETE restrict ON UPDATE no action;--> statement-breakpoint
-ALTER TABLE "v2"."workspace_snapshots" ADD CONSTRAINT "workspace_snapshots_source_session_id_space_sessions_id_fk" FOREIGN KEY ("source_session_id") REFERENCES "v2"."space_sessions"("id") ON DELETE restrict ON UPDATE no action;--> statement-breakpoint
-ALTER TABLE "v2"."workspace_snapshots" ADD CONSTRAINT "workspace_snapshots_source_turn_id_session_turns_id_fk" FOREIGN KEY ("source_turn_id") REFERENCES "v2"."session_turns"("id") ON DELETE restrict ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "v2"."workspace_snapshots" ADD CONSTRAINT "workspace_snapshots_source_execution_attempt_id_workspace_execution_attempts_id_fk" FOREIGN KEY ("source_execution_attempt_id") REFERENCES "v2"."workspace_execution_attempts"("id") ON DELETE restrict ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "v2"."workspace_state" ADD CONSTRAINT "workspace_state_space_id_spaces_id_fk" FOREIGN KEY ("space_id") REFERENCES "v2"."spaces"("id") ON DELETE restrict ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "v2"."workspace_state" ADD CONSTRAINT "workspace_state_canonical_snapshot_id_workspace_snapshots_id_fk" FOREIGN KEY ("canonical_snapshot_id") REFERENCES "v2"."workspace_snapshots"("id") ON DELETE restrict ON UPDATE no action;--> statement-breakpoint
@@ -389,7 +362,7 @@ CREATE INDEX "v2_idx_workspace_state_generation" ON "v2"."workspace_state" USING
 CREATE UNIQUE INDEX "v2_uq_workspace_sync_conflicts_open_cycle_path" ON "v2"."workspace_sync_conflicts" USING btree ("cycle_id","path") WHERE "v2"."workspace_sync_conflicts"."status" = 'open';--> statement-breakpoint
 CREATE INDEX "v2_idx_workspace_sync_conflicts_space_status" ON "v2"."workspace_sync_conflicts" USING btree ("space_id","status","created_at");--> statement-breakpoint
 CREATE INDEX "v2_idx_workspace_sync_conflicts_cycle" ON "v2"."workspace_sync_conflicts" USING btree ("cycle_id","path");--> statement-breakpoint
-CREATE UNIQUE INDEX "v2_uq_workspace_sync_cycles_active_space" ON "v2"."workspace_sync_cycles" USING btree ("space_id") WHERE "v2"."workspace_sync_cycles"."status" in ('planned', 'transferring', 'applying_cloud', 'applying_local', 'verifying');--> statement-breakpoint
+CREATE UNIQUE INDEX "v2_uq_workspace_sync_cycles_active_space" ON "v2"."workspace_sync_cycles" USING btree ("space_id") WHERE "v2"."workspace_sync_cycles"."status" in ('planned', 'transferring', 'applying_cloud');--> statement-breakpoint
 CREATE INDEX "v2_idx_workspace_sync_cycles_space_status" ON "v2"."workspace_sync_cycles" USING btree ("space_id","status","created_at");--> statement-breakpoint
 CREATE INDEX "v2_idx_workspace_sync_cycles_attempt" ON "v2"."workspace_sync_cycles" USING btree ("execution_attempt_id");--> statement-breakpoint
 CREATE INDEX "v2_idx_workspace_writer_leases_expiry" ON "v2"."workspace_writer_leases" USING btree ("expires_at");--> statement-breakpoint

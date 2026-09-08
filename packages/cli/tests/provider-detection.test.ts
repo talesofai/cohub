@@ -22,11 +22,7 @@ test("detects credentials from isolated provider files", async () => {
     commandProbe: noCliAuth,
   });
 
-  assert.deepEqual(providers.map((item) => [item.provider, item.source]), [
-    ["codex", "credentials"],
-    ["claude_code", "credentials"],
-    ["pi", "credentials"],
-  ]);
+  assert.deepEqual(providers.map((item) => item.provider), ["codex", "claude_code", "pi"]);
 });
 
 test("honors provider-specific credential directories", async () => {
@@ -62,7 +58,6 @@ test("uses provider-specific Pi environment keys without treating shared keys as
     commandProbe: noCliAuth,
   });
   assert.deepEqual(providers.map((item) => item.provider), ["pi"]);
-  assert.equal(providers[0]?.source, "environment");
 
   const shared = await detectLocalProviders({
     env: { HOME: home, OPENAI_API_KEY: "openai-test" },
@@ -93,7 +88,7 @@ test("does not treat ambient AWS credentials or false cloud flags as Claude auth
     home,
     commandProbe: noCliAuth,
   });
-  assert.deepEqual(enabled.map((item) => [item.provider, item.source]), [["claude_code", "environment"]]);
+  assert.deepEqual(enabled.map((item) => item.provider), ["claude_code"]);
 });
 
 test("passes the caller environment to CLI probes", async () => {
@@ -126,10 +121,7 @@ test("accepts logged-in CLI status when no local auth file is present", async ()
     },
   });
 
-  assert.deepEqual(providers.map((item) => [item.provider, item.source]), [
-    ["codex", "cli"],
-    ["claude_code", "cli"],
-  ]);
+  assert.deepEqual(providers.map((item) => item.provider), ["codex", "claude_code"]);
   assert.deepEqual(calls, ["codex login status", "claude auth status --json"]);
 });
 

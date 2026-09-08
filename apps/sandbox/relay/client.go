@@ -15,7 +15,6 @@ import (
 	"math/rand"
 	"net/http"
 	"net/url"
-	"os"
 	"strings"
 	"sync"
 	"time"
@@ -50,22 +49,11 @@ type Options struct {
 	Kind string
 	// RuntimeID identifies a registered local runtime when Kind is runtime.
 	RuntimeID string
-	// ReplicaID and DeviceID identify the attached workspace and enrolled device
-	// for runtime registrations. They are ignored by legacy sandbox relays.
+	// ReplicaID identifies the attached workspace for runtime registrations. It
+	// is ignored by legacy sandbox relays.
 	ReplicaID string
-	DeviceID  string
-	// Provider is recorded by the gateway for runtime registrations.
+	// Provider identifies the adapter and is checked against API registration.
 	Provider string
-	// ProviderVersion and AdapterVersion describe the native provider adapter
-	// behind the runtime wire protocol. Runtime mode supplies stable defaults
-	// when callers do not provide them.
-	ProviderVersion string
-	AdapterVersion  string
-	// Capabilities advertises the normalized operations supported by the host.
-	// It is copied into the registration frame and never used to widen access.
-	Capabilities map[string]bool
-	// ProtocolVersion pins the local-runtime wire contract. Zero selects v1.
-	ProtocolVersion int
 	// Server serves each opened sandbox data channel.
 	Server SessionServer
 	// RuntimeServer serves each opened local-runtime data channel.
@@ -83,23 +71,17 @@ type Options struct {
 // gateway republishes to space subscribers, so the web file tree stays live
 // even when no agent is attached.
 type controlFrame struct {
-	Type            string          `json:"type"`
-	Kind            string          `json:"kind,omitempty"`
-	Version         int             `json:"version,omitempty"`
-	SpaceID         string          `json:"spaceId,omitempty"`
-	ReplicaID       string          `json:"replicaId,omitempty"`
-	DeviceID        string          `json:"deviceId,omitempty"`
-	RuntimeID       string          `json:"runtimeId,omitempty"`
-	Provider        string          `json:"provider,omitempty"`
-	ProviderVersion string          `json:"providerVersion,omitempty"`
-	AdapterVersion  string          `json:"adapterVersion,omitempty"`
-	ProtocolVersion int             `json:"protocolVersion,omitempty"`
-	Capabilities    map[string]bool `json:"capabilities,omitempty"`
-	Channel         string          `json:"channel,omitempty"`
-	Protocol        string          `json:"protocol,omitempty"`
-	Message         string          `json:"message,omitempty"`
-	Status          int             `json:"status,omitempty"`
-	Payload         json.RawMessage `json:"payload,omitempty"`
+	Type      string          `json:"type"`
+	Kind      string          `json:"kind,omitempty"`
+	SpaceID   string          `json:"spaceId,omitempty"`
+	ReplicaID string          `json:"replicaId,omitempty"`
+	RuntimeID string          `json:"runtimeId,omitempty"`
+	Provider  string          `json:"provider,omitempty"`
+	Channel   string          `json:"channel,omitempty"`
+	Protocol  string          `json:"protocol,omitempty"`
+	Message   string          `json:"message,omitempty"`
+	Status    int             `json:"status,omitempty"`
+	Payload   json.RawMessage `json:"payload,omitempty"`
 	// Binding carries the opaque per-channel context the gateway attached to
 	// an `open` frame. The relay does not interpret it; the channel server does.
 	Binding json.RawMessage `json:"binding,omitempty"`
@@ -113,12 +95,10 @@ type ChannelServer interface {
 }
 
 const (
-	controlPingInterval    = 20 * time.Second
-	dialTimeout            = 15 * time.Second
-	configRetryDelay       = 5 * time.Minute
-	runtimeWireProtocol    = "local-runtime-v1"
-	runtimeProtocolVersion = 1
-	runtimeAdapterVersion  = "cohub-local-runtime-v1"
+	controlPingInterval = 20 * time.Second
+	dialTimeout         = 15 * time.Second
+	configRetryDelay    = 5 * time.Minute
+	runtimeWireProtocol = "local-runtime-v1"
 )
 
 var reconnectDelays = []time.Duration{
@@ -211,37 +191,6 @@ func (c *Client) writeControl(ctx context.Context, conn *websocket.Conn, frame c
 	return wsjson.Write(ctx, conn, frame)
 }
 
-func runtimeCapabilities(provider string, input map[string]bool) map[string]bool {
-	capabilities := map[string]bool{
-		"streaming":          true,
-		"sessionResume":      true,
-		"sessionFork":        strings.EqualFold(strings.TrimSpace(provider), "pi") || strings.EqualFold(strings.TrimSpace(provider), "claude_code"),
-		"sessionCancel":      true,
-		"permissionRequests": false,
-		"promptImages":       true,
-		"nativeTools":        true,
-	}
-	// The API validates this object against the strict shared protocol schema.
-	// Ignore unknown caller keys rather than making registration fail because a
-	// provider-specific hint leaked into the wire identity frame.
-	for _, key := range []string{
-		"streaming",
-		"sessionResume",
-		"sessionFork",
-		"sessionCancel",
-		"promptImages",
-		"nativeTools",
-	} {
-		if value, ok := input[key]; ok {
-			capabilities[key] = value
-		}
-	}
-	// local-runtime-v1 has no permission-response command. Keep this false even
-	// when an embedding caller supplies stale or overly broad capabilities.
-	capabilities["permissionRequests"] = false
-	return capabilities
-}
-
 func runtimeRegistrationFrame(opts Options, kind string) controlFrame {
 	if kind != "runtime" {
 		return controlFrame{
@@ -252,38 +201,14 @@ func runtimeRegistrationFrame(opts Options, kind string) controlFrame {
 			Provider:  opts.Provider,
 		}
 	}
-	protocolVersion := opts.ProtocolVersion
-	if protocolVersion == 0 {
-		protocolVersion = runtimeProtocolVersion
-	}
-	providerVersion := strings.TrimSpace(opts.ProviderVersion)
-	if providerVersion == "" {
-		providerVersion = strings.TrimSpace(os.Getenv("COHUB_RUNTIME_PROVIDER_VERSION"))
-	}
-	if providerVersion == "" {
-		providerVersion = "unknown"
-	}
-	adapterVersion := strings.TrimSpace(opts.AdapterVersion)
-	if adapterVersion == "" {
-		adapterVersion = strings.TrimSpace(os.Getenv("COHUB_RUNTIME_ADAPTER_VERSION"))
-	}
-	if adapterVersion == "" {
-		adapterVersion = runtimeAdapterVersion
-	}
 	return controlFrame{
-		Type:            "register",
-		Kind:            "runtime",
-		Version:         protocolVersion,
-		SpaceID:         opts.SpaceID,
-		ReplicaID:       opts.ReplicaID,
-		DeviceID:        opts.DeviceID,
-		RuntimeID:       opts.RuntimeID,
-		Provider:        opts.Provider,
-		ProviderVersion: providerVersion,
-		AdapterVersion:  adapterVersion,
-		ProtocolVersion: protocolVersion,
-		Capabilities:    runtimeCapabilities(opts.Provider, opts.Capabilities),
-		Protocol:        runtimeWireProtocol,
+		Type:      "register",
+		Kind:      "runtime",
+		SpaceID:   opts.SpaceID,
+		ReplicaID: opts.ReplicaID,
+		RuntimeID: opts.RuntimeID,
+		Provider:  opts.Provider,
+		Protocol:  runtimeWireProtocol,
 	}
 }
 

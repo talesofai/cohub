@@ -143,6 +143,11 @@ type snapshotCommitResponse struct {
 	CycleID    string `json:"cycleId"`
 }
 
+type canonicalPullPreparation struct {
+	uploadLocal      bool
+	allowDestructive bool
+}
+
 func scanPolicyFromRemote(state remoteReplicaState) ScanPolicy {
 	return ScanPolicy{
 		PolicyVersion:    state.WorkspacePolicy.PolicyVersion,
@@ -159,62 +164,22 @@ func remoteExecutionAttemptForState(state remoteReplicaState) *remoteExecutionAt
 	return state.ExecutionAttempt
 }
 
-// Resolve the runtime identity immediately before a lease mutation. The local
-// permit stores attempt/lease provenance, while the server remains authoritative
-// for which registered runtime owns that attempt.
-func (d *Daemon) runtimeIDForPermit(ctx context.Context, permit *PermitContext) (string, error) {
-	if permit == nil || strings.TrimSpace(permit.SpaceID) == "" || strings.TrimSpace(permit.ReplicaID) == "" || strings.TrimSpace(permit.ExecutionAttemptID) == "" {
+func runtimeIDForPermit(permit *PermitContext) (string, error) {
+	if permit == nil || strings.TrimSpace(permit.SpaceID) == "" || strings.TrimSpace(permit.ReplicaID) == "" || strings.TrimSpace(permit.ExecutionAttemptID) == "" || strings.TrimSpace(permit.RuntimeID) == "" {
 		return "", errors.New("local runtime execution permit identity is unavailable")
 	}
-	if runtimeID := strings.TrimSpace(permit.RuntimeID); runtimeID != "" {
-		return runtimeID, nil
-	}
-	body, err := d.getJSON(ctx, fmt.Sprintf("%s/api/local-agent/spaces/%s/replicas/%s/state", d.apiBaseURL(), permit.SpaceID, permit.ReplicaID))
+	return strings.TrimSpace(permit.RuntimeID), nil
+}
+
+func runtimeIDForPermitState(permit *PermitContext, state remoteReplicaState) (string, error) {
+	runtimeID, err := runtimeIDForPermit(permit)
 	if err != nil {
 		return "", err
 	}
-	var state remoteReplicaState
-	if err := json.Unmarshal(body, &state); err != nil {
-		return "", fmt.Errorf("decode local runtime state: %w", err)
-	}
-	attempt := remoteExecutionAttemptForState(state)
-	if attempt == nil || attempt.ID != permit.ExecutionAttemptID || attempt.SpaceID != permit.SpaceID || attempt.ReplicaID != permit.ReplicaID || strings.TrimSpace(attempt.RuntimeID) == "" {
+	attempt := state.ExecutionAttempt
+	if attempt != nil && (attempt.ID != permit.ExecutionAttemptID || (attempt.SpaceID != "" && attempt.SpaceID != permit.SpaceID) || (attempt.ReplicaID != "" && attempt.ReplicaID != permit.ReplicaID) || (strings.TrimSpace(attempt.RuntimeID) != "" && attempt.RuntimeID != runtimeID)) {
 		return "", errors.New("authoritative local runtime identity does not match the execution permit")
 	}
-	runtimeID := strings.TrimSpace(attempt.RuntimeID)
-	if err := d.state.BindPermitRuntimeID(permit.ExecutionAttemptID, runtimeID); err != nil {
-		return "", fmt.Errorf("persist local runtime identity for execution permit: %w", err)
-	}
-	permit.RuntimeID = runtimeID
-	return runtimeID, nil
-}
-
-// runtimeIDForPermitState resolves an execution's runtime identity from the
-// durable permit first. The state endpoint may intentionally omit terminal
-// attempts after snapshot commit, so a persisted identity is sufficient for
-// the API's lease/attempt provenance checks. A legacy permit with an empty
-// runtime_id is backfilled only when the authoritative state still exposes the
-// exact attempt identity.
-func (d *Daemon) runtimeIDForPermitState(permit *PermitContext, state remoteReplicaState) (string, error) {
-	if permit == nil || strings.TrimSpace(permit.ExecutionAttemptID) == "" || strings.TrimSpace(permit.SpaceID) == "" || strings.TrimSpace(permit.ReplicaID) == "" {
-		return "", errors.New("local runtime execution permit identity is unavailable")
-	}
-	attempt := state.ExecutionAttempt
-	runtimeID := strings.TrimSpace(permit.RuntimeID)
-	if runtimeID != "" {
-		if attempt != nil && (attempt.ID != permit.ExecutionAttemptID || (attempt.SpaceID != "" && attempt.SpaceID != permit.SpaceID) || (attempt.ReplicaID != "" && attempt.ReplicaID != permit.ReplicaID) || (strings.TrimSpace(attempt.RuntimeID) != "" && attempt.RuntimeID != runtimeID)) {
-			return "", errors.New("authoritative local runtime identity does not match the execution permit")
-		}
-		return runtimeID, nil
-	}
-	if attempt == nil || attempt.ID != permit.ExecutionAttemptID || attempt.SpaceID != permit.SpaceID || attempt.ReplicaID != permit.ReplicaID || strings.TrimSpace(attempt.RuntimeID) == "" {
-		return "", errors.New("authoritative local runtime identity is unavailable for the execution permit")
-	}
-	runtimeID = strings.TrimSpace(attempt.RuntimeID)
-	if err := d.state.BindPermitRuntimeID(permit.ExecutionAttemptID, runtimeID); err != nil {
-		return "", fmt.Errorf("persist local runtime identity for execution permit: %w", err)
-	}
-	permit.RuntimeID = runtimeID
 	return runtimeID, nil
 }
 
@@ -322,14 +287,8 @@ func (d *Daemon) prepareLocalRuntimePermitFromState(replica *ReplicaState, state
 	if permit != nil {
 		validHolder := permit.Status == "prepared" && permit.HolderID == attempt.ID
 		validHolder = validHolder || permit.Status != "prepared" && isLocalRuntimePermit(permit.HolderID) && serverPermitHolderID(permit.HolderID) == attempt.ID
-		if permit.ExecutionAttemptID != attempt.ID || permit.SpaceID != replica.SpaceID || permit.ReplicaID != replica.ReplicaID || (strings.TrimSpace(permit.RuntimeID) != "" && permit.RuntimeID != attempt.RuntimeID) || !validHolder {
+		if permit.ExecutionAttemptID != attempt.ID || permit.SpaceID != replica.SpaceID || permit.ReplicaID != replica.ReplicaID || permit.RuntimeID != attempt.RuntimeID || !validHolder {
 			return false, errors.New("local runtime execution permit provenance is invalid")
-		}
-		if strings.TrimSpace(permit.RuntimeID) == "" {
-			if err := d.state.BindPermitRuntimeID(attempt.ID, attempt.RuntimeID); err != nil {
-				return false, fmt.Errorf("persist local runtime identity for execution permit: %w", err)
-			}
-			permit.RuntimeID = attempt.RuntimeID
 		}
 	}
 	if permit != nil && permit.Status != "prepared" {
@@ -614,13 +573,15 @@ func (d *Daemon) syncReplica(ctx context.Context, replica *ReplicaState) error {
 	if state.Workspace.Status != "ready" && state.Workspace.Status != "syncing" {
 		return fmt.Errorf("workspace is not ready: %s", state.Workspace.Status)
 	}
-	// Under one_way_to_cloud the local tree is authoritative: cloud snapshots
-	// are never applied to disk. A canonical pointer that moved past the local
-	// applied snapshot means a cloud-side writer changed the tree; surface the
-	// local tree as the next candidate instead of pulling the cloud version
-	// over local edits.
-	if state.IntegrationPolicy.WorkspaceMode == "one_way_to_cloud" && replica.AppliedSnapshotID != "" {
-		return d.uploadLocalCandidate(ctx, replica, state, "")
+	if canonicalID != replica.AppliedSnapshotID && replica.AppliedSnapshotID != "" && replica.CandidateSnapshotID == "" {
+		preparation, prepareErr := d.prepareCanonicalPull(replica, state)
+		if prepareErr != nil {
+			return prepareErr
+		}
+		if preparation.uploadLocal {
+			return d.uploadLocalCandidate(ctx, replica, state, "")
+		}
+		forceCloudAuthoritative = preparation.allowDestructive
 	}
 	snapshotBody, err := d.getJSON(ctx, fmt.Sprintf("%s/api/local-agent/spaces/%s/replicas/%s/snapshots/%s", d.apiBaseURL(), replica.SpaceID, replica.ReplicaID, canonicalID))
 	if err != nil {
@@ -797,7 +758,7 @@ func (d *Daemon) startLocalRuntimeLeaseHeartbeat(ctx context.Context, spaceID st
 	} else {
 		return nil, fmt.Errorf("local runtime execution permit is already %s", permit.Status)
 	}
-	runtimeID, err := d.runtimeIDForPermit(ctx, permit)
+	runtimeID, err := runtimeIDForPermit(permit)
 	if err != nil {
 		return nil, err
 	}
@@ -948,7 +909,7 @@ func (d *Daemon) finalizeExecutionWorkspace(ctx context.Context, spaceID, replic
 	}
 	replica.PolicyVersion = state.WorkspacePolicy.PolicyVersion
 	replica.IntegrationPolicyVersion = state.IntegrationPolicy.IntegrationPolicyVersion
-	runtimeID, err := d.runtimeIDForPermitState(permit, state)
+	runtimeID, err := runtimeIDForPermitState(permit, state)
 	if err != nil {
 		return err
 	}
@@ -956,7 +917,6 @@ func (d *Daemon) finalizeExecutionWorkspace(ctx context.Context, spaceID, replic
 		"leaseEpoch":               permit.LeaseEpoch,
 		"baseSnapshotId":           nullableString(permit.BaseSnapshotID),
 		"runtimeId":                runtimeID,
-		"workspacePolicyVersion":   replica.PolicyVersion,
 		"integrationPolicyVersion": replica.IntegrationPolicyVersion,
 	})
 	if err := checkLeaseHeartbeat(); err != nil {
@@ -1116,7 +1076,7 @@ func (d *Daemon) uploadLocalCandidate(ctx context.Context, replica *ReplicaState
 		if permit == nil || permit.SpaceID != replica.SpaceID || permit.ReplicaID != replica.ReplicaID || permit.LeaseEpoch <= 0 {
 			return errors.New("execution attempt has no valid local lease provenance")
 		}
-		runtimeID, err = d.runtimeIDForPermitState(permit, state)
+		runtimeID, err = runtimeIDForPermitState(permit, state)
 		if err != nil {
 			return err
 		}
@@ -1205,6 +1165,32 @@ func storedManifestTreeHash(raw []byte) (string, error) {
 	}
 	hash, _, err := CanonicalHash(treeRaw)
 	return hash, err
+}
+
+func (d *Daemon) prepareCanonicalPull(replica *ReplicaState, state remoteReplicaState) (canonicalPullPreparation, error) {
+	current, err := ScanWorkspace(replica.Root, scanPolicyFromRemote(state))
+	if err != nil {
+		return canonicalPullPreparation{}, err
+	}
+	storedTreeHash, err := storedManifestTreeHash(replica.Manifest)
+	if err != nil {
+		return canonicalPullPreparation{}, err
+	}
+	if current.TreeHash == storedTreeHash {
+		return canonicalPullPreparation{}, nil
+	}
+	switch state.IntegrationPolicy.WorkspaceMode {
+	case "two_way_safe", "one_way_to_cloud":
+		return canonicalPullPreparation{uploadLocal: true}, nil
+	case "one_way_to_local":
+		if _, err := d.createInitialRecoveryBackup(replica, current); err != nil {
+			return canonicalPullPreparation{}, fmt.Errorf("create one-way-to-local recovery backup: %w", err)
+		}
+		replica.Manifest = current.ManifestBytes
+		return canonicalPullPreparation{allowDestructive: true}, nil
+	default:
+		return canonicalPullPreparation{}, fmt.Errorf("workspace mode is unsupported: %s", state.IntegrationPolicy.WorkspaceMode)
+	}
 }
 
 func (d *Daemon) putSignedBytes(ctx context.Context, url string, headers map[string]string, body []byte) error {
@@ -1500,23 +1486,37 @@ func (d *Daemon) downloadToFile(ctx context.Context, url, path string, expectedS
 	return file.Close()
 }
 
-func (d *Daemon) remoteWriterLeaseActive(ctx context.Context, spaceID, replicaID string) (bool, error) {
-	body, err := d.getJSON(ctx, fmt.Sprintf("%s/api/local-agent/spaces/%s/replicas/%s/state", d.apiBaseURL(), spaceID, replicaID))
-	if err != nil {
-		return false, err
+func validateRemoteApplyPrecondition(state remoteReplicaState, snapshotID string, generation int64, now time.Time) error {
+	canonicalID := state.Workspace.CanonicalSnapshotID
+	if canonicalID == "" {
+		canonicalID = state.Replica.CanonicalSnapshot
 	}
-	var state remoteReplicaState
-	if err := json.Unmarshal(body, &state); err != nil {
-		return false, err
+	if canonicalID != snapshotID || state.Workspace.Generation != generation {
+		return fmt.Errorf("canonical workspace state changed before apply: expected snapshot %s generation %d, got snapshot %s generation %d", snapshotID, generation, canonicalID, state.Workspace.Generation)
 	}
 	if state.Lease == nil {
-		return false, nil
+		return nil
 	}
 	expiresAt, err := time.Parse(time.RFC3339Nano, state.Lease.ExpiresAt)
 	if err != nil {
-		return false, fmt.Errorf("workspace writer lease expiry is invalid: %w", err)
+		return fmt.Errorf("workspace writer lease expiry is invalid: %w", err)
 	}
-	return expiresAt.After(time.Now().UTC()), nil
+	if expiresAt.After(now.UTC()) {
+		return errors.New("workspace has an active server writer lease")
+	}
+	return nil
+}
+
+func (d *Daemon) validateRemoteApplyState(ctx context.Context, spaceID, replicaID, snapshotID string, generation int64) error {
+	body, err := d.getJSON(ctx, fmt.Sprintf("%s/api/local-agent/spaces/%s/replicas/%s/state", d.apiBaseURL(), spaceID, replicaID))
+	if err != nil {
+		return err
+	}
+	var state remoteReplicaState
+	if err := json.Unmarshal(body, &state); err != nil {
+		return err
+	}
+	return validateRemoteApplyPrecondition(state, snapshotID, generation, time.Now())
 }
 
 func (d *Daemon) applyRemoteSnapshot(ctx context.Context, replica *ReplicaState, manifest remoteManifest, blobs map[string]struct {
@@ -1565,12 +1565,8 @@ func (d *Daemon) applyRemoteSnapshot(ctx context.Context, replica *ReplicaState,
 		}
 		oldByPath[entry.Path] = entry
 	}
-	deletions := 0
-	for path := range oldByPath {
-		if _, ok := newByPath[path]; !ok {
-			deletions++
-		}
-	}
+	deletePaths := remoteManifestDeletionPaths(oldByPath, newByPath, manifest.Omitted)
+	deletions := len(deletePaths)
 	if !allowDestructive && (deletions > 1000 || (len(oldByPath) > 0 && float64(deletions)/float64(len(oldByPath)) > 0.2)) {
 		return errors.New("remote workspace deletion threshold requires explicit confirmation")
 	}
@@ -1580,11 +1576,7 @@ func (d *Daemon) applyRemoteSnapshot(ctx context.Context, replica *ReplicaState,
 			affectedPaths = append(affectedPaths, entry.Path)
 		}
 	}
-	for path := range oldByPath {
-		if _, ok := newByPath[path]; !ok {
-			affectedPaths = append(affectedPaths, path)
-		}
-	}
+	affectedPaths = append(affectedPaths, deletePaths...)
 	cycleID := fmt.Sprintf("pull-%s-%d", snapshotID, generation)
 	staging := filepath.Join(d.cfg.DataDir, "staging", cycleID)
 	if err := os.MkdirAll(staging, 0o700); err != nil {
@@ -1617,6 +1609,28 @@ func (d *Daemon) applyRemoteSnapshot(ctx context.Context, replica *ReplicaState,
 		}
 		stagedFiles[entry.Path] = temporary
 	}
+	replacements := make(map[string]localFileReplacement, len(stagedFiles))
+	replacementPaths := make(map[string]struct{}, len(stagedFiles))
+	for path, source := range stagedFiles {
+		entry := newByPath[path]
+		mode := os.FileMode(0o664)
+		if entry.Executable {
+			mode = 0o775
+		}
+		replacement, err := newLocalFileReplacement(replica.Root, cycleID, path, source, destinations[path], entry.Size, entry.SHA256, mode)
+		if err != nil {
+			return fmt.Errorf("prepare local replacement for %s: %w", path, err)
+		}
+		if _, managed := destinations[replacement.journalPath]; managed {
+			return fmt.Errorf("local replacement path conflicts with managed workspace path: %s", replacement.journalPath)
+		}
+		if _, duplicate := replacementPaths[replacement.journalPath]; duplicate {
+			return fmt.Errorf("local replacement path collision: %s", replacement.journalPath)
+		}
+		replacementPaths[replacement.journalPath] = struct{}{}
+		affectedPaths = append(affectedPaths, replacement.journalPath)
+		replacements[path] = replacement
+	}
 	if _, err := os.Stat(filepath.Join(replica.Root, ".cohub", "system")); err != nil && !errors.Is(err, os.ErrNotExist) {
 		return err
 	}
@@ -1625,10 +1639,8 @@ func (d *Daemon) applyRemoteSnapshot(ctx context.Context, replica *ReplicaState,
 	// before the first mutation.
 	d.mu.Lock()
 	defer d.mu.Unlock()
-	if active, err := d.remoteWriterLeaseActive(ctx, replica.SpaceID, replica.ReplicaID); err != nil {
+	if err := d.validateRemoteApplyState(ctx, replica.SpaceID, replica.ReplicaID, snapshotID, generation); err != nil {
 		return err
-	} else if active {
-		return errors.New("workspace has an active server writer lease")
 	}
 	if _, _, valid, err := d.activePermit(replica.SpaceID); err != nil {
 		return err
@@ -1665,49 +1677,39 @@ func (d *Daemon) applyRemoteSnapshot(ctx context.Context, replica *ReplicaState,
 		if entry.Type == "directory" && prior.Type == "directory" {
 			continue
 		}
-		if err := removePath(destinations[entry.Path]); err != nil {
+		if err := removeReplicaPathChecked(replica.Root, entry.Path); err != nil {
 			return err
 		}
 	}
 	for _, entry := range sortedEntries(manifest.Entries, false) {
-		destination := destinations[entry.Path]
 		switch entry.Type {
 		case "directory":
-			if err := os.MkdirAll(destination, 0o775); err != nil {
+			if err := mkdirAllReplicaPathChecked(replica.Root, entry.Path, 0o775); err != nil {
 				return err
 			}
 		case "symlink":
 			if prior, ok := oldByPath[entry.Path]; ok && sameEntry(prior, entry) {
 				continue
 			}
-			if err := os.MkdirAll(filepath.Dir(destination), 0o775); err != nil {
+			if err := mkdirAllReplicaPathParentChecked(replica.Root, entry.Path, 0o775); err != nil {
 				return err
 			}
-			if err := os.Symlink(entry.SymlinkTarget, destination); err != nil {
+			if err := symlinkReplicaPathChecked(replica.Root, entry.SymlinkTarget, entry.Path); err != nil {
 				return err
 			}
 		case "file":
-			temporary, changed := stagedFiles[entry.Path]
+			replacement, changed := replacements[entry.Path]
 			if !changed {
 				continue
 			}
-			if err := os.MkdirAll(filepath.Dir(destination), 0o775); err != nil {
-				return err
+			if err := replacement.install(); err != nil {
+				return fmt.Errorf("replace local file %s: %w", entry.Path, err)
 			}
-			if err := os.Rename(temporary, destination); err != nil {
-				return err
-			}
-		}
-	}
-	deletePaths := make([]string, 0, deletions)
-	for path := range oldByPath {
-		if _, ok := newByPath[path]; !ok {
-			deletePaths = append(deletePaths, path)
 		}
 	}
 	sort.Slice(deletePaths, func(i, j int) bool { return len(deletePaths[i]) > len(deletePaths[j]) })
 	for _, path := range deletePaths {
-		if err := removePath(destinations[path]); err != nil {
+		if err := removeReplicaPathChecked(replica.Root, path); err != nil {
 			return err
 		}
 	}
@@ -1728,6 +1730,9 @@ func (d *Daemon) applyRemoteSnapshot(ctx context.Context, replica *ReplicaState,
 	}
 	if len(rawManifest) == 0 {
 		return errors.New("remote workspace manifest bytes are missing")
+	}
+	if err := syncReplicaMutationDirectories(replica.Root, affectedPaths); err != nil {
+		return fmt.Errorf("sync applied workspace directories: %w", err)
 	}
 	if err := d.state.SetReplicaAppliedWithJournal(replica.SpaceID, snapshotID, generation, "ready", rawManifest, cycleID); err != nil {
 		return err
@@ -1763,6 +1768,33 @@ func parseStoredManifest(raw []byte) ([]remoteEntry, error) {
 
 func sameEntry(a, b remoteEntry) bool {
 	return a.Path == b.Path && a.Type == b.Type && a.Size == b.Size && a.SHA256 == b.SHA256 && a.Executable == b.Executable && a.SymlinkTarget == b.SymlinkTarget
+}
+
+func manifestPathOmitted(path string, omitted map[string]struct{}) bool {
+	for {
+		if _, ok := omitted[path]; ok {
+			return true
+		}
+		separator := strings.LastIndexByte(path, '/')
+		if separator < 0 {
+			return false
+		}
+		path = path[:separator]
+	}
+}
+
+func remoteManifestDeletionPaths(oldByPath, newByPath map[string]remoteEntry, omitted []string) []string {
+	omittedPaths := make(map[string]struct{}, len(omitted))
+	for _, path := range omitted {
+		omittedPaths[path] = struct{}{}
+	}
+	paths := make([]string, 0)
+	for path := range oldByPath {
+		if _, exists := newByPath[path]; !exists && !manifestPathOmitted(path, omittedPaths) {
+			paths = append(paths, path)
+		}
+	}
+	return paths
 }
 
 func candidateApplyIsSafe(candidateRaw, currentRaw []byte, target remoteManifest) error {
@@ -1824,7 +1856,8 @@ func targetPathForReplica(root, path string) string {
 }
 
 func targetPathForReplicaChecked(root, path string) (string, error) {
-	if path == "" || filepath.IsAbs(path) || strings.Contains(path, "\\") || strings.Contains(path, "\x00") {
+	normalized, err := normalizePath(path)
+	if err != nil || normalized != path || filepath.IsAbs(path) || filepath.VolumeName(path) != "" || strings.Contains(path, "\\") {
 		return "", errors.New("unsafe workspace path")
 	}
 	candidate := filepath.Clean(filepath.Join(root, filepath.FromSlash(path)))
@@ -1841,16 +1874,10 @@ func safeRelativeSymlink(root, destination, target string) bool {
 		return false
 	}
 	resolved := filepath.Clean(filepath.Join(filepath.Dir(destination), filepath.FromSlash(target)))
-	_, err := targetPathForReplicaChecked(root, filepath.ToSlash(mustRelative(root, resolved)))
-	return err == nil
+	rel, err := filepath.Rel(filepath.Clean(root), resolved)
+	return err == nil && rel != ".." && !strings.HasPrefix(rel, ".."+string(os.PathSeparator)) && !filepath.IsAbs(rel)
 }
 
-func mustRelative(root, path string) string {
-	rel, _ := filepath.Rel(root, path)
-	return rel
-}
-
-func removePath(path string) error { return os.RemoveAll(path) }
 func syncFilePath(path string) error {
 	file, err := os.OpenFile(path, os.O_RDONLY, 0)
 	if err != nil {

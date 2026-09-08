@@ -85,6 +85,47 @@ func TestLocalApplyJournalRecoveryRunsBeforeDaemonWork(t *testing.T) {
 	}
 }
 
+func TestLocalApplyJournalRollbackRejectsIntermediateSymlink(t *testing.T) {
+	dataDir := t.TempDir()
+	root := t.TempDir()
+	outside := t.TempDir()
+	state, err := OpenState(dataDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer state.Close()
+	if err := os.MkdirAll(filepath.Join(root, "dir"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(root, "dir", "file.txt"), []byte("before"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	journal, err := createLocalApplyJournal(state, dataDir, root, "cycle", []string{"dir/file.txt"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer journal.Cleanup()
+	if err := os.RemoveAll(filepath.Join(root, "dir")); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(outside, "file.txt"), []byte("outside"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(outside, filepath.Join(root, "dir")); err != nil {
+		t.Skipf("creating symlinks is unavailable: %v", err)
+	}
+	if err := journal.Rollback(); err == nil {
+		t.Fatal("expected rollback through an intermediate symlink to fail")
+	}
+	content, err := os.ReadFile(filepath.Join(outside, "file.txt"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(content) != "outside" {
+		t.Fatalf("rollback changed a file outside the replica root: %q", content)
+	}
+}
+
 func TestReplicaAppliedPointerAndJournalCommitAreAtomic(t *testing.T) {
 	dataDir := t.TempDir()
 	root := t.TempDir()

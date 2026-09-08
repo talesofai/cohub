@@ -29,7 +29,6 @@ export type LocalRuntimeProvider = z.infer<typeof LocalRuntimeProviderSchema>;
 
 export const LocalRuntimeStatusSchema = z.enum([
   "offline",
-  "connecting",
   "ready",
   "busy",
   "error",
@@ -40,22 +39,7 @@ export type LocalRuntimeStatus = z.infer<typeof LocalRuntimeStatusSchema>;
 const JsonObjectSchema = z.record(z.string(), z.unknown());
 const PositiveIntegerSchema = z.number().int().positive();
 
-/** Capabilities are descriptive and must not be used to widen workspace scope. */
-export const LocalRuntimeCapabilitiesSchema = z.object({
-  streaming: z.boolean().default(true),
-  sessionResume: z.boolean().default(false),
-  sessionFork: z.boolean().default(false),
-  sessionCancel: z.boolean().default(true),
-  // local-runtime-v1 has no permission-response command. Providers may emit
-  // informational permission.requested events, but callers cannot answer
-  // them over the wire, so this capability is intentionally unavailable.
-  permissionRequests: z.literal(false).default(false),
-  promptImages: z.boolean().default(false),
-  nativeTools: z.boolean().default(true),
-}).strict();
-export type LocalRuntimeCapabilities = z.infer<typeof LocalRuntimeCapabilitiesSchema>;
-
-/** Identity and negotiated capabilities advertised by a local runtime. */
+/** Metadata recorded when the CLI registers a local runtime through the API. */
 export const LocalRuntimeRegistrationSchema = z.object({
   version: z.literal(LOCAL_RUNTIME_PROTOCOL_VERSION),
   runtimeId: z.string().min(1).max(255),
@@ -63,15 +47,17 @@ export const LocalRuntimeRegistrationSchema = z.object({
   replicaId: z.string().min(1).max(255),
   deviceId: z.string().min(1).max(255),
   provider: LocalRuntimeProviderSchema,
-  providerVersion: z.string().min(1).max(120),
-  adapterVersion: z.string().min(1).max(120),
   protocolVersion: z.literal(LOCAL_RUNTIME_PROTOCOL_VERSION),
-  capabilities: LocalRuntimeCapabilitiesSchema,
 }).strict();
 export type LocalRuntimeRegistration = z.infer<typeof LocalRuntimeRegistrationSchema>;
 
-/** Control-channel registration frame sent by the local runtime. */
-export const LocalRuntimeRegisterFrameSchema = LocalRuntimeRegistrationSchema.extend({
+/** Control-channel identity for a runtime already registered through the API. */
+export const LocalRuntimeRegisterFrameSchema = LocalRuntimeRegistrationSchema.pick({
+  runtimeId: true,
+  spaceId: true,
+  replicaId: true,
+  provider: true,
+}).extend({
   type: z.literal("register"),
   kind: z.literal("runtime"),
   protocol: z.literal(LOCAL_RUNTIME_WIRE_PROTOCOL),
@@ -85,7 +71,6 @@ export const LocalRuntimeRegisteredFrameSchema = z.object({
   provider: LocalRuntimeProviderSchema,
   protocol: z.literal(LOCAL_RUNTIME_WIRE_PROTOCOL),
   connectionEpoch: PositiveIntegerSchema,
-  capabilities: LocalRuntimeCapabilitiesSchema,
 }).strict();
 export type LocalRuntimeRegisteredFrame = z.infer<typeof LocalRuntimeRegisteredFrameSchema>;
 
@@ -115,19 +100,9 @@ export const LocalRuntimeControlFrameSchema = z.discriminatedUnion("type", [
 ]);
 export type LocalRuntimeControlFrame = z.infer<typeof LocalRuntimeControlFrameSchema>;
 
-export const LocalRuntimeCommandStatusSchema = z.enum([
-  "prepared",
-  "sent",
-  "completed",
-  "failed",
-  "unknown",
-]);
-export type LocalRuntimeCommandStatus = z.infer<typeof LocalRuntimeCommandStatusSchema>;
-
 export const LocalRuntimeOperationSchema = z.enum([
   "session.open",
   "session.resume",
-  "session.fork",
   "turn.start",
   "turn.cancel",
   "session.close",
@@ -205,81 +180,17 @@ export const LocalRuntimeProviderEventSchema = z.object({
 }).strict();
 export type LocalRuntimeProviderEvent = z.infer<typeof LocalRuntimeProviderEventSchema>;
 
-export const LocalRuntimeDataFrameSchema = z.discriminatedUnion("type", [
-  LocalRuntimeCommandSchema,
-  LocalRuntimeEventSchema,
-]);
-export type LocalRuntimeDataFrame = z.infer<typeof LocalRuntimeDataFrameSchema>;
-
-export type LocalRuntimeSession = {
-  runtimeId: string;
-  runtimeSessionId: string;
-  cohubSessionId: string;
-  provider: LocalRuntimeProvider;
-  providerSessionId: string;
-  connectionEpoch: number;
-  lastEventSequence: number;
-  lastEventHash: string | null;
-  status: "active" | "closed" | "disconnected" | "error" | "revoked";
-};
-
-export type LocalRuntimeCommandRecord = {
-  commandId: string;
-  runtimeId: string;
-  runtimeSessionId: string;
-  executionAttemptId: string | null;
-  operation: LocalRuntimeOperation;
-  sequence: number;
-  status: LocalRuntimeCommandStatus;
-  payloadHash: string;
-  response: Record<string, unknown> | null;
-  errorMessage: string | null;
-};
-
-export type LocalRuntimeEventReceipt = {
-  runtimeSessionId: string;
-  eventId: string;
-  sequence: number;
-  kind: LocalRuntimeEventKind;
-  payloadHash: string;
-};
-
-/** Provider adapters run locally and expose only normalized events. */
-export type LocalRuntimeSessionInput = {
-  cwd: string;
-  /** Physical replica root corresponding to the wire-level `/workspace`. */
-  workspaceRoot?: string;
-  providerSessionId?: string | null;
-  /** Model selected for this Cohub session, when one was requested. */
-  model?: string | null;
-  /** Workspace permission policy selected by the server. */
-  accessMode?: "read_only" | "full_access";
-  /** The provider-neutral session operation being performed. */
-  operation?: LocalRuntimeOperation;
-  /** Provider-specific session options. Adapters must validate their own keys. */
-  payload?: Record<string, unknown>;
-  signal?: AbortSignal;
-};
-
 export type LocalRuntimePromptInput = {
   text: string;
   content?: unknown[];
   options?: Record<string, unknown>;
 };
 
-export type LocalRuntimeSessionHandle = {
-  providerSessionId: string;
-  run(input: LocalRuntimePromptInput, signal?: AbortSignal): AsyncIterable<LocalRuntimeProviderEvent>;
-  cancel(reason?: string): Promise<void>;
-  close(): Promise<void>;
-};
-
-export interface LocalProviderAdapter {
-  readonly provider: LocalRuntimeProvider;
-  readonly version: string;
-  readonly capabilities: LocalRuntimeCapabilities;
-  open(input: LocalRuntimeSessionInput): Promise<LocalRuntimeSessionHandle>;
-}
+export const LocalRuntimeDataFrameSchema = z.discriminatedUnion("type", [
+  LocalRuntimeCommandSchema,
+  LocalRuntimeEventSchema,
+]);
+export type LocalRuntimeDataFrame = z.infer<typeof LocalRuntimeDataFrameSchema>;
 
 export const parseLocalRuntimeControlFrame = (value: unknown): LocalRuntimeControlFrame =>
   LocalRuntimeControlFrameSchema.parse(value);

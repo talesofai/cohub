@@ -16,6 +16,10 @@
       "types": "./dist/lock-db-pool.d.ts",
       "default": "./dist/lock-db-pool.js"
     },
+    "./workspace-physical-lock": {
+      "types": "./dist/workspace-physical-lock.d.ts",
+      "default": "./dist/workspace-physical-lock.js"
+    },
     "./agent-queue": {
       "types": "./src/agent-queue/index.ts",
       "default": "./dist/agent-queue/index.js"

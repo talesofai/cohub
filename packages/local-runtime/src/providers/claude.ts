@@ -14,14 +14,10 @@ import {
 } from "@anthropic-ai/claude-agent-sdk";
 import type { ContentBlock } from "@cohub/protocol/core";
 import type {
-  LocalProviderAdapter,
-  LocalRuntimeCapabilities,
-  LocalRuntimePromptInput,
   LocalRuntimeProviderEvent,
   LocalRuntimeOperation,
-  LocalRuntimeSessionHandle,
-  LocalRuntimeSessionInput,
 } from "@cohub/protocol";
+import type { LocalProviderAdapter, LocalRuntimePromptInput, LocalRuntimeSessionHandle, LocalRuntimeSessionInput } from "../types.js";
 import { boundedProviderId, providerEventId, providerIdValue, MAX_PROVIDER_ID_BYTES } from "../provider-identity.js";
 import { pathInside, resolveWorkspacePath, workspaceFenceRoot } from "./workspace-path.js";
 
@@ -1573,10 +1569,9 @@ type SessionOptions = {
   workspaceRoot?: string;
   providerSessionId: string | null;
   newSessionId: string;
-  operation: Extract<LocalRuntimeOperation, "session.open" | "session.resume" | "session.fork">;
+  operation: Extract<LocalRuntimeOperation, "session.open" | "session.resume">;
   model: string | null;
   accessMode: "read_only" | "full_access";
-  permissionMode?: ClaudePermissionMode;
   allowDangerouslySkipPermissions?: boolean;
   configDir?: string;
   settingSources?: ClaudeSettingSource[];
@@ -1584,8 +1579,6 @@ type SessionOptions = {
   forwardSubagentText?: boolean;
   env?: Record<string, string | undefined>;
   additionalDirectories?: string[];
-  maxTurns?: number;
-  maxBudgetUsd?: number;
   queryFactory?: ClaudeQueryFactory;
   permissionResolver?: ClaudePermissionResolver;
   signal?: AbortSignal;
@@ -1693,7 +1686,6 @@ function raceTimeout<T>(promise: Promise<T>, timeoutMs = CLOSE_TIMEOUT_MS): Prom
 }
 
 class ClaudeRuntimeSession implements LocalRuntimeSessionHandle {
-  readonly capabilities = runtimeCapabilities;
   private readonly inputQueue = new InputQueue();
   private readonly options: SessionOptions;
   private readonly expectedSessionId: string;
@@ -1720,13 +1712,10 @@ class ClaudeRuntimeSession implements LocalRuntimeSessionHandle {
 
   constructor(options: SessionOptions) {
     this.options = options;
-    this.expectedSessionId = options.operation === "session.fork"
-      ? options.newSessionId
-      : options.providerSessionId || options.newSessionId;
+    this.expectedSessionId = options.providerSessionId || options.newSessionId;
     this.currentModel = options.model || undefined;
     this.currentAccessMode = options.accessMode;
-    this.currentPermissionMode = options.permissionMode
-      ?? (options.accessMode === "full_access" ? "acceptEdits" : "default");
+    this.currentPermissionMode = options.accessMode === "full_access" ? "acceptEdits" : "default";
     this.assertPermissionMode(this.currentPermissionMode, this.currentAccessMode);
     if (options.signal) {
       const abortQuery = () => {
@@ -1753,13 +1742,7 @@ class ClaudeRuntimeSession implements LocalRuntimeSessionHandle {
     if (!env.CLAUDE_CODE_ENTRYPOINT) env.CLAUDE_CODE_ENTRYPOINT = "sdk-ts";
     const sessionIdentity = this.options.operation === "session.open"
       ? { sessionId: this.options.newSessionId }
-      : this.options.operation === "session.fork"
-        ? {
-            resume: this.options.providerSessionId as string,
-            forkSession: true,
-            sessionId: this.options.newSessionId,
-          }
-        : { resume: this.options.providerSessionId as string };
+      : { resume: this.options.providerSessionId as string };
     return {
       cwd: this.options.cwd,
       env,
@@ -1780,8 +1763,6 @@ class ClaudeRuntimeSession implements LocalRuntimeSessionHandle {
       ...sessionIdentity,
       ...(this.currentModel ? { model: this.currentModel } : {}),
       ...(this.options.additionalDirectories?.length ? { additionalDirectories: this.options.additionalDirectories } : {}),
-      ...(this.options.maxTurns !== undefined ? { maxTurns: this.options.maxTurns } : {}),
-      ...(this.options.maxBudgetUsd !== undefined ? { maxBudgetUsd: this.options.maxBudgetUsd } : {}),
       ...(this.options.allowDangerouslySkipPermissions ? { allowDangerouslySkipPermissions: true } : {}),
       canUseTool: this.canUseTool,
     };
@@ -2277,26 +2258,6 @@ function normalizePermission(value: PermissionResult | null | undefined): Permis
   return { behavior: "deny", message: "Permission denied by local runtime", decisionClassification: "user_reject" };
 }
 
-const runtimeCapabilities: LocalRuntimeCapabilities = {
-  streaming: true,
-  sessionResume: true,
-  sessionFork: true,
-  sessionCancel: true,
-  permissionRequests: false,
-  promptImages: true,
-  nativeTools: true,
-};
-
-type ExtendedSessionInput = LocalRuntimeSessionInput & {
-  model?: string | null;
-  accessMode?: "read_only" | "full_access";
-  payload?: Record<string, unknown>;
-};
-
-function providerOptions(input: ExtendedSessionInput): Json {
-  return record(input.payload);
-}
-
 function settingSources(value: unknown): ClaudeSettingSource[] | undefined {
   if (value === undefined) return undefined;
   if (!Array.isArray(value) || value.some((entry) => typeof entry !== "string" || !CLAUDE_SETTING_SOURCES.has(entry))) {
@@ -2323,8 +2284,7 @@ function booleanOption(value: unknown, name: string): boolean | undefined {
   return value;
 }
 
-function sessionOptions(input: ExtendedSessionInput, adapterOptions: ClaudeAdapterOptions): SessionOptions {
-  const options = providerOptions(input);
+function sessionOptions(input: LocalRuntimeSessionInput, adapterOptions: ClaudeAdapterOptions): SessionOptions {
   const workspaceRootValue = typeof input.workspaceRoot === "string" ? input.workspaceRoot.trim() : "";
   if (input.workspaceRoot !== undefined && (!workspaceRootValue || !isAbsolute(workspaceRootValue))) {
     throw new Error("Claude provider workspaceRoot must be an absolute path");
@@ -2335,25 +2295,17 @@ function sessionOptions(input: ExtendedSessionInput, adapterOptions: ClaudeAdapt
   }
   const providerSessionId = typeof input.providerSessionId === "string" ? input.providerSessionId.trim() || null : null;
   const operation = input.operation ?? (providerSessionId ? "session.resume" : "session.open");
-  if (operation !== "session.open" && operation !== "session.resume" && operation !== "session.fork") {
+  if (operation !== "session.open" && operation !== "session.resume") {
     throw new Error("Claude provider session operation is invalid");
   }
   if (operation === "session.open" && providerSessionId) {
     throw new Error("Claude provider session.open must not include a providerSessionId");
   }
-  if ((operation === "session.resume" || operation === "session.fork") && !providerSessionId) {
+  if (operation === "session.resume" && !providerSessionId) {
     throw new Error(`Claude provider ${operation} requires a providerSessionId`);
   }
-  // A fork must never reuse the source UUID. Resume/open can retain the
-  // caller's native identity, while fork receives a fresh durable identity.
-  const newSessionId = operation === "session.fork" ? randomUUID() : providerSessionId || randomUUID();
-  const permissionMode = typeof options.permissionMode === "string" && CLAUDE_PERMISSION_MODES.has(options.permissionMode)
-    ? options.permissionMode as ClaudePermissionMode
-    : undefined;
-  if (options.permissionMode !== undefined && permissionMode === undefined) throw new Error("Claude provider permissionMode is invalid");
-  // Access mode is an authorization decision from the runtime command. A
-  // provider payload may not widen it (or silently choose a different mode
-  // when an embedding caller omitted the field).
+  const newSessionId = providerSessionId || randomUUID();
+  // Access mode is an authorization decision from the runtime command.
   const accessMode = input.accessMode === "full_access" ? "full_access" : "read_only";
   const additionalDirectories = Array.isArray(adapterOptions.additionalDirectories)
     ? adapterOptions.additionalDirectories
@@ -2363,26 +2315,14 @@ function sessionOptions(input: ExtendedSessionInput, adapterOptions: ClaudeAdapt
   if (additionalDirectories?.some((directory) => !pathInside(workspaceFenceRoot(input.cwd, workspaceRoot), directory))) {
     throw new Error("Claude provider additionalDirectories must stay inside the workspace");
   }
-  const maxBudgetUsd = typeof options.maxBudgetUsd === "number" && Number.isFinite(options.maxBudgetUsd) && options.maxBudgetUsd >= 0
-    ? options.maxBudgetUsd
-    : undefined;
-  if (options.maxBudgetUsd !== undefined && maxBudgetUsd === undefined) throw new Error("Claude provider maxBudgetUsd must be a non-negative number");
-  const maxTurns = integerValue(options.maxTurns);
-  if (options.maxTurns !== undefined && (maxTurns === undefined || maxTurns < 1)) throw new Error("Claude provider maxTurns must be a positive integer");
   const configDirValue = stringValue(adapterOptions.configDir);
   if (adapterOptions.configDir !== undefined && !configDirValue) throw new Error("Claude provider configDir must be a non-empty string");
   const configDir = configDirValue ? resolve(configDirValue) : undefined;
   const persistSession = booleanOption(adapterOptions.persistSession, "persistSession");
   const forwardSubagentText = booleanOption(adapterOptions.forwardSubagentText, "forwardSubagentText");
   const allowDangerouslySkipPermissions = booleanOption(adapterOptions.allowDangerouslySkipPermissions, "allowDangerouslySkipPermissions") === true;
-  if ((operation === "session.resume" || operation === "session.fork") && persistSession === false) {
+  if (operation === "session.resume" && persistSession === false) {
     throw new Error(`Claude ${operation} requires persistSession to remain enabled`);
-  }
-  if (permissionMode === "bypassPermissions" && !allowDangerouslySkipPermissions) {
-    throw new Error("Claude bypassPermissions requires explicit local opt-in");
-  }
-  if (options.model !== undefined && options.model !== null && typeof options.model !== "string") {
-    throw new Error("Claude provider model must be a string or null");
   }
   let requestedModel: string | undefined;
   if (input.model !== undefined && input.model !== null) {
@@ -2397,9 +2337,8 @@ function sessionOptions(input: ExtendedSessionInput, adapterOptions: ClaudeAdapt
     providerSessionId,
     newSessionId,
     operation,
-    model: requestedModel || stringValue(options.model) || null,
+    model: requestedModel || null,
     accessMode,
-    permissionMode,
     allowDangerouslySkipPermissions,
     ...(configDir ? { configDir } : {}),
     settingSources: settingSources(adapterOptions.settingSources),
@@ -2407,8 +2346,6 @@ function sessionOptions(input: ExtendedSessionInput, adapterOptions: ClaudeAdapt
     forwardSubagentText,
     env: environment(adapterOptions.env),
     additionalDirectories,
-    maxTurns,
-    maxBudgetUsd,
     signal: input.signal,
   };
 }
@@ -2416,8 +2353,6 @@ function sessionOptions(input: ExtendedSessionInput, adapterOptions: ClaudeAdapt
 /** Native Claude Code adapter. The SDK stays local; only normalized events cross the runtime wire. */
 export class ClaudeAdapter implements LocalProviderAdapter {
   readonly provider = "claude_code" as const;
-  readonly version = "@anthropic-ai/claude-agent-sdk@0.3.263";
-  readonly capabilities = runtimeCapabilities;
 
   private readonly adapterOptions: ClaudeAdapterOptions;
 
@@ -2426,8 +2361,7 @@ export class ClaudeAdapter implements LocalProviderAdapter {
   }
 
   async open(input: LocalRuntimeSessionInput): Promise<LocalRuntimeSessionHandle> {
-    const extended = input as ExtendedSessionInput;
-    const options = sessionOptions(extended, this.adapterOptions);
+    const options = sessionOptions(input, this.adapterOptions);
     if (!isAbsolute(options.cwd)) throw new Error("Claude provider cwd must be absolute");
     if (options.workspaceRoot) {
       options.workspaceRoot = await canonicalWorkspaceRoot(options.workspaceRoot);
@@ -2451,5 +2385,3 @@ export class ClaudeAdapter implements LocalProviderAdapter {
     return new ClaudeRuntimeSession(options);
   }
 }
-
-export const claudeAdapter = new ClaudeAdapter();

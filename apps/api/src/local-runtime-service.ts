@@ -4,7 +4,6 @@ import {
   LOCAL_RUNTIME_PROTOCOL_VERSION,
   isLocalRuntimeHeartbeatFresh,
   LocalRuntimeProviderSchema,
-  LocalRuntimeCapabilitiesSchema,
   isUuid,
 } from "@cohub/protocol";
 import { db } from "./db/index.js";
@@ -29,7 +28,7 @@ const bounded = (value: unknown, field: string, max: number) => {
 
 const RUNTIME_REGISTRATION_UNIQUE_CONSTRAINT = "v2_uq_local_agent_runtimes_space_device_provider";
 const UNRESOLVED_ATTEMPT_STATUSES = ["queued", "prepared", "running", "workspace_sealed", "transcript_sealed", "awaiting_recovery"] as const;
-const CONNECTED_RUNTIME_STATUSES = ["connecting", "ready", "busy"] as const;
+const CONNECTED_RUNTIME_STATUSES = ["ready", "busy"] as const;
 const isConnectedRuntimeStatus = (status: string): status is (typeof CONNECTED_RUNTIME_STATUSES)[number] =>
   CONNECTED_RUNTIME_STATUSES.some((value) => value === status);
 
@@ -90,10 +89,7 @@ const serialize = (row: typeof localAgentRuntimes.$inferSelect) => ({
   userUuid: row.userUuid,
   provider: row.provider,
   displayName: row.displayName,
-  providerVersion: row.providerVersion,
-  adapterVersion: row.adapterVersion,
   protocolVersion: row.protocolVersion,
-  capabilities: row.capabilities,
   status: row.status,
   connectionEpoch: row.connectionEpoch,
   lastSeenAt: row.lastSeenAt?.toISOString() ?? null,
@@ -123,9 +119,6 @@ export async function registerLocalRuntime(input: {
   deviceId?: string;
   provider: string;
   displayName: string;
-  providerVersion?: string;
-  adapterVersion?: string;
-  capabilities?: Record<string, unknown>;
   protocolVersion: number;
 }) {
   assertUuid(input.spaceId, "spaceId");
@@ -136,7 +129,6 @@ export async function registerLocalRuntime(input: {
   const provider = LocalRuntimeProviderSchema.parse(input.provider);
   await assertActorCanUseSpace(input.actor, input.spaceId);
   const displayName = bounded(input.displayName, "displayName", 255);
-  const capabilities = LocalRuntimeCapabilitiesSchema.parse(input.capabilities ?? {});
   const persistRegistration = () => db.transaction(async (tx) => {
     // Re-check and lock the authorization inputs in the same transaction as
     // the runtime upsert. The preflight checks above used to leave a window
@@ -178,10 +170,7 @@ export async function registerLocalRuntime(input: {
       userUuid: input.actor.userUuid,
       provider,
       displayName,
-      providerVersion: bounded(input.providerVersion ?? "unknown", "providerVersion", 120),
-      adapterVersion: bounded(input.adapterVersion ?? "cohub-local-runtime-v1", "adapterVersion", 120),
       protocolVersion,
-      capabilities: capabilities as unknown as Record<string, unknown>,
       status: "offline" as const,
       lastError: null,
       updatedAt: new Date(),
@@ -526,13 +515,11 @@ export async function authorizeLocalRuntime(input: {
   runtimeId: string;
   spaceId: string;
   actor: LocalAgentActor;
-  protocolVersion: number;
   gatewayNodeId?: string | null;
   gatewayWsEndpoint?: string | null;
 }) {
   assertUuid(input.runtimeId, "runtimeId");
   assertUuid(input.spaceId, "spaceId");
-  const protocolVersion = assertSupportedLocalRuntimeProtocolVersion(input.protocolVersion);
   if (!input.actor.deviceId) throw new LocalAgentServiceError("runtime device credential is required", "device_required", 401);
   await assertActorCanUseSpace(input.actor, input.spaceId);
   const result = await db.transaction(async (tx) => {
@@ -573,7 +560,7 @@ export async function authorizeLocalRuntime(input: {
     if (replica.workspaceStatus !== "ready" || !replica.workspaceCanonicalSnapshotId || replica.appliedSnapshotId !== replica.workspaceCanonicalSnapshotId) {
       throw new LocalAgentServiceError("local workspace replica is not synchronized for this runtime", "runtime_replica_not_ready", 409);
     }
-    if (row.protocolVersion !== protocolVersion) {
+    if (row.protocolVersion !== LOCAL_RUNTIME_PROTOCOL_VERSION) {
       throw new LocalAgentServiceError(
         `local runtime protocol version ${row.protocolVersion} is unsupported`,
         "unsupported_protocol",
@@ -614,19 +601,16 @@ export async function authorizeLocalRuntime(input: {
     spaceId: result.spaceId,
     replicaId: result.replicaId,
     provider: result.provider,
-    protocolVersion: result.protocolVersion,
     connectionEpoch: result.connectionEpoch,
-    capabilities: result.capabilities,
   };
 }
 
-export async function touchLocalRuntime(input: { runtimeId: string; connectionEpoch: number; actor: LocalAgentActor; protocolVersion: number }) {
+export async function touchLocalRuntime(input: { runtimeId: string; connectionEpoch: number; actor: LocalAgentActor }) {
   assertUuid(input.runtimeId, "runtimeId");
   if (!Number.isSafeInteger(input.connectionEpoch) || input.connectionEpoch < 1) throw new LocalAgentServiceError("connectionEpoch is invalid", "invalid_epoch", 400);
-  const protocolVersion = assertSupportedLocalRuntimeProtocolVersion(input.protocolVersion);
   if (!input.actor.deviceId) throw new LocalAgentServiceError("runtime device credential is required", "device_required", 401);
   const [runtime] = await db.select({ spaceId: localAgentRuntimes.spaceId, userUuid: localAgentRuntimes.userUuid, deviceId: localAgentRuntimes.deviceId, provider: localAgentRuntimes.provider, protocolVersion: localAgentRuntimes.protocolVersion, status: localAgentRuntimes.status }).from(localAgentRuntimes).where(eq(localAgentRuntimes.id, input.runtimeId)).limit(1);
-  if (!runtime || runtime.userUuid !== input.actor.userUuid || runtime.deviceId !== input.actor.deviceId || runtime.protocolVersion !== protocolVersion || !isSupportedLocalRuntimeProvider(runtime.provider) || !["connecting", "ready", "busy"].includes(runtime.status)) return false;
+  if (!runtime || runtime.userUuid !== input.actor.userUuid || runtime.deviceId !== input.actor.deviceId || runtime.protocolVersion !== LOCAL_RUNTIME_PROTOCOL_VERSION || !isSupportedLocalRuntimeProvider(runtime.provider) || !["ready", "busy"].includes(runtime.status)) return false;
   if (!(await hasPermission({ uuid: input.actor.userUuid }, "file.edit", { spaceId: runtime.spaceId }))) return false;
   const [device] = await db.select({ id: localAgentDevices.id }).from(localAgentDevices).where(and(
     eq(localAgentDevices.id, input.actor.deviceId),
@@ -642,9 +626,10 @@ export async function touchLocalRuntime(input: { runtimeId: string; connectionEp
   }).where(and(
     eq(localAgentRuntimes.id, input.runtimeId),
     eq(localAgentRuntimes.connectionEpoch, input.connectionEpoch),
+    eq(localAgentRuntimes.protocolVersion, LOCAL_RUNTIME_PROTOCOL_VERSION),
     eq(localAgentRuntimes.deviceId, input.actor.deviceId),
     eq(localAgentRuntimes.userUuid, input.actor.userUuid),
-    inArray(localAgentRuntimes.status, ["connecting", "ready", "busy"]),
+    inArray(localAgentRuntimes.status, ["ready", "busy"]),
     sql`exists (
       select 1 from v2.space_local_agent_policies policy
       where policy.space_id = ${localAgentRuntimes.spaceId}
@@ -655,17 +640,14 @@ export async function touchLocalRuntime(input: { runtimeId: string; connectionEp
   return Boolean(row);
 }
 
-export async function reportLocalRuntimeStatus(input: {
+export async function disconnectLocalRuntime(input: {
   runtimeId: string;
   connectionEpoch: number;
-  protocolVersion: number;
   actor: LocalAgentActor;
-  status: "ready" | "offline" | "error";
-  error?: string | null;
+  reason?: string | null;
 }) {
   assertUuid(input.runtimeId, "runtimeId");
   if (!Number.isSafeInteger(input.connectionEpoch) || input.connectionEpoch < 1) throw new LocalAgentServiceError("connectionEpoch is invalid", "invalid_epoch", 400);
-  const protocolVersion = assertSupportedLocalRuntimeProtocolVersion(input.protocolVersion);
   if (!input.actor.deviceId) throw new LocalAgentServiceError("runtime device credential is required", "device_required", 401);
   const [device] = await db.select({ id: localAgentDevices.id }).from(localAgentDevices).where(and(
     eq(localAgentDevices.id, input.actor.deviceId),
@@ -674,51 +656,22 @@ export async function reportLocalRuntimeStatus(input: {
     input.actor.credentialVersion != null ? eq(localAgentDevices.credentialVersion, input.actor.credentialVersion) : undefined,
   )).limit(1);
   if (!device) return null;
-  const errorMessage = input.error == null ? null : bounded(input.error, "error", 2000);
+  const reason = input.reason == null ? null : bounded(input.reason, "reason", 2000);
   const current = new Date();
-  const allowedStatuses = input.status === "offline"
-    ? ["connecting", "ready", "busy", "error", "offline"]
-    : input.status === "ready"
-      ? ["connecting", "ready", "busy"]
-      : ["connecting", "ready", "busy", "error"];
-  const [runtime] = await db.select({ provider: localAgentRuntimes.provider, spaceId: localAgentRuntimes.spaceId }).from(localAgentRuntimes).where(and(
-    eq(localAgentRuntimes.id, input.runtimeId),
-    eq(localAgentRuntimes.connectionEpoch, input.connectionEpoch),
-    eq(localAgentRuntimes.protocolVersion, protocolVersion),
-    eq(localAgentRuntimes.deviceId, input.actor.deviceId),
-    eq(localAgentRuntimes.userUuid, input.actor.userUuid),
-    ne(localAgentRuntimes.status, "revoked"),
-  )).limit(1);
-  if (!runtime || (input.status !== "offline" && !isSupportedLocalRuntimeProvider(runtime.provider))) return null;
-  // A runtime may report an error or go offline while its user is being
-  // revoked, but it must not transition back to `ready` without a current
-  // workspace write grant. Keep this check on the ready path only so cleanup
-  // from a stale connection remains possible.
-  if (input.status === "ready" && !(await hasPermission({ uuid: input.actor.userUuid }, "file.edit", {
-    spaceId: runtime.spaceId,
-  }))) return null;
   const [row] = await db.update(localAgentRuntimes).set({
-    status: input.status,
+    status: "offline",
     lastSeenAt: current,
-    ...(input.status === "offline" ? { gatewayNodeId: null, gatewayWsEndpoint: null } : {}),
-    ...(input.status === "offline" ? { disconnectedAt: current } : { connectedAt: current, disconnectedAt: null }),
-    lastError: errorMessage,
+    gatewayNodeId: null,
+    gatewayWsEndpoint: null,
+    disconnectedAt: current,
+    lastError: reason,
     updatedAt: current,
   }).where(and(
     eq(localAgentRuntimes.id, input.runtimeId),
     eq(localAgentRuntimes.connectionEpoch, input.connectionEpoch),
-    eq(localAgentRuntimes.protocolVersion, protocolVersion),
     eq(localAgentRuntimes.deviceId, input.actor.deviceId),
     eq(localAgentRuntimes.userUuid, input.actor.userUuid),
-    inArray(localAgentRuntimes.status, allowedStatuses as Array<typeof localAgentRuntimes.$inferSelect["status"]>),
-    ...(input.status === "ready"
-      ? [sql`exists (
-          select 1 from v2.space_local_agent_policies policy
-          where policy.space_id = ${localAgentRuntimes.spaceId}
-            and policy.device_id = ${localAgentRuntimes.deviceId}
-            and policy.workspace_mode <> 'one_way_to_local'
-        )`]
-      : []),
+    ne(localAgentRuntimes.status, "revoked"),
   )).returning();
   return row ? serialize(row) : null;
 }

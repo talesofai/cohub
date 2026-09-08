@@ -9,7 +9,7 @@ import {
   ClaudeAdapter,
   createClaudeEventContext,
   mapClaudeMessage,
-} from "@cohub/local-runtime/providers/claude";
+} from "../providers/claude.js";
 
 const sessionId = "11111111-1111-4111-8111-111111111111";
 
@@ -476,7 +476,7 @@ test("does not duplicate normalized text carried in prompt content", async () =>
   await handle.close();
 });
 
-test("keeps Claude config provider-owned while accepting bounded payload options", async () => {
+test("uses provider-owned Claude configuration", async () => {
   let receivedOptions: Record<string, unknown> | undefined;
   const adapter = new ClaudeAdapter({
     configDir: "/tmp/cohub-claude-test",
@@ -498,18 +498,11 @@ test("keeps Claude config provider-owned while accepting bounded payload options
   const handle = await adapter.open({
     cwd: "/workspace",
     providerSessionId: null,
-    payload: {
-      configDir: "/tmp/remote-override",
-      settingSources: ["local"],
-      env: { CLAUDE_REMOTE_FLAG: "no" },
-      maxTurns: 3,
-    },
   });
   for await (const _event of handle.run({ text: "hello" })) {}
   assert.equal(receivedOptions?.cwd, "/workspace");
   assert.deepEqual(receivedOptions?.settingSources, ["user", "project"]);
   assert.equal(receivedOptions?.persistSession, true);
-  assert.equal(receivedOptions?.maxTurns, 3);
   assert.equal((receivedOptions?.env as Record<string, unknown> | undefined)?.CLAUDE_CONFIG_DIR, "/tmp/cohub-claude-test");
   assert.equal((receivedOptions?.env as Record<string, unknown> | undefined)?.CLAUDE_TEST_FLAG, "yes");
   await handle.close();
@@ -761,7 +754,7 @@ test("rejects a malformed Claude model before creating a query", async () => {
     },
   });
   await assert.rejects(
-    adapter.open({ cwd, providerSessionId: null, payload: { model: 42 } }),
+    adapter.open({ cwd, providerSessionId: null, model: 42 } as never),
     /Claude provider model must be a string or null/,
   );
 });
@@ -778,39 +771,6 @@ test("rejects a Claude cwd outside the explicit workspace root", async () => {
     adapter.open({ cwd: outside, workspaceRoot, providerSessionId: null }),
     /cwd must stay inside the workspace/,
   );
-});
-
-test("uses the native Claude fork option and returns the forked session id", async () => {
-  const sourceSessionId = "22222222-2222-4222-8222-222222222222";
-  let receivedOptions: ClaudeOptions | undefined;
-  const adapter = new ClaudeAdapter(({ options }) => {
-    receivedOptions = options;
-    const forkedSessionId = String(options?.sessionId || "");
-    return {
-      async *[Symbol.asyncIterator]() {
-        yield sdk({ type: "system", subtype: "init", uuid: "event-fork-init", session_id: forkedSessionId });
-        yield sdk({ type: "result", subtype: "success", is_error: false, result: "forked", uuid: "event-fork-result", session_id: forkedSessionId });
-      },
-      close() {},
-      async interrupt() {},
-    } as unknown as Query;
-  });
-  const handle = await adapter.open({
-    cwd: "/workspace",
-    providerSessionId: sourceSessionId,
-    operation: "session.fork",
-  });
-  assert.equal(receivedOptions, undefined);
-  const events: LocalRuntimeProviderEvent[] = [];
-  for await (const event of handle.run({ text: "continue on a branch" })) events.push(event);
-  const forkOptions = receivedOptions as unknown as ClaudeOptions;
-  assert.equal(forkOptions.resume, sourceSessionId);
-  assert.equal(forkOptions.forkSession, true);
-  assert.equal(typeof forkOptions.sessionId, "string");
-  assert.notEqual(forkOptions.sessionId, sourceSessionId);
-  assert.equal(handle.providerSessionId, forkOptions.sessionId);
-  assert.equal(events.at(-1)?.kind, "turn.completed");
-  await handle.close();
 });
 
 test("rejects Claude resume when session persistence is disabled", async () => {

@@ -383,7 +383,7 @@ func (d *Daemon) releaseExecutionPermit(ctx context.Context, spaceID, executionA
 	if permit == nil || permit.SpaceID != spaceID || permit.Status == "completed" || (permit.Status == "expired" && !isLocalRuntimePermit(permit.HolderID)) || (permit.Status != "prepared" && permit.Status != "active" && permit.Status != "expired") {
 		return nil
 	}
-	runtimeID, err := d.runtimeIDForPermit(ctx, permit)
+	runtimeID, err := runtimeIDForPermit(permit)
 	if err != nil {
 		return err
 	}

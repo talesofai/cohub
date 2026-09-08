@@ -2,7 +2,6 @@ package locald
 
 import (
 	"context"
-	"database/sql"
 	"os"
 	"path/filepath"
 	"testing"
@@ -281,69 +280,5 @@ func TestPermitRuntimeIdentityPersistsAndFencesClaim(t *testing.T) {
 	}
 	if err := store.ClaimLocalRuntimePermit(attemptID, spaceID, replicaID, runtimeID, baseID, 1, expiresAt); err != nil {
 		t.Fatalf("claim from the registered runtime failed: %v", err)
-	}
-}
-
-func TestPermitSchemaMigrationAddsRuntimeIdentity(t *testing.T) {
-	dataDir := t.TempDir()
-	if err := os.MkdirAll(dataDir, 0o700); err != nil {
-		t.Fatal(err)
-	}
-	db, err := sql.Open("sqlite", filepath.Join(dataDir, "state.db"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	_, err = db.Exec(`CREATE TABLE permits (
-		execution_attempt_id TEXT PRIMARY KEY,
-		space_id TEXT NOT NULL,
-		replica_id TEXT NOT NULL,
-		base_snapshot_id TEXT,
-		lease_epoch INTEGER,
-		expires_at TEXT NOT NULL,
-		holder_kind TEXT NOT NULL DEFAULT 'local_agent',
-		holder_id TEXT NOT NULL DEFAULT '',
-		status TEXT NOT NULL DEFAULT 'prepared',
-		created_at TEXT NOT NULL
-	)`)
-	if err != nil {
-		_ = db.Close()
-		t.Fatal(err)
-	}
-	const attemptID = "33333333-3333-4333-8333-333333333333"
-	expiresAt := time.Now().UTC().Add(time.Minute).Format(time.RFC3339Nano)
-	_, err = db.Exec(`INSERT INTO permits(execution_attempt_id, space_id, replica_id, base_snapshot_id, lease_epoch, expires_at, holder_kind, holder_id, status, created_at) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`, attemptID, "11111111-1111-4111-8111-111111111111", "22222222-2222-4222-8222-222222222222", "44444444-4444-4444-8444-444444444444", 1, expiresAt, "local_agent", attemptID, "prepared", expiresAt)
-	if err != nil {
-		_ = db.Close()
-		t.Fatal(err)
-	}
-	if err := db.Close(); err != nil {
-		t.Fatal(err)
-	}
-	store, err := OpenState(dataDir)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer store.Close()
-	permit, err := store.PermitContext(attemptID)
-	if err != nil || permit == nil {
-		t.Fatalf("read migrated permit: %v %#v", err, permit)
-	}
-	if permit.RuntimeID != "" {
-		t.Fatalf("legacy permit unexpectedly gained an unverified runtime identity: %#v", permit)
-	}
-	const runtimeID = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"
-	if err := store.BindPermitRuntimeID(attemptID, runtimeID); err != nil {
-		t.Fatalf("bind migrated permit identity: %v", err)
-	}
-	permit, err = store.PermitContext(attemptID)
-	if err != nil || permit == nil || permit.RuntimeID != runtimeID {
-		t.Fatalf("migrated runtime identity was not durable: %v %#v", err, permit)
-	}
-	version, err := store.GetMeta("schema_version")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if version != "5" {
-		t.Fatalf("unexpected locald schema version: %q", version)
 	}
 }

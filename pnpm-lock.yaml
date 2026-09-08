@@ -124,18 +124,6 @@ importers:
         specifier: ^4.5.4
         version: 4.5.4
     devDependencies:
-      '@anthropic-ai/claude-agent-sdk':
-        specifier: 0.3.263
-        version: 0.3.263(@anthropic-ai/sdk@0.93.0(zod@4.5.4))(@modelcontextprotocol/sdk@1.30.0(zod@4.5.4))(zod@4.5.4)
-      '@cohub/local-runtime':
-        specifier: workspace:*
-        version: link:../../packages/local-runtime
-      '@earendil-works/pi-coding-agent':
-        specifier: 0.81.1
-        version: 0.81.1(@modelcontextprotocol/sdk@1.30.0(zod@4.5.4))(ws@8.21.3)(zod@4.5.4)
-      '@openai/codex-sdk':
-        specifier: 0.153.4
-        version: 0.153.4
       '@types/node':
         specifier: ^26.4.0
         version: 26.4.0
@@ -653,12 +641,6 @@ importers:
       '@anthropic-ai/sdk':
         specifier: ^0.93.0
         version: 0.93.0(zod@4.5.4)
-      '@earendil-works/pi-agent-core':
-        specifier: 0.81.1
-        version: 0.81.1(@modelcontextprotocol/sdk@1.30.0(zod@4.5.4))(ws@8.21.3)(zod@4.5.4)
-      '@earendil-works/pi-ai':
-        specifier: 0.81.1
-        version: 0.81.1(@modelcontextprotocol/sdk@1.30.0(zod@4.5.4))(ws@8.21.3)(zod@4.5.4)
       '@earendil-works/pi-coding-agent':
         specifier: 0.81.1
         version: 0.81.1(@modelcontextprotocol/sdk@1.30.0(zod@4.5.4))(ws@8.21.3)(zod@4.5.4)

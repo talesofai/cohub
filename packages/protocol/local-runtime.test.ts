@@ -3,7 +3,6 @@ import { test } from "node:test";
 import {
   LOCAL_RUNTIME_STALE_AFTER_MS,
   LOCAL_RUNTIME_WIRE_PROTOCOL,
-  LocalRuntimeCapabilitiesSchema,
   LocalRuntimeControlFrameSchema,
   LocalRuntimeDataFrameSchema,
   LocalRuntimeEventKindSchema,
@@ -18,23 +17,6 @@ test("runtime heartbeat freshness tolerates a bounded outage", () => {
   assert.equal(isLocalRuntimeHeartbeatFresh(now - LOCAL_RUNTIME_STALE_AFTER_MS - 1, now), false);
   assert.equal(isLocalRuntimeHeartbeatFresh(null, now), false);
   assert.equal(isLocalRuntimeHeartbeatFresh("not-a-date", now), false);
-});
-
-test("local runtime capabilities have conservative defaults", () => {
-  assert.deepEqual(LocalRuntimeCapabilitiesSchema.parse({}), {
-    streaming: true,
-    sessionResume: false,
-    sessionFork: false,
-    sessionCancel: true,
-    permissionRequests: false,
-    promptImages: false,
-    nativeTools: true,
-  });
-  assert.throws(
-    () => LocalRuntimeCapabilitiesSchema.parse({ permissionRequests: true }),
-    /Invalid input/,
-    "permission requests must not be advertised without a response operation",
-  );
 });
 
 test("omitted access mode is read-only", () => {
@@ -59,7 +41,7 @@ test("omitted access mode is read-only", () => {
   if (parsed.type === "command") assert.equal(parsed.accessMode, "read_only");
 });
 
-test("registration requires the local-runtime-v1 wire identity", () => {
+test("runtime registration retains provider and protocol version", () => {
   const registration = LocalRuntimeRegistrationSchema.parse({
     version: 1,
     runtimeId: "runtime-1",
@@ -67,17 +49,42 @@ test("registration requires the local-runtime-v1 wire identity", () => {
     replicaId: "replica-1",
     deviceId: "device-1",
     provider: "pi",
-    providerVersion: "0.81.1",
-    adapterVersion: "pi-sdk-v1",
     protocolVersion: 1,
-    capabilities: {},
   });
   assert.equal(registration.provider, "pi");
+  assert.equal(registration.protocolVersion, 1);
+});
+
+test("control registration carries only the pre-registered connection identity", () => {
+  const registration = {
+    runtimeId: "runtime-1",
+    spaceId: "space-1",
+    replicaId: "replica-1",
+    provider: "pi" as const,
+  };
+  assert.deepEqual(LocalRuntimeControlFrameSchema.parse({
+    type: "register",
+    kind: "runtime",
+    protocol: LOCAL_RUNTIME_WIRE_PROTOCOL,
+    ...registration,
+  }), {
+    type: "register",
+    kind: "runtime",
+    protocol: LOCAL_RUNTIME_WIRE_PROTOCOL,
+    ...registration,
+  });
   assert.throws(() => LocalRuntimeControlFrameSchema.parse({
     type: "register",
     kind: "runtime",
     protocol: "invalid-runtime",
     ...registration,
+  }));
+  assert.throws(() => LocalRuntimeControlFrameSchema.parse({
+    type: "register",
+    kind: "runtime",
+    protocol: LOCAL_RUNTIME_WIRE_PROTOCOL,
+    ...registration,
+    protocolVersion: 1,
   }));
   assert.equal(LOCAL_RUNTIME_WIRE_PROTOCOL, "local-runtime-v1");
 });

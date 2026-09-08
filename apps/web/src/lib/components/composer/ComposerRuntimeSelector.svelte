@@ -1,13 +1,6 @@
 <script lang="ts">
 import type { LocalRuntimeRecord } from "@neta-art/cohub";
-import {
-	AlertCircle,
-	Check,
-	ChevronDown,
-	Cloud,
-	Laptop,
-	LoaderCircle,
-} from "lucide-svelte";
+import { AlertCircle, Check, ChevronDown, Cloud, Laptop } from "lucide-svelte";
 
 type Props = {
 	runtimes?: LocalRuntimeRecord[];
@@ -39,7 +32,6 @@ function providerLabel(provider: LocalRuntimeRecord["provider"]) {
 
 function statusLabel(status: LocalRuntimeRecord["status"]) {
 	if (status === "ready") return "Ready";
-	if (status === "connecting") return "Connecting";
 	if (status === "busy") return "Busy";
 	if (status === "error") return "Error";
 	if (status === "revoked") return "Revoked";
@@ -129,9 +121,7 @@ $effect(() => {
 						disabled={!canSelect(runtime)}
 						onclick={() => select(runtime.id)}
 					>
-						{#if runtime.status === "connecting"}
-							<LoaderCircle class="h-4 w-4 shrink-0 animate-spin text-text-tertiary" />
-						{:else if runtime.status === "error" || runtime.status === "revoked"}
+						{#if runtime.status === "error" || runtime.status === "revoked"}
 							<AlertCircle class="h-4 w-4 shrink-0 text-warning" />
 						{:else}
 							<Laptop class="h-4 w-4 shrink-0 text-text-tertiary" />

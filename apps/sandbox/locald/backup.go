@@ -33,6 +33,9 @@ func (d *Daemon) createInitialRecoveryBackup(replica *ReplicaState, scan ScanRes
 	if valid, err := validateRecoveryBackup(finalPath, scan); err != nil {
 		return "", err
 	} else if valid {
+		if err := syncDirectoryTree(finalPath, d.cfg.DataDir); err != nil {
+			return "", fmt.Errorf("sync existing recovery backup: %w", err)
+		}
 		return finalPath, nil
 	}
 	if err := os.MkdirAll(backupRoot, 0o700); err != nil {
@@ -86,13 +89,22 @@ func (d *Daemon) createInitialRecoveryBackup(replica *ReplicaState, scan ScanRes
 	if err := writeSyncedPrivateFile(filepath.Join(staging, "backup.json"), canonicalDescriptor); err != nil {
 		return "", fmt.Errorf("write backup descriptor: %w", err)
 	}
+	if err := syncDirectoryTree(staging, d.cfg.DataDir); err != nil {
+		return "", fmt.Errorf("sync recovery backup staging tree: %w", err)
+	}
 	if err := os.Rename(staging, finalPath); err != nil {
 		if valid, validateErr := validateRecoveryBackup(finalPath, scan); validateErr == nil && valid {
+			if err := syncDirectoryTree(finalPath, d.cfg.DataDir); err != nil {
+				return "", fmt.Errorf("sync concurrent recovery backup: %w", err)
+			}
 			committed = true
 			_ = os.RemoveAll(staging)
 			return finalPath, nil
 		}
 		return "", fmt.Errorf("commit recovery backup: %w", err)
+	}
+	if err := syncDirectoryTree(finalPath, d.cfg.DataDir); err != nil {
+		return "", fmt.Errorf("sync committed recovery backup: %w", err)
 	}
 	committed = true
 	return finalPath, nil

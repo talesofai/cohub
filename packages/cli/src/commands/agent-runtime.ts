@@ -4,7 +4,12 @@ import { constants } from "node:fs";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import type { Command } from "commander";
-import { resolveApiBaseUrl, resolveWebsocketUrl } from "@neta-art/cohub";
+import {
+  isLocalRuntimeHeartbeatFresh,
+  resolveApiBaseUrl,
+  resolveWebsocketUrl,
+  type LocalRuntimeRecord,
+} from "@neta-art/cohub";
 import { createClient } from "../client.js";
 import { error, handleHttp, json as outJson, jsonRequested, ok, table } from "../output.js";
 import { detectLocalProviders, providerDisplayName, type DetectedProvider } from "./provider-detection.js";
@@ -13,41 +18,12 @@ import { resolveLocaldBinary } from "./locald-binary.js";
 
 type Provider = DetectedProvider["provider"];
 
-type RuntimeRecord = {
-  id: string;
-  spaceId: string;
-  deviceId: string;
-  replicaId: string;
-  provider: Provider;
-  displayName: string;
-  status: string;
-  connectionEpoch: number;
-  lastSeenAt?: string | null;
-};
-
 type StartedRuntime = {
   provider: Provider;
   runtimeId: string;
   state: "started" | "already_running";
   pid: number | null;
   relay: string;
-};
-
-const LOCAL_RUNTIME_ADAPTER_VERSION = "cohub-local-runtime-v1";
-const LOCAL_RUNTIME_PROVIDER_VERSIONS: Record<Provider, string> = {
-  codex: "@openai/codex-sdk@0.153.4",
-  claude_code: "@anthropic-ai/claude-agent-sdk@0.3.263",
-  pi: "@earendil-works/pi-coding-agent@0.81.1",
-};
-
-export const localRuntimeProviderVersion = (provider: Provider): string =>
-  LOCAL_RUNTIME_PROVIDER_VERSIONS[provider];
-
-const LOCAL_RUNTIME_STALE_AFTER_MS = 90_000;
-const isRuntimeHeartbeatFresh = (lastSeenAt: string | null | undefined, now = Date.now()) => {
-  if (!lastSeenAt) return false;
-  const timestamp = Date.parse(lastSeenAt);
-  return Number.isFinite(timestamp) && now - timestamp <= LOCAL_RUNTIME_STALE_AFTER_MS;
 };
 
 const runtimeRelayUrl = () => {
@@ -63,20 +39,10 @@ const runtimeRelayUrl = () => {
 export const bundledRuntimeHostPath = (): string =>
   resolve(dirname(fileURLToPath(import.meta.url)), "../../bin/cohub-agent-runtime.js");
 
-const runtimeCapabilities = (provider: Provider) => ({
-  streaming: true,
-  sessionResume: true,
-  sessionFork: provider !== "codex",
-  sessionCancel: true,
-  permissionRequests: false,
-  promptImages: true,
-  nativeTools: true,
-} as const);
-
 function startLocalRuntime(input: {
   binary: string;
   dataDir: string;
-  runtime: RuntimeRecord;
+  runtime: LocalRuntimeRecord;
   root: string;
   relay?: string;
   providerCommand?: string;
@@ -85,7 +51,6 @@ function startLocalRuntime(input: {
 }) {
   const relay = input.relay?.trim() || runtimeRelayUrl();
   const providerCommand = input.providerCommand?.trim() || bundledRuntimeHostPath();
-  const providerVersion = localRuntimeProviderVersion(input.runtime.provider);
   const foreground = input.foreground === true;
   const child = (input.spawnProcess ?? nodeSpawn)(input.binary, [
     "runtime",
@@ -106,8 +71,6 @@ function startLocalRuntime(input: {
       COHUB_LOCALD_DATA_DIR: input.dataDir,
       COHUB_LOCAL_AGENT_DEVICE_ID: input.runtime.deviceId,
       COHUB_NODE_EXECUTABLE: process.execPath,
-      COHUB_RUNTIME_PROVIDER_VERSION: providerVersion,
-      COHUB_RUNTIME_ADAPTER_VERSION: LOCAL_RUNTIME_ADAPTER_VERSION,
     },
   });
   if (!foreground) {
@@ -139,7 +102,7 @@ export async function startDetectedRuntimes(input: {
   foreground?: boolean;
   spawnProcess?: typeof nodeSpawn;
 }): Promise<{ runtimes: StartedRuntime[]; waits: Array<Promise<number | null>> }> {
-  const registrations: Array<{ runtime: RuntimeRecord; provider: Provider }> = [];
+  const registrations: Array<{ runtime: LocalRuntimeRecord; provider: Provider }> = [];
   const failures: string[] = [];
 
   for (const detected of input.providers) {
@@ -151,11 +114,8 @@ export async function startDetectedRuntimes(input: {
         replicaId: input.replicaId,
         provider: detected.provider,
         displayName: `${detected.displayName} local runtime`,
-        providerVersion: localRuntimeProviderVersion(detected.provider),
-        adapterVersion: LOCAL_RUNTIME_ADAPTER_VERSION,
-        capabilities: runtimeCapabilities(detected.provider),
         protocolVersion: 1,
-      }) as RuntimeRecord;
+      });
       if (runtime.replicaId !== input.replicaId) throw new Error("runtime is bound to a different workspace replica");
       if (runtime.status === "revoked") throw new Error("runtime registration is revoked");
       registrations.push({ runtime, provider: detected.provider });
@@ -178,8 +138,8 @@ export async function startDetectedRuntimes(input: {
   const runtimes: StartedRuntime[] = [];
   const waits: Array<Promise<number | null>> = [];
   for (const { runtime, provider } of registrations) {
-    const alreadyRunning = ["connecting", "ready", "busy"].includes(runtime.status)
-      && isRuntimeHeartbeatFresh(runtime.lastSeenAt);
+    const alreadyRunning = ["ready", "busy"].includes(runtime.status)
+      && isLocalRuntimeHeartbeatFresh(runtime.lastSeenAt);
     if (alreadyRunning) {
       runtimes.push({ provider, runtimeId: runtime.id, state: "already_running", pid: null, relay: input.relay?.trim() || runtimeRelayUrl() });
       continue;
@@ -285,16 +245,13 @@ export function registerAgentRuntime(program: Command): void {
 
   runtime
     .command("start <spaceId>")
-    .description("Attach a workspace and start every configured local runtime")
+    .description("Attach a workspace and start every detected local runtime")
     .requiredOption("--root <path>", "Local workspace root")
     .option("--name <name>", "Device or workspace display name")
-    .option("--mode <mode>", "Workspace mode: two_way_safe, one_way_to_cloud, one_way_to_local, handoff", "two_way_safe")
     .option("--data-dir <path>", "locald state directory")
-    .option("--relay <url>", "Gateway runtime relay URL")
-    .option("--provider-command <command>", "local runtime host command")
     .option("--foreground", "Keep runtimes attached to this terminal")
     .option("--json", "Output as JSON")
-    .action(async (spaceId: string, opts: { root: string; name?: string; mode?: string; dataDir?: string; relay?: string; providerCommand?: string; foreground?: boolean; json?: boolean }) => {
+    .action(async (spaceId: string, opts: { root: string; name?: string; dataDir?: string; foreground?: boolean; json?: boolean }) => {
       const root = resolve(opts.root);
       try {
         const rootInfo = await stat(root).catch(() => null);
@@ -305,7 +262,7 @@ export function registerAgentRuntime(program: Command): void {
           client: createClient(),
           spaceId,
           root,
-          options: { dataDir: opts.dataDir, name: opts.name, mode: opts.mode, automatic: true },
+          options: { dataDir: opts.dataDir, name: opts.name, automatic: true },
         });
         const replicaId = String(prepared.attached.replica.id);
         await waitForReplicaReady(createClient(), spaceId, replicaId);
@@ -319,8 +276,6 @@ export function registerAgentRuntime(program: Command): void {
           deviceId: prepared.device.id,
           replicaId,
           providers,
-          relay: opts.relay,
-          providerCommand: opts.providerCommand,
           foreground: opts.foreground,
         });
         const result = {

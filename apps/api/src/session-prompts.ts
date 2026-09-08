@@ -143,12 +143,9 @@ async function allocateCloudWorkspaceAttempt(input: {
       executorKind: runtimeId ? "local_runtime" : "cloud_agent",
       provider: runtime?.provider ?? null,
       integrationPolicyVersion: runtimeId ? integrationPolicyVersion : null,
-      workspaceRequired: true,
-      transcriptRequired: true,
       sessionId: input.sessionId,
       turnId: input.turnId,
       baseCanonicalSnapshotId: state.canonicalSnapshotId,
-      workspacePolicyVersion: policy?.policyVersion ?? null,
       status: "queued",
     }).onConflictDoNothing({ target: [workspaceExecutionAttempts.spaceId, workspaceExecutionAttempts.idempotencyKey] }).returning({ id: workspaceExecutionAttempts.id, turnId: workspaceExecutionAttempts.turnId, runtimeId: workspaceExecutionAttempts.runtimeId });
     if (!createdAttempt) {

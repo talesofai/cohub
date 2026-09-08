@@ -13,9 +13,9 @@ import {
   type WorkspaceManifestV1,
 } from "@cohub/protocol/workspace-replication";
 
-export type WorkspaceSensitiveContentMode = "exclude_with_warning" | "include_with_consent";
+type WorkspaceSensitiveContentMode = "exclude_with_warning" | "include_with_consent";
 
-export type WorkspaceScanPolicy = {
+type WorkspaceScanPolicy = {
   policyVersion: number;
   defaultExcludes?: string[];
   customExcludes?: string[];
@@ -26,26 +26,17 @@ export type WorkspaceScanPolicy = {
   hashWorkers?: number;
 };
 
-export type WorkspaceScanWarning = {
+type WorkspaceScanWarning = {
   path: string;
   type: "sensitive" | "unsupported";
   reason: string;
 };
 
-export type WorkspaceScanBlob = {
-  path: string;
-  sha256: string;
-  size: number;
-};
-
-export type WorkspaceScanResult = {
+type WorkspaceScanResult = {
   manifest: WorkspaceManifestV1;
-  manifestSha256: string;
   treeHash: string;
-  blobs: WorkspaceScanBlob[];
   warnings: WorkspaceScanWarning[];
   ignoredCount: number;
-  mutationGeneration: number | null;
 };
 
 export class WorkspaceScanError extends Error {
@@ -102,14 +93,13 @@ function stableIdentity(stats: { dev: number; ino: number; size: number; mtimeMs
   return [stats.dev, stats.ino, stats.size, stats.mtimeMs, stats.ctimeMs, stats.birthtimeMs].join(":");
 }
 
-async function hashStableFile(path: string, relativePath: string, maxFileBytes: number, mutationGeneration?: () => number): Promise<{ sha256: string; size: number }> {
+async function hashStableFile(path: string, relativePath: string, maxFileBytes: number): Promise<{ sha256: string; size: number }> {
   for (let attempt = 0; attempt < 3; attempt += 1) {
     const before = await lstat(path).catch((error) => {
       throw new WorkspaceScanError(`Unable to stat managed path ${relativePath}: ${error instanceof Error ? error.message : String(error)}`, "scan_incomplete", [relativePath]);
     });
     if (!before.isFile()) throw new WorkspaceScanError(`Managed path changed type while scanning: ${relativePath}`, "workspace_busy", [relativePath]);
     if (!Number.isSafeInteger(before.size) || before.size > maxFileBytes) throw new WorkspaceScanError(`File exceeds the configured limit: ${relativePath}`, "scan_limit", [relativePath]);
-    const generationBefore = mutationGeneration?.() ?? null;
     const hash = createHash("sha256");
     await new Promise<void>((resolvePromise, reject) => {
       const stream = createReadStream(path);
@@ -120,8 +110,7 @@ async function hashStableFile(path: string, relativePath: string, maxFileBytes: 
     const after = await lstat(path).catch((error) => {
       throw new WorkspaceScanError(`Unable to restat managed path ${relativePath}: ${error instanceof Error ? error.message : String(error)}`, "scan_incomplete", [relativePath]);
     });
-    const generationAfter = mutationGeneration?.() ?? null;
-    if (stableIdentity(before) === stableIdentity(after) && generationBefore === generationAfter) {
+    if (stableIdentity(before) === stableIdentity(after)) {
       return { sha256: hash.digest("hex"), size: after.size };
     }
   }
@@ -143,10 +132,6 @@ export async function scanWorkspaceReplica(rootInput: string, policy: WorkspaceS
   const listings = new Map<string, string>();
   let ignoredCount = 0;
   let totalBytes = 0;
-  let mutationGeneration = 0;
-  const readGeneration = () => mutationGeneration;
-  const startGeneration = readGeneration();
-
   const listDirectory = async (directory: string) => {
     const names = await readdir(directory).catch((error) => {
       throw new WorkspaceScanError(`Unable to enumerate managed directory ${normalizeSlash(relative(root, directory)) || "."}: ${error instanceof Error ? error.message : String(error)}`, "scan_incomplete", [normalizeSlash(relative(root, directory)) || "."]);
@@ -230,15 +215,13 @@ export async function scanWorkspaceReplica(rootInput: string, policy: WorkspaceS
       const index = nextFile++;
       const file = files[index];
       if (!file) return;
-      const result = await hashStableFile(file.absPath, (entries[file.entryIndex] as WorkspaceManifestEntry).path, maxFileBytes, readGeneration);
+      const result = await hashStableFile(file.absPath, (entries[file.entryIndex] as WorkspaceManifestEntry).path, maxFileBytes);
       const entry = entries[file.entryIndex];
       if (entry?.type !== "file") throw new WorkspaceScanError("Scanner index changed unexpectedly", "scan_incomplete");
       entry.sha256 = result.sha256;
       entry.size = result.size;
     }
   }));
-  if (readGeneration() !== startGeneration) throw new WorkspaceScanError("Workspace changed during scan", "workspace_busy");
-
   const cleanEntries = entries.map(({ absPath: _absPath, ...entry }) => entry);
   const collisions = detectManifestPathCollisions(cleanEntries);
   if (collisions.length > 0) throw new WorkspaceScanError("Workspace contains colliding normalized paths", "path_collision", collisions.flatMap((collision) => collision.paths));
@@ -258,8 +241,6 @@ export async function scanWorkspaceReplica(rootInput: string, policy: WorkspaceS
     portableGitState: null,
     omitted,
   });
-  const canonicalManifest = canonicalizeJson(manifest);
-  const manifestSha256 = sha256Text(canonicalManifest);
   const treeHash = sha256Text(canonicalizeJson({
     scanPolicyHash: manifest.scanPolicyHash,
     entries: manifest.entries,
@@ -268,11 +249,8 @@ export async function scanWorkspaceReplica(rootInput: string, policy: WorkspaceS
   }));
   return {
     manifest,
-    manifestSha256,
     treeHash,
-    blobs: manifest.entries.filter((entry): entry is Extract<WorkspaceManifestEntry, { type: "file" }> => entry.type === "file").map((entry) => ({ path: entry.path, sha256: entry.sha256, size: entry.size })),
     warnings,
     ignoredCount,
-    mutationGeneration: null,
   };
 }

@@ -617,7 +617,6 @@ export type WorkspaceStateUpdatedEvent = {
       generation: number;
       status: string;
       activeCycleId: string | null;
-      lastWriterKind: string | null;
       updatedAt: string;
     };
     replica?: {

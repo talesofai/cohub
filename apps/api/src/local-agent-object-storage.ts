@@ -56,7 +56,7 @@ const envPrefix = () => config.env === "prod" ? "" : `${config.env}/`;
 
 export const buildLocalAgentObjectKey = (input: {
   spaceId: string;
-  kind: "manifest" | "blob" | "native_payload";
+  kind: "manifest" | "blob";
   identity: string;
 }) => {
   const identity = assertObjectKey(input.identity);

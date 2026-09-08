@@ -28,11 +28,22 @@ test("workspace scanner includes directories, hashes files, and applies policy e
     });
 
     assert.deepEqual(result.manifest.entries.map((entry) => entry.path), ["src", "src/main.ts"]);
-    assert.equal(result.blobs.length, 1);
     assert.ok(result.warnings.some((warning) => warning.path === ".env" && warning.type === "sensitive"));
     assert.deepEqual(result.manifest.omitted, [".env"]);
-    assert.equal(result.manifestSha256.length, 64);
     assert.equal(result.treeHash.length, 64);
+  });
+});
+
+test("scanner excludes omitted paths from the tree hash", async () => {
+  await withRoot(async (root) => {
+    await writeFile(join(root, "main.ts"), "export const value = 1;\n");
+    const plain = await scanWorkspaceReplica(root, { policyVersion: 1 });
+    await mkdir(join(root, ".aws"));
+    await writeFile(join(root, ".aws", "credentials"), "TOKEN=secret\n");
+    const withOmission = await scanWorkspaceReplica(root, { policyVersion: 1 });
+
+    assert.deepEqual(withOmission.manifest.omitted, [".aws"]);
+    assert.equal(withOmission.treeHash, plain.treeHash);
   });
 });
 

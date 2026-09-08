@@ -132,8 +132,8 @@ async function claimWorkspaceAttempt(tx: Transaction, spaceId: string, owner: Tu
   if (!attemptId) {
     const createdRows = await tx.execute(sql`
       insert into v2.workspace_execution_attempts
-        (space_id, runtime_id, replica_id, provider, idempotency_key, executor_kind, workspace_required, transcript_required, session_id, turn_id, base_canonical_snapshot_id, workspace_policy_version, integration_policy_version, status, created_at, updated_at)
-      select ws.space_id, ${requestedRuntimeId}, ${requestedReplicaId}, ${requestedProvider}, ${`${requestedExecutorKind === "local_runtime" ? "local-runtime" : "cloud"}-turn:${owner.id}`}, ${requestedExecutorKind}, true, true, ${owner.sessionId}, ${owner.id}, ws.canonical_snapshot_id, wp.policy_version,
+        (space_id, runtime_id, replica_id, provider, idempotency_key, executor_kind, session_id, turn_id, base_canonical_snapshot_id, integration_policy_version, status, created_at, updated_at)
+      select ws.space_id, ${requestedRuntimeId}, ${requestedReplicaId}, ${requestedProvider}, ${`${requestedExecutorKind === "local_runtime" ? "local-runtime" : "cloud"}-turn:${owner.id}`}, ${requestedExecutorKind}, ${owner.sessionId}, ${owner.id}, ws.canonical_snapshot_id,
         (select lap.integration_policy_version
          from v2.workspace_replicas fallback_replica
          join v2.space_local_agent_policies lap
@@ -142,7 +142,6 @@ async function claimWorkspaceAttempt(tx: Transaction, spaceId: string, owner: Tu
          limit 1),
         'queued', now(), now()
       from v2.workspace_state ws
-      left join v2.space_workspace_policies wp on wp.space_id = ws.space_id
       where ws.space_id = ${spaceId}
       on conflict (space_id, idempotency_key) do update set updated_at = now()
       returning id
@@ -353,7 +352,7 @@ export async function claimNextTurnBatch(input: Pick<AgentTurnJobData, "sessionI
           where local_attempt.session_id = ${input.sessionId}
             and local_attempt.executor_kind = 'local_runtime'
             and local_attempt.status = 'queued'
-            and local_runtime.status in ('offline', 'connecting', 'error', 'revoked')
+            and local_runtime.status in ('offline', 'error', 'revoked')
         ) as has_local_runtime_wait,
         exists (
           select 1 from v2.session_turns local_turn

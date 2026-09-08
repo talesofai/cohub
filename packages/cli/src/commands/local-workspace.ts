@@ -8,7 +8,7 @@ import { createClient } from "../client.js";
 import { error } from "../output.js";
 import { LocaldUnavailableError, resolveLocaldBinary } from "./locald-binary.js";
 
-export const WORKSPACE_MODES = ["two_way_safe", "one_way_to_cloud", "one_way_to_local", "handoff"] as const;
+export const WORKSPACE_MODES = ["two_way_safe", "one_way_to_cloud", "one_way_to_local"] as const;
 export type WorkspaceMode = (typeof WORKSPACE_MODES)[number];
 export type InitialChoice = "use-cloud" | "use-local" | "merge";
 
@@ -36,7 +36,6 @@ export type WorkspaceAttachment = {
     bootstrapCycleId: string | null;
   };
   initialChoice: InitialChoice;
-  integrationPolicyVersion: number;
   newlyEnrolled: boolean;
 };
 
@@ -193,9 +192,7 @@ async function resolveDevice(
 }
 
 const storedInitialChoice = (replica: Record<string, unknown> | undefined): InitialChoice | undefined => {
-  const capabilities = replica?.capabilities;
-  if (!capabilities || typeof capabilities !== "object" || Array.isArray(capabilities)) return undefined;
-  const value = (capabilities as Record<string, unknown>).initialChoice;
+  const value = replica?.initialChoice;
   return value === "use-cloud" || value === "use-local" || value === "merge" ? value : undefined;
 };
 
@@ -211,8 +208,10 @@ export async function ensureWorkspaceReplica(input: {
   if (!info?.isDirectory()) throw new Error(`Invalid workspace root: ${requestedRoot} is not a directory`);
   const root = await realpath(requestedRoot).catch(() => requestedRoot);
   const options = input.options ?? {};
-  const mode = options.mode?.trim() || "two_way_safe";
-  if (!WORKSPACE_MODES.includes(mode as WorkspaceMode)) throw new Error(`Invalid workspace mode: ${mode}`);
+  const requestedMode = options.mode?.trim();
+  if (requestedMode && !WORKSPACE_MODES.includes(requestedMode as WorkspaceMode)) {
+    throw new Error(`Invalid workspace mode: ${requestedMode}`);
+  }
   const binary = input.binary ?? await resolveLocaldBinary();
   const dataDir = localdDataDir(options.dataDir);
   const client = input.client ?? createClient();
@@ -279,19 +278,13 @@ export async function ensureWorkspaceReplica(input: {
     deviceId: device.id,
     rootFingerprint,
     displayName: options.name?.trim() || root.split(/[\\/]/).pop() || "workspace",
-    capabilities: {
-      platform: process.platform,
-      architecture: process.arch,
-      caseSensitive: process.platform !== "win32" && process.platform !== "darwin",
-      symlinkSupport: true,
-      initialChoice,
-    },
+    initialChoice,
     protocolVersion: 1,
   });
   const currentPolicy = attached.integrationPolicy as { workspaceMode?: string; integrationPolicyVersion?: number };
-  const policy = currentPolicy.workspaceMode === mode
+  const policy = !requestedMode || currentPolicy.workspaceMode === requestedMode
     ? currentPolicy
-    : (await client.localAgent.updatePolicy(input.spaceId, device.id, { workspaceMode: mode as WorkspaceMode })).policy as { integrationPolicyVersion?: number };
+    : (await client.localAgent.updatePolicy(input.spaceId, device.id, { workspaceMode: requestedMode as WorkspaceMode })).policy as { integrationPolicyVersion?: number };
   const integrationPolicyVersion = policy.integrationPolicyVersion;
   if (!Number.isSafeInteger(integrationPolicyVersion) || Number(integrationPolicyVersion) < 1) throw new Error("Local agent policy response has no valid integrationPolicyVersion");
   const validIntegrationPolicyVersion = Number(integrationPolicyVersion);
@@ -311,7 +304,6 @@ export async function ensureWorkspaceReplica(input: {
     device,
     attached,
     initialChoice: effectiveInitialChoice,
-    integrationPolicyVersion: validIntegrationPolicyVersion,
     newlyEnrolled,
   };
 }

@@ -1,96 +1,12 @@
-import { readdir, stat } from "node:fs/promises";
-import { resolve } from "node:path";
 import type { Command } from "commander";
 import { createClient } from "../client.js";
 import { error, handleHttp, json as outJson, jsonRequested, ok, table } from "../output.js";
-import {
-  ensureWorkspaceReplica,
-  resolveInitialChoice,
-  WORKSPACE_MODES,
-  type WorkspaceMode,
-} from "./local-workspace.js";
 
-export { resolveInitialChoice } from "./local-workspace.js";
-
-type WorkspaceOptions = {
-  json?: boolean;
-  deviceId?: string;
-  dataDir?: string;
-  name?: string;
-  mode?: string;
-  yes?: boolean;
-  useCloud?: boolean;
-  useLocal?: boolean;
-  merge?: boolean;
-};
-
-function choose<T extends readonly string[]>(value: string | undefined, values: T, name: string): T[number] {
-  if (!value || values.includes(value as T[number])) return (value ?? values[0]) as T[number];
-  return error(`Invalid ${name}`, `Use one of: ${values.join(", ")}`);
-}
+type WorkspaceOptions = { json?: boolean };
 
 
 export function registerWorkspace(program: Command): void {
   const workspace = program.command("workspace").description("Manage a cloud Space workspace replica");
-
-  workspace
-    .command("attach <spaceId> [root]")
-    .description("Attach a local folder to a cloud Space workspace")
-    .option("--device-id <id>", "Use an existing enrolled device")
-    .option("--name <name>", "Device or replica display name")
-    .option("--mode <mode>", "Workspace mode: two_way_safe, one_way_to_cloud, one_way_to_local, handoff", "two_way_safe")
-    .option("--data-dir <path>", "locald state directory")
-    .option("--merge", "Merge local and cloud trees, stopping on overlapping changes")
-    .option("--use-cloud", "Replace managed local content after creating a local recovery backup")
-    .option("--use-local", "Make the local tree authoritative for initial reconciliation")
-    .option("-y, --yes", "Skip confirmation")
-    .option("--json", "Output as JSON")
-    .action(async (spaceId: string, rootArg: string | undefined, opts: WorkspaceOptions) => {
-      const root = resolve(rootArg ?? process.cwd());
-      const info = await stat(root).catch(() => null);
-      if (!info?.isDirectory()) return error("Invalid workspace root", `${root} is not a directory`);
-      const mode = choose(opts.mode, WORKSPACE_MODES, "workspace mode") as WorkspaceMode;
-      let initialChoice: "use-cloud" | "use-local" | "merge";
-      try {
-        initialChoice = resolveInitialChoice(opts, await (async () => {
-          const entries = await readdir(root, { withFileTypes: true });
-          for (const entry of entries) {
-            if (entry.name === ".git") continue;
-            if (entry.name === ".cohub" && entry.isDirectory()) {
-              const cohubEntries = await readdir(resolve(root, ".cohub"), { withFileTypes: true }).catch(() => []);
-              if (cohubEntries.every((item) => item.name === "system")) continue;
-            }
-            return true;
-          }
-          return false;
-        })());
-      } catch (cause) {
-        return handleHttp(cause);
-      }
-      try {
-        const prepared = await ensureWorkspaceReplica({
-          client: createClient(),
-          spaceId,
-          root,
-          options: {
-            dataDir: opts.dataDir,
-            deviceId: opts.deviceId,
-            name: opts.name,
-            mode,
-            initialChoice,
-          },
-        });
-        if (jsonRequested(opts)) return outJson({ spaceId, root: prepared.root, device: prepared.device, replica: prepared.attached.replica, cloudReplica: prepared.attached.cloudReplica, workspace: prepared.attached.workspace, newlyEnrolled: prepared.newlyEnrolled });
-        ok(`Workspace attached to ${spaceId}`);
-        console.log(`  Root:    ${root}`);
-        console.log(`  Replica: ${String(prepared.attached.replica.id)}`);
-        console.log(`  Mode:    ${mode}`);
-        console.log(`  Initial: ${prepared.initialChoice}`);
-        console.log("  locald is running and will synchronize in the background.");
-      } catch (e: unknown) {
-        handleHttp(e);
-      }
-    });
 
   workspace
     .command("status")

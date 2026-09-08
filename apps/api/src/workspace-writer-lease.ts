@@ -125,8 +125,6 @@ export async function beginCloudFileMutation(input: {
       spaceId: input.spaceId,
       replicaId: cloudReplica.id,
       baseSnapshotId: activeLease.baseSnapshotId ?? workspace.canonicalSnapshotId,
-      direction: "reconcile",
-      canonicalGenerationAtStart: workspace.generation,
       leaseEpoch: activeLease.epoch,
       status: "applying_cloud",
     }).onConflictDoNothing().returning({ id: workspaceSyncCycles.id });

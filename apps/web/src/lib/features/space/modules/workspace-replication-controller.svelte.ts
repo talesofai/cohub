@@ -20,7 +20,6 @@ export type WorkspaceReplicationWorkspace = {
 	generation: number;
 	status: string;
 	activeCycleId: string | null;
-	lastWriterKind: string | null;
 	updatedAt: string;
 };
 
@@ -94,7 +93,6 @@ function parseWorkspace(
 		generation,
 		status: typeof value.status === "string" ? value.status : "unknown",
 		activeCycleId: asNullableString(value.activeCycleId),
-		lastWriterKind: asNullableString(value.lastWriterKind),
 		updatedAt: value.updatedAt,
 	};
 }
@@ -134,9 +132,9 @@ function parseRuntime(value: unknown): LocalRuntimeRecord | null {
 		!(["pi", "codex", "claude_code"] as string[]).includes(
 			runtime.provider ?? "",
 		) ||
-		!(
-			["offline", "connecting", "ready", "busy", "error", "revoked"] as string[]
-		).includes(runtime.status ?? "")
+		!(["offline", "ready", "busy", "error", "revoked"] as string[]).includes(
+			runtime.status ?? "",
+		)
 	)
 		return null;
 	return runtime as LocalRuntimeRecord;

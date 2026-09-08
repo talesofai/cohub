@@ -5,7 +5,6 @@ import WebSocket, { type RawData } from "ws";
 import { createLogger } from "@cohub/infra/logging";
 import {
   isUuid,
-  type LOCAL_RUNTIME_PROTOCOL_VERSION,
   LOCAL_RUNTIME_WIRE_PROTOCOL,
   LocalRuntimeOpenFrameSchema,
   LocalRuntimeRegisterFrameSchema,
@@ -13,7 +12,7 @@ import {
   type LocalRuntimeOpenFrame,
 } from "@cohub/protocol";
 import { gatewayConfig } from "./config.js";
-import { authorizeLocalRuntime, reportLocalRuntimeStatus, touchLocalRuntime } from "./api-client.js";
+import { authorizeLocalRuntime, disconnectLocalRuntime, touchLocalRuntime } from "./api-client.js";
 
 const logger = createLogger({ serviceName: "cohub-gateway" });
 
@@ -53,17 +52,11 @@ export type RuntimeControlFrame = {
   runtimeId?: string;
   spaceId?: string;
   replicaId?: string;
-  deviceId?: string;
-  version?: number;
   channel?: string;
   message?: string;
   status?: number;
   kind?: string;
   provider?: string;
-  providerVersion?: string;
-  adapterVersion?: string;
-  protocolVersion?: number;
-  capabilities?: Record<string, unknown>;
   protocol?: string;
 };
 
@@ -252,7 +245,6 @@ type RegisteredRuntime = {
   tokenHash: Buffer;
   connectionEpoch: number;
   provider: string;
-  protocolVersion: typeof LOCAL_RUNTIME_PROTOCOL_VERSION;
   protocol: typeof LOCAL_RUNTIME_WIRE_PROTOCOL;
   connectedAt: number;
 };
@@ -581,10 +573,6 @@ export async function handleRuntimeControlConnection(socket: WebSocket, request:
         return;
       }
       const registerFrame: LocalRuntimeRegisterFrame = registration.data;
-      if (registerFrame.kind !== "runtime") {
-        closeSocket(socket, 4400, "runtime registration kind is required");
-        return;
-      }
       const runtimeId = registerFrame.runtimeId.trim();
       const spaceId = registerFrame.spaceId.trim();
       const provider = registerFrame.provider.trim();
@@ -593,16 +581,10 @@ export async function handleRuntimeControlConnection(socket: WebSocket, request:
         closeSocket(socket, 4400, "runtime identity is incomplete");
         return;
       }
-      if (registerFrame.protocol !== LOCAL_RUNTIME_WIRE_PROTOCOL) {
-        sendSocket(socket, { type: "error", status: 400, message: "local runtime protocol version is required" });
-        closeSocket(socket, 4400, "unsupported local runtime protocol");
-        return;
-      }
       const auth = await authorizeLocalRuntime({
         authToken: token,
         runtimeId,
         spaceId,
-        protocolVersion: registerFrame.protocolVersion,
         gatewayNodeId: gatewayConfig.nodeId,
         gatewayWsEndpoint: buildRuntimePeerEndpoint(),
       }).catch((error) => {
@@ -614,13 +596,11 @@ export async function handleRuntimeControlConnection(socket: WebSocket, request:
         closeSocket(socket, auth.status >= 500 ? 1011 : 4403, auth.status >= 500 ? "authorization unavailable" : "forbidden");
         return;
       }
-      const fenceAuthorizedRuntime = (error: string) => reportLocalRuntimeStatus({
+      const fenceAuthorizedRuntime = (reason: string) => disconnectLocalRuntime({
         runtimeId: auth.runtimeId,
         connectionEpoch: auth.connectionEpoch,
-        protocolVersion: auth.protocolVersion,
-        status: "offline",
         authToken: token,
-        error,
+        reason,
       }).catch((fenceError) => logger.warn("[RuntimeRelay] failed to fence an authorized runtime", {
         runtimeId,
         error: fenceError,
@@ -661,7 +641,6 @@ export async function handleRuntimeControlConnection(socket: WebSocket, request:
         tokenHash: hashToken(token),
         connectionEpoch: auth.connectionEpoch,
         provider: auth.provider,
-        protocolVersion: registerFrame.protocolVersion,
         protocol: LOCAL_RUNTIME_WIRE_PROTOCOL,
         connectedAt: Date.now(),
       };
@@ -673,7 +652,6 @@ export async function handleRuntimeControlConnection(socket: WebSocket, request:
         provider: auth.provider,
         protocol: LOCAL_RUNTIME_WIRE_PROTOCOL,
         connectionEpoch: auth.connectionEpoch,
-        capabilities: auth.capabilities,
       })) {
         await fenceAuthorizedRuntime("runtime registration response could not be sent");
         closeSocket(socket, 4503, "runtime registration failed");
@@ -697,7 +675,6 @@ export async function handleRuntimeControlConnection(socket: WebSocket, request:
         void touchLocalRuntime({
           runtimeId: runtime.runtimeId,
           connectionEpoch: runtime.connectionEpoch,
-          protocolVersion: runtime.protocolVersion,
           authToken: token,
         }).catch((error) => {
           logger.warn("[RuntimeRelay] runtime heartbeat rejected; closing connection", { runtimeId: runtime?.runtimeId, error });
@@ -714,13 +691,11 @@ export async function handleRuntimeControlConnection(socket: WebSocket, request:
     runtimesById.delete(runtime.runtimeId);
     closePendingPeersForRuntime(runtime.runtimeId, "runtime disconnected");
     closeDataPairsForRuntime(runtime.runtimeId, "runtime disconnected");
-    await reportLocalRuntimeStatus({
+    await disconnectLocalRuntime({
       runtimeId: runtime.runtimeId,
       connectionEpoch: runtime.connectionEpoch,
-      protocolVersion: runtime.protocolVersion,
-      status: "offline",
       authToken: token,
-      error: "runtime connection closed",
+      reason: "runtime connection closed",
     }).catch((error) => logger.warn("[RuntimeRelay] failed to report runtime disconnect", {
       runtimeId: runtime?.runtimeId,
       error,
@@ -1038,7 +1013,6 @@ export async function handleRuntimeDataConnection(runtimeSocket: WebSocket, requ
   const touched = await touchLocalRuntime({
       runtimeId: runtime.runtimeId,
       connectionEpoch: runtime.connectionEpoch,
-      protocolVersion: runtime.protocolVersion,
       authToken: token,
   }).catch(() => false);
   const currentRuntime = runtimesById.get(pending.runtimeId);

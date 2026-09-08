@@ -160,8 +160,6 @@ export async function acquireCloudCommandLease(input: { spaceId: string; holderI
       spaceId: input.spaceId,
       replicaId: cloudReplica.id,
       baseSnapshotId: workspace.canonicalSnapshotId,
-      direction: "reconcile",
-      canonicalGenerationAtStart: workspace.generation,
       leaseEpoch: lease.epoch,
       status: "applying_cloud",
     }).onConflictDoNothing().returning({ id: workspaceSyncCycles.id });

@@ -10,9 +10,6 @@ COPY .npmrc pnpm-workspace.yaml pnpm-lock.yaml package.json tsconfig.base.json .
 COPY packages/protocol/package.json ./packages/protocol/package.json
 COPY packages/protocol/tsconfig.json ./packages/protocol/tsconfig.json
 COPY packages/protocol/tsconfig.build.json ./packages/protocol/tsconfig.build.json
-COPY packages/local-runtime/package.json ./packages/local-runtime/package.json
-COPY packages/local-runtime/tsconfig.json ./packages/local-runtime/tsconfig.json
-COPY packages/local-runtime/tsconfig.build.json ./packages/local-runtime/tsconfig.build.json
 COPY packages/billing/package.json ./packages/billing/package.json
 COPY packages/billing/tsconfig.json ./packages/billing/tsconfig.json
 COPY packages/billing/tsconfig.build.json ./packages/billing/tsconfig.build.json
@@ -50,7 +47,6 @@ RUN --mount=type=cache,id=pnpm-store,target=/pnpm/store \
   fi
 
 COPY packages/protocol ./packages/protocol
-COPY packages/local-runtime ./packages/local-runtime
 COPY packages/billing ./packages/billing
 COPY packages/infra ./packages/infra
 COPY packages/db ./packages/db

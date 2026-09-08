@@ -1,8 +1,7 @@
 import { z } from "zod";
 
-export const WORKSPACE_REPLICATION_PROTOCOL_VERSION = 1 as const;
-export const WORKSPACE_MANIFEST_VERSION = 1 as const;
-export const WORKSPACE_RECONCILE_PLAN_VERSION = 1 as const;
+const WORKSPACE_MANIFEST_VERSION = 1 as const;
+const WORKSPACE_RECONCILE_PLAN_VERSION = 1 as const;
 export const WORKSPACE_MAX_DELETION_COUNT = 1_000;
 export const WORKSPACE_MAX_DELETION_RATIO = 0.2;
 
@@ -10,7 +9,6 @@ export type WorkspaceSyncJobData = {
   cycleId: string;
   spaceId: string;
   replicaId: string;
-  requestId?: string | null;
 };
 
 export type WorkspaceReplicaKind = "cloud" | "local";
@@ -25,14 +23,10 @@ export type WorkspaceReplicaStatus =
 export type WorkspaceSyncMode =
   | "two_way_safe"
   | "one_way_to_cloud"
-  | "one_way_to_local"
-  | "handoff";
+  | "one_way_to_local";
 export type WorkspaceSnapshotStatus =
   | "uploading"
-  | "uploaded"
-  | "verifying"
   | "ready"
-  | "rejected"
   | "gc_pending";
 export type WorkspaceConflictKind =
   | "content"
@@ -55,7 +49,7 @@ export type WorkspaceConflictResolution =
 const Sha256Schema = z.string().regex(/^[a-f0-9]{64}$/);
 const NonNegativeIntegerSchema = z.number().int().nonnegative();
 
-export const WorkspaceManifestEntrySchema = z.discriminatedUnion("type", [
+const WorkspaceManifestEntrySchema = z.discriminatedUnion("type", [
   z.object({
     path: z.string().min(1),
     type: z.literal("directory"),
@@ -76,13 +70,11 @@ export const WorkspaceManifestEntrySchema = z.discriminatedUnion("type", [
 
 export type WorkspaceManifestEntry = z.infer<typeof WorkspaceManifestEntrySchema>;
 
-export const WorkspaceManifestBoundarySchema = z.object({
+const WorkspaceManifestBoundarySchema = z.object({
   path: z.string().min(1),
   mode: z.enum(["unmanaged_outer", "same_space_nested"]),
   replicaId: z.string().min(1).optional(),
 }).strict();
-
-export type WorkspaceManifestBoundary = z.infer<typeof WorkspaceManifestBoundarySchema>;
 
 export const WorkspaceManifestSchema = z.object({
   version: z.literal(WORKSPACE_MANIFEST_VERSION),
@@ -102,33 +94,14 @@ export const WorkspaceManifestSchema = z.object({
 
 export type WorkspaceManifestV1 = z.infer<typeof WorkspaceManifestSchema>;
 
-export const WorkspaceSnapshotDescriptorSchema = z.object({
-  version: z.literal(WORKSPACE_REPLICATION_PROTOCOL_VERSION),
-  snapshotId: z.string().min(1),
-  replicaId: z.string().min(1),
-  replicaGeneration: NonNegativeIntegerSchema,
-  parentSnapshotId: z.string().min(1).nullable(),
-  baseCanonicalSnapshotId: z.string().min(1).nullable(),
-  policyVersion: NonNegativeIntegerSchema,
-  executionAttemptId: z.string().min(1).nullable(),
-  manifestSha256: Sha256Schema,
-  manifestTransportSha256: Sha256Schema,
-  manifestTransportBytes: NonNegativeIntegerSchema,
-  manifestUncompressedBytes: NonNegativeIntegerSchema,
-  fileCount: NonNegativeIntegerSchema,
-  totalBytes: NonNegativeIntegerSchema,
-}).strict();
-
-export type WorkspaceSnapshotDescriptorV1 = z.infer<typeof WorkspaceSnapshotDescriptorSchema>;
-
-export type WorkspaceReconcileOperation = {
+type WorkspaceReconcileOperation = {
   path: string;
   action: "apply_local_to_cloud" | "apply_cloud_to_local" | "delete_local" | "delete_cloud";
   entry: WorkspaceManifestEntry | null;
   expectedBase: WorkspaceManifestEntry | null;
 };
 
-export type WorkspaceReconcileConflict = {
+type WorkspaceReconcileConflict = {
   path: string;
   kind: WorkspaceConflictKind;
   base: WorkspaceManifestEntry | null;
@@ -136,11 +109,10 @@ export type WorkspaceReconcileConflict = {
   cloud: WorkspaceManifestEntry | null;
 };
 
-export type WorkspaceReconcileResult = {
+type WorkspaceReconcileResult = {
   version: typeof WORKSPACE_RECONCILE_PLAN_VERSION;
   operations: WorkspaceReconcileOperation[];
   conflicts: WorkspaceReconcileConflict[];
-  unchangedPaths: string[];
 };
 
 /**
@@ -273,6 +245,16 @@ const entryEqual = (left: WorkspaceManifestEntry | null, right: WorkspaceManifes
 const manifestMap = (manifest: WorkspaceManifestV1 | null): Map<string, WorkspaceManifestEntry> =>
   new Map((manifest?.entries ?? []).map((entry) => [entry.path, entry]));
 
+const pathIsOmitted = (path: string, omitted: ReadonlySet<string>): boolean => {
+  let candidate = path;
+  while (true) {
+    if (omitted.has(candidate)) return true;
+    const separator = candidate.lastIndexOf("/");
+    if (separator < 0) return false;
+    candidate = candidate.slice(0, separator);
+  }
+};
+
 /**
  * Build a deterministic path-based three-way plan. The planner never guesses
  * a delete/modify or type conflict and never drops a version from the result.
@@ -290,7 +272,6 @@ export function reconcileWorkspaceManifests(input: {
   const paths = [...new Set([...base.keys(), ...local.keys(), ...cloud.keys()])].sort(compareUtf8Bytes);
   const operations: WorkspaceReconcileOperation[] = [];
   const conflicts: WorkspaceReconcileConflict[] = [];
-  const unchangedPaths: string[] = [];
 
   for (const path of paths) {
     const b = base.get(path) ?? null;
@@ -298,12 +279,10 @@ export function reconcileWorkspaceManifests(input: {
     const c = cloud.get(path) ?? null;
     // A side that omitted the path did not observe it. Its absence is not a
     // deletion; leave whatever the other side has in place.
-    if ((l === null && localOmitted.has(path)) || (c === null && cloudOmitted.has(path))) {
-      unchangedPaths.push(path);
+    if ((l === null && pathIsOmitted(path, localOmitted)) || (c === null && pathIsOmitted(path, cloudOmitted))) {
       continue;
     }
     if (entryEqual(l, c)) {
-      unchangedPaths.push(path);
       continue;
     }
     if (entryEqual(l, b)) {
@@ -323,15 +302,10 @@ export function reconcileWorkspaceManifests(input: {
     version: WORKSPACE_RECONCILE_PLAN_VERSION,
     operations,
     conflicts,
-    unchangedPaths,
   };
 }
 
-export function manifestTreeHash(manifest: WorkspaceManifestV1): Promise<string> {
-  return manifestTreeHashAsync(manifest);
-}
-
-export async function sha256Hex(bytes: Uint8Array): Promise<string> {
+async function sha256Hex(bytes: Uint8Array): Promise<string> {
   const digest = await globalThis.crypto.subtle.digest("SHA-256", bytes as BufferSource);
   return Array.from(new Uint8Array(digest), (byte) => byte.toString(16).padStart(2, "0")).join("");
 }
@@ -339,18 +313,3 @@ export async function sha256Hex(bytes: Uint8Array): Promise<string> {
 export async function canonicalJsonSha256(value: unknown): Promise<string> {
   return sha256Hex(canonicalizeJsonBytes(value));
 }
-
-export async function manifestTreeHashAsync(manifest: WorkspaceManifestV1): Promise<string> {
-  const validated = validateManifest(manifest);
-  return canonicalJsonSha256({
-    scanPolicyHash: validated.scanPolicyHash,
-    entries: validated.entries,
-    boundaries: validated.boundaries,
-    portableGitState: validated.portableGitState,
-  });
-}
-
-export const workspaceSnapshotStatusIsTerminal = (status: WorkspaceSnapshotStatus): boolean =>
-  status === "ready" || status === "rejected" || status === "gc_pending";
-
-export const workspaceConflictIsOpen = (status: WorkspaceConflictStatus): boolean => status === "open";

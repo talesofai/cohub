@@ -267,7 +267,7 @@ const defaultIntegrationPolicy = (spaceId: string, deviceId: string, userUuid: s
   deviceId,
   userUuid,
   integrationPolicyVersion: 1,
-  workspaceMode: "handoff" as const,
+  workspaceMode: "two_way_safe" as const,
   updatedBy: userUuid,
 });
 
@@ -276,18 +276,15 @@ export async function ensureWorkspaceReplica(input: {
   spaceId: string;
   rootFingerprint: string;
   displayName: string;
-  capabilities?: Record<string, unknown>;
+  initialChoice: "use-cloud" | "use-local" | "merge";
   protocolVersion?: number;
 }) {
   assertUuid(input.spaceId, "spaceId");
   const rootFingerprint = normalizeBounded(input.rootFingerprint, "rootFingerprint", 255);
   const displayName = normalizeBounded(input.displayName, "displayName", 255);
-  const capabilities = input.capabilities && typeof input.capabilities === "object" && !Array.isArray(input.capabilities)
-    ? input.capabilities
-    : {};
-  const initialChoice = capabilities.initialChoice;
+  const initialChoice = input.initialChoice;
   if (initialChoice !== "use-cloud" && initialChoice !== "use-local" && initialChoice !== "merge") {
-    throw new LocalAgentServiceError("capabilities.initialChoice must be use-cloud, use-local, or merge", "initial_strategy_required", 400);
+    throw new LocalAgentServiceError("initialChoice must be use-cloud, use-local, or merge", "initial_strategy_required", 400);
   }
   if (input.actor.deviceId) await assertDeviceActor(input.actor, input.actor.deviceId);
   const [space] = await db.select({ id: spaces.id }).from(spaces).where(eq(spaces.id, input.spaceId)).limit(1);
@@ -319,7 +316,7 @@ export async function ensureWorkspaceReplica(input: {
         status: "attaching",
         displayName: "Cloud /workspace",
         protocolVersion: input.protocolVersion ?? 1,
-        capabilities: { source: "cloud" },
+        initialChoice: null,
       }).returning();
     }
     if (!cloudReplica) throw new LocalAgentServiceError("cloud replica unavailable", "replica_unavailable", 500);
@@ -341,19 +338,16 @@ export async function ensureWorkspaceReplica(input: {
         displayName,
         rootFingerprint,
         protocolVersion: input.protocolVersion ?? 1,
-        capabilities,
+        initialChoice,
       }).returning();
     } else {
-      const storedCapabilities = localReplica.capabilities && typeof localReplica.capabilities === "object" && !Array.isArray(localReplica.capabilities)
-        ? localReplica.capabilities as Record<string, unknown>
-        : {};
-      if (storedCapabilities.initialChoice && storedCapabilities.initialChoice !== initialChoice) {
+      if (localReplica.initialChoice && localReplica.initialChoice !== initialChoice) {
         throw new LocalAgentServiceError("the replica initial strategy is immutable", "initial_strategy_immutable", 409);
       }
       [localReplica] = await tx.update(workspaceReplicas).set({
         displayName,
         protocolVersion: input.protocolVersion ?? localReplica.protocolVersion,
-        capabilities: { ...storedCapabilities, ...capabilities, initialChoice },
+        initialChoice,
         updatedAt: now(),
       }).where(eq(workspaceReplicas.id, localReplica.id)).returning();
     }
@@ -366,14 +360,12 @@ export async function ensureWorkspaceReplica(input: {
     if (!state) throw new LocalAgentServiceError("workspace state unavailable", "workspace_state_unavailable", 500);
     let [bootstrapCycle] = await tx.select().from(workspaceSyncCycles).where(and(
       eq(workspaceSyncCycles.spaceId, input.spaceId),
-      inArray(workspaceSyncCycles.status, ["planned", "transferring", "applying_cloud", "applying_local", "verifying"]),
+      inArray(workspaceSyncCycles.status, ["planned", "transferring", "applying_cloud"]),
     )).orderBy(asc(workspaceSyncCycles.createdAt)).limit(1).for("update");
     if (!bootstrapCycle && !state.canonicalSnapshotId && initialChoice === "use-cloud") {
       [bootstrapCycle] = await tx.insert(workspaceSyncCycles).values({
         spaceId: input.spaceId,
         replicaId: cloudReplica.id,
-        direction: "initial_attach",
-        canonicalGenerationAtStart: state.generation,
         status: "planned",
       }).returning();
     }
@@ -406,9 +398,8 @@ const serializeReplica = (row: typeof workspaceReplicas.$inferSelect) => ({
   status: row.status,
   displayName: row.displayName,
   rootFingerprint: row.rootFingerprint,
-  boundaryMode: row.boundaryMode,
   protocolVersion: row.protocolVersion,
-  capabilities: row.capabilities,
+  initialChoice: row.initialChoice,
   currentSnapshotId: row.currentSnapshotId,
   appliedSnapshotId: row.appliedSnapshotId,
   lastCommonSnapshotId: row.lastCommonSnapshotId,
@@ -426,9 +417,8 @@ const serializeReplicaOverview = (row: typeof workspaceReplicas.$inferSelect) =>
   kind: row.kind,
   status: row.status,
   displayName: row.displayName,
-  boundaryMode: row.boundaryMode,
   protocolVersion: row.protocolVersion,
-  capabilities: row.capabilities,
+  initialChoice: row.initialChoice,
   currentSnapshotId: row.currentSnapshotId,
   appliedSnapshotId: row.appliedSnapshotId,
   lastCommonSnapshotId: row.lastCommonSnapshotId,
@@ -445,7 +435,6 @@ const serializeWorkspaceState = (row: typeof workspaceState.$inferSelect) => ({
   status: row.status,
   activeCycleId: row.activeCycleId,
   activeExecutionAttemptId: row.activeExecutionAttemptId,
-  lastWriterKind: row.lastWriterKind,
   updatedAt: row.updatedAt.toISOString(),
 });
 
@@ -791,10 +780,7 @@ export async function prepareWorkspaceSnapshot(input: { actor: LocalAgentActor; 
   if (source !== "watcher" && source !== "initial_merge" && source !== "initial_use_local") {
     throw new LocalAgentServiceError("snapshot source is unsupported", "snapshot_source_invalid", 400);
   }
-  const capabilities = replica.capabilities && typeof replica.capabilities === "object" && !Array.isArray(replica.capabilities)
-    ? replica.capabilities as Record<string, unknown>
-    : {};
-  const initialChoice = typeof capabilities.initialChoice === "string" ? capabilities.initialChoice : null;
+  const initialChoice = replica.initialChoice;
   if (source === "initial_merge" && initialChoice !== "merge") {
     throw new LocalAgentServiceError("replica was not attached with merge as its initial strategy", "initial_strategy_mismatch", 409);
   }
@@ -1286,9 +1272,7 @@ export async function commitWorkspaceSnapshot(input: { actor: LocalAgentActor; s
       replicaId: replica.id,
       baseSnapshotId: updated?.baseCanonicalSnapshotId ?? lockedSnapshot.baseCanonicalSnapshotId,
       localSnapshotId: updated?.id ?? lockedSnapshot.id,
-      direction: "reconcile",
       status: "planned",
-      canonicalGenerationAtStart: currentState.generation,
       executionAttemptId: updated?.sourceExecutionAttemptId ?? lockedSnapshot.sourceExecutionAttemptId,
       leaseEpoch: updated?.leaseEpoch ?? lockedSnapshot.leaseEpoch,
     }).onConflictDoNothing().returning();
@@ -1734,7 +1718,6 @@ export async function registerLocalWorkspaceAttempt(input: {
   runtimeId: string;
   leaseEpoch: number;
   baseSnapshotId: string | null;
-  workspacePolicyVersion: number;
   integrationPolicyVersion: number;
 }) {
   const replica = await resolveReplicaForActor({ actor: input.actor, spaceId: input.spaceId, replicaId: input.replicaId });
@@ -1802,7 +1785,6 @@ export async function registerLocalWorkspaceAttempt(input: {
   return {
     attemptId: attempt.id,
     status: attempt.status,
-    transcriptRequired: attempt.transcriptRequired,
     workspaceLeaseEpoch: attempt.workspaceLeaseEpoch,
   };
 }

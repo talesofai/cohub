@@ -2,7 +2,7 @@ import { randomUUID } from "node:crypto";
 import { realpathSync } from "node:fs";
 import { dirname, isAbsolute, relative, resolve } from "node:path";
 import { TextDecoder } from "node:util";
-import type { LocalProviderAdapter, LocalRuntimeCommand, LocalRuntimeEvent, LocalRuntimeProvider, LocalRuntimeProviderEvent, LocalRuntimeSessionHandle, LocalRuntimeSessionInput } from "@cohub/protocol";
+import type { LocalRuntimeCommand, LocalRuntimeEvent, LocalRuntimeProvider, LocalRuntimeProviderEvent } from "@cohub/protocol";
 import {
   LocalRuntimeCommandSchema,
   LocalRuntimeEventSchema,
@@ -14,10 +14,11 @@ import {
   LOCAL_RUNTIME_MAX_FRAME_BYTES_HARD,
   LOCAL_RUNTIME_MAX_COMMANDS,
   LOCAL_RUNTIME_MAX_SESSIONS,
-  type LocalRuntimeAdapterFactory,
-  type LocalRuntimeAdapterRegistry,
+  type LocalProviderAdapter,
   type LocalRuntimeLogger,
   type LocalRuntimeRunnerOptions,
+  type LocalRuntimeSessionHandle,
+  type LocalRuntimeSessionInput,
 } from "./types.js";
 import { providerIdValue } from "./provider-identity.js";
 import { pathInside, resolveWorkspacePath } from "./providers/workspace-path.js";
@@ -166,27 +167,6 @@ function isAbortError(error: unknown): boolean {
   return false;
 }
 
-function adapterFromRegistry(
-  registry: LocalRuntimeAdapterRegistry | undefined,
-  provider: LocalRuntimeProvider,
-): LocalRuntimeAdapterFactory | undefined {
-  if (!registry) return undefined;
-  if (registry instanceof Map) return registry.get(provider);
-  if (typeof registry === "object" && !Array.isArray(registry) && "open" in registry) {
-    return (registry as unknown as LocalProviderAdapter).provider === provider
-      ? registry as unknown as LocalProviderAdapter
-      : undefined;
-  }
-  if (typeof registry === "object" && !Array.isArray(registry) && provider in registry) {
-    return (registry as Partial<Record<LocalRuntimeProvider, LocalRuntimeAdapterFactory>>)[provider];
-  }
-  if (typeof (registry as Iterable<LocalProviderAdapter>)[Symbol.iterator] !== "function") return undefined;
-  for (const adapter of registry as Iterable<LocalProviderAdapter>) {
-    if (adapter.provider === provider) return adapter;
-  }
-  return undefined;
-}
-
 async function writeChunk(output: NodeJS.WritableStream, chunk: string): Promise<void> {
   const state = output as NodeJS.WritableStream & { destroyed?: boolean; writableEnded?: boolean };
   if (state.destroyed || state.writableEnded) throw new LocalRuntimeRunnerError("runtime output is closed", "output_closed");
@@ -332,8 +312,7 @@ export class LocalRuntimeRunnerError extends Error {
 export class LocalRuntimeRunner {
   private readonly input: NodeJS.ReadableStream;
   private readonly output: NodeJS.WritableStream;
-  private readonly adapters?: LocalRuntimeAdapterRegistry;
-  private readonly adapterFactory?: LocalRuntimeRunnerOptions["adapterFactory"];
+  private readonly adapterFactory: LocalRuntimeRunnerOptions["adapterFactory"];
   private readonly logger: LocalRuntimeLogger;
   private readonly maxFrameBytes: number;
   private readonly maxEventBytes: number;
@@ -355,10 +334,9 @@ export class LocalRuntimeRunner {
   private stopped = false;
   private removeExternalAbortListener: (() => void) | null = null;
 
-  constructor(options: LocalRuntimeRunnerOptions = {}) {
+  constructor(options: LocalRuntimeRunnerOptions) {
     this.input = options.input ?? process.stdin;
     this.output = options.output ?? process.stdout;
-    this.adapters = options.adapters;
     this.adapterFactory = options.adapterFactory;
     this.logger = options.logger ?? {};
     this.maxFrameBytes = options.maxFrameBytes ?? LOCAL_RUNTIME_MAX_FRAME_BYTES;
@@ -398,14 +376,6 @@ export class LocalRuntimeRunner {
         this.removeExternalAbortListener = () => this.externalSignal?.removeEventListener("abort", onAbort);
       }
     }
-  }
-
-  getSession(runtimeSessionId: string): Readonly<RuntimeSessionState> | null {
-    return this.sessions.get(runtimeSessionId) ?? null;
-  }
-
-  get activeTurnId(): string | null {
-    return this.activeTurn?.command.turnId ?? null;
   }
 
   /** Run until EOF, stop(), or an unrecoverable framing error. */
@@ -483,7 +453,6 @@ export class LocalRuntimeRunner {
       switch (command.operation) {
         case "session.open":
         case "session.resume":
-        case "session.fork":
           await this.openSession(command);
           break;
         case "turn.start":
@@ -520,36 +489,16 @@ export class LocalRuntimeRunner {
   }
 
   private async resolveAdapter(command: LocalRuntimeCommand): Promise<LocalProviderAdapter> {
-    const candidate = adapterFromRegistry(this.adapters, command.provider)
-      ?? (this.adapterFactory
-        ? await this.adapterFactory({
-            provider: command.provider,
-            command,
-            session: this.sessionInput(command),
-          })
-        : undefined);
+    const candidate = await this.adapterFactory(command.provider);
     if (!candidate) throw new LocalRuntimeRunnerError(`no adapter is configured for provider ${command.provider}`, "provider_unavailable");
-    const adapter = typeof candidate === "function"
-      ? await candidate({
-          provider: command.provider,
-          command,
-          session: this.sessionInput(command),
-        })
-      : candidate;
-    if (!adapter || typeof adapter.open !== "function" || adapter.provider !== command.provider) {
+    if (typeof candidate.open !== "function" || candidate.provider !== command.provider) {
       throw new LocalRuntimeRunnerError("provider adapter identity is invalid", "provider_adapter_invalid");
     }
-    return adapter;
+    return candidate;
   }
 
-  /** Keep provider-specific options on the local side of the wire boundary. */
   private sessionInput(command: LocalRuntimeCommand): LocalRuntimeSessionInput {
-    const payload = { ...command.payload };
     const cwd = this.mapWorkspacePath(command.cwd);
-    if (typeof payload.cwd === "string") payload.cwd = this.mapWorkspacePath(payload.cwd);
-    // Provider-specific additional directories could otherwise bypass the
-    // replica fence. The host process is already launched inside workspaceRoot.
-    delete payload.additionalDirectories;
     return {
       cwd,
       ...(this.workspaceRoot ? { workspaceRoot: this.workspaceRoot } : {}),
@@ -557,7 +506,6 @@ export class LocalRuntimeRunner {
       model: command.model ?? null,
       accessMode: command.accessMode,
       operation: command.operation,
-      payload,
       signal: this.runtimeAbort.signal,
     };
   }
@@ -594,11 +542,6 @@ export class LocalRuntimeRunner {
         throw new LocalRuntimeRunnerError("session.resume requires a native providerSessionId", "invalid_session_resume");
       }
     }
-    if (command.operation === "session.fork") {
-      if (!command.providerSessionId?.trim() || isProvisionalProviderSessionId(command.providerSessionId)) {
-        throw new LocalRuntimeRunnerError("session.fork requires a native source providerSessionId", "invalid_session_fork");
-      }
-    }
     const existing = this.sessions.get(command.runtimeSessionId);
     if (existing) {
       if (existing.status === "closed") throw new LocalRuntimeRunnerError("runtime session is already closed", "session_closed");
@@ -607,13 +550,6 @@ export class LocalRuntimeRunner {
       }
       if (existing.accessMode === "read_only" && command.accessMode === "full_access") {
         throw new LocalRuntimeRunnerError("runtime session accessMode cannot widen a read-only session", "access_mode_widening");
-      }
-      // A runtime session id represents one native session. Only an exact
-      // replay of the original open/resume operation may reuse it; accepting
-      // a new fork or a resume with a different lifecycle would otherwise
-      // silently bind a second provider side effect to the same ledger row.
-      if (command.operation === "session.fork") {
-        throw new LocalRuntimeRunnerError("runtime session already exists; fork requires a new runtimeSessionId", "session_exists");
       }
       if (command.operation === "session.resume" && command.providerSessionId !== existing.providerSessionId) {
         throw new LocalRuntimeRunnerError("provider session identity cannot be changed", "provider_session_mismatch");
@@ -631,12 +567,6 @@ export class LocalRuntimeRunner {
       throw new LocalRuntimeRunnerError("runtime session limit reached", "session_state_limit");
     }
     const adapter = await this.resolveAdapter(command);
-    if (command.operation === "session.resume" && adapter.capabilities?.sessionResume === false) {
-      throw new LocalRuntimeRunnerError("provider does not support session resume", "capability_missing");
-    }
-    if (command.operation === "session.fork" && adapter.capabilities?.sessionFork === false) {
-      throw new LocalRuntimeRunnerError("provider does not support session fork", "capability_missing");
-    }
     const handle = await adapter.open(this.sessionInput(command));
     if (!handle || typeof handle.run !== "function" || typeof handle.close !== "function") {
       throw new LocalRuntimeRunnerError("provider returned an invalid session handle", "provider_session_invalid");
@@ -676,7 +606,6 @@ export class LocalRuntimeRunner {
         operation: command.operation,
         providerSessionId,
         ...(providerSessionIdProvisional ? { provisional: true } : {}),
-        capabilities: adapter.capabilities,
       },
     });
   }
@@ -958,7 +887,7 @@ export class LocalRuntimeRunner {
       this.logger.warn?.("local runtime command rejected", { commandId: command.commandId, operation: command.operation, code, message });
       // There is no valid provider session id with which to construct an event;
       // closing the stream is safer than emitting an unverifiable frame.
-      if (["session.open", "session.resume", "session.fork"].includes(command.operation)) this.stop(error);
+      if (command.operation === "session.open" || command.operation === "session.resume") this.stop(error);
       return;
     }
     if (command.operation === "turn.start") {
@@ -1068,10 +997,6 @@ export class LocalRuntimeRunner {
   }
 }
 
-export function createLocalRuntimeRunner(options: LocalRuntimeRunnerOptions = {}): LocalRuntimeRunner {
-  return new LocalRuntimeRunner(options);
-}
-
-export function runLocalRuntime(options: LocalRuntimeRunnerOptions = {}): Promise<void> {
+export function runLocalRuntime(options: LocalRuntimeRunnerOptions): Promise<void> {
   return new LocalRuntimeRunner(options).run();
 }

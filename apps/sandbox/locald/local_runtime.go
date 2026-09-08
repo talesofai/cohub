@@ -42,10 +42,6 @@ type LocalRuntimeOptions struct {
 	// the workspace lease that authorized that channel.
 	ExecutionAttemptID string
 	Provider           string
-	ProviderVersion    string
-	AdapterVersion     string
-	Capabilities       map[string]bool
-	ProtocolVersion    int
 	ProviderCommand    string
 	ProviderArgs       []string
 	WorkspaceDir       string
@@ -227,18 +223,13 @@ func RunLocalRuntime(ctx context.Context, options LocalRuntimeOptions) error {
 			}
 			return finalizer.accessToken()
 		},
-		SpaceID:         options.SpaceID,
-		ReplicaID:       options.ReplicaID,
-		DeviceID:        options.DeviceID,
-		Kind:            "runtime",
-		RuntimeID:       options.RuntimeID,
-		Provider:        options.Provider,
-		ProviderVersion: options.ProviderVersion,
-		AdapterVersion:  options.AdapterVersion,
-		Capabilities:    options.Capabilities,
-		ProtocolVersion: options.ProtocolVersion,
-		RuntimeServer:   server,
-		Logger:          options.Logger,
+		SpaceID:       options.SpaceID,
+		ReplicaID:     options.ReplicaID,
+		Kind:          "runtime",
+		RuntimeID:     options.RuntimeID,
+		Provider:      options.Provider,
+		RuntimeServer: server,
+		Logger:        options.Logger,
 	})
 	options.Logger.Info("local runtime starting",
 		slog.String("runtimeId", options.RuntimeID),

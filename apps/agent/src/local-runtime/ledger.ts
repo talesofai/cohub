@@ -99,7 +99,6 @@ export async function recordInboundEvent(input: {
       runtimeSessionId: session.id,
       eventId,
       sequence,
-      direction: "inbound",
       kind: input.kind,
       commandId: input.commandId,
       payload: input.payload,
@@ -107,7 +106,6 @@ export async function recordInboundEvent(input: {
     });
     await tx.update(localAgentRuntimeSessions).set({
       lastEventSequence: sequence,
-      lastEventHash: payloadHash,
       lastSeenAt: new Date(),
       updatedAt: new Date(),
     }).where(eq(localAgentRuntimeSessions.id, session.id));

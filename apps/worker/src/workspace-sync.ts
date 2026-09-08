@@ -129,6 +129,73 @@ function targetPath(root: string, path: string) {
   return candidate;
 }
 
+async function assertSafeParentChain(path: string, options?: { allowMissing?: boolean }) {
+  const absolute = resolve(path);
+  const parent = dirname(absolute);
+  let current = "/";
+  for (const part of parent.slice(1).split("/")) {
+    if (!part) continue;
+    current = join(current, part);
+    const info = await lstat(current).catch((error: NodeJS.ErrnoException) => {
+      if (error.code === "ENOENT" && options?.allowMissing) return null;
+      throw error;
+    });
+    if (!info) return;
+    if (info.isSymbolicLink() || !info.isDirectory()) throw new Error(`workspace parent is not a directory: ${current}`);
+  }
+}
+
+async function assertSafeRoot(root: string) {
+  const absolute = resolve(root);
+  await assertSafeParentChain(absolute);
+  const info = await lstat(absolute);
+  if (info.isSymbolicLink() || !info.isDirectory()) throw new Error(`workspace root is not a directory: ${root}`);
+}
+
+async function syncDirectory(path: string) {
+  const handle = await open(path, "r");
+  try {
+    await handle.sync();
+  } finally {
+    await handle.close();
+  }
+}
+
+async function removeAndSync(path: string) {
+  const parent = dirname(resolve(path));
+  const parentInfo = await lstat(parent).catch((error: NodeJS.ErrnoException) => {
+    if (error.code === "ENOENT") return null;
+    throw error;
+  });
+  if (!parentInfo) return;
+  if (parentInfo.isSymbolicLink() || !parentInfo.isDirectory()) {
+    throw new Error(`workspace parent is not a directory: ${parent}`);
+  }
+  await rm(path, { recursive: true, force: true });
+  await syncDirectory(parent);
+}
+
+async function ensureDirectoryChain(path: string) {
+  const absolute = resolve(path);
+  const parts = absolute.slice(1).split("/").filter(Boolean);
+  let current = "/";
+  for (const part of parts) {
+    current = join(current, part);
+    const info = await lstat(current).catch((error: NodeJS.ErrnoException) => {
+      if (error.code === "ENOENT") return null;
+      throw error;
+    });
+    if (info) {
+      if (info.isSymbolicLink() || !info.isDirectory()) throw new Error(`workspace parent is not a directory: ${current}`);
+      continue;
+    }
+    await mkdir(current, { mode: 0o775 });
+    await syncDirectory(dirname(current));
+    const created = await lstat(current);
+    if (created.isSymbolicLink() || !created.isDirectory()) throw new Error(`workspace directory was replaced: ${current}`);
+  }
+}
+
 async function syncFile(path: string) {
   const handle = await open(path, "r");
   try {
@@ -139,7 +206,15 @@ async function syncFile(path: string) {
 }
 
 async function removeExisting(path: string) {
+  await assertSafeParentChain(path, { allowMissing: true });
+  const parentInfo = await lstat(dirname(resolve(path))).catch((error: NodeJS.ErrnoException) => {
+    if (error.code === "ENOENT") return null;
+    throw error;
+  });
+  if (!parentInfo) return;
+  if (parentInfo.isSymbolicLink() || !parentInfo.isDirectory()) throw new Error(`workspace parent is not a directory: ${dirname(resolve(path))}`);
   await rm(path, { recursive: true, force: true });
+  await syncDirectory(dirname(resolve(path)));
 }
 
 async function applyEntry(input: {
@@ -148,16 +223,18 @@ async function applyEntry(input: {
   blobByPath: Map<string, typeof workspaceBlobs.$inferSelect>;
   cycleId: string;
 }) {
+  await assertSafeRoot(input.root);
   const destination = targetPath(input.root, input.entry.path);
   if (input.entry.type === "directory") {
     await removeExisting(destination);
-    await mkdir(destination, { recursive: true, mode: 0o775 });
+    await ensureDirectoryChain(destination);
     return;
   }
-  await mkdir(dirname(destination), { recursive: true, mode: 0o775 });
+  await ensureDirectoryChain(dirname(destination));
   await removeExisting(destination);
   if (input.entry.type === "symlink") {
     await symlink(input.entry.symlinkTarget, destination);
+    await syncDirectory(dirname(destination));
     return;
   }
   const blob = input.blobByPath.get(input.entry.path);
@@ -166,13 +243,16 @@ async function applyEntry(input: {
   if (fileEntry.type !== "file") throw new Error(`workspace entry changed type for ${input.entry.path}`);
   const mode = fileEntry.executable ? 0o775 : 0o664;
   const temporary = `${destination}.cohub-${input.cycleId}.tmp`;
+  await removeExisting(temporary);
   await streamWorkspaceBlobToFile({ objectKey: blob.objectKey, expectedSize: blob.size, expectedSha256: blob.sha256, destination: temporary, mode });
   await chmod(temporary, mode);
   await syncFile(temporary);
   await rename(temporary, destination);
+  await syncDirectory(dirname(destination));
 }
 
 async function applyDelete(root: string, path: string) {
+  await assertSafeRoot(root);
   await removeExisting(targetPath(root, path));
 }
 
@@ -285,7 +365,7 @@ async function persistCloudSnapshot(input: {
     ) {
       throw new Error(`cloud snapshot ${snapshotId} was reused with different provenance or content`);
     }
-    if (snapshot.status === "rejected" || snapshot.status === "gc_pending") {
+    if (snapshot.status === "gc_pending") {
       throw new Error(`cloud snapshot ${snapshotId} is not recoverable from status ${snapshot.status}`);
     }
   } else {
@@ -338,7 +418,7 @@ async function persistCloudSnapshot(input: {
   const [ready] = await db.update(workspaceSnapshots).set({ status: "ready", updatedAt: new Date() }).where(and(
     eq(workspaceSnapshots.id, snapshot.id),
     eq(workspaceSnapshots.spaceId, input.spaceId),
-    sql`${workspaceSnapshots.status} in ('uploading', 'uploaded', 'verifying', 'ready')`,
+    sql`${workspaceSnapshots.status} in ('uploading', 'ready')`,
   )).returning();
   if (!ready) throw new Error(`failed to publish cloud workspace snapshot ${snapshotId}`);
   return ready;
@@ -396,17 +476,6 @@ async function loadSnapshotManifest(snapshotId: string | null): Promise<Workspac
 
 async function recordConflicts(input: { cycleId: string; spaceId: string; conflicts: ReturnType<typeof reconcileWorkspaceManifests>["conflicts"] }) {
   if (input.conflicts.length === 0) return;
-  const hashes = [...new Set(input.conflicts.flatMap((conflict) => [conflict.base, conflict.local, conflict.cloud])
-    .filter((entry): entry is Extract<WorkspaceManifestEntry, { type: "file" }> => entry?.type === "file")
-    .map((entry) => entry.sha256))];
-  const blobs = hashes.length > 0
-    ? await db.select({ sha256: workspaceBlobs.sha256, objectKey: workspaceBlobs.objectKey }).from(workspaceBlobs).where(and(
-        eq(workspaceBlobs.spaceId, input.spaceId),
-        inArray(workspaceBlobs.sha256, hashes),
-      ))
-    : [];
-  const objectKeyByHash = new Map(blobs.map((blob) => [blob.sha256, blob.objectKey]));
-  const objectKey = (entry: WorkspaceManifestEntry | null) => entry?.type === "file" ? objectKeyByHash.get(entry.sha256) ?? null : null;
   await db.insert(workspaceSyncConflicts).values(input.conflicts.map((conflict) => ({
     cycleId: input.cycleId,
     spaceId: input.spaceId,
@@ -415,9 +484,6 @@ async function recordConflicts(input: { cycleId: string; spaceId: string; confli
     baseEntry: conflict.base as Record<string, unknown> | null,
     localEntry: conflict.local as Record<string, unknown> | null,
     cloudEntry: conflict.cloud as Record<string, unknown> | null,
-    baseObjectKey: objectKey(conflict.base),
-    localObjectKey: objectKey(conflict.local),
-    cloudObjectKey: objectKey(conflict.cloud),
     status: "open" as const,
   }))).onConflictDoNothing();
 }
@@ -489,14 +555,18 @@ const pathDepth = (value: string) => value.split("/").length;
 const applyJournalRoot = (spaceId: string, cycleId: string) => join(config.spaceSystemRoot, "workspace-apply-journal", spaceId, cycleId);
 
 async function copyWorkspaceNode(source: string, destination: string) {
+  await assertSafeParentChain(source, { allowMissing: true });
+  await ensureDirectoryChain(dirname(destination));
   const info = await lstat(source);
-  await mkdir(dirname(destination), { recursive: true, mode: 0o775 });
   if (info.isSymbolicLink()) {
     await symlink(await readlink(source), destination);
+    await syncDirectory(dirname(destination));
     return;
   }
   if (info.isDirectory()) {
-    await mkdir(destination, { recursive: true, mode: info.mode & 0o777 });
+    await removeExisting(destination);
+    await mkdir(destination, { mode: info.mode & 0o777 });
+    await syncDirectory(dirname(destination));
     for (const child of await readdir(source)) {
       await copyWorkspaceNode(join(source, child), join(destination, child));
     }
@@ -506,14 +576,16 @@ async function copyWorkspaceNode(source: string, destination: string) {
   await cp(source, destination, { force: false, errorOnExist: true, preserveTimestamps: true });
   await chmod(destination, info.mode & 0o777);
   await syncFile(destination);
+  await syncDirectory(dirname(destination));
 }
 
 async function rollbackApplyJournal(root: string, stageRoot: string, entries: ApplyJournalEntry[]) {
+  await assertSafeRoot(root);
   const restored: string[] = [];
   for (const entry of entries) {
     if (restored.some((ancestor) => entry.path === ancestor || entry.path.startsWith(`${ancestor}/`))) continue;
     const destination = targetPath(root, entry.path);
-    await rm(destination, { recursive: true, force: true });
+    await removeExisting(destination);
     if (entry.existed) {
       await copyWorkspaceNode(join(stageRoot, "nodes", ...entry.path.split("/")), destination);
     }
@@ -522,13 +594,17 @@ async function rollbackApplyJournal(root: string, stageRoot: string, entries: Ap
 }
 
 async function recoverApplyJournal(root: string, stageRoot: string) {
+  await assertSafeRoot(root);
+  await assertSafeParentChain(stageRoot, { allowMissing: true });
+  const stageInfo = await lstat(stageRoot);
+  if (stageInfo.isSymbolicLink() || !stageInfo.isDirectory()) throw new Error("workspace apply journal root is not a directory");
   const descriptorPath = join(stageRoot, "journal.json");
   const descriptorBytes = await readFile(descriptorPath).catch((error: NodeJS.ErrnoException) => {
     if (error.code === "ENOENT") return null;
     throw error;
   });
   if (!descriptorBytes) {
-    await rm(stageRoot, { recursive: true, force: true });
+    await removeAndSync(stageRoot);
     return;
   }
   const descriptor = JSON.parse(descriptorBytes.toString("utf8")) as { version?: unknown; root?: unknown; entries?: unknown };
@@ -543,15 +619,21 @@ async function recoverApplyJournal(root: string, stageRoot: string) {
     return { path: entry.path, existed: entry.existed };
   });
   await rollbackApplyJournal(root, stageRoot, entries);
-  await rm(stageRoot, { recursive: true, force: true });
+  await removeAndSync(stageRoot);
+}
+
+export async function recoverWorkspaceApplyBeforeRetry(input: { root: string; stageRoot: string }) {
+  const exists = await lstat(input.stageRoot).then(
+    () => true,
+    (error: NodeJS.ErrnoException) => error.code === "ENOENT" ? false : Promise.reject(error),
+  );
+  if (exists) await recoverApplyJournal(input.root, input.stageRoot);
 }
 
 async function createApplyJournal(input: { root: string; cycleId: string; spaceId: string; paths: string[] }): Promise<ApplyJournal> {
   const stageRoot = applyJournalRoot(input.spaceId, input.cycleId);
-  if (await lstat(stageRoot).then(() => true).catch((error: NodeJS.ErrnoException) => error.code === "ENOENT" ? false : Promise.reject(error))) {
-    await recoverApplyJournal(input.root, stageRoot);
-  }
-  await mkdir(stageRoot, { recursive: true, mode: 0o700 });
+  await recoverWorkspaceApplyBeforeRetry({ root: input.root, stageRoot });
+  await ensureDirectoryChain(stageRoot);
   const uniquePaths = [...new Set(input.paths)].sort((left, right) => pathDepth(left) - pathDepth(right) || left.localeCompare(right));
   const entries: ApplyJournalEntry[] = [];
   try {
@@ -574,12 +656,13 @@ async function createApplyJournal(input: { root: string; cycleId: string; spaceI
     const descriptorPath = join(stageRoot, "journal.json");
     await writeFile(descriptorPath, JSON.stringify({ version: 1, root: resolve(input.root), entries }), { mode: 0o600, flag: "wx" });
     await syncFile(descriptorPath);
+    await syncDirectory(stageRoot);
     return {
       rollback: () => rollbackApplyJournal(input.root, stageRoot, entries),
-      cleanup: () => rm(stageRoot, { recursive: true, force: true }),
+      cleanup: () => removeAndSync(stageRoot),
     };
   } catch (error) {
-    await rm(stageRoot, { recursive: true, force: true }).catch(() => undefined);
+    await removeAndSync(stageRoot).catch(() => undefined);
     throw error;
   }
 }
@@ -668,10 +751,14 @@ async function processWorkspaceSyncJobLocked(job: Job<WorkspaceSyncJobData>) {
   const { cycleId, spaceId } = job.data;
   const [cycle] = await db.select().from(workspaceSyncCycles).where(and(eq(workspaceSyncCycles.id, cycleId), eq(workspaceSyncCycles.spaceId, spaceId))).limit(1);
   if (!cycle) throw new Error("workspace_sync_cycle_not_found");
-  if (isTerminal(cycle.status)) {
-    await rm(applyJournalRoot(spaceId, cycleId), { recursive: true, force: true });
+  const workspaceRoot = join(config.spaceStorageRoot, spaceId, "workspace");
+  const journalRoot = applyJournalRoot(spaceId, cycleId);
+  if (cycle.status === "completed") {
+    await removeAndSync(journalRoot);
     return { cycleId, status: cycle.status };
   }
+  await recoverWorkspaceApplyBeforeRetry({ root: workspaceRoot, stageRoot: journalRoot });
+  if (isTerminal(cycle.status)) return { cycleId, status: cycle.status };
   await db.update(workspaceSyncCycles).set({ status: "transferring", updatedAt: new Date() }).where(and(eq(workspaceSyncCycles.id, cycle.id), eq(workspaceSyncCycles.status, "planned")));
 
   const [policy] = await db.select().from(spaceWorkspacePolicies).where(eq(spaceWorkspacePolicies.spaceId, spaceId)).limit(1);
@@ -682,7 +769,7 @@ async function processWorkspaceSyncJobLocked(job: Job<WorkspaceSyncJobData>) {
 
   let scan: Awaited<ReturnType<typeof scanWorkspaceReplica>>;
   try {
-    scan = await scanWorkspaceReplica(join(config.spaceStorageRoot, spaceId, "workspace"), scanOptions(policy));
+    scan = await scanWorkspaceReplica(workspaceRoot, scanOptions(policy));
   } catch (error) {
     const message = error instanceof WorkspaceScanError ? `${error.code}: ${error.message}` : error instanceof Error ? error.message : String(error);
     await db.transaction(async (tx) => {
@@ -707,7 +794,7 @@ async function processWorkspaceSyncJobLocked(job: Job<WorkspaceSyncJobData>) {
   const cloudSnapshot = await persistCloudSnapshot({
     snapshotId: cloudSnapshotId,
     spaceId,
-    root: join(config.spaceStorageRoot, spaceId, "workspace"),
+    root: workspaceRoot,
     cloudReplicaId: cloudReplica.id,
     manifest: scan.manifest,
     treeHash: scan.treeHash,
@@ -721,7 +808,7 @@ async function processWorkspaceSyncJobLocked(job: Job<WorkspaceSyncJobData>) {
 
   if (!state.canonicalSnapshotId && !cycle.localSnapshotId) {
     await db.transaction(async (tx) => {
-      await tx.update(workspaceState).set({ canonicalSnapshotId: cloudSnapshot.id, cloudAppliedSnapshotId: cloudSnapshot.id, generation: currentGeneration + 1, status: "ready", activeCycleId: null, updatedAt: new Date(), lastWriterKind: "cloud_scan", lastWriterId: cloudSnapshot.id }).where(eq(workspaceState.spaceId, spaceId));
+      await tx.update(workspaceState).set({ canonicalSnapshotId: cloudSnapshot.id, cloudAppliedSnapshotId: cloudSnapshot.id, generation: currentGeneration + 1, status: "ready", activeCycleId: null, updatedAt: new Date() }).where(eq(workspaceState.spaceId, spaceId));
       await tx.update(workspaceReplicas).set({ currentSnapshotId: cloudSnapshot.id, appliedSnapshotId: cloudSnapshot.id, lastCommonSnapshotId: cloudSnapshot.id, status: "ready", updatedAt: new Date() }).where(eq(workspaceReplicas.id, cloudReplica.id));
       // Every attached local replica must learn the canonical pointer, but a
       // replica with its own outstanding candidate keeps that pointer until
@@ -754,8 +841,8 @@ async function processWorkspaceSyncJobLocked(job: Job<WorkspaceSyncJobData>) {
         if (cycle.executionAttemptId) {
           await tx.update(workspaceExecutionAttempts).set({
             resultSnapshotId: canonicalSnapshotId,
-            status: sql`case when ${workspaceExecutionAttempts.transcriptRequired} = false or ${workspaceExecutionAttempts.status} = 'transcript_sealed' or ${terminalAttemptTurn} then 'completed' else 'workspace_sealed' end`,
-            completedAt: sql`case when ${workspaceExecutionAttempts.transcriptRequired} = false or ${workspaceExecutionAttempts.status} = 'transcript_sealed' or ${terminalAttemptTurn} then now() else ${workspaceExecutionAttempts.completedAt} end`,
+            status: sql`case when ${workspaceExecutionAttempts.status} = 'transcript_sealed' or ${terminalAttemptTurn} then 'completed' else 'workspace_sealed' end`,
+            completedAt: sql`case when ${workspaceExecutionAttempts.status} = 'transcript_sealed' or ${terminalAttemptTurn} then now() else ${workspaceExecutionAttempts.completedAt} end`,
             updatedAt: new Date(),
           }).where(and(eq(workspaceExecutionAttempts.id, cycle.executionAttemptId), inArray(workspaceExecutionAttempts.status, ["running", "transcript_sealed", "awaiting_recovery"])));
         }
@@ -766,7 +853,7 @@ async function processWorkspaceSyncJobLocked(job: Job<WorkspaceSyncJobData>) {
     await assertCycleStillFenced({ cycle, spaceId, expectedGeneration: currentGeneration });
     await db.transaction(async (tx) => {
       const changedAt = new Date();
-      await tx.update(workspaceState).set({ canonicalSnapshotId: cloudSnapshot.id, cloudAppliedSnapshotId: cloudSnapshot.id, generation: currentGeneration + 1, status: "ready", activeCycleId: null, updatedAt: changedAt, lastWriterKind: "cloud_scan", lastWriterId: cloudSnapshot.id }).where(eq(workspaceState.spaceId, spaceId));
+      await tx.update(workspaceState).set({ canonicalSnapshotId: cloudSnapshot.id, cloudAppliedSnapshotId: cloudSnapshot.id, generation: currentGeneration + 1, status: "ready", activeCycleId: null, updatedAt: changedAt }).where(eq(workspaceState.spaceId, spaceId));
       await tx.update(workspaceReplicas).set({ currentSnapshotId: cloudSnapshot.id, appliedSnapshotId: cloudSnapshot.id, lastCommonSnapshotId: cloudSnapshot.id, status: "ready", updatedAt: changedAt }).where(eq(workspaceReplicas.id, cloudReplica.id));
       await tx.update(workspaceReplicas).set({ currentSnapshotId: cloudSnapshot.id, status: "syncing", updatedAt: changedAt }).where(and(
         eq(workspaceReplicas.spaceId, spaceId),
@@ -777,8 +864,8 @@ async function processWorkspaceSyncJobLocked(job: Job<WorkspaceSyncJobData>) {
       if (cycle.executionAttemptId) {
         await tx.update(workspaceExecutionAttempts).set({
           resultSnapshotId: cloudSnapshot.id,
-          status: sql`case when ${workspaceExecutionAttempts.transcriptRequired} = false or ${workspaceExecutionAttempts.status} = 'transcript_sealed' or ${terminalAttemptTurn} then 'completed' else 'workspace_sealed' end`,
-          completedAt: sql`case when ${workspaceExecutionAttempts.transcriptRequired} = false or ${workspaceExecutionAttempts.status} = 'transcript_sealed' or ${terminalAttemptTurn} then now() else ${workspaceExecutionAttempts.completedAt} end`,
+          status: sql`case when ${workspaceExecutionAttempts.status} = 'transcript_sealed' or ${terminalAttemptTurn} then 'completed' else 'workspace_sealed' end`,
+          completedAt: sql`case when ${workspaceExecutionAttempts.status} = 'transcript_sealed' or ${terminalAttemptTurn} then now() else ${workspaceExecutionAttempts.completedAt} end`,
           updatedAt: changedAt,
         }).where(and(eq(workspaceExecutionAttempts.id, cycle.executionAttemptId), inArray(workspaceExecutionAttempts.status, ["running", "transcript_sealed", "awaiting_recovery"])));
       }
@@ -821,7 +908,7 @@ async function processWorkspaceSyncJobLocked(job: Job<WorkspaceSyncJobData>) {
   await assertCycleStillFenced({ cycle, spaceId, expectedGeneration: currentGeneration });
   await db.update(workspaceSyncCycles).set({ status: "applying_cloud", updatedAt: new Date() }).where(eq(workspaceSyncCycles.id, cycleId));
   const applyJournal = await applyLocalPlan({
-    root: join(config.spaceStorageRoot, spaceId, "workspace"),
+    root: workspaceRoot,
     cycleId,
     spaceId,
     plan,
@@ -831,7 +918,7 @@ async function processWorkspaceSyncJobLocked(job: Job<WorkspaceSyncJobData>) {
   });
   let promoted = false;
   try {
-    const verified = await scanWorkspaceReplica(join(config.spaceStorageRoot, spaceId, "workspace"), scanOptions(policy));
+    const verified = await scanWorkspaceReplica(workspaceRoot, scanOptions(policy));
     const expected = mergedManifest({ cloud: scan.manifest, local: localManifest, plan });
     const expectedTreeHash = await canonicalJsonSha256({ scanPolicyHash: expected.scanPolicyHash, entries: expected.entries, boundaries: expected.boundaries, portableGitState: expected.portableGitState });
     if (verified.treeHash !== expectedTreeHash) throw new Error("cloud workspace verification hash mismatch after apply");
@@ -840,7 +927,7 @@ async function processWorkspaceSyncJobLocked(job: Job<WorkspaceSyncJobData>) {
     const resultSnapshot = await persistCloudSnapshot({
       snapshotId: resultSnapshotId,
       spaceId,
-      root: join(config.spaceStorageRoot, spaceId, "workspace"),
+      root: workspaceRoot,
       cloudReplicaId: cloudReplica.id,
       manifest: verified.manifest,
       treeHash: verified.treeHash,
@@ -851,7 +938,7 @@ async function processWorkspaceSyncJobLocked(job: Job<WorkspaceSyncJobData>) {
       generation: nextCloudReplicaGeneration + 1,
     });
     await db.transaction(async (tx) => {
-      const promotedState = await tx.update(workspaceState).set({ canonicalSnapshotId: resultSnapshot.id, cloudAppliedSnapshotId: resultSnapshot.id, generation: currentGeneration + 1, status: "ready", activeCycleId: null, updatedAt: new Date(), lastWriterKind: "workspace_sync", lastWriterId: cycle.replicaId }).where(and(eq(workspaceState.spaceId, spaceId), eq(workspaceState.generation, currentGeneration))).returning({ spaceId: workspaceState.spaceId });
+      const promotedState = await tx.update(workspaceState).set({ canonicalSnapshotId: resultSnapshot.id, cloudAppliedSnapshotId: resultSnapshot.id, generation: currentGeneration + 1, status: "ready", activeCycleId: null, updatedAt: new Date() }).where(and(eq(workspaceState.spaceId, spaceId), eq(workspaceState.generation, currentGeneration))).returning({ spaceId: workspaceState.spaceId });
       if (promotedState.length === 0) throw new Error("workspace canonical generation changed before promotion; the cycle must be re-planned");
       await tx.update(workspaceReplicas).set({ currentSnapshotId: resultSnapshot.id, appliedSnapshotId: resultSnapshot.id, lastCommonSnapshotId: resultSnapshot.id, status: "ready", updatedAt: new Date() }).where(eq(workspaceReplicas.id, cloudReplica.id));
       // The worker changed the cloud copy, not the local filesystem. Advance
@@ -866,8 +953,8 @@ async function processWorkspaceSyncJobLocked(job: Job<WorkspaceSyncJobData>) {
       if (cycle.executionAttemptId) {
         await tx.update(workspaceExecutionAttempts).set({
           resultSnapshotId: resultSnapshot.id,
-          status: sql`case when ${workspaceExecutionAttempts.transcriptRequired} = false or ${workspaceExecutionAttempts.status} = 'transcript_sealed' or ${terminalAttemptTurn} then 'completed' else 'workspace_sealed' end`,
-          completedAt: sql`case when ${workspaceExecutionAttempts.transcriptRequired} = false or ${workspaceExecutionAttempts.status} = 'transcript_sealed' or ${terminalAttemptTurn} then now() else ${workspaceExecutionAttempts.completedAt} end`,
+          status: sql`case when ${workspaceExecutionAttempts.status} = 'transcript_sealed' or ${terminalAttemptTurn} then 'completed' else 'workspace_sealed' end`,
+          completedAt: sql`case when ${workspaceExecutionAttempts.status} = 'transcript_sealed' or ${terminalAttemptTurn} then now() else ${workspaceExecutionAttempts.completedAt} end`,
           updatedAt: new Date(),
         }).where(and(eq(workspaceExecutionAttempts.id, cycle.executionAttemptId), inArray(workspaceExecutionAttempts.status, ["running", "transcript_sealed", "awaiting_recovery"])));
       }

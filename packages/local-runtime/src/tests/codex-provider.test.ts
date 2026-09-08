@@ -9,7 +9,7 @@ import {
   CodexAdapter,
   createCodexEventContext,
   mapCodexEvent,
-} from "@cohub/local-runtime/providers/codex";
+} from "../providers/codex.js";
 
 async function* eventsFrom(events: ThreadEvent[]) {
   for (const event of events) yield event;
@@ -294,10 +294,6 @@ test("enforces Codex session operation invariants before creating a thread", asy
     () => adapter.open({ cwd: "/workspace", operation: "session.open", providerSessionId: "thread-1" }),
     /session\.open must not include a providerSessionId/,
   );
-  await assert.rejects(
-    () => adapter.open({ cwd: "/workspace", operation: "session.fork", providerSessionId: "thread-1" }),
-    /does not support session fork/,
-  );
 });
 
 test("rejects oversized or unsafe Codex resume ids before invoking the SDK", async () => {
@@ -319,7 +315,7 @@ test("rejects oversized or unsafe Codex resume ids before invoking the SDK", asy
   assert.equal(calls, 0);
 });
 
-test("reads Codex thread settings from the provider payload only", async () => {
+test("reads Codex thread settings from local adapter configuration", async () => {
   let receivedOptions: ThreadOptions | undefined;
   const thread = {
     id: "thread-payload-only",
@@ -328,32 +324,31 @@ test("reads Codex thread settings from the provider payload only", async () => {
     },
   };
   const adapter = new CodexAdapter({
+    modelReasoningEffort: "high",
     clientFactory: () => ({
       startThread(options?: ThreadOptions) { receivedOptions = options; return thread; },
       resumeThread(_id: string, options?: ThreadOptions) { receivedOptions = options; return thread; },
     }),
   });
-  const handle = await adapter.open({
-    cwd: "/workspace",
-    payload: { modelReasoningEffort: "high" },
-  });
+  const handle = await adapter.open({ cwd: "/workspace" });
   assert.equal(receivedOptions?.modelReasoningEffort, "high");
   await handle.close();
 });
 
 test("rejects unsupported Codex model reasoning effort values", async () => {
   const adapter = new CodexAdapter({
+    modelReasoningEffort: "unbounded" as never,
     clientFactory: () => {
       throw new Error("client must not be created for invalid reasoning effort");
     },
   });
   await assert.rejects(
-    () => adapter.open({ cwd: "/workspace", payload: { modelReasoningEffort: "unbounded" } }),
+    () => adapter.open({ cwd: "/workspace" }),
     /modelReasoningEffort is invalid/,
   );
 });
 
-test("keeps Codex sandbox and approval policy inside the authorized access mode", async () => {
+test("derives Codex sandbox and approval policy from the authorized access mode", async () => {
   const received: ThreadOptions[] = [];
   const thread = {
     id: "thread-1",
@@ -365,20 +360,14 @@ test("keeps Codex sandbox and approval policy inside the authorized access mode"
     startThread(options?: ThreadOptions) { if (options) received.push(options); return thread; },
     resumeThread(_id: string, options?: ThreadOptions) { if (options) received.push(options); return thread; },
   };
-  const adapter = new CodexAdapter({
-    sandboxMode: "danger-full-access",
-    approvalPolicy: "on-request",
-    clientFactory: () => client,
-  });
+  const adapter = new CodexAdapter({ clientFactory: () => client });
   const readOnly = await adapter.open({
     cwd: "/workspace",
     accessMode: "read_only",
-    payload: { sandboxMode: "danger-full-access", approvalPolicy: "on-request" },
   });
   const fullAccess = await adapter.open({
     cwd: "/workspace",
     accessMode: "full_access",
-    payload: { sandboxMode: "danger-full-access", approvalPolicy: "on-request" },
   });
   assert.equal(received[0]?.sandboxMode, "read-only");
   assert.equal(received[0]?.approvalPolicy, "never");
@@ -411,7 +400,6 @@ test("does not allow read-only Codex sessions to inherit network or search acces
   const handle = await adapter.open({
     cwd: "/workspace",
     accessMode: "read_only",
-    payload: { networkAccessEnabled: true, webSearchMode: "live", webSearchEnabled: true },
   });
   assert.equal(receivedOptions?.networkAccessEnabled, false);
   assert.equal(receivedOptions?.webSearchMode, "disabled");

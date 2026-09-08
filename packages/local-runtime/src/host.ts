@@ -4,7 +4,7 @@ import {
   type LocalRuntimeProvider,
 } from "@cohub/protocol";
 import {
-  createDefaultLocalRuntimeAdapters,
+  createDefaultLocalRuntimeAdapter,
 } from "./providers/index.js";
 import {
   LocalRuntimeRunner,
@@ -14,11 +14,10 @@ import type { LocalRuntimeRunnerOptions } from "./types.js";
 
 export const LOCAL_RUNTIME_HOST_VERSION = "1.0.0";
 
-export type LocalRuntimeHostOptions = Omit<LocalRuntimeRunnerOptions, "adapters" | "input" | "output" | "endOutput"> & {
+export type LocalRuntimeHostOptions = Omit<LocalRuntimeRunnerOptions, "adapterFactory" | "input" | "output" | "endOutput"> & {
   input?: NodeJS.ReadableStream;
   output?: NodeJS.WritableStream;
-  /** Override the built-in provider registry for embedding/tests. */
-  adapters?: LocalRuntimeRunnerOptions["adapters"];
+  adapterFactory?: LocalRuntimeRunnerOptions["adapterFactory"];
   endOutput?: boolean;
 };
 
@@ -54,7 +53,7 @@ export function createLocalRuntimeHost(options: LocalRuntimeHostOptions = {}): L
     workspaceRoot,
     input: options.input ?? process.stdin,
     output: options.output ?? process.stdout,
-    adapters: options.adapters ?? createDefaultLocalRuntimeAdapters(),
+    adapterFactory: options.adapterFactory ?? createDefaultLocalRuntimeAdapter,
     endOutput: options.endOutput ?? true,
   });
 }

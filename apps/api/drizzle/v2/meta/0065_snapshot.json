@@ -4247,12 +4247,6 @@
           "primaryKey": false,
           "notNull": true
         },
-        "direction": {
-          "name": "direction",
-          "type": "varchar(20)",
-          "primaryKey": false,
-          "notNull": true
-        },
         "kind": {
           "name": "kind",
           "type": "varchar(120)",
@@ -4454,12 +4448,6 @@
           "notNull": true,
           "default": 0
         },
-        "last_event_hash": {
-          "name": "last_event_hash",
-          "type": "varchar(64)",
-          "primaryKey": false,
-          "notNull": false
-        },
         "last_seen_at": {
           "name": "last_seen_at",
           "type": "timestamp with time zone",
@@ -4649,33 +4637,12 @@
           "primaryKey": false,
           "notNull": true
         },
-        "provider_version": {
-          "name": "provider_version",
-          "type": "varchar(120)",
-          "primaryKey": false,
-          "notNull": true,
-          "default": "'unknown'"
-        },
-        "adapter_version": {
-          "name": "adapter_version",
-          "type": "varchar(120)",
-          "primaryKey": false,
-          "notNull": true,
-          "default": "'unknown'"
-        },
         "protocol_version": {
           "name": "protocol_version",
           "type": "integer",
           "primaryKey": false,
           "notNull": true,
           "default": 1
-        },
-        "capabilities": {
-          "name": "capabilities",
-          "type": "jsonb",
-          "primaryKey": false,
-          "notNull": true,
-          "default": "'{}'::jsonb"
         },
         "status": {
           "name": "status",
@@ -6828,7 +6795,7 @@
           "type": "varchar(30)",
           "primaryKey": false,
           "notNull": true,
-          "default": "'handoff'"
+          "default": "'two_way_safe'"
         },
         "updated_by": {
           "name": "updated_by",
@@ -9686,20 +9653,6 @@
           "primaryKey": false,
           "notNull": false
         },
-        "workspace_required": {
-          "name": "workspace_required",
-          "type": "boolean",
-          "primaryKey": false,
-          "notNull": true,
-          "default": true
-        },
-        "transcript_required": {
-          "name": "transcript_required",
-          "type": "boolean",
-          "primaryKey": false,
-          "notNull": true,
-          "default": true
-        },
         "session_id": {
           "name": "session_id",
           "type": "uuid",
@@ -9712,12 +9665,6 @@
           "primaryKey": false,
           "notNull": false
         },
-        "relative_cwd": {
-          "name": "relative_cwd",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": false
-        },
         "base_canonical_snapshot_id": {
           "name": "base_canonical_snapshot_id",
           "type": "uuid",
@@ -9726,12 +9673,6 @@
         },
         "workspace_lease_epoch": {
           "name": "workspace_lease_epoch",
-          "type": "bigint",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "workspace_policy_version": {
-          "name": "workspace_policy_version",
           "type": "bigint",
           "primaryKey": false,
           "notNull": false
@@ -10076,18 +10017,6 @@
           "primaryKey": false,
           "notNull": false
         },
-        "parent_replica_id": {
-          "name": "parent_replica_id",
-          "type": "uuid",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "boundary_mode": {
-          "name": "boundary_mode",
-          "type": "varchar(30)",
-          "primaryKey": false,
-          "notNull": false
-        },
         "protocol_version": {
           "name": "protocol_version",
           "type": "integer",
@@ -10095,12 +10024,11 @@
           "notNull": true,
           "default": 1
         },
-        "capabilities": {
-          "name": "capabilities",
-          "type": "jsonb",
+        "initial_choice": {
+          "name": "initial_choice",
+          "type": "varchar(20)",
           "primaryKey": false,
-          "notNull": true,
-          "default": "'{}'::jsonb"
+          "notNull": false
         },
         "current_snapshot_id": {
           "name": "current_snapshot_id",
@@ -10263,20 +10191,6 @@
           "schemaTo": "v2",
           "columnsFrom": [
             "device_id"
-          ],
-          "columnsTo": [
-            "id"
-          ],
-          "onDelete": "restrict",
-          "onUpdate": "no action"
-        },
-        "workspace_replicas_parent_replica_id_workspace_replicas_id_fk": {
-          "name": "workspace_replicas_parent_replica_id_workspace_replicas_id_fk",
-          "tableFrom": "workspace_replicas",
-          "tableTo": "workspace_replicas",
-          "schemaTo": "v2",
-          "columnsFrom": [
-            "parent_replica_id"
           ],
           "columnsTo": [
             "id"
@@ -10501,12 +10415,6 @@
           "primaryKey": false,
           "notNull": false
         },
-        "merge_parent_snapshot_id": {
-          "name": "merge_parent_snapshot_id",
-          "type": "uuid",
-          "primaryKey": false,
-          "notNull": false
-        },
         "base_canonical_snapshot_id": {
           "name": "base_canonical_snapshot_id",
           "type": "uuid",
@@ -10581,18 +10489,6 @@
           "type": "varchar(40)",
           "primaryKey": false,
           "notNull": true
-        },
-        "source_session_id": {
-          "name": "source_session_id",
-          "type": "uuid",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "source_turn_id": {
-          "name": "source_turn_id",
-          "type": "uuid",
-          "primaryKey": false,
-          "notNull": false
         },
         "source_execution_attempt_id": {
           "name": "source_execution_attempt_id",
@@ -10763,20 +10659,6 @@
           "onDelete": "restrict",
           "onUpdate": "no action"
         },
-        "workspace_snapshots_merge_parent_snapshot_id_workspace_snapshots_id_fk": {
-          "name": "workspace_snapshots_merge_parent_snapshot_id_workspace_snapshots_id_fk",
-          "tableFrom": "workspace_snapshots",
-          "tableTo": "workspace_snapshots",
-          "schemaTo": "v2",
-          "columnsFrom": [
-            "merge_parent_snapshot_id"
-          ],
-          "columnsTo": [
-            "id"
-          ],
-          "onDelete": "restrict",
-          "onUpdate": "no action"
-        },
         "workspace_snapshots_base_canonical_snapshot_id_workspace_snapshots_id_fk": {
           "name": "workspace_snapshots_base_canonical_snapshot_id_workspace_snapshots_id_fk",
           "tableFrom": "workspace_snapshots",
@@ -10784,34 +10666,6 @@
           "schemaTo": "v2",
           "columnsFrom": [
             "base_canonical_snapshot_id"
-          ],
-          "columnsTo": [
-            "id"
-          ],
-          "onDelete": "restrict",
-          "onUpdate": "no action"
-        },
-        "workspace_snapshots_source_session_id_space_sessions_id_fk": {
-          "name": "workspace_snapshots_source_session_id_space_sessions_id_fk",
-          "tableFrom": "workspace_snapshots",
-          "tableTo": "space_sessions",
-          "schemaTo": "v2",
-          "columnsFrom": [
-            "source_session_id"
-          ],
-          "columnsTo": [
-            "id"
-          ],
-          "onDelete": "restrict",
-          "onUpdate": "no action"
-        },
-        "workspace_snapshots_source_turn_id_session_turns_id_fk": {
-          "name": "workspace_snapshots_source_turn_id_session_turns_id_fk",
-          "tableFrom": "workspace_snapshots",
-          "tableTo": "session_turns",
-          "schemaTo": "v2",
-          "columnsFrom": [
-            "source_turn_id"
           ],
           "columnsTo": [
             "id"
@@ -10885,18 +10739,6 @@
         "active_execution_attempt_id": {
           "name": "active_execution_attempt_id",
           "type": "uuid",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "last_writer_kind": {
-          "name": "last_writer_kind",
-          "type": "varchar(40)",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "last_writer_id": {
-          "name": "last_writer_id",
-          "type": "varchar(255)",
           "primaryKey": false,
           "notNull": false
         },
@@ -11074,24 +10916,6 @@
         "cloud_entry": {
           "name": "cloud_entry",
           "type": "jsonb",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "base_object_key": {
-          "name": "base_object_key",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "local_object_key": {
-          "name": "local_object_key",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "cloud_object_key": {
-          "name": "cloud_object_key",
-          "type": "text",
           "primaryKey": false,
           "notNull": false
         },
@@ -11316,31 +11140,6 @@
           "primaryKey": false,
           "notNull": false
         },
-        "direction": {
-          "name": "direction",
-          "type": "varchar(30)",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "canonical_generation_at_start": {
-          "name": "canonical_generation_at_start",
-          "type": "bigint",
-          "primaryKey": false,
-          "notNull": true,
-          "default": 0
-        },
-        "plan_object_key": {
-          "name": "plan_object_key",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "plan_sha256": {
-          "name": "plan_sha256",
-          "type": "varchar(64)",
-          "primaryKey": false,
-          "notNull": false
-        },
         "lease_epoch": {
           "name": "lease_epoch",
           "type": "bigint",
@@ -11405,7 +11204,7 @@
             }
           ],
           "isUnique": true,
-          "where": "\"v2\".\"workspace_sync_cycles\".\"status\" in ('planned', 'transferring', 'applying_cloud', 'applying_local', 'verifying')",
+          "where": "\"v2\".\"workspace_sync_cycles\".\"status\" in ('planned', 'transferring', 'applying_cloud')",
           "concurrently": false,
           "method": "btree",
           "with": {}

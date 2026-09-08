@@ -4,7 +4,6 @@ import { tmpdir } from "node:os";
 import { isAbsolute, join, relative, resolve, sep } from "node:path";
 import {
   Codex,
-  type ApprovalMode,
   type CodexOptions,
   type Input as CodexInput,
   type ModelReasoningEffort,
@@ -14,14 +13,8 @@ import {
   type ThreadOptions,
 } from "@openai/codex-sdk";
 import type { ContentBlock } from "@cohub/protocol/core";
-import type {
-  LocalProviderAdapter,
-  LocalRuntimeCapabilities,
-  LocalRuntimePromptInput,
-  LocalRuntimeProviderEvent,
-  LocalRuntimeSessionHandle,
-  LocalRuntimeSessionInput,
-} from "@cohub/protocol";
+import type { LocalRuntimeProviderEvent } from "@cohub/protocol";
+import type { LocalProviderAdapter, LocalRuntimePromptInput, LocalRuntimeSessionHandle, LocalRuntimeSessionInput } from "../types.js";
 import {
   assertProviderId,
   boundedProviderId,
@@ -39,7 +32,6 @@ const MAX_PROVIDER_EVENT_ID_LENGTH = MAX_PROVIDER_ID_BYTES;
 const MAX_WARNING_COUNT = 32;
 const MAX_WARNING_BYTES = 4 * 1024;
 const CLOSE_TIMEOUT_MS = 5_000;
-const PROVIDER_VERSION = "@openai/codex-sdk@0.153.4";
 
 type Json = Record<string, unknown>;
 
@@ -64,8 +56,6 @@ export type CodexAdapterOptions = {
   clientFactory?: CodexClientFactory;
   model?: string | null;
   accessMode?: "read_only" | "full_access";
-  sandboxMode?: SandboxMode;
-  approvalPolicy?: ApprovalMode;
   additionalDirectories?: string[];
   networkAccessEnabled?: boolean;
   modelReasoningEffort?: ModelReasoningEffort;
@@ -74,12 +64,6 @@ export type CodexAdapterOptions = {
   skipGitRepoCheck?: boolean;
   threadSource?: string;
   turnIdFactory?: () => string;
-};
-
-type ExtendedSessionInput = LocalRuntimeSessionInput & {
-  model?: string | null;
-  accessMode?: "read_only" | "full_access";
-  payload?: Record<string, unknown>;
 };
 
 type Snapshot = {
@@ -756,10 +740,6 @@ async function preparePrompt(
   }
 }
 
-function payloadRecord(input: ExtendedSessionInput): Record<string, unknown> {
-  return input.payload && typeof input.payload === "object" ? input.payload : {};
-}
-
 function stringOption(value: unknown): string | undefined {
   return typeof value === "string" && value.trim() ? value.trim() : undefined;
 }
@@ -812,55 +792,43 @@ function modelReasoningEffortOption(value: unknown): ModelReasoningEffort | unde
   return value.trim() as ModelReasoningEffort;
 }
 
-function threadOptions(config: CodexAdapterOptions, input: ExtendedSessionInput): ThreadOptions {
-  const payload = payloadRecord(input);
+function threadOptions(config: CodexAdapterOptions, input: LocalRuntimeSessionInput): ThreadOptions {
   const accessMode = input.accessMode ?? config.accessMode ?? "read_only";
   if (accessMode !== "read_only" && accessMode !== "full_access") {
     throw new Error("Codex provider accessMode is invalid");
   }
-  const model = stringOption(input.model) || stringOption(config.model) || stringOption(payload.model);
-  // Access mode is a server-authorized boundary. Do not let provider payloads
-  // (or a stale local config) widen it to danger-full-access or solicit an
-  // approval interaction that this protocol cannot service.
+  const model = stringOption(input.model) || stringOption(config.model);
+  // The runtime command owns authorization; the local configuration cannot
+  // widen it or request an approval interaction this protocol cannot service.
   const sandboxMode: SandboxMode = accessMode === "full_access" ? "workspace-write" : "read-only";
-  const approvalPolicy: ApprovalMode = "never";
-  const modelReasoningEffort = modelReasoningEffortOption(payload.modelReasoningEffort)
-    ?? modelReasoningEffortOption(config.modelReasoningEffort);
-  // Directory expansion is host policy, not prompt data. Ignore a remote
-  // payload's `additionalDirectories`; the adapter validates the configured
-  // list against the bound workspace before handing it to Codex.
+  const modelReasoningEffort = modelReasoningEffortOption(config.modelReasoningEffort);
   const additionalDirectories = config.additionalDirectories
     ?.map((value) => resolve(input.cwd, value));
-  const requestedNetworkAccess = booleanOption(payload.networkAccessEnabled, "networkAccessEnabled");
   const configuredNetworkAccess = booleanOption(config.networkAccessEnabled, "networkAccessEnabled");
-  const requestedWebSearchMode = webSearchModeOption(payload.webSearchMode);
   const configuredWebSearchMode = webSearchModeOption(config.webSearchMode);
-  const requestedWebSearchEnabled = booleanOption(payload.webSearchEnabled, "webSearchEnabled");
   const configuredWebSearchEnabled = booleanOption(config.webSearchEnabled, "webSearchEnabled");
   // Read-only sessions must not gain an outbound network or live-search path
   // through provider options. Explicitly pass the disabled values so a local
   // Codex config cannot re-enable them behind the SDK's defaults.
   const networkAccessEnabled = accessMode === "read_only"
     ? false
-    : requestedNetworkAccess ?? configuredNetworkAccess;
+    : configuredNetworkAccess;
   const webSearchMode = accessMode === "read_only"
     ? "disabled"
-    : requestedWebSearchMode ?? configuredWebSearchMode;
+    : configuredWebSearchMode;
   const webSearchEnabled = accessMode === "read_only"
     ? false
-    : requestedWebSearchEnabled ?? configuredWebSearchEnabled;
+    : configuredWebSearchEnabled;
   // Replicas intentionally omit `.git`; the local runtime already fences the
   // physical workspace, so Codex's repository preflight must not reject a
   // valid snapshot by default. Callers can opt back into the check.
-  const skipGitRepoCheck = typeof payload.skipGitRepoCheck === "boolean"
-    ? payload.skipGitRepoCheck
-    : config.skipGitRepoCheck ?? true;
-  const threadSource = stringOption(payload.threadSource) || stringOption(config.threadSource);
+  const skipGitRepoCheck = config.skipGitRepoCheck ?? true;
+  const threadSource = stringOption(config.threadSource);
   return {
     ...(model ? { model } : {}),
     workingDirectory: input.cwd,
     sandboxMode,
-    approvalPolicy,
+    approvalPolicy: "never",
     ...(additionalDirectories?.length ? { additionalDirectories } : {}),
     ...(networkAccessEnabled !== undefined ? { networkAccessEnabled } : {}),
     ...(modelReasoningEffort ? { modelReasoningEffort } : {}),
@@ -1065,21 +1033,9 @@ class CodexRuntimeSession implements LocalRuntimeSessionHandle {
   }
 }
 
-const runtimeCapabilities: LocalRuntimeCapabilities = {
-  streaming: true,
-  sessionResume: true,
-  sessionFork: false,
-  sessionCancel: true,
-  permissionRequests: false,
-  promptImages: true,
-  nativeTools: true,
-};
-
 /** Native Codex adapter. Only normalized runtime events cross the wire. */
 export class CodexAdapter implements LocalProviderAdapter {
   readonly provider = "codex" as const;
-  readonly version = PROVIDER_VERSION;
-  readonly capabilities = runtimeCapabilities;
 
   private readonly options: CodexAdapterOptions;
 
@@ -1088,14 +1044,13 @@ export class CodexAdapter implements LocalProviderAdapter {
   }
 
   async open(input: LocalRuntimeSessionInput): Promise<LocalRuntimeSessionHandle> {
-    const extended = input as ExtendedSessionInput;
-    const cwd = extended.cwd?.trim();
+    const cwd = input.cwd?.trim();
     if (!cwd) throw new Error("Codex provider cwd is required");
     if (!isAbsolute(cwd)) throw new Error("Codex provider cwd must be absolute");
-    const workspaceRootValue = typeof extended.workspaceRoot === "string"
-      ? extended.workspaceRoot.trim()
+    const workspaceRootValue = typeof input.workspaceRoot === "string"
+      ? input.workspaceRoot.trim()
       : "";
-    if (extended.workspaceRoot !== undefined && (!workspaceRootValue || !isAbsolute(workspaceRootValue))) {
+    if (input.workspaceRoot !== undefined && (!workspaceRootValue || !isAbsolute(workspaceRootValue))) {
       throw new Error("Codex provider workspaceRoot must be an absolute path");
     }
     const workspaceRoot = resolve(workspaceRootValue || cwd);
@@ -1111,13 +1066,12 @@ export class CodexAdapter implements LocalProviderAdapter {
         throw new Error("Codex provider cwd must stay inside the workspace");
       }
     }
-    const normalizedInput = { ...extended, cwd, workspaceRoot };
+    const normalizedInput = { ...input, cwd, workspaceRoot };
     const requestedSessionId = input.providerSessionId
       ? validateProviderSessionId(input.providerSessionId)
       : null;
     const operation = input.operation ?? (requestedSessionId ? "session.resume" : "session.open");
     if (operation !== "session.open" && operation !== "session.resume") {
-      if (operation === "session.fork") throw new Error("Codex provider does not support session fork");
       throw new Error("Codex provider session operation is invalid");
     }
     if (operation === "session.open" && requestedSessionId) {
@@ -1156,5 +1110,3 @@ export class CodexAdapter implements LocalProviderAdapter {
     return new CodexRuntimeSession(thread, cwd, workspaceRoot, this.options.turnIdFactory || randomUUID, input.signal);
   }
 }
-
-export const codexAdapter = new CodexAdapter();

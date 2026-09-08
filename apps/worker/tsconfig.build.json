@@ -19,6 +19,9 @@
       "@cohub/infra/bullmq": [
         "../../packages/infra/dist/bullmq/index.d.ts"
       ],
+      "@cohub/infra/workspace-physical-lock": [
+        "../../packages/infra/dist/workspace-physical-lock.d.ts"
+      ],
       "@cohub/infra/space-hooks": [
         "../../packages/infra/dist/space-hooks/index.d.ts"
       ],

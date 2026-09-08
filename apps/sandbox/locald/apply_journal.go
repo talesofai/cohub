@@ -91,7 +91,10 @@ func createLocalApplyJournal(state *StateStore, dataDir, root, cycleID string, p
 		if skipped {
 			continue
 		}
-		source, _ := targetPathForReplicaChecked(root, path)
+		source, err := targetPathForReplicaMutationChecked(root, path)
+		if err != nil {
+			return nil, err
+		}
 		_, statErr := os.Lstat(source)
 		if errors.Is(statErr, os.ErrNotExist) {
 			entries = append(entries, localApplyJournalEntry{Path: path, Existed: false})
@@ -119,6 +122,9 @@ func createLocalApplyJournal(state *StateStore, dataDir, root, cycleID string, p
 		return nil, err
 	}
 	if err := writeSyncedPrivateFile(filepath.Join(journalPath, "journal.json"), descriptorRaw); err != nil {
+		return nil, err
+	}
+	if err := syncDirectoryTree(journalPath, dataDir); err != nil {
 		return nil, err
 	}
 	if err := state.RecordApplyJournal(cycleID, descriptor.Root, journalPath); err != nil {
@@ -164,14 +170,14 @@ func (j *localApplyJournal) Rollback() error {
 		if skipped {
 			continue
 		}
-		destination, err := targetPathForReplicaChecked(j.descriptor.Root, entry.Path)
-		if err != nil {
-			return err
-		}
-		if err := os.RemoveAll(destination); err != nil {
+		if err := removeReplicaPathChecked(j.descriptor.Root, entry.Path); err != nil {
 			return err
 		}
 		if entry.Existed {
+			destination, err := targetPathForReplicaMutationChecked(j.descriptor.Root, entry.Path)
+			if err != nil {
+				return err
+			}
 			source := filepath.Join(j.path, "nodes", filepath.FromSlash(entry.Path))
 			if err := copyLocalApplyNode(source, destination); err != nil {
 				return err
@@ -179,7 +185,25 @@ func (j *localApplyJournal) Rollback() error {
 		}
 		restored = append(restored, entry.Path)
 	}
-	return nil
+	paths := make([]string, 0, len(j.descriptor.Entries))
+	for _, entry := range j.descriptor.Entries {
+		paths = append(paths, entry.Path)
+		if !entry.Existed {
+			continue
+		}
+		destination, err := targetPathForReplicaMutationChecked(j.descriptor.Root, entry.Path)
+		if err != nil {
+			return err
+		}
+		if info, statErr := os.Lstat(destination); statErr == nil && info.IsDir() {
+			if err := syncDirectoryTree(destination, j.descriptor.Root); err != nil {
+				return err
+			}
+		} else if statErr != nil && !errors.Is(statErr, os.ErrNotExist) {
+			return statErr
+		}
+	}
+	return syncReplicaMutationDirectories(j.descriptor.Root, paths)
 }
 
 func (j *localApplyJournal) Cleanup() error {

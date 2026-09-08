@@ -7,7 +7,6 @@ import { join } from "node:path";
 export type DetectedProvider = {
   provider: "codex" | "claude_code" | "pi";
   displayName: string;
-  source: "environment" | "credentials" | "cli";
 };
 
 export type ProviderDetectionOptions = {
@@ -199,11 +198,11 @@ export async function detectLocalProviders(options: ProviderDetectionOptions = {
   const codexAuth = await readJson(join(codexHome, "auth.json"));
   const codexEnv = nonEmptyEnv(env, CODEX_ENV_KEYS);
   if (codexEnv || hasCodexCredential(codexAuth)) {
-    detected.push({ provider: "codex", displayName: "Codex", source: codexEnv ? "environment" : "credentials" });
+    detected.push({ provider: "codex", displayName: "Codex" });
   } else {
     const result = await probe("codex", ["login", "status"], timeoutMs, env);
     if (result.code === 0 && codexStatusHasCredentials(result.stdout)) {
-      detected.push({ provider: "codex", displayName: "Codex", source: "cli" });
+      detected.push({ provider: "codex", displayName: "Codex" });
     }
   }
 
@@ -217,14 +216,14 @@ export async function detectLocalProviders(options: ProviderDetectionOptions = {
   const claudeCredential = await readJson(join(claudeDir, ".credentials.json"));
   const claudeRootConfig = await readJson(join(home, ".claude.json"));
   if (claudeEnv || hasClaudeCredential(claudeCredential)) {
-    detected.push({ provider: "claude_code", displayName: "Claude Code", source: claudeEnv ? "environment" : "credentials" });
+    detected.push({ provider: "claude_code", displayName: "Claude Code" });
   } else {
     const result = await probe("claude", ["auth", "status", "--json"], timeoutMs, env);
     const status = jsonObject(result.stdout);
     if (result.code === 0 && status?.loggedIn === true) {
-      detected.push({ provider: "claude_code", displayName: "Claude Code", source: "cli" });
+      detected.push({ provider: "claude_code", displayName: "Claude Code" });
     } else if (await readableFile(join(home, ".claude.json")) && claudeRootConfig?.hasAvailableSubscription === true) {
-      detected.push({ provider: "claude_code", displayName: "Claude Code", source: "credentials" });
+      detected.push({ provider: "claude_code", displayName: "Claude Code" });
     }
   }
 
@@ -232,7 +231,7 @@ export async function detectLocalProviders(options: ProviderDetectionOptions = {
   const piAuth = await readJson(join(piDir, "auth.json"));
   const piEnv = nonEmptyEnv(env, PI_ENV_KEYS);
   if (piEnv || hasPiCredential(piAuth)) {
-    detected.push({ provider: "pi", displayName: "Pi", source: piEnv ? "environment" : "credentials" });
+    detected.push({ provider: "pi", displayName: "Pi" });
   }
 
   return detected;

@@ -13,18 +13,11 @@ import {
 } from "@earendil-works/pi-coding-agent";
 import type { BeforeToolCallContext, BeforeToolCallResult } from "@earendil-works/pi-agent-core";
 import type { Api, ImageContent, Model } from "@earendil-works/pi-ai";
-import type {
-  LocalProviderAdapter,
-  LocalRuntimeCapabilities,
-  LocalRuntimePromptInput,
-  LocalRuntimeProviderEvent,
-  LocalRuntimeSessionHandle,
-  LocalRuntimeSessionInput,
-} from "@cohub/protocol";
+import type { LocalRuntimeProviderEvent } from "@cohub/protocol";
+import type { LocalProviderAdapter, LocalRuntimePromptInput, LocalRuntimeSessionHandle, LocalRuntimeSessionInput } from "../types.js";
 import { resolveWorkspacePath, workspaceFenceRoot } from "./workspace-path.js";
 
 const PROVIDER = "pi" as const;
-const ADAPTER_VERSION = "@earendil-works/pi-coding-agent@0.81.1";
 const MAX_PENDING_EVENTS = 2048;
 const MAX_TEXT_BYTES = 16 * 1024 * 1024;
 // Keep raw values well below the runtime's event limit. JSON escaping can
@@ -441,7 +434,6 @@ export type PiSessionManagerFactory = {
   list: (cwd: string, sessionDir?: string) => Promise<ReadonlyArray<{ id: string; path: string; cwd?: string }>>;
   open: (path: string, sessionDir?: string, cwdOverride?: string) => SessionManager;
   create: (cwd: string, sessionDir?: string, options?: { id?: string }) => SessionManager;
-  fork?: (sourcePath: string, cwd: string, sessionDir?: string, options?: { id?: string }) => SessionManager;
 };
 
 export type PiProviderOptions = {
@@ -477,7 +469,6 @@ const sessionManagers: PiSessionManagerFactory = {
   list: (cwd, sessionDir) => SessionManager.list(cwd, sessionDir),
   open: (path, sessionDir, cwdOverride) => SessionManager.open(path, sessionDir, cwdOverride),
   create: (cwd, sessionDir, options) => SessionManager.create(cwd, sessionDir, options),
-  fork: (sourcePath, cwd, sessionDir, options) => SessionManager.forkFrom(sourcePath, cwd, sessionDir, options),
 };
 
 type TurnState = {
@@ -1413,9 +1404,6 @@ function validateNativeSessionIdentity(session: AgentSession, options: PiProvide
   if (options.operation === "session.resume" && requested && actual !== requested) {
     throw new Error(`Pi session.resume returned session id ${actual}; expected ${requested}`);
   }
-  if (options.operation === "session.fork" && requested && actual === requested) {
-    throw new Error("Pi session.fork must return a new providerSessionId");
-  }
 }
 
 async function validateCwd(value: string): Promise<string> {
@@ -1447,7 +1435,6 @@ async function modelRuntime(agentDir?: string): Promise<ModelRuntime> {
 
 async function managerFor(cwd: string, options: PiProviderOptions): Promise<SessionManager> {
   if (options.sessionManager) {
-    if (options.operation === "session.fork") throw new Error("Pi session fork requires a session manager factory");
     const requested = options.sessionId?.trim() || undefined;
     if (options.operation === "session.open" && requested) {
       throw new Error("Pi session.open must not include a providerSessionId");
@@ -1480,7 +1467,6 @@ async function managerFor(cwd: string, options: PiProviderOptions): Promise<Sess
   const requested = options.sessionId?.trim() || undefined;
   if (!requested) {
     if (options.operation === "session.resume") throw new Error("Pi session resume requires a providerSessionId");
-    if (options.operation === "session.fork") throw new Error("Pi session fork requires a source providerSessionId");
     return factory.create(cwd, sessionDir);
   }
   if (options.operation === "session.open") {
@@ -1501,14 +1487,10 @@ async function managerFor(cwd: string, options: PiProviderOptions): Promise<Sess
     }
   }
   if (!existing) {
-    if (options.operation === "session.resume" || options.operation === "session.fork") {
+    if (options.operation === "session.resume") {
       throw new Error(`Pi provider session was not found: ${requested}`);
     }
     return factory.create(cwd, sessionDir, { id: requested });
-  }
-  if (options.operation === "session.fork") {
-    if (!factory.fork) throw new Error("Pi session manager does not support native session fork");
-    return factory.fork(existing.path, cwd, sessionDir);
   }
   return factory.open(existing.path, sessionDir, cwd);
 }
@@ -1585,7 +1567,7 @@ function defaultSessionDir(cwd: string, agentDir: string): string {
   return join(resolve(agentDir), "sessions", safeCwd);
 }
 
-/** Normalize a tool allowlist and reject malformed remote configuration. */
+/** Normalize a configured tool allowlist. */
 function toolAllowlist(value: unknown, name: string): string[] | undefined {
   if (value === undefined) return undefined;
   if (!Array.isArray(value) || value.some((entry) => typeof entry !== "string" || !entry.trim())) {
@@ -1603,31 +1585,7 @@ function toolAllowlist(value: unknown, name: string): string[] | undefined {
   return result;
 }
 
-/** Apply the adapter-owned tool ceiling to a payload-selected subset. */
-function constrainToolAllowlist(requested: string[] | undefined, ceiling: string[] | undefined): string[] | undefined {
-  if (!requested) return ceiling?.slice();
-  if (!ceiling) return requested;
-  const canonical = new Map<string, string>();
-  for (const name of ceiling) canonical.set(name.trim().toLowerCase(), name.trim());
-  const outside = requested.filter((name) => !canonical.has(name.toLowerCase()));
-  if (outside.length > 0) {
-    throw new Error(`Pi provider tools exceed the adapter tool ceiling: ${outside.join(", ")}`);
-  }
-  // Keep the adapter's spelling so Pi's case-sensitive registry lookup is not
-  // defeated by a payload using e.g. "READ".
-  return requested.map((name) => canonical.get(name.toLowerCase()) as string);
-}
-
-type ExtendedSessionInput = LocalRuntimeSessionInput & {
-  model?: string | null;
-  accessMode?: "read_only" | "full_access";
-};
-
-function optionsForInput(input: ExtendedSessionInput, adapter: PiProviderOptions): PiProviderOptions {
-  // Provider-specific options are intentionally payload-only. The runtime
-  // metadata channel is routing/observability data and must not configure Pi.
-  const providerOptions = input.payload ?? {};
-  const stringOption = (name: string): string | undefined => typeof providerOptions[name] === "string" && providerOptions[name] ? providerOptions[name] as string : undefined;
+function optionsForInput(input: LocalRuntimeSessionInput, adapter: PiProviderOptions): PiProviderOptions {
   const normalizeWorkspaceRoot = (value: unknown, name: string): string | undefined => {
     if (value === undefined) return undefined;
     if (typeof value !== "string" || !value.trim() || !isAbsolute(value.trim())) {
@@ -1638,31 +1596,20 @@ function optionsForInput(input: ExtendedSessionInput, adapter: PiProviderOptions
   const workspaceRoot = input.workspaceRoot !== undefined
     ? normalizeWorkspaceRoot(input.workspaceRoot, "workspaceRoot")
     : normalizeWorkspaceRoot(adapter.workspaceRoot, "configured workspaceRoot");
-  const configuredTools = toolAllowlist(adapter.tools, "adapter tools");
-  const requestedTools = toolAllowlist(providerOptions.tools, "tools");
-  const tools = constrainToolAllowlist(requestedTools, configuredTools);
-  const payloadAccessMode = providerOptions.accessMode;
-  if (payloadAccessMode !== undefined && payloadAccessMode !== "read_only" && payloadAccessMode !== "full_access") {
-    throw new Error("Pi provider accessMode is invalid");
-  }
+  const tools = toolAllowlist(adapter.tools, "adapter tools");
   if (input.accessMode !== undefined && input.accessMode !== "read_only" && input.accessMode !== "full_access") {
     throw new Error("Pi provider accessMode is invalid");
   }
   if (adapter.accessMode !== undefined && adapter.accessMode !== "read_only" && adapter.accessMode !== "full_access") {
     throw new Error("Pi provider accessMode is invalid");
   }
-  // Top-level accessMode and adapter configuration define the authorization
-  // ceiling. Payload options may request a downgrade, but can never widen a
-  // read-only session.
+  // Top-level accessMode and adapter configuration define the authorization ceiling.
   const accessModeCeiling: PiAccessMode = input.accessMode === "read_only" || adapter.accessMode === "read_only"
     ? "read_only"
     : input.accessMode === "full_access" || adapter.accessMode === "full_access"
       ? "full_access"
       : "read_only";
-  // Payload options may downgrade a full-access host session for this native
-  // session, but the top-level policy remains the authorization ceiling.
-  const accessMode = (payloadAccessMode as PiAccessMode | undefined)
-    ?? input.accessMode
+  const accessMode = input.accessMode
     ?? adapter.accessMode
     ?? "read_only";
   const effectiveSessionId = input.providerSessionId !== undefined ? input.providerSessionId : adapter.sessionId;
@@ -1685,39 +1632,26 @@ function optionsForInput(input: ExtendedSessionInput, adapter: PiProviderOptions
     signal: input.signal ?? adapter.signal,
     sessionId: normalizedSessionId,
     operation,
-    model: input.model ?? stringOption("model") ?? adapter.model,
-    autoRetry: typeof providerOptions.autoRetry === "boolean" ? providerOptions.autoRetry : adapter.autoRetry,
+    model: input.model ?? adapter.model,
+    autoRetry: adapter.autoRetry,
     cancelTimeoutMs: adapter.cancelTimeoutMs,
     accessMode,
-    // Session storage is host configuration, not provider-controlled prompt
-    // data. In particular, do not let a remote payload redirect Pi to an
-    // arbitrary directory containing credentials or another session journal.
     sessionDir: adapter.sessionDir,
     agentDir: adapter.agentDir,
     tools,
-    thinkingLevel: stringOption("thinkingLevel") as CreateAgentSessionOptions["thinkingLevel"] | undefined ?? adapter.thinkingLevel,
+    thinkingLevel: adapter.thinkingLevel,
   };
 }
 
 /** Native Pi adapter. The Pi SDK remains local; only normalized events cross the runtime boundary. */
 export class PiProviderAdapter implements LocalProviderAdapter {
   readonly provider = PROVIDER;
-  readonly version = ADAPTER_VERSION;
-  readonly capabilities: LocalRuntimeCapabilities = {
-    streaming: true,
-    sessionResume: true,
-    sessionFork: true,
-    sessionCancel: true,
-    permissionRequests: false,
-    promptImages: true,
-    nativeTools: true,
-  };
 
   constructor(private readonly options: PiProviderOptions = {}) {}
 
   async open(input: LocalRuntimeSessionInput): Promise<LocalRuntimeSessionHandle> {
-    const options = optionsForInput(input as ExtendedSessionInput, this.options);
-    if (options.operation !== "session.open" && options.operation !== "session.resume" && options.operation !== "session.fork") {
+    const options = optionsForInput(input, this.options);
+    if (options.operation !== "session.open" && options.operation !== "session.resume") {
       throw new Error("Pi provider session operation is invalid");
     }
     if (options.autoRetry === true) {
@@ -1783,5 +1717,3 @@ export class PiProviderAdapter implements LocalProviderAdapter {
     }
   }
 }
-
-export const piProviderAdapter = new PiProviderAdapter();

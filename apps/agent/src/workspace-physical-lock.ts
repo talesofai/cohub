@@ -1,53 +1,21 @@
-import { createHash } from "node:crypto";
-import type { LockDbLease } from "@cohub/infra/lock-db-pool";
-import { lockDbPool } from "./db.js";
 import { createLogger } from "@cohub/infra/logging";
+import {
+  createWorkspacePhysicalLockManager,
+  type WorkspacePhysicalLock as InfraWorkspacePhysicalLock,
+} from "@cohub/infra/workspace-physical-lock";
+import { lockDbPool } from "./db.js";
 
 const logger = createLogger({ serviceName: "cohub-agent" });
+const workspacePhysicalLocks = createWorkspacePhysicalLockManager({
+  pool: lockDbPool,
+  onReleaseError: (spaceId, error) => {
+    logger.error("failed to finish workspace lock transaction; retiring the lock connection", { spaceId, error });
+  },
+});
 
-const advisoryKeys = (spaceId: string): [number, number] => {
-  const digest = createHash("sha256").update(`cohub-workspace-writer-v1\0${spaceId}`).digest();
-  return [digest.readInt32BE(0), digest.readInt32BE(4)];
-};
+export type WorkspacePhysicalLock = InfraWorkspacePhysicalLock;
 
-export type WorkspacePhysicalLock = {
-  release: () => Promise<void>;
-};
-
-/** Holds a PostgreSQL session advisory lock on a bounded dedicated pool. */
+/** Holds a PostgreSQL transaction advisory lock on a bounded reserved-connection pool. */
 export async function acquireWorkspacePhysicalLock(spaceId: string): Promise<WorkspacePhysicalLock | null> {
-  const [key1, key2] = advisoryKeys(spaceId);
-  const lock: LockDbLease = await lockDbPool.acquire();
-  try {
-    const rows = await lock.connection.unsafe<Array<{ locked: boolean }>>(
-      "select pg_try_advisory_lock($1, $2) as locked",
-      [key1, key2],
-    );
-    if (rows[0]?.locked !== true) {
-      await lock.release();
-      return null;
-    }
-    let released = false;
-    return {
-      release: async () => {
-        if (released) return;
-        released = true;
-        try {
-          const unlockRows = await lock.connection.unsafe<Array<{ unlocked: boolean }>>(
-            "select pg_advisory_unlock($1, $2) as unlocked",
-            [key1, key2],
-          );
-          if (unlockRows[0]?.unlocked !== true) throw new Error("workspace_advisory_unlock_failed");
-          await lock.release();
-        } catch (error) {
-          logger.error("failed to release workspace advisory lock; retiring the lock connection", { spaceId, error });
-          await lock.discard();
-          throw error;
-        }
-      },
-    };
-  } catch (error) {
-    await lock.discard();
-    throw error;
-  }
+  return workspacePhysicalLocks.acquire(spaceId);
 }

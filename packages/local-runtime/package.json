@@ -4,9 +4,6 @@
   "description": "Provider-neutral local runtime host for Cohub native agent SDKs.",
   "private": true,
   "type": "module",
-  "bin": {
-    "cohub-agent-runtime": "./bin/cohub-agent-runtime.js"
-  },
   "exports": {
     ".": {
       "types": "./dist/index.d.ts",
@@ -43,7 +40,6 @@
   },
   "files": [
     "dist",
-    "bin",
     "README.md"
   ],
   "scripts": {

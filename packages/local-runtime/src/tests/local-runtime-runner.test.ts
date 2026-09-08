@@ -2,15 +2,13 @@ import assert from "node:assert/strict";
 import { PassThrough, Readable } from "node:stream";
 import test from "node:test";
 import type {
-  LocalProviderAdapter,
-  LocalRuntimeCapabilities,
   LocalRuntimeCommand,
   LocalRuntimeEvent,
   LocalRuntimePromptInput,
-  LocalRuntimeSessionHandle,
 } from "@cohub/protocol";
 import { LocalRuntimeEventSchema } from "@cohub/protocol";
-import { readLocalRuntimeFrames, runLocalRuntime } from "@cohub/local-runtime/runner";
+import { readLocalRuntimeFrames, runLocalRuntime } from "../runner.js";
+import type { LocalProviderAdapter, LocalRuntimeSessionHandle } from "../types.js";
 
 const IDs = {
   runtimeId: "runtime-1",
@@ -19,16 +17,6 @@ const IDs = {
   cohubSessionId: "cohub-session-1",
   executionAttemptId: "attempt-1",
   providerSessionId: "native-session-1",
-};
-
-const capabilities: LocalRuntimeCapabilities = {
-  streaming: true,
-  sessionResume: true,
-  sessionFork: true,
-  sessionCancel: true,
-  permissionRequests: false,
-  promptImages: true,
-  nativeTools: true,
 };
 
 function command(overrides: Partial<LocalRuntimeCommand> = {}): LocalRuntimeCommand {
@@ -99,8 +87,6 @@ function collect(output: PassThrough): LocalRuntimeEvent[] {
 
 class FixtureAdapter implements LocalProviderAdapter {
   readonly provider = "codex" as const;
-  readonly version = "fixture";
-  readonly capabilities = capabilities;
   openCalls: Array<{ cwd: string; providerSessionId: string | null | undefined }> = [];
   cancelCalls = 0;
   closeCalls = 0;
@@ -134,8 +120,6 @@ class FixtureAdapter implements LocalProviderAdapter {
 
 class LazyCodexAdapter implements LocalProviderAdapter {
   readonly provider = "codex" as const;
-  readonly version = "fixture-lazy-codex";
-  readonly capabilities = capabilities;
   closeCalls = 0;
 
   async open(): Promise<LocalRuntimeSessionHandle> {
@@ -166,7 +150,7 @@ test("runs a native session and preserves per-session event ordering", async () 
   )]);
   const output = new PassThrough();
   const events = collect(output);
-  await runLocalRuntime({ input, output, adapters: { codex: adapter }, endOutput: true });
+  await runLocalRuntime({ input, output, adapterFactory: () => adapter, endOutput: true });
 
   assert.equal(adapter.openCalls.length, 1);
   assert.deepEqual(adapter.openCalls[0], { cwd: "/workspace", providerSessionId: null });
@@ -182,7 +166,7 @@ test("allows a lazy Codex thread id to transition during the first turn", async 
   const input = new PassThrough();
   const output = new PassThrough();
   const events = collect(output);
-  const running = runLocalRuntime({ input, output, adapters: { codex: adapter }, endOutput: true });
+  const running = runLocalRuntime({ input, output, adapterFactory: () => adapter, endOutput: true });
   input.write(`${JSON.stringify(openCommand("lazy-open"))}\n`);
   for (let attempt = 0; attempt < 20 && events.length === 0; attempt += 1) {
     await new Promise((resolve) => setImmediate(resolve));
@@ -216,7 +200,7 @@ test("rejects a Codex resume command without a native provider session id", asyn
   }))]);
   const output = new PassThrough();
   const events = collect(output);
-  await runLocalRuntime({ input, output, adapters: { codex: adapter }, endOutput: true });
+  await runLocalRuntime({ input, output, adapterFactory: () => adapter, endOutput: true });
 
   assert.equal(adapter.openCalls.length, 0);
   assert.equal(events.length, 0);
@@ -228,7 +212,7 @@ test("cancels an active turn while the input loop remains responsive", async () 
   const input = new PassThrough();
   const output = new PassThrough();
   const events = collect(output);
-  const running = runLocalRuntime({ input, output, adapters: { codex: adapter }, endOutput: true });
+  const running = runLocalRuntime({ input, output, adapterFactory: () => adapter, endOutput: true });
   input.write(`${JSON.stringify(openCommand())}\n`);
   input.write(`${JSON.stringify(turnCommand("turn-1", "turn-1"))}\n`);
   await new Promise((resolve) => setImmediate(resolve));
@@ -254,7 +238,7 @@ test("rejects a second turn without invoking the provider twice", async () => {
   const input = new PassThrough();
   const output = new PassThrough();
   const events = collect(output);
-  const running = runLocalRuntime({ input, output, adapters: { codex: adapter }, endOutput: true });
+  const running = runLocalRuntime({ input, output, adapterFactory: () => adapter, endOutput: true });
   input.write(`${JSON.stringify(openCommand())}\n`);
   input.write(`${JSON.stringify(turnCommand("turn-1", "turn-1"))}\n`);
   await new Promise((resolve) => setImmediate(resolve));

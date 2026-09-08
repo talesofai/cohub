@@ -4,27 +4,10 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { PassThrough, Readable } from "node:stream";
 import { test } from "node:test";
-import type {
-  LocalProviderAdapter,
-  LocalRuntimeCapabilities,
-  LocalRuntimeCommand,
-  LocalRuntimeEvent,
-  LocalRuntimePromptInput,
-  LocalRuntimeSessionHandle,
-  LocalRuntimeSessionInput,
-} from "@cohub/protocol";
+import type { LocalRuntimeCommand, LocalRuntimeEvent } from "@cohub/protocol";
 import { LocalRuntimeEventSchema } from "@cohub/protocol";
 import { runLocalRuntime } from "./runner.js";
-
-const capabilities: LocalRuntimeCapabilities = {
-  streaming: true,
-  sessionResume: true,
-  sessionFork: false,
-  sessionCancel: true,
-  permissionRequests: false,
-  promptImages: false,
-  nativeTools: true,
-};
+import type { LocalProviderAdapter, LocalRuntimePromptInput, LocalRuntimeSessionHandle, LocalRuntimeSessionInput } from "./types.js";
 
 function command(overrides: Partial<LocalRuntimeCommand> = {}): LocalRuntimeCommand {
   return {
@@ -43,7 +26,7 @@ function command(overrides: Partial<LocalRuntimeCommand> = {}): LocalRuntimeComm
     cwd: "/workspace",
     model: "gpt-5-codex",
     accessMode: "full_access",
-    payload: { approvalPolicy: "never", modelReasoningEffort: "high" },
+    payload: {},
     connectionEpoch: 1,
     ...overrides,
   };
@@ -59,12 +42,10 @@ function lines(output: PassThrough): LocalRuntimeEvent[] {
   return events;
 }
 
-test("forwards native session options and publishes Codex's delayed id transition", async () => {
+test("forwards canonical session fields and publishes Codex's delayed id transition", async () => {
   let received: LocalRuntimeSessionInput | undefined;
   const adapter: LocalProviderAdapter = {
     provider: "codex",
-    version: "fixture",
-    capabilities,
     async open(input): Promise<LocalRuntimeSessionHandle> {
       received = input;
       return {
@@ -88,11 +69,10 @@ test("forwards native session options and publishes Codex's delayed id transitio
   const input = Readable.from(`${JSON.stringify(command())}\n${JSON.stringify(turn)}\n`);
   const output = new PassThrough();
   const events = lines(output);
-  await runLocalRuntime({ input, output, adapters: { codex: adapter }, endOutput: true });
+  await runLocalRuntime({ input, output, adapterFactory: () => adapter, endOutput: true });
 
   assert.equal(received?.model, "gpt-5-codex");
   assert.equal(received?.accessMode, "full_access");
-  assert.deepEqual(received?.payload, { approvalPolicy: "never", modelReasoningEffort: "high" });
   assert.equal(events[0]?.payload.provisional, true);
   assert.match(events[0]?.providerSessionId ?? "", /^pending:/);
   assert.equal(events[2]?.providerSessionId, "native-thread-1");
@@ -108,8 +88,6 @@ test("requires the exact provisional id when a Codex thread is still lazy", asyn
   let runCalls = 0;
   const adapter: LocalProviderAdapter = {
     provider: "codex",
-    version: "fixture-lazy-codex",
-    capabilities,
     async open(): Promise<LocalRuntimeSessionHandle> {
       return {
         providerSessionId: "",
@@ -131,7 +109,7 @@ test("requires the exact provisional id when a Codex thread is still lazy", asyn
   }))}\n`);
   const output = new PassThrough();
   const events = lines(output);
-  await runLocalRuntime({ input, output, adapters: { codex: adapter }, endOutput: true });
+  await runLocalRuntime({ input, output, adapterFactory: () => adapter, endOutput: true });
 
   assert.equal(events[0]?.providerSessionId, "pending:runtime-session-1");
   assert.equal(runCalls, 0);
@@ -143,8 +121,6 @@ test("rejects a command from another execution attempt when the host channel is 
   let opened = false;
   const adapter: LocalProviderAdapter = {
     provider: "codex",
-    version: "fixture-attempt-fence",
-    capabilities,
     async open(): Promise<LocalRuntimeSessionHandle> {
       opened = true;
       return {
@@ -160,7 +136,7 @@ test("rejects a command from another execution attempt when the host channel is 
     runLocalRuntime({
       input: Readable.from(`${JSON.stringify(command({ executionAttemptId: "attempt-b" }))}\n`),
       output,
-      adapters: { codex: adapter },
+      adapterFactory: () => adapter,
       executionAttemptId: "attempt-a",
       endOutput: true,
     }),
@@ -172,8 +148,6 @@ test("rejects a command from another execution attempt when the host channel is 
 test("rejects a provider attempting to replace a provisional id with another pending id", async () => {
   const adapter: LocalProviderAdapter = {
     provider: "codex",
-    version: "fixture-invalid-transition",
-    capabilities,
     async open(): Promise<LocalRuntimeSessionHandle> {
       return {
         providerSessionId: "",
@@ -194,7 +168,7 @@ test("rejects a provider attempting to replace a provisional id with another pen
   }))}\n`);
   const output = new PassThrough();
   const events = lines(output);
-  await runLocalRuntime({ input, output, adapters: { codex: adapter }, endOutput: true });
+  await runLocalRuntime({ input, output, adapterFactory: () => adapter, endOutput: true });
 
   assert.equal(events.at(-1)?.kind, "turn.failed");
   assert.equal(events.at(-1)?.payload.code, "provider_session_changed");
@@ -205,8 +179,6 @@ test("keeps a read-only session from being widened by a later turn or resume", a
   let runCalls = 0;
   const adapter: LocalProviderAdapter = {
     provider: "codex",
-    version: "fixture-access-ceiling",
-    capabilities,
     async open(): Promise<LocalRuntimeSessionHandle> {
       return {
         providerSessionId: "native-read-only",
@@ -236,20 +208,18 @@ test("keeps a read-only session from being widened by a later turn or resume", a
   const input = Readable.from(`${JSON.stringify(command({ commandId: "read-only-open", accessMode: "read_only" }))}\n${JSON.stringify(turn)}\n${JSON.stringify(resume)}\n`);
   const output = new PassThrough();
   const events = lines(output);
-  await runLocalRuntime({ input, output, adapters: { codex: adapter }, endOutput: true });
+  await runLocalRuntime({ input, output, adapterFactory: () => adapter, endOutput: true });
 
   assert.equal(runCalls, 0);
   const failures = events.filter((event) => event.payload.code === "access_mode_widening");
   assert.equal(failures.length, 2);
 });
 
-test("maps the virtual workspace and strips directory widening before SDK access", async () => {
+test("maps the virtual workspace and strips prompt directory widening before SDK access", async () => {
   let received: LocalRuntimeSessionInput | undefined;
   let prompt: LocalRuntimePromptInput | undefined;
   const adapter: LocalProviderAdapter = {
     provider: "codex",
-    version: "fixture",
-    capabilities,
     async open(input): Promise<LocalRuntimeSessionHandle> {
       received = input;
       return {
@@ -264,10 +234,7 @@ test("maps the virtual workspace and strips directory widening before SDK access
     },
   };
   const root = "/tmp/cohub-runtime-fixture/project";
-  const open = command({ payload: {
-    cwd: "/workspace/subdir",
-    additionalDirectories: ["/outside"],
-  } });
+  const open = command();
   const turn = command({
     commandId: "turn-2",
     operation: "turn.start",
@@ -281,11 +248,10 @@ test("maps the virtual workspace and strips directory widening before SDK access
   const input = Readable.from(`${JSON.stringify(open)}\n${JSON.stringify(turn)}\n`);
   const output = new PassThrough();
   lines(output);
-  await runLocalRuntime({ input, output, adapters: { codex: adapter }, workspaceRoot: root, endOutput: true });
+  await runLocalRuntime({ input, output, adapterFactory: () => adapter, workspaceRoot: root, endOutput: true });
 
   assert.equal(received?.cwd, `${root}`);
-  assert.equal(received?.payload?.cwd, `${root}/subdir`);
-  assert.equal(received?.payload?.additionalDirectories, undefined);
+  assert.equal(received?.workspaceRoot, root);
   assert.equal(prompt?.options?.cwd, `${root}/subdir`);
   assert.equal(prompt?.options?.additionalDirectories, undefined);
 });
@@ -298,8 +264,6 @@ test("rejects a workspace path that escapes through a symlink", async () => {
   let opened = false;
   const adapter: LocalProviderAdapter = {
     provider: "codex",
-    version: "fixture",
-    capabilities,
     async open(): Promise<LocalRuntimeSessionHandle> {
       opened = true;
       return {
@@ -313,7 +277,7 @@ test("rejects a workspace path that escapes through a symlink", async () => {
   await runLocalRuntime({
     input: Readable.from(`${JSON.stringify(command({ cwd: "/workspace/safe/linked" }))}\n`),
     output: new PassThrough(),
-    adapters: { codex: adapter },
+    adapterFactory: () => adapter,
     workspaceRoot: root,
     endOutput: true,
   });

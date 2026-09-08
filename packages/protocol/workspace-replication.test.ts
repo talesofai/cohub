@@ -4,7 +4,6 @@ import {
   WorkspaceManifestSchema,
   canonicalizeJson,
   detectManifestPathCollisions,
-  manifestTreeHash,
   reconcileWorkspaceManifests,
   validateManifest,
 } from "./src/workspace-replication/index.js";
@@ -93,7 +92,6 @@ test("builds a deterministic three-way plan and preserves conflicts", () => {
   ]);
   const result = reconcileWorkspaceManifests({ base, local, cloud });
   assert.deepEqual(result.conflicts.map((item) => item.path), ["deleted.txt"]);
-  assert.ok(result.unchangedPaths.includes("same.txt"));
   assert.deepEqual(result.operations, [
     {
       path: "changed.txt",
@@ -112,23 +110,33 @@ test("omitted paths are not treated as deletions", () => {
   const result = reconcileWorkspaceManifests({ base, local, cloud });
   assert.deepEqual(result.operations, []);
   assert.deepEqual(result.conflicts, []);
-  assert.deepEqual(result.unchangedPaths, [".env"]);
 });
 
-test("omitted paths do not change the tree hash", async () => {
-  const plain = manifest([{ path: "a", type: "directory" }]);
-  const withOmission = WorkspaceManifestSchema.parse({ ...plain, omitted: ["secret.pem"] });
-  assert.equal(await manifestTreeHash(plain), await manifestTreeHash(withOmission));
-});
+test("omitted directories protect their unobserved descendants on either side", () => {
+  const privateDirectory = { path: ".aws", type: "directory" } as const;
+  const unchangedPrivateFile = { path: ".aws/credentials", type: "file", size: 1, sha256: hashA, executable: false } as const;
+  const changedPrivateFile = { path: ".aws/config", type: "file", size: 1, sha256: hashA, executable: false } as const;
+  const publicFile = { path: "public.txt", type: "file", size: 1, sha256: hashA, executable: false } as const;
+  const base = manifest([privateDirectory, unchangedPrivateFile, changedPrivateFile, publicFile]);
+  const local = WorkspaceManifestSchema.parse({ ...manifest([]), omitted: [".aws"] });
+  const cloud = manifest([
+    privateDirectory,
+    unchangedPrivateFile,
+    { ...changedPrivateFile, sha256: hashB },
+    publicFile,
+  ]);
 
-test("produces stable tree hashes independent of input entry order", async () => {
-  const first = manifest([
-    { path: "b", type: "directory" },
-    { path: "a", type: "directory" },
+  const localOmitted = reconcileWorkspaceManifests({ base, local, cloud });
+
+  assert.deepEqual(localOmitted.operations, [
+    { path: "public.txt", action: "delete_cloud", entry: null, expectedBase: publicFile },
   ]);
-  const second = manifest([
-    { path: "a", type: "directory" },
-    { path: "b", type: "directory" },
+  assert.deepEqual(localOmitted.conflicts, []);
+
+  const cloudOmitted = reconcileWorkspaceManifests({ base, local: cloud, cloud: local });
+
+  assert.deepEqual(cloudOmitted.operations, [
+    { path: "public.txt", action: "delete_local", entry: null, expectedBase: publicFile },
   ]);
-  assert.equal(await manifestTreeHash(first), await manifestTreeHash(second));
+  assert.deepEqual(cloudOmitted.conflicts, []);
 });

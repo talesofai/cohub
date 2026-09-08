@@ -150,9 +150,6 @@ router.post("/spaces/:spaceId/runtimes", async (c) => {
       replicaId: body.replicaId,
       provider: body.provider,
       displayName: body.displayName as string,
-      providerVersion: body.providerVersion as string | undefined,
-      adapterVersion: body.adapterVersion as string | undefined,
-      capabilities: body.capabilities as Record<string, unknown> | undefined,
       protocolVersion: body.protocolVersion,
     }), 201);
   } catch (error) {
@@ -216,7 +213,7 @@ router.post("/spaces/:spaceId/replicas/attach", async (c) => {
       spaceId,
       rootFingerprint: body.rootFingerprint as string,
       displayName: body.displayName as string,
-      capabilities: body.capabilities as Record<string, unknown> | undefined,
+      initialChoice: body.initialChoice as "use-cloud" | "use-local" | "merge",
       protocolVersion: typeof body.protocolVersion === "number" ? body.protocolVersion : undefined,
     });
     if (result.bootstrapCycleId) {
@@ -467,7 +464,6 @@ router.post("/spaces/:spaceId/replicas/:replicaId/attempts/:attemptId/register",
       runtimeId: typeof body.runtimeId === "string" ? body.runtimeId : "",
       leaseEpoch: body.leaseEpoch as number,
       baseSnapshotId: typeof body.baseSnapshotId === "string" ? body.baseSnapshotId : null,
-      workspacePolicyVersion: body.workspacePolicyVersion as number,
       integrationPolicyVersion: body.integrationPolicyVersion as number,
     }));
   } catch (error) {

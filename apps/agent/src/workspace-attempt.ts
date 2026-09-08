@@ -108,8 +108,6 @@ export async function sealCloudWorkspaceAttempt(input: { spaceId: string; sessio
           replicaId: cloudReplica.id,
           baseSnapshotId: attempt.baseCanonicalSnapshotId,
           executionAttemptId: input.attemptId,
-          direction: "reconcile",
-          canonicalGenerationAtStart: state.generation,
           leaseEpoch: input.leaseEpoch,
           status: "planned",
         }).onConflictDoNothing().returning({ id: workspaceSyncCycles.id });

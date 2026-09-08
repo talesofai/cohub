@@ -37,15 +37,11 @@ func TestRuntimeIDForPermitUsesPersistedIdentityWithoutStateLookup(t *testing.T)
 	if err := state.PutPermit(attemptID, spaceID, replicaID, testLeaseRuntimeID, baseID, 1, time.Now().UTC().Add(time.Minute), "local_agent", attemptID); err != nil {
 		t.Fatal(err)
 	}
-	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
-		t.Fatalf("persisted runtime identity unexpectedly queried state endpoint: %s", request.URL.Path)
-	}))
-	defer server.Close()
 	permit, err := state.PermitContext(attemptID)
 	if err != nil || permit == nil {
 		t.Fatalf("read permit: %v %#v", err, permit)
 	}
-	runtimeID, err := (&Daemon{cfg: Config{APIBaseURL: server.URL}, state: state, client: server.Client()}).runtimeIDForPermit(context.Background(), permit)
+	runtimeID, err := runtimeIDForPermit(permit)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -73,7 +69,7 @@ func TestRuntimeIDForPermitStateSurvivesTerminalAttemptOmission(t *testing.T) {
 	if err != nil || permit == nil {
 		t.Fatalf("read permit: %v %#v", err, permit)
 	}
-	runtimeID, err := (&Daemon{state: state}).runtimeIDForPermitState(permit, remoteReplicaState{})
+	runtimeID, err := runtimeIDForPermitState(permit, remoteReplicaState{})
 	if err != nil {
 		t.Fatal(err)
 	}

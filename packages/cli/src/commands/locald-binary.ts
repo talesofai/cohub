@@ -33,7 +33,7 @@ export class LocaldUnavailableError extends Error {
   override name = "LocaldUnavailableError";
 }
 
-export class LocaldDownloadError extends LocaldUnavailableError {
+class LocaldDownloadError extends LocaldUnavailableError {
   override name = "LocaldDownloadError";
 }
 
@@ -49,7 +49,6 @@ const resolveTarget = (): Target => {
 };
 
 const cacheDir = (version: string) => join(homedir(), ".cache", "cohub", "locald", version);
-export const localdBinaryCachePath = (version: string = LOCALD_VERSION) => join(cacheDir(version), resolveTarget().binaryName);
 const archiveName = (version: string, target: Target) => `${BINARY_NAME}_${version}_${target.goos}_${target.goarch}.tar.gz`;
 
 const isExecutableFile = async (path: string) => {
@@ -181,61 +180,18 @@ const downloadAndVerify = async (version: string, target: Target): Promise<strin
   }
 };
 
-export type EnsureLocaldOptions = {
-  version?: string;
-  force?: boolean;
-  onStatus?: (message: string) => void;
-};
-
-export const ensureLocaldBinary = async (options: EnsureLocaldOptions = {}): Promise<string> => {
+export async function resolveLocaldBinary(): Promise<string> {
   const override = process.env.COHUB_LOCALD_BIN?.trim();
   if (override) {
     if (!(await isExecutableFile(override))) throw new LocaldUnavailableError(`COHUB_LOCALD_BIN=${override} is not an executable file`);
     return override;
   }
-  const version = options.version?.trim() || process.env.COHUB_LOCALD_VERSION?.trim() || LOCALD_VERSION;
+  const version = process.env.COHUB_LOCALD_VERSION?.trim() || LOCALD_VERSION;
   const target = resolveTarget();
   const cached = join(cacheDir(version), target.binaryName);
-  if (!options.force && await isExecutableFile(cached)) return cached;
-  return withLock(version, async () => {
-    if (!options.force && await isExecutableFile(cached)) return cached;
-    options.onStatus?.(`Downloading local agent runtime ${version} (${target.goos}/${target.goarch})`);
-    const path = await downloadAndVerify(version, target);
-    options.onStatus?.("Local agent runtime ready");
-    return path;
-  });
-};
-
-export const installLocaldBinary = (options: EnsureLocaldOptions = {}) => ensureLocaldBinary(options);
-export const updateLocaldBinary = (options: Omit<EnsureLocaldOptions, "force"> = {}) => ensureLocaldBinary({ ...options, force: true });
-
-export async function resolveLocaldBinary(options: { download?: boolean } = {}): Promise<string> {
-  const override = process.env.COHUB_LOCALD_BIN?.trim();
-  if (override) {
-    if (!(await isExecutableFile(override))) throw new LocaldUnavailableError(`COHUB_LOCALD_BIN=${override} is not an executable file`);
-    return override;
-  }
-  const command = process.platform === "win32" ? "where.exe" : "which";
-  try {
-    const result = await new Promise<string>((resolvePromise, reject) => {
-      const child = spawn(command, [BINARY_NAME], { stdio: ["ignore", "pipe", "pipe"] });
-      const output: Buffer[] = [];
-      child.stdout.on("data", (chunk: Buffer) => output.push(chunk));
-      child.once("error", reject);
-      child.once("close", (code) => code === 0 ? resolvePromise(Buffer.concat(output).toString("utf8")) : reject(new Error(`exit ${code}`)));
-    });
-    const path = result.trim().split(/\r?\n/)[0];
-    if (path && await isExecutableFile(path)) return path;
-  } catch {
-    // The versioned cache is the next local source; downloading is explicit
-    // only when the caller permits it.
-  }
-  const cached = join(cacheDir(process.env.COHUB_LOCALD_VERSION?.trim() || LOCALD_VERSION), resolveTarget().binaryName);
   if (await isExecutableFile(cached)) return cached;
-  if (options.download === false) {
-    throw new LocaldUnavailableError(
-      "cohub-locald is unavailable. Retry the command with network access or set COHUB_LOCALD_BIN to a local executable.",
-    );
-  }
-  return ensureLocaldBinary();
+  return withLock(version, async () => {
+    if (await isExecutableFile(cached)) return cached;
+    return downloadAndVerify(version, target);
+  });
 }

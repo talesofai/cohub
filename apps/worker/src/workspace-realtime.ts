@@ -11,7 +11,6 @@ const toWorkspace = (row: typeof workspaceState.$inferSelect) => ({
   generation: row.generation,
   status: row.status,
   activeCycleId: row.activeCycleId,
-  lastWriterKind: row.lastWriterKind,
   updatedAt: row.updatedAt.toISOString(),
 });
 

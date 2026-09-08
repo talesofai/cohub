@@ -130,50 +130,30 @@ func TestWriteControlSerializesConcurrentMessages(t *testing.T) {
 	}
 }
 
-func TestRuntimeRegistrationFrameCarriesCompleteIdentity(t *testing.T) {
+func TestRuntimeRegistrationFrameCarriesConnectionIdentity(t *testing.T) {
 	frame := runtimeRegistrationFrame(Options{
 		SpaceID:   "space",
 		ReplicaID: "replica",
-		DeviceID:  "device",
 		RuntimeID: "runtime",
 		Provider:  "codex",
 	}, "runtime")
 	if frame.Type != "register" || frame.Kind != "runtime" {
 		t.Fatalf("unexpected registration type: %#v", frame)
 	}
-	if frame.Version != runtimeProtocolVersion || frame.ProtocolVersion != runtimeProtocolVersion {
-		t.Fatalf("registration protocol version = (%d, %d), want %d", frame.Version, frame.ProtocolVersion, runtimeProtocolVersion)
-	}
 	if frame.Protocol != runtimeWireProtocol {
 		t.Fatalf("registration protocol = %q, want %q", frame.Protocol, runtimeWireProtocol)
 	}
-	if frame.ReplicaID != "replica" || frame.DeviceID != "device" || frame.ProviderVersion == "" || frame.AdapterVersion == "" {
-		t.Fatalf("registration identity metadata is incomplete: %#v", frame)
+	if frame.SpaceID != "space" || frame.ReplicaID != "replica" || frame.RuntimeID != "runtime" || frame.Provider != "codex" {
+		t.Fatalf("registration connection identity is incomplete: %#v", frame)
 	}
-	for _, key := range []string{"streaming", "sessionResume", "sessionFork", "sessionCancel", "permissionRequests", "promptImages", "nativeTools"} {
-		if _, ok := frame.Capabilities[key]; !ok {
-			t.Fatalf("registration capabilities missing %q: %#v", key, frame.Capabilities)
+	encoded, err := json.Marshal(frame)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, field := range []string{"version", "protocolVersion", "deviceId"} {
+		if strings.Contains(string(encoded), `"`+field+`"`) {
+			t.Fatalf("redundant registration field %q leaked into %s", field, encoded)
 		}
-	}
-}
-
-func TestRuntimeCapabilitiesIgnoreUnknownKeys(t *testing.T) {
-	capabilities := runtimeCapabilities("codex", map[string]bool{
-		"streaming":          false,
-		"permissionRequests": true,
-		"providerHint":       true,
-	})
-	if capabilities["streaming"] {
-		t.Fatal("expected a known capability override to be preserved")
-	}
-	if _, ok := capabilities["providerHint"]; ok {
-		t.Fatal("unknown capability leaked into the strict registration frame")
-	}
-	if !capabilities["sessionResume"] || !capabilities["nativeTools"] {
-		t.Fatalf("default capabilities were lost: %#v", capabilities)
-	}
-	if capabilities["permissionRequests"] {
-		t.Fatalf("permissionRequests must remain false for local-runtime-v1: %#v", capabilities)
 	}
 }
 

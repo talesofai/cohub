@@ -1,7 +1,4 @@
-import type {
-  WorkspaceManifestV1,
-  WorkspaceSyncJobData,
-} from "@cohub/protocol";
+import type { WorkspaceManifestV1 } from "@cohub/protocol";
 import type { Fetch, HttpTransport } from "../transport.js";
 
 export type LocalAgentDevice = {
@@ -26,11 +23,8 @@ export type LocalRuntimeRecord = {
   userUuid: string;
   provider: "pi" | "codex" | "claude_code";
   displayName: string;
-  providerVersion: string;
-  adapterVersion: string;
   protocolVersion: number;
-  capabilities: Record<string, unknown>;
-  status: "offline" | "connecting" | "ready" | "busy" | "error" | "revoked";
+  status: "offline" | "ready" | "busy" | "error" | "revoked";
   connectionEpoch: number;
   lastSeenAt: string | null;
   connectedAt: string | null;
@@ -128,9 +122,6 @@ export class LocalAgentApi {
     replicaId: string;
     provider: "pi" | "codex" | "claude_code";
     displayName: string;
-    providerVersion?: string;
-    adapterVersion?: string;
-    capabilities?: Record<string, unknown>;
     protocolVersion: number;
   }, customFetch?: Fetch) {
     return this.transport.request<LocalRuntimeRecord>(`/api/local-agent/spaces/${spaceId}/runtimes`, {
@@ -153,7 +144,7 @@ export class LocalAgentApi {
     return this.transport.request<{ runtime: LocalRuntimeRecord }>(`/api/local-agent/spaces/${spaceId}/runtimes/${runtimeId}`, { method: "DELETE", fetch: customFetch });
   }
 
-  attach(spaceId: string, input: { deviceId?: string; rootFingerprint: string; displayName: string; capabilities?: Record<string, unknown>; protocolVersion?: number }, customFetch?: Fetch) {
+  attach(spaceId: string, input: { deviceId?: string; rootFingerprint: string; displayName: string; initialChoice: "use-cloud" | "use-local" | "merge"; protocolVersion?: number }, customFetch?: Fetch) {
     return this.transport.request<LocalAgentAttachResponse>(`/api/local-agent/spaces/${spaceId}/replicas/attach`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
@@ -176,7 +167,7 @@ export class LocalAgentApi {
   }
 
   updatePolicy(spaceId: string, deviceId: string, input: Partial<{
-    workspaceMode: "two_way_safe" | "one_way_to_cloud" | "one_way_to_local" | "handoff";
+    workspaceMode: "two_way_safe" | "one_way_to_cloud" | "one_way_to_local";
   }>, customFetch?: Fetch) {
     return this.transport.request<{ policy: Record<string, unknown> }>(`/api/local-agent/spaces/${spaceId}/devices/${deviceId}/policy`, {
       method: "PATCH",
@@ -253,5 +244,3 @@ export class LocalAgentApi {
     });
   }
 }
-
-export type { WorkspaceSyncJobData };

@@ -109,7 +109,6 @@ function runtimeProviderLabel(provider: string) {
 function runtimeStatusLabel(status: string) {
 	if (status === "ready") return "Ready";
 	if (status === "busy") return "Busy";
-	if (status === "connecting") return "Connecting";
 	if (status === "error") return "Error";
 	if (status === "revoked") return "Revoked";
 	return "Offline";

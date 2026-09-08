@@ -6,7 +6,7 @@ import { test } from "node:test";
 import { SessionManager, SettingsManager } from "@earendil-works/pi-coding-agent";
 import type { AgentSession, AgentSessionEvent, ModelRuntime } from "@earendil-works/pi-coding-agent";
 import type { LocalRuntimeProviderEvent } from "@cohub/protocol";
-import { PiProviderAdapter, PiProviderSession } from "@cohub/local-runtime/providers/pi";
+import { PiProviderAdapter, PiProviderSession } from "../providers/pi.js";
 
 type FakeSession = {
   session: AgentSession;
@@ -420,29 +420,6 @@ test("rejects a multibyte oversized native Pi session identity and disposes it",
   assert.equal(disposed, true);
 });
 
-test("rejects a Pi fork that reuses the source identity", async () => {
-  const cwd = await mkdtemp(join(tmpdir(), "cohub-pi-fork-mismatch-"));
-  const fake = fakeSession(cwd, "source-session");
-  let disposed = false;
-  (fake.session as unknown as { dispose: () => void }).dispose = () => { disposed = true; };
-  const manager = fake.session.sessionManager as never;
-  const adapter = new PiProviderAdapter({
-    modelRuntime: {} as ModelRuntime,
-    sessionManagerFactory: {
-      list: async () => [{ id: "source-session", path: "/tmp/source-session.jsonl", cwd }],
-      open: () => manager,
-      create: () => manager,
-      fork: () => manager,
-    },
-    createAgentSession: async () => ({ session: fake.session }),
-  });
-  await assert.rejects(
-    () => adapter.open({ cwd, providerSessionId: "source-session", operation: "session.fork" }),
-    /must return a new providerSessionId/,
-  );
-  assert.equal(disposed, true);
-});
-
 test("preserves top-level and structured Pi prompt text", async () => {
   const cwd = await mkdtemp(join(tmpdir(), "cohub-pi-content-"));
   const fake = fakeSession(cwd);
@@ -617,29 +594,6 @@ test("fails a resume when the native session is missing", async () => {
   );
 });
 
-test("forks an existing native Pi session through SessionManager.forkFrom", async () => {
-  const cwd = await mkdtemp(join(tmpdir(), "cohub-pi-fork-"));
-  const fake = fakeSession(cwd);
-  const calls: string[] = [];
-  const manager = fake.session.sessionManager as never;
-  const adapter = new PiProviderAdapter({
-    modelRuntime: {} as ModelRuntime,
-    sessionManagerFactory: {
-      list: async () => [{ id: "source-session", path: "/tmp/source-session.jsonl", cwd }],
-      open: () => manager,
-      create: () => manager,
-      fork: (path, targetCwd) => {
-        calls.push(`fork:${path}:${targetCwd}`);
-        return manager;
-      },
-    },
-    createAgentSession: async () => ({ session: fake.session }),
-  });
-  const handle = await adapter.open({ cwd, providerSessionId: "source-session", operation: "session.fork" });
-  assert.deepEqual(calls, [`fork:/tmp/source-session.jsonl:${cwd}`]);
-  await handle.close();
-});
-
 test("rejects concurrent turns and propagates cancellation", async () => {
   const cwd = await mkdtemp(join(tmpdir(), "cohub-pi-abort-"));
   const fake = fakeSession(cwd);
@@ -707,7 +661,7 @@ test("blocks write tools in read-only mode and emits canonical events", async ()
   await handle.close();
 });
 
-test("does not let Pi payload access mode widen a read-only session", async () => {
+test("does not let Pi runtime access mode widen the adapter ceiling", async () => {
   const cwd = await mkdtemp(join(tmpdir(), "cohub-pi-access-ceiling-"));
   const fake = fakeSession(cwd);
   const adapter = new PiProviderAdapter({
@@ -717,40 +671,8 @@ test("does not let Pi payload access mode widen a read-only session", async () =
     createAgentSession: async () => ({ session: fake.session }),
   });
   await assert.rejects(
-    () => adapter.open({ cwd, payload: { accessMode: "full_access" } }),
+    () => adapter.open({ cwd, accessMode: "full_access" }),
     /cannot widen a read-only session/,
-  );
-});
-
-test("does not let Pi payload tools exceed the adapter ceiling", async () => {
-  const cwd = await mkdtemp(join(tmpdir(), "cohub-pi-tools-ceiling-"));
-  const fake = fakeSession(cwd);
-  const adapter = new PiProviderAdapter({
-    modelRuntime: {} as ModelRuntime,
-    tools: ["read", "bash"],
-    accessMode: "full_access",
-    sessionManager: fake.session.sessionManager as never,
-    createAgentSession: async () => ({ session: fake.session }),
-  });
-  await assert.rejects(
-    () => adapter.open({ cwd, accessMode: "full_access", payload: { tools: ["read", "write"] } }),
-    /tools exceed the adapter tool ceiling/,
-  );
-  assert.deepEqual(fake.activeToolNames, ["read", "write"]);
-});
-
-test("rejects malformed Pi payload tool lists instead of widening defaults", async () => {
-  const cwd = await mkdtemp(join(tmpdir(), "cohub-pi-tools-invalid-"));
-  const fake = fakeSession(cwd);
-  const adapter = new PiProviderAdapter({
-    modelRuntime: {} as ModelRuntime,
-    accessMode: "full_access",
-    sessionManager: fake.session.sessionManager as never,
-    createAgentSession: async () => ({ session: fake.session }),
-  });
-  await assert.rejects(
-    () => adapter.open({ cwd, accessMode: "full_access", payload: { tools: ["read", 42] } }),
-    /provider tools must be a string array/,
   );
 });
 
@@ -820,25 +742,6 @@ test("rejects a relative workspace root on direct Pi sessions", async () => {
   );
 });
 
-test("ignores legacy Pi metadata provider options", async () => {
-  const cwd = await mkdtemp(join(tmpdir(), "cohub-pi-metadata-options-"));
-  const fake = fakeSession(cwd);
-  const adapter = new PiProviderAdapter({
-    modelRuntime: {} as ModelRuntime,
-    accessMode: "read_only",
-    sessionManager: fake.session.sessionManager as never,
-    createAgentSession: async () => ({ session: fake.session }),
-  });
-  const input = {
-    cwd,
-    accessMode: "read_only",
-    metadata: { accessMode: "full_access", tools: ["write"] },
-  } as unknown as Parameters<typeof adapter.open>[0];
-  const handle = await adapter.open(input);
-  assert.deepEqual(fake.activeToolNames, ["read", "grep", "find", "ls"]);
-  await handle.close();
-});
-
 test("does not let Pi turn options widen a read-only session", async () => {
   const cwd = await mkdtemp(join(tmpdir(), "cohub-pi-turn-access-ceiling-"));
   const fake = fakeSession(cwd);
@@ -848,19 +751,6 @@ test("does not let Pi turn options widen a read-only session", async () => {
   assert.equal(events[0]?.payload.code, "access_mode_widening");
   assert.deepEqual(fake.activeToolNames, ["read", "grep", "find", "ls"]);
   await session.close();
-});
-
-test("allows a provider payload to downgrade a full-access Pi session", async () => {
-  const cwd = await mkdtemp(join(tmpdir(), "cohub-pi-payload-access-downgrade-"));
-  const fake = fakeSession(cwd);
-  const adapter = new PiProviderAdapter({
-    modelRuntime: {} as ModelRuntime,
-    sessionManager: fake.session.sessionManager as never,
-    createAgentSession: async () => ({ session: fake.session }),
-  });
-  const handle = await adapter.open({ cwd, accessMode: "full_access", payload: { accessMode: "read_only" } });
-  assert.deepEqual(fake.activeToolNames, ["read", "grep", "find", "ls"]);
-  await handle.close();
 });
 
 test("allows a full-access Pi session to downgrade and restore access", async () => {

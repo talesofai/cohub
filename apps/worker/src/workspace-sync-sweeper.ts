@@ -63,7 +63,7 @@ export async function sweepWorkspaceSyncWork() {
     errorMessage: "Workspace sync worker stopped before completion; retrying the durable cycle.",
     updatedAt: new Date(),
   }).where(and(
-    inArray(workspaceSyncCycles.status, ["transferring", "applying_cloud", "applying_local", "verifying"]),
+    inArray(workspaceSyncCycles.status, ["transferring", "applying_cloud"]),
     lt(workspaceSyncCycles.updatedAt, staleBefore),
   ));
 
@@ -90,9 +90,7 @@ export async function sweepWorkspaceSyncWork() {
       spaceId: candidate.spaceId,
       replicaId: candidate.replicaId,
       localSnapshotId: candidate.snapshotId,
-      direction: "reconcile",
       status: "planned",
-      canonicalGenerationAtStart: 0,
     }).onConflictDoNothing();
   }
 
@@ -100,7 +98,6 @@ export async function sweepWorkspaceSyncWork() {
     attemptId: workspaceExecutionAttempts.id,
     spaceId: workspaceExecutionAttempts.spaceId,
     baseSnapshotId: workspaceExecutionAttempts.baseCanonicalSnapshotId,
-    generation: workspaceState.generation,
     replicaId: workspaceReplicas.id,
   }).from(workspaceExecutionAttempts)
     .innerJoin(workspaceState, eq(workspaceState.spaceId, workspaceExecutionAttempts.spaceId))
@@ -118,8 +115,6 @@ export async function sweepWorkspaceSyncWork() {
       replicaId: attempt.replicaId,
       baseSnapshotId: attempt.baseSnapshotId,
       executionAttemptId: attempt.attemptId,
-      direction: "reconcile",
-      canonicalGenerationAtStart: attempt.generation,
       status: "planned",
     }).onConflictDoNothing().returning({ id: workspaceSyncCycles.id });
     if (cycle) {
@@ -138,7 +133,6 @@ export async function sweepWorkspaceSyncWork() {
     replicaId: workspaceReplicas.id,
     baseSnapshotId: workspaceExecutionAttempts.baseCanonicalSnapshotId,
     leaseEpoch: workspaceExecutionAttempts.workspaceLeaseEpoch,
-    generation: workspaceState.generation,
   }).from(workspaceExecutionAttempts)
     .innerJoin(workspaceState, eq(workspaceState.spaceId, workspaceExecutionAttempts.spaceId))
     .innerJoin(workspaceReplicas, and(
@@ -183,8 +177,6 @@ export async function sweepWorkspaceSyncWork() {
       localSnapshotId: candidate.id,
       executionAttemptId: attempt.attemptId,
       leaseEpoch: attempt.leaseEpoch,
-      direction: "reconcile",
-      canonicalGenerationAtStart: attempt.generation,
       status: "planned",
     }).onConflictDoNothing().returning({ id: workspaceSyncCycles.id });
     if (!cycle) continue;

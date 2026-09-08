@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { resolveInitialChoice } from "../src/commands/workspace.js";
+import { resolveInitialChoice } from "../src/commands/local-workspace.js";
 
 void test("workspace attach defaults only an empty root to use-cloud", () => {
   assert.equal(resolveInitialChoice({}, false), "use-cloud");

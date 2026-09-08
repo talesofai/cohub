@@ -32,7 +32,6 @@ export async function dispatchWorkspaceStateUpdated(input: {
     generation: input.workspace.generation,
     status: input.workspace.status,
     activeCycleId: input.workspace.activeCycleId,
-    lastWriterKind: input.workspace.lastWriterKind,
     updatedAt: input.workspace.updatedAt,
   };
   const lease = input.lease

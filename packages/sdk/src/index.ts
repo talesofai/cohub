@@ -17,6 +17,7 @@ export {
 } from "./app-ref.js";
 export type { ParsedAppRef, AppPublicRef } from "./app-ref.js";
 export { isUuid } from "@cohub/protocol/identifiers";
+export { isLocalRuntimeHeartbeatFresh } from "@cohub/protocol/local-runtime";
 export { AppCommerceApi } from "./apis/app-commerce.js";
 export { AppRealtimeApi, AppRoom } from "./apis/app-realtime.js";
 export { LocalAgentApi } from "./apis/local-agent.js";

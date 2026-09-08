@@ -12,8 +12,7 @@ import { hasPermission } from "../../permissions.js";
 import { ensureInternalRequest, getLocalAgentPrincipal, getOptionalAuth, getAppSessionPrincipal, requireValidId } from "../../lib/middleware.js";
 import { getSpaceById } from "../../space-sessions.js";
 import { getSpaceSandboxBySpaceId, updateSpaceSandbox } from "../../space-sandboxes.js";
-import { LOCAL_RUNTIME_PROTOCOL_VERSION } from "@cohub/protocol";
-import { authorizeLocalRuntime, reportLocalRuntimeStatus, touchLocalRuntime } from "../../local-runtime-service.js";
+import { authorizeLocalRuntime, disconnectLocalRuntime, touchLocalRuntime } from "../../local-runtime-service.js";
 import { normalizeSandboxLifecycleStatus, normalizeSandboxRuntimeStatus } from "@cohub/sandbox-controller";
 import {
   PublicAssetConfigError,
@@ -266,14 +265,11 @@ router.post("/local-runtime/authorize", async (c) => {
   if (forbidden) return forbidden;
   const principal = getLocalAgentPrincipal(c);
   if (!principal) return c.json({ ok: false, message: "a local device credential is required" }, 401);
-  const body = await c.req.json<{ runtimeId?: string; spaceId?: string; protocolVersion?: unknown; gatewayNodeId?: string; gatewayWsEndpoint?: string }>().catch(() => null);
+  const body = await c.req.json<{ runtimeId?: string; spaceId?: string; gatewayNodeId?: string; gatewayWsEndpoint?: string }>().catch(() => null);
   const runtimeId = typeof body?.runtimeId === "string" ? body.runtimeId.trim() : "";
   const spaceId = typeof body?.spaceId === "string" ? body.spaceId.trim() : "";
   if (!runtimeId || !spaceId || !requireValidId(runtimeId) || !requireValidId(spaceId)) {
     return c.json({ ok: false, message: "runtimeId and spaceId are required" }, 400);
-  }
-  if (body?.protocolVersion !== LOCAL_RUNTIME_PROTOCOL_VERSION) {
-    return c.json({ ok: false, message: "protocolVersion must be 1" }, 400);
   }
   const allowed = await hasPermission({ uuid: principal.userUuid }, "file.edit", { spaceId }).catch((error) => {
     logger.warn("[LocalRuntime] failed to authorize runtime connect", { runtimeId, spaceId, error });
@@ -284,7 +280,6 @@ router.post("/local-runtime/authorize", async (c) => {
     const result = await authorizeLocalRuntime({
       runtimeId,
       spaceId,
-      protocolVersion: body.protocolVersion,
       actor: {
         userUuid: principal.userUuid,
         deviceId: principal.deviceId,
@@ -309,19 +304,15 @@ router.post("/local-runtime/heartbeat", async (c) => {
   if (forbidden) return forbidden;
   const principal = getLocalAgentPrincipal(c);
   if (!principal) return c.json({ ok: false, message: "a local device credential is required" }, 401);
-  const body = await c.req.json<{ runtimeId?: string; connectionEpoch?: number; protocolVersion?: unknown }>().catch(() => null);
+  const body = await c.req.json<{ runtimeId?: string; connectionEpoch?: number }>().catch(() => null);
   const runtimeId = typeof body?.runtimeId === "string" ? body.runtimeId.trim() : "";
   const connectionEpoch = typeof body?.connectionEpoch === "number" ? body.connectionEpoch : 0;
   if (!runtimeId || !requireValidId(runtimeId) || !Number.isSafeInteger(connectionEpoch) || connectionEpoch < 1) {
     return c.json({ ok: false, message: "runtimeId and connectionEpoch are required" }, 400);
   }
-  if (body?.protocolVersion !== LOCAL_RUNTIME_PROTOCOL_VERSION) {
-    return c.json({ ok: false, message: "protocolVersion must be 1" }, 400);
-  }
   const touched = await touchLocalRuntime({
     runtimeId,
     connectionEpoch,
-    protocolVersion: body.protocolVersion,
     actor: {
       userUuid: principal.userUuid,
       deviceId: principal.deviceId,
@@ -336,8 +327,8 @@ router.post("/local-runtime/heartbeat", async (c) => {
   return c.json({ ok: true });
 });
 
-// POST /internal/gateway/local-runtime/status
-router.post("/local-runtime/status", async (c) => {
+// POST /internal/gateway/local-runtime/disconnect
+router.post("/local-runtime/disconnect", async (c) => {
   const forbidden = ensureInternalRequest(c);
   if (forbidden) return forbidden;
   const principal = getLocalAgentPrincipal(c);
@@ -345,39 +336,28 @@ router.post("/local-runtime/status", async (c) => {
   const body = await c.req.json<{
     runtimeId?: string;
     connectionEpoch?: number;
-    protocolVersion?: unknown;
-    status?: "ready" | "offline" | "error";
-    error?: string | null;
+    reason?: string | null;
   }>().catch(() => null);
   const runtimeId = typeof body?.runtimeId === "string" ? body.runtimeId.trim() : "";
   const connectionEpoch = typeof body?.connectionEpoch === "number" ? body.connectionEpoch : 0;
-  if (body?.status !== "ready" && body?.status !== "offline" && body?.status !== "error") {
-    return c.json({ ok: false, message: "status must be ready, offline, or error" }, 400);
-  }
-  const status = body.status;
   if (!runtimeId || !requireValidId(runtimeId) || !Number.isSafeInteger(connectionEpoch) || connectionEpoch < 1) {
     return c.json({ ok: false, message: "runtimeId and connectionEpoch are required" }, 400);
   }
-  if (body?.protocolVersion !== LOCAL_RUNTIME_PROTOCOL_VERSION) {
-    return c.json({ ok: false, message: "protocolVersion must be 1" }, 400);
+  if (body?.reason != null && typeof body.reason !== "string") {
+    return c.json({ ok: false, message: "reason must be a string" }, 400);
   }
-  if (body?.error != null && typeof body.error !== "string") {
-    return c.json({ ok: false, message: "error must be a string" }, 400);
-  }
-  const updated = await reportLocalRuntimeStatus({
+  const updated = await disconnectLocalRuntime({
     runtimeId,
     connectionEpoch,
-    protocolVersion: body.protocolVersion,
     actor: {
       userUuid: principal.userUuid,
       deviceId: principal.deviceId,
       credentialVersion: principal.credentialVersion,
       principal: "device",
     },
-    status,
-    error: body?.error ?? null,
+    reason: body?.reason ?? null,
   }).then((result) => Boolean(result)).catch((error) => {
-    logger.warn("[LocalRuntime] failed to record runtime status", { runtimeId, connectionEpoch, error });
+    logger.warn("[LocalRuntime] failed to record runtime disconnect", { runtimeId, connectionEpoch, error });
     return null;
   });
   if (!updated) return c.json({ ok: false, message: "runtime is stale or revoked" }, 409);
