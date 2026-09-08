@@ -51,9 +51,14 @@
       win.style.left = `${40 + embeds.size * 32}px`;
       win.style.top = `${40 + embeds.size * 32}px`;
       win.style.zIndex = String(++z);
-      win.innerHTML = `<div class="bar"><span>${ref}</span><button type="button" aria-label="Close">×</button></div><iframe title="${ref}" sandbox="allow-scripts allow-same-origin allow-forms allow-popups allow-modals" allow="clipboard-read; clipboard-write"></iframe>`;
-      const frame = win.querySelector("iframe");
+      win.innerHTML = '<div class="bar"><span></span><button type="button" aria-label="Close">×</button></div>';
+      win.querySelector("span").textContent = ref;
+      const frame = document.createElement("iframe");
+      frame.title = ref;
+      frame.sandbox = "allow-scripts allow-same-origin allow-forms allow-popups allow-downloads allow-modals";
+      frame.allow = "clipboard-read; clipboard-write; fullscreen; web-share";
       frame.src = toUrl(ref);
+      win.append(frame);
 
       const close = () => { embed.dispose(); embeds.delete(embed); win.remove(); };
       const embed = cohub.app.embed.attach(frame, {

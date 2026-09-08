@@ -14,6 +14,7 @@ import {
 	type AppEmbedConnection,
 	type AppEmbedState,
 	connectAppEmbed,
+	isServedFrom,
 	resolveEmbedderOrigin,
 } from "$lib/features/app/app-embed";
 import { loadAppPreview } from "$lib/features/app/app-open";
@@ -72,23 +73,23 @@ const shell = $derived<AppRuntimeShellContext | undefined>(
 		: undefined,
 );
 const invocation = $derived<AppRuntimeInvocationContext | undefined>(
-	embedder
+	embed
 		? {
 				surface: "page",
 				source: "embed",
-				embedder,
-				...(embed?.shell?.space ? { spaceId: embed.shell.space.id } : {}),
-				...(embed?.shell?.session ? { sessionId: embed.shell.session.id } : {}),
-				...(embed?.shell?.turn ? { turnId: embed.shell.turn.id } : {}),
+				...(embedder ? { embedder } : {}),
+				...(embed.shell?.space ? { spaceId: embed.shell.space.id } : {}),
+				...(embed.shell?.session ? { sessionId: embed.shell.session.id } : {}),
+				...(embed.shell?.turn ? { turnId: embed.shell.turn.id } : {}),
 			}
 		: undefined,
 );
 
+const embedderOrigin = resolveEmbedderOrigin();
+
 $effect(() => {
-	if (!surfaceReady) return;
-	const origin = resolveEmbedderOrigin();
-	if (!origin) return;
-	embedConnection = connectAppEmbed(origin, (state) => {
+	if (!surfaceReady || !embedderOrigin) return;
+	embedConnection = connectAppEmbed(embedderOrigin, (state) => {
 		embed = state;
 	});
 	return () => {
@@ -98,17 +99,18 @@ $effect(() => {
 	};
 });
 
-// The embedder names itself by id. Resolve it to a public App for display; it is
-// self-reported and never used for authorization.
+// The embedder names itself by id. It is trusted only when that App's content
+// is served from the frame origin that sent the hint.
 const embedderAppId = $derived(embed?.embedder.appId ?? null);
 $effect(() => {
 	const appId = embedderAppId;
 	embedder = null;
-	if (!appId) return;
+	if (!appId || !embedderOrigin) return;
 	let cancelled = false;
 	void loadAppPreview(sdk.apps, appId).then(
-		({ app }) => {
-			if (!cancelled) embedder = { appId: app.id, slug: app.slug };
+		({ app, content }) => {
+			if (!cancelled && isServedFrom(content, embedderOrigin))
+				embedder = { appId: app.id, slug: app.slug };
 		},
 		() => undefined,
 	);
@@ -119,7 +121,8 @@ $effect(() => {
 
 function handleCloseRequest() {
 	if (embedConnection) return embedConnection.requestClose();
-	// Browsers only let scripts close tabs they opened; otherwise leave the App.
+	// Browsers only let scripts close tabs they opened; otherwise leave the App,
+	// which may land outside Cohub when this page was the entry point.
 	window.close();
 	if (!window.closed) history.back();
 }

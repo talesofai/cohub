@@ -16,9 +16,8 @@ export type AppRuntimeInvocationContext = {
   turnId?: string;
   toolCallId?: string;
   /**
-   * The App whose page embeds this one, when `source` is `embed`. Self-reported
-   * by the embedder and resolved to a public App record for display; do not
-   * use it for authorization.
+   * The App whose page embeds this one, when `source` is `embed`. Present only
+   * when that App's published content is served from the embedding frame.
    */
   embedder?: { appId: string; slug: string };
 };
@@ -588,6 +587,7 @@ export class AppRuntimeApi {
   /**
    * Asks the host to close this App: a workspace tab closes, an embedded page
    * forwards the request to its embedder, a standalone page closes the tab.
+   * No-op in broker mode, where the App owns its own window.
    */
   requestClose() {
     this.transport.notify?.(buildAppRuntimeCloseRequest());

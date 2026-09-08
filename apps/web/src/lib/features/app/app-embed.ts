@@ -18,9 +18,6 @@ export type AppEmbedConnection = {
 	dispose: () => void;
 };
 
-const ATTACH_RETRY_MS = 1_000;
-const ATTACH_DEADLINE_MS = 8_000;
-
 /**
  * The origin of the direct parent frame, when this page is embedded.
  * `ancestorOrigins[0]` is the nearest ancestor; `referrer` is the fallback for
@@ -36,10 +33,26 @@ export function resolveEmbedderOrigin(): string | null {
 	}
 }
 
+/** Whether an App's content is served from the given origin. */
+export function isServedFrom(
+	content: { url: string } | null | undefined,
+	origin: string,
+) {
+	if (!content) return false;
+	try {
+		return new URL(content.url).origin === origin;
+	} catch {
+		return false;
+	}
+}
+
 /**
  * Connects a public App page to the App embedding it. Hints received here are
  * navigation context only; identity, grants, and tokens stay in the local
  * runtime bridge and never cross this channel.
+ *
+ * Either side may come up first: this page asks to be attached, and the
+ * embedder also announces itself on attach and on every frame load.
  */
 export function connectAppEmbed(
 	origin: string,
@@ -53,7 +66,6 @@ export function connectAppEmbed(
 		if (event.source !== window.parent || event.origin !== origin) return;
 		const attach = parseAppEmbedAttach(event.data);
 		if (attach) {
-			clearInterval(retry);
 			state = {
 				embedId: attach.embedId,
 				embedder: attach.embedder,
@@ -71,19 +83,12 @@ export function connectAppEmbed(
 
 	window.addEventListener("message", receive);
 	post(buildAppEmbedAttachRequest());
-	const retry = setInterval(
-		() => post(buildAppEmbedAttachRequest()),
-		ATTACH_RETRY_MS,
-	);
-	const deadline = setTimeout(() => clearInterval(retry), ATTACH_DEADLINE_MS);
 
 	return {
 		requestClose() {
 			if (state) post(buildAppEmbedCloseRequest(state.embedId));
 		},
 		dispose() {
-			clearInterval(retry);
-			clearTimeout(deadline);
 			window.removeEventListener("message", receive);
 		},
 	};

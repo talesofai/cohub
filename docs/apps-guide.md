@@ -372,7 +372,8 @@ embedder never sees the embedded App's tokens or messages.
 ```html
 <iframe
   src="https://cohub.live/alice/studio/w/notes"
-  sandbox="allow-scripts allow-same-origin allow-forms allow-popups allow-modals"
+  sandbox="allow-scripts allow-same-origin allow-forms allow-popups allow-downloads allow-modals"
+  allow="clipboard-read; clipboard-write; fullscreen; web-share"
 ></iframe>
 ```
 
@@ -392,11 +393,11 @@ embed.dispose();
 
 The embedded App sees the forwarded location as `context.shell` with
 `surface: "embed"` and learns who hosts it from
-`context.invocation.embedder` (`{ appId, slug }`). The embedder names itself;
-Cohub resolves the id to a public App for display but cannot verify who sent
-it, so treat it — like the forwarded Space and Session ids — as a navigation
-hint, never as an authorization input. Reading a Space or Session still
-requires the embedded App's own grants.
+`context.invocation.embedder` (`{ appId, slug }`). Cohub sets `embedder` only
+when that App's published content is served from the frame that sent the hint;
+an unverifiable embedder leaves it absent. Treat the forwarded Space and
+Session ids as navigation hints, never as authorization inputs — reading them
+still requires the embedded App's own grants.
 
 Any App can ask its host to close the surface it runs in:
 
