@@ -1,6 +1,10 @@
 import { readdir, readFile } from "node:fs/promises";
 import { extname, join } from "node:path";
 import {
+  isGenerationModelPricing,
+  type GenerationModelPricing,
+} from "@cohub/protocol/generation";
+import {
   parseGenerationModelDeclaration,
   type GenerationModelDeclaration,
 } from "@neta-art/generation";
@@ -25,7 +29,12 @@ type RedisLike = {
 export type GenerationDeclarationLoader = ReturnType<typeof createGenerationDeclarationLoader>;
 
 function parseDeclaration(rawText: string, path: string): GenerationModelDeclaration {
-  return parseGenerationModelDeclaration(rawText, path);
+  const declaration = parseGenerationModelDeclaration(rawText, path);
+  const pricing = (declaration as { pricing?: unknown }).pricing;
+  if (pricing !== undefined && !isGenerationModelPricing(pricing)) {
+    throw new Error(`Generation model pricing has invalid schema: ${path}`);
+  }
+  return declaration;
 }
 
 async function readGenerationsConfigFromDir(dir: string): Promise<{ rawText: string; content: GenerationsConfig }> {
@@ -43,7 +52,9 @@ async function readGenerationsConfigFromDir(dir: string): Promise<{ rawText: str
   return { rawText: rawParts.join("\n---\n"), content: { declarations } };
 }
 
-export type PublicGenerationDeclaration = Omit<GenerationModelDeclaration, "adapter">;
+export type PublicGenerationDeclaration = Omit<GenerationModelDeclaration, "adapter"> & {
+  pricing?: GenerationModelPricing;
+};
 
 export type ListGenerationModelsResponse = {
   models: PublicGenerationDeclaration[];

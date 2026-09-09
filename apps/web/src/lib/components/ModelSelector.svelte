@@ -1,5 +1,8 @@
 <script lang="ts">
-import type { PublicGenerationDeclaration } from "@cohub/protocol/generation";
+import type {
+	GenerationModelPricing,
+	PublicGenerationDeclaration,
+} from "@cohub/protocol/generation";
 import type { ModelStatusEntry } from "@cohub/protocol/model/status";
 import { Brain, Check, ChevronDown, Image } from "lucide-svelte";
 import Dialog from "$lib/components/Dialog.svelte";
@@ -330,6 +333,43 @@ function formatModelCost(item: ModelItem, locale: Locale): string {
 	});
 
 	return parts.join(" · ");
+}
+
+function getGenerationPricing(
+	model: PublicGenerationDeclaration,
+): GenerationModelPricing | null {
+	const pricing = model.pricing;
+	return pricing && typeof pricing === "object" ? pricing : null;
+}
+
+function formatGenerationPrice(
+	model: PublicGenerationDeclaration,
+	locale: Locale,
+): string {
+	const pricing = getGenerationPricing(model);
+	if (!pricing) return "";
+
+	const unit = {
+		image: m.model_price_unit_image({}, { locale }),
+		second: m.model_price_unit_second({}, { locale }),
+		request: m.model_price_unit_request({}, { locale }),
+		"1m_tokens": m.model_price_unit_1m_tokens({}, { locale }),
+	}[pricing.unit];
+
+	const format = (value: number | undefined) =>
+		value === undefined ? null : formatModelCostValue(value, locale);
+
+	const amount = format(pricing.amount);
+	let text = amount ? `${amount} / ${unit}` : "";
+	if (!text) {
+		const min = format(pricing.min);
+		const max = format(pricing.max);
+		if (min && max) text = `${min}\u2013${max} / ${unit}`;
+		else if (min ?? max)
+			text = `${m.model_price_from({}, { locale })} ${min ?? max} / ${unit}`;
+	}
+	if (!text) return "";
+	return pricing.note ? `${text} \u00b7 ${pricing.note}` : text;
 }
 
 function getGenerationModelTitle(model: PublicGenerationDeclaration): string {
@@ -1122,6 +1162,7 @@ const hoverCardPos = $derived.by(() => {
 			{:else}
 				<div class="mt-1.5 -mx-3">
 					{#each filteredGenerationModels as model (model.model)}
+						{@const priceText = formatGenerationPrice(model, locale)}
 						<div class="px-3 py-2 transition-colors duration-100 hover:bg-bg-hover/60">
 							<div class="flex items-start gap-2.5">
 								<input
@@ -1144,7 +1185,12 @@ const hoverCardPos = $derived.by(() => {
 												<span class="truncate text-[13px] font-medium text-text-primary">{getGenerationModelTitle(model)}</span>
 												<span class="text-[10px] text-text-tertiary/80">{getGenerationKind(model)}</span>
 											</div>
-											<div class="mt-0.5 truncate pl-5 text-[11px] text-text-tertiary">{model.model}</div>
+											<div class="mt-0.5 flex min-w-0 items-center gap-1.5 pl-5 text-[11px] text-text-tertiary">
+												<span class="truncate">{model.model}</span>
+												{#if priceText}
+													<span class="shrink-0 tabular-nums text-text-tertiary/75">· {priceText}</span>
+												{/if}
+											</div>
 										</button>
 										{#if generationPolicyMode === "limited" && selectedGenerationModels.has(model.model)}
 											<span class="mt-0.5 h-1.5 w-1.5 shrink-0 rounded-full bg-brand" aria-label={m.model_selector_selected({}, { locale })}></span>
