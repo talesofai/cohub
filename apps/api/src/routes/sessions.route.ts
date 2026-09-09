@@ -41,6 +41,12 @@ router.post("/:id/turns/:turnId/fork", async (c) => {
 
   const sourceTurn = await getSessionTurnById(session.id, turnId);
   if (!sourceTurn) return c.json({ message: "turn not found" }, 404);
+  const sourceMeta = sourceTurn.meta;
+  const isLocalRuntimeTurn = sourceMeta?.executorKind === "local_runtime"
+    || (typeof sourceMeta?.runtimeId === "string" && sourceMeta.runtimeId.trim().length > 0);
+  if (isLocalRuntimeTurn) {
+    return c.json({ code: "local_runtime_fork_unsupported", message: "local runtime sessions cannot be forked yet" }, 400);
+  }
   if (sourceTurn.executionKind === "direct_generation" && !["completed", "failed", "interrupted", "cancelled"].includes(sourceTurn.status)) {
     return c.json({ message: "cannot fork a running turn" }, 400);
   }

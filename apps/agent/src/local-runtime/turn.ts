@@ -14,18 +14,10 @@ import { db } from "../db.js";
 import { normalizeContentBlocksImages } from "../image-normalizer.js";
 import { logger } from "../logger.js";
 import { abortSessionTurn, interruptSessionTurn, persistAssistantMessage, persistUserMessage, failSessionTurn } from "../persistence.js";
-import {
-  appendLocalRuntimeAssistantMessages,
-  appendLocalRuntimeUserMessage,
-  openLocalRuntimeSession,
-  type LocalRuntimeAssistantTranscriptInput,
-  type LocalRuntimeTranscriptInput,
-} from "../local-runtime-transcript.js";
 import { registerActiveAbortHandle } from "../active-turns.js";
 import { getAbortEvent } from "../abort.js";
 import { readPublicAssetImageUrl } from "../public-asset-storage.js";
 import { sendOutput } from "../redis.js";
-import type { SessionManager } from "../runtime/local-session-manager.js";
 import {
   completeCommand,
   failCommand,
@@ -56,7 +48,7 @@ import { RUNTIME_BUSY_CLOSE_CODE, openRuntimeChannel, type RuntimeChannel } from
 
 /** Drive one Cohub turn through a provider-neutral local runtime host. */
 
-const MAX_RUNTIME_TRANSCRIPT_BYTES = 16 * 1024 * 1024;
+const MAX_RUNTIME_PROJECTION_BYTES = 16 * 1024 * 1024;
 const LEASE_HEARTBEAT_MS = 10_000;
 const CANCEL_GRACE_MS = 5_000;
 const SESSION_READY_TIMEOUT_MS = 30_000;
@@ -353,7 +345,7 @@ type TurnContext = {
 async function publishProjection(turn: TurnContext): Promise<void> {
   syncToolBlocks(turn.projection);
   const contentBytes = Buffer.byteLength(JSON.stringify(turn.projection.content), "utf8");
-  if (contentBytes > MAX_RUNTIME_TRANSCRIPT_BYTES) throw new Error("local runtime transcript exceeds the persistence size limit");
+  if (contentBytes > MAX_RUNTIME_PROJECTION_BYTES) throw new Error("local runtime projection exceeds the persistence size limit");
   turn.patchSeq += 1;
   await sendOutput({
     type: "stream_update",
@@ -996,7 +988,6 @@ export async function processLocalRuntimeTurn(input: { attemptId: string }): Pro
   };
 
   let channel: RuntimeChannel | null = null;
-  let sessionManager: SessionManager | null = null;
   let scope: LedgerScope | null = null;
   let runtimeSessionId = priorSession?.id ?? randomUUID();
   let providerSessionId = priorSession?.providerSessionId ?? null;
@@ -1067,23 +1058,11 @@ export async function processLocalRuntimeTurn(input: { attemptId: string }): Pro
     });
     await setRuntimeStatus({ runtimeId: runtime.id, connectionEpoch: runtime.connectionEpoch, status: "busy" });
 
-    sessionManager = await openLocalRuntimeSession(attempt.spaceId, turn.sessionId);
-    const transcriptBase: LocalRuntimeTranscriptInput = {
-      spaceId: attempt.spaceId,
-      sessionId: turn.sessionId,
-      turnId: turn.id,
-      executionAttemptId: attempt.id,
-      userMessageId,
-      startedAt: turnContext.startedAt,
-    };
-    const userEntryId = appendLocalRuntimeUserMessage(sessionManager, transcriptBase, normalizedUserContent, { ...meta, runtimeId: runtime.id, executorKind: "local_runtime" });
-    await sessionManager.flush();
     await persistUserMessage({
       spaceId: attempt.spaceId,
       sessionId: turn.sessionId,
       userMessageId,
       turnId: turn.id,
-      agentSessionEntryId: userEntryId,
       content: normalizedUserContent,
       meta: { ...meta, runtimeId: runtime.id, executorKind: "local_runtime" },
     });
@@ -1284,22 +1263,7 @@ export async function processLocalRuntimeTurn(input: { attemptId: string }): Pro
     const errorMessage = isError
       ? stringValue(terminalPayload.message) ?? turnContext.projection.errorMessage ?? "The local provider returned no assistant content."
       : null;
-    if (!sessionManager) throw new Error("local runtime session JSONL manager is unavailable");
     const completedAt = new Date().toISOString();
-    const transcript: LocalRuntimeAssistantTranscriptInput = {
-      ...transcriptBase,
-      assistantMessageId: turnContext.assistantMessageId,
-      content: turnContext.projection.content,
-      provider: runtime.provider,
-      model: typeof meta.model === "string" ? meta.model : null,
-      stopReason,
-      usage: turnContext.projection.usage,
-      messageKind: isError ? "assistant_error" : "assistant_final",
-      errorMessage,
-      completedAt,
-    };
-    const sessionEntryId = appendLocalRuntimeAssistantMessages(sessionManager, transcript);
-    await sessionManager.flush();
     await persistAssistantMessage({
       spaceId: attempt.spaceId,
       spaceSessionId: turn.sessionId,
@@ -1321,7 +1285,6 @@ export async function processLocalRuntimeTurn(input: { attemptId: string }): Pro
           stopReason,
           errorMessage,
           usage: turnContext.projection.usage,
-          sessionEntryId,
           meta: {
             messageKind: isError ? "assistant_error" : "assistant_final",
             runtimeId: runtime.id,
@@ -1412,11 +1375,6 @@ export async function processLocalRuntimeTurn(input: { attemptId: string }): Pro
     if (cancelTimer) clearTimeout(cancelTimer);
     await Promise.resolve(heartbeatInFlight).catch(() => undefined);
     unregisterAbort?.();
-    if (sessionManager) {
-      await sessionManager.close().catch((closeError: unknown) => {
-        logger.warn("[LocalRuntime] session JSONL close failed", { sessionId: turn.sessionId, error: closeError });
-      });
-    }
     await closeChannelBeforeLeaseRelease();
   }
 }

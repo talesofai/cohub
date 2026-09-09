@@ -15,4 +15,7 @@ and normalized events are written to stdout; diagnostics go to stderr.
 
 The host is intentionally transport-agnostic. A relay or local daemon owns
 authentication and workspace fencing, while this process owns SDK sessions and
-their native credentials/configuration.
+their native credentials/configuration. Cohub stores only the normalized turn
+and message stream for realtime clients; provider session history remains in
+the provider's native storage. Forking a local-runtime session is not supported
+yet.
