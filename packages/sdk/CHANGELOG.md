@@ -1,5 +1,12 @@
 # @neta-art/cohub
 
+## 8.12.1
+
+### Patch Changes
+
+- 2fe6bee: The App consent dialog now merges identical authorization requests. When an App calls `auth.request()` again with the same scopes and target while the dialog is still open — for example on every context update — the new request joins the open dialog and receives the same answer, instead of dismissing it with a spurious denial and opening a fresh one. Requests for a different consent still replace the dialog as before.
+- 95622b1: Realtime subscriptions now surface rejected room subscriptions instead of silently receiving nothing. When the gateway rejects the Space room (for example an app session without `space.view`), `session.subscribe()` calls its `error` handler and `space.events.subscribe()` its handler with the `system.subscribe.error` event, so an App can tell the viewer why it is not receiving events.
+
 ## 8.12.0
 
 ### Minor Changes
