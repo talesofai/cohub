@@ -1,10 +1,8 @@
 import type { GenerationContentBlock, GenerationModelDeclaration } from "@neta-art/generation";
 import type { BillingPayload } from "../billing.js";
 import type { RequestSource } from "../provenance.js";
-import type { GenerationModelPricing } from "./pricing.js";
 export * from "./catalog.js";
 export * from "./policy.js";
-export * from "./pricing.js";
 export * from "./session-messages.js";
 
 export type {
@@ -13,6 +11,7 @@ export type {
   GenerationContentBlockMeta,
   GenerationContentSpec,
   GenerationModelDeclaration,
+  GenerationModelPricing,
   GenerationParameterSpec,
   GenerationResult,
   GenerationSource,
@@ -114,9 +113,7 @@ export type GenerationTaskResult = {
 
 export type GenerationExampleRequest = Omit<CreateGenerationTaskRequest, "spaceId">;
 export type GenerationDeclaration = GenerationModelDeclaration;
-export type PublicGenerationDeclaration = Omit<GenerationModelDeclaration, "adapter"> & {
-  pricing?: GenerationModelPricing;
-};
+export type PublicGenerationDeclaration = Omit<GenerationModelDeclaration, "adapter">;
 
 export type ListGenerationModelsResponse = {
   models: PublicGenerationDeclaration[];
