@@ -1,5 +1,16 @@
 # @neta-art/cohub-cli
 
+## 6.10.0
+
+### Minor Changes
+
+- 5232f9f: Add space webhook triggers (`on.event: webhook`) and hook `uses` App Actions.
+
+### Patch Changes
+
+- Updated dependencies [5232f9f]
+  - @neta-art/cohub@8.13.0
+
 ## 6.9.1
 
 ### Patch Changes
