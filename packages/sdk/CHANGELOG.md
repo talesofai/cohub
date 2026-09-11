@@ -1,5 +1,24 @@
 # @neta-art/cohub
 
+## 8.14.0
+
+### Minor Changes
+
+- c7b6df3: Consent dialogs now target a Space the viewer controls, and app misconfiguration stays off the viewer's screen.
+  
+  - **Viewer-controlled default target**: a Space-bound `auth.request` no longer silently targets the app author's home Space. The host resolves a default from the invocation Space, then the embedding shell's Space, then the viewer's last-picked Space, then their first accessible Space — falling back to `GET /api/spaces/default`, which ensures a home Space. The target is resolved _before_ silent reuse, so a legacy home-Space cached grant can no longer silently re-authorize the author's Space. An explicit `spaceId` the viewer cannot access is treated as no target (with a developer diagnostic that never leaks the resolved Space id) instead of failing after they consent. If the viewer's Space list cannot be loaded (bounded by a timeout), confirmation is blocked rather than falling through to the app author's Space. Silent renewal for client-known targets (account grants, or the Space the app was invoked in) happens before the list is loaded, so returning viewers skip that round trip and are not blocked by a transient list failure.
+  - **Shared Space picker model**: `normalizeSpacePickerQuery`, `orderSpacePickerItems`, `filterSpacePickerItems`, and `selectSpacePickerItems` (plus their types) are exported from `@neta-art/cohub/space-picker`, so every host can render the same chooser.
+  - **Selection owned by the bridge core**: `AppBridgeDialogState` gains `selectedSpaceId` and `canChangeSpace`, `AppAuthorizeRequest` gains `defaultSpaceId`, and `AppBridgeCore` gains `setSelectedSpace(id)`. Hosts render; the core decides. Concurrent authorize requests can no longer overwrite each other and leave one unanswered: the dialog is reserved synchronously and later requests join or replace it, and a replaced silent attempt never clears the newer one. Confirmation only accepts a Space the host actually loaded; an accessible explicit `spaceId` is pinned in the core (not just hidden in the UI), so a host cannot redirect a grant the caller then acts on.
+  - **Structured authorize errors**: failed grants return a machine-readable `code` (`space_inaccessible`, `scope_not_held`, `app_not_accessible`, `consent_required`, `space_not_found`, `migration_pending`).
+  - **Developer diagnostics**: the host forwards `cohub.app.diagnostic` events and the SDK logs them to the app author's console via `console.warn` (the diagnostic subscription also announces runtime readiness, so apps that never read context still receive them). Delivery is non-fatal — a throwing host transport cannot break authorization — and is limited to the iframe bridge host today. Viewer-facing copy stays neutral for app-configuration failures and is mapped per error code. Account-level scopes silently reuse a grant on **any** Space that covers them (legacy, Space-less entries included), trying each in turn; picker mode only reuses the last-picked Space while the viewer still has it. Silent renewal retries once with a refreshed token on a 401 (an auth failure is never treated as a revoked grant), clears the cache only for a 403/404 grant rejection, and is capped and timeout-bounded. `AppRuntimeApi` exposes an idempotent `dispose()` to release its diagnostic and pointer listeners.
+- 785f9a9: Add a `session.access.manage` permission so builders can share a session. Session-level access (share/unshare) is now authorized by this permission instead of the host-only `member.manage`; space-level access and member management remain host-only. The permission is part of the public permission vocabulary and is not granted to Apps.
+
+### Patch Changes
+
+- fd5fdd5: Release overlay rect input regions when the pointer leaves them. Once the host makes a cross-origin overlay frame interactive it swallows pointer events, so the host could not tell that the pointer had left a rect region — a resting overlay kept the whole window unclickable. The SDK now reports the pointer while a rect `inputRegion` is active, and the host releases the region as soon as it is outside. Ownership is frozen while any button is held (including a drag that began on the page underneath), and an overlay that opts out or closes loses interaction immediately.
+  
+  `requestConfigure` also now treats `geometry` as the complete shape: a present object replaces the current one (`{}` fills the layer), and a geometry with any invalid axis is ignored rather than silently becoming a fill.
+
 ## 8.13.0
 
 ### Minor Changes
