@@ -1,5 +1,16 @@
 # @neta-art/cohub
 
+## 8.20.0
+
+### Minor Changes
+
+- 21d5227: Expose nullable file-monitoring health in Runtime status and use a single backend-neutral watcher event source. Sandbox archive validation accepts the currently published `v1.82.4` binary-only artifact during the one-time release transition and validates the native release shape with license notices. The sandbox binary pin remains unchanged until new CDN artifacts are verified.
+  
+  Runtime 状态增加可空的文件监听健康信息，文件事件统一使用通用后端来源。Sandbox 归档在本次发布过渡期间接受当前已发布的 `v1.82.4` 单二进制格式，同时校验带许可证的新制品。新的 CDN 制品验证完成前保持现有 Sandbox 二进制版本 pin。
+- 5394f11: Add redacted, local-only Runtime diagnostics with bounded JSONL rotation, incremental `runtime logs`, sandboxd output capture, stable runtime identity, and request/trace correlation across the Agent, Gateway, API, and Web status surfaces.
+  
+  增加脱敏且仅保存在本机的 Runtime 诊断能力：有界 JSONL 轮转、增量 `runtime logs`、sandboxd 输出采集、稳定 Runtime ID，以及贯通 Agent、Gateway、API 和 Web 状态页的 request/trace 关联。
+
 ## 8.19.0
 
 ### Minor Changes
