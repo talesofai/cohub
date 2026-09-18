@@ -1,0 +1,118 @@
+name: App Runtime Deploy to Cloudflare Workers
+
+on:
+  pull_request:
+    paths:
+      - 'apps/app-runtime-edge/**'
+      - '.github/workflows/app-runtime-deploy-cloudflare.yml'
+      - 'package.json'
+      - 'pnpm-lock.yaml'
+      - 'pnpm-workspace.yaml'
+      - '.npmrc'
+      - 'tsconfig.base.json'
+      - 'biome.json'
+  push:
+    branches:
+      - main
+    tags:
+      - 'v*.*.*'
+    paths:
+      - 'apps/app-runtime-edge/**'
+      - '.github/workflows/app-runtime-deploy-cloudflare.yml'
+      - 'package.json'
+      - 'pnpm-lock.yaml'
+      - 'pnpm-workspace.yaml'
+      - '.npmrc'
+      - 'tsconfig.base.json'
+      - 'biome.json'
+  workflow_dispatch:
+    inputs:
+      environment:
+        description: 'Target environment'
+        required: true
+        default: 'dev'
+        type: choice
+        options:
+          - dev
+          - prod
+
+# Serialize deployments to each environment, including tags and manual runs,
+# without interrupting the current run. PR checks use a separate group.
+concurrency:
+  group: app-runtime-${{ github.event_name == 'pull_request' && format('pr-{0}', github.event.pull_request.number) || ((startsWith(github.ref, 'refs/tags/') || inputs.environment == 'prod') && 'prod' || 'dev') }}
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+  HUSKY: '0'
+
+jobs:
+  check-and-deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Determine environment
+        id: target
+        env:
+          REQUESTED_ENVIRONMENT: ${{ inputs.environment || 'dev' }}
+        run: |
+          set -euo pipefail
+          if [[ "$GITHUB_REF" == refs/tags/* ]]; then
+            if [[ ! "$GITHUB_REF_NAME" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+              echo "Expected a stable service tag like v1.23.0."
+              exit 1
+            fi
+            echo "environment=prod" >> "$GITHUB_OUTPUT"
+          elif [[ "$GITHUB_EVENT_NAME" == workflow_dispatch && "$REQUESTED_ENVIRONMENT" == prod ]]; then
+            echo "environment=prod" >> "$GITHUB_OUTPUT"
+          else
+            echo "environment=dev" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+          cache: 'pnpm'
+
+      - name: Configure Talesofai npm auth
+        env:
+          GITEA_NPM_TOKEN: ${{ secrets.GITEA_NPM_TOKEN }}
+        run: |
+          if [ -n "$GITEA_NPM_TOKEN" ]; then
+            printf '\n//git.talesofai.com/api/packages/talesofai/npm/:_authToken=%s\n' "$GITEA_NPM_TOKEN" >> ~/.npmrc
+          fi
+
+      - name: Install dependencies
+        # Keep shared repository tooling available alongside the isolated Worker.
+        run: pnpm --filter @cohub/app-runtime-edge... --filter cohub install --frozen-lockfile
+
+      - name: Lint
+        run: pnpm --filter @cohub/app-runtime-edge lint
+
+      - name: Typecheck
+        run: pnpm --filter @cohub/app-runtime-edge typecheck
+
+      - name: Build
+        run: pnpm --filter @cohub/app-runtime-edge build
+
+      - name: Deploy to Cloudflare
+        if: github.event_name != 'pull_request'
+        env:
+          DEPLOY_ENVIRONMENT: ${{ steps.target.outputs.environment }}
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+        run: |
+          if [[ "$DEPLOY_ENVIRONMENT" == prod ]]; then
+            pnpm --filter @cohub/app-runtime-edge run deploy:prod
+          else
+            pnpm --filter @cohub/app-runtime-edge run deploy
+          fi

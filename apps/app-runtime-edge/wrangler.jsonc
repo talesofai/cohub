@@ -1,0 +1,28 @@
+{
+  "$schema": "./node_modules/wrangler/config-schema.json",
+  "name": "cohub-app-runtime-dev",
+  "main": "src/index.ts",
+  "compatibility_date": "2026-09-18",
+  "workers_dev": false,
+  "preview_urls": false,
+  "build": { "command": "node scripts/build.mts" },
+  "rules": [{ "type": "Text", "globs": ["**/*.js.txt"], "fallthrough": true }],
+  "vars": { "COHUB_ENV": "dev" },
+  "routes": [
+    { "pattern": "https://works.cohub.live/__cohub_dev/*", "zone_name": "cohub.live" },
+    { "pattern": "https://works.cohub.live/dev/w/*", "zone_name": "cohub.live" }
+  ],
+  "observability": { "enabled": true, "head_sampling_rate": 0.1 },
+  "env": {
+    "prod": {
+      "name": "cohub-app-runtime",
+      "workers_dev": false,
+      "preview_urls": false,
+      "vars": { "COHUB_ENV": "prod" },
+      "routes": [
+        { "pattern": "https://works.cohub.live/__cohub/*", "zone_name": "cohub.live" },
+        { "pattern": "https://works.cohub.live/w/*", "zone_name": "cohub.live" }
+      ]
+    }
+  }
+}

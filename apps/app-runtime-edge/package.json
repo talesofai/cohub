@@ -1,0 +1,23 @@
+{
+  "name": "@cohub/app-runtime-edge",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "build": "node scripts/build.mts",
+    "lint": "biome lint .",
+    "lint:fix": "biome lint --write .",
+    "types": "wrangler types worker-configuration.d.ts --include-runtime false",
+    "typecheck": "pnpm types && tsc -p tsconfig.json --noEmit && tsc -p tsconfig.browser.json --noEmit && tsc -p tsconfig.tools.json --noEmit",
+    "deploy": "wrangler deploy --env \"\"",
+    "deploy:prod": "wrangler deploy --env prod"
+  },
+  "devDependencies": {
+    "@biomejs/biome": "2.5.11",
+    "@cloudflare/workers-types": "5.20260918.1",
+    "@types/node": "26.4.0",
+    "esbuild": "0.28.2",
+    "typescript": "7.0.2",
+    "wrangler": "4.134.0"
+  }
+}
